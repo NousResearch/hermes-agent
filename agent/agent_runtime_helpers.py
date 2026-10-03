@@ -1464,65 +1464,96 @@ def restore_primary_runtime(agent) -> bool:
     )
     if blocked:
         return False
-    agent._restore_wait_logged = False
+    try:
+        snapshot = _snapshot_switch_state(agent, fields=_PRIMARY_RESTORE_SNAPSHOT_FIELDS)
+        compressor = agent.context_compressor
+        # Memory only: plugin-owned external state is outside this rollback boundary.
+        compressor_state = {
+            name: value.copy() if isinstance(value, (dict, list, set)) else value
+            for name, value in vars(compressor).items()
+        }
+        transport_cache = getattr(agent, "_transport_cache", _MISSING)
+        cached_transports = dict(transport_cache) if isinstance(transport_cache, dict) else None
+    except Exception as exc:
+        logger.warning("Cannot snapshot live fallback for primary restore: %s", exc)
+        return False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
     if not (isinstance(fallback_route, (list, tuple)) and len(fallback_route) == 2):
         fallback_route = (getattr(agent, "model", ""), getattr(agent, "provider", ""))
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
+    from agent.context_compressor_state import defer_compressor_state_writes
     try:
-        _apply_primary_runtime_fields(agent, rt)
-        from agent.turn_recovery import reset_codex_reasoning_replay
-        reset_codex_reasoning_replay(agent)
-        _restore_runtime_capabilities(agent, rt)
-        agent._use_prompt_caching = rt["use_prompt_caching"]
-        # Default to native layout for snapshots predating the native-vs-proxy split.
-        agent._use_native_cache_layout = rt.get(
-            "use_native_cache_layout",
-            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
-        )
-        # An operator cache disable (_cache_disabled) must survive snapshot restoration.
-        if getattr(agent, "_cache_disabled", False):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-        _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
-            model=rt["compressor_model"], context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
-        )
-        # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
-        if getattr(agent, "_compression_feasibility_checked", False) is True:
-            from agent.conversation_compression import revalidate_compression_feasibility
-            revalidate_compression_feasibility(agent)
-        _rebind_primary_credential_pool(
-            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
-        )
-        # Older snapshots have no reasoning_config; keep the current value.
-        saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
-            agent.reasoning_config = dict(saved_reasoning)
-        agent._fallback_activated = False
-        agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0
-        # Reset the stale-call circuit breaker: its streak measured the fallback provider.
-        from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
-        _reset_stale_streak(agent)
-        # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
-        # again (prefix cache match).
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
-        logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
-        agent._provider_fallback_active = False
-        agent._provider_fallback_route = None
-        if provider_fallback_active:
-            # Notification surfaces are best-effort and must never undo a successful restore.
-            with contextlib.suppress(Exception):
-                agent._emit_diagnostic_status(
-                    f"✅ Primary model restored: {agent.model} via {agent.provider}; "
-                    f"fallback {previous_model} via {previous_provider} is no longer active."
-                )
-        return True
+        with defer_compressor_state_writes(compressor):
+            agent._restore_wait_logged = False
+            _apply_primary_runtime_fields(agent, rt)
+            from agent.turn_recovery import reset_codex_reasoning_replay
+            reset_codex_reasoning_replay(agent)
+            _restore_runtime_capabilities(agent, rt)
+            agent._use_prompt_caching = rt["use_prompt_caching"]
+            # Default to native layout for snapshots predating the native-vs-proxy split.
+            agent._use_native_cache_layout = rt.get(
+                "use_native_cache_layout",
+                agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
+            )
+            # An operator cache disable (_cache_disabled) must survive snapshot restoration.
+            if getattr(agent, "_cache_disabled", False):
+                agent._use_prompt_caching = False
+                agent._use_native_cache_layout = False
+            _rebuild_primary_client(agent, rt, reason="restore_primary")
+            agent.context_compressor.update_model(
+                model=rt["compressor_model"], context_length=rt["compressor_context_length"],
+                base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
+                provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+            )
+            # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
+            if getattr(agent, "_compression_feasibility_checked", False) is True:
+                from agent.conversation_compression import revalidate_compression_feasibility
+                revalidate_compression_feasibility(agent)
+            _rebind_primary_credential_pool(
+                agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            )
+            # Older snapshots have no reasoning_config; keep the current value.
+            saved_reasoning = rt.get("reasoning_config")
+            if saved_reasoning is not None:
+                agent.reasoning_config = dict(saved_reasoning)
+            agent._fallback_activated = False
+            agent._fallback_index = 0
+            agent._rate_limit_backoff_count = 0
+            # Reset the stale-call circuit breaker: its streak measured the fallback provider.
+            from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
+            _reset_stale_streak(agent)
+            # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
+            # again (prefix cache match).
+            rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+            logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
+            agent._provider_fallback_active = False
+            agent._provider_fallback_route = None
+            if provider_fallback_active:
+                # Notification surfaces are best-effort and must never undo a successful restore.
+                with contextlib.suppress(Exception):
+                    agent._emit_diagnostic_status(
+                        f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+                        f"fallback {previous_model} via {previous_provider} is no longer active."
+                    )
+            return True
     except Exception as e:
+        abandoned = [getattr(agent, name, None) for name in ("client", "_anthropic_client")]
+        _restore_switch_snapshot(agent, snapshot)
+        vars(compressor).clear()
+        vars(compressor).update(compressor_state)
+        if cached_transports is not None:
+            transport_cache.clear()
+            transport_cache.update(cached_transports)
+        retained = [snapshot.get(name) for name in ("client", "_anthropic_client")]
+        retired = set()
+        for client in abandoned:
+            if client is None or any(client is old for old in retained) or id(client) in retired:
+                continue
+            retired.add(id(client))
+            # Shared transports may still be borrowed: shutdown only, never hard-close here.
+            with contextlib.suppress(Exception):
+                agent._retire_shared_openai_client(client, reason="failed_primary_restore")
         logger.warning("Failed to restore primary runtime: %s", e)
         return False
 
@@ -2159,22 +2190,32 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
 )
 _MISSING = object()
+_PRIMARY_RESTORE_SNAPSHOT_FIELDS = (
+    "request_overrides", "_transport_cache", "_use_prompt_caching", "_use_native_cache_layout",
+    "reasoning_config", "_restore_wait_logged", "_fallback_activated", "_fallback_index",
+    "_rate_limit_backoff_count", "_consecutive_stale_streams", "_provider_fallback_active",
+    "_provider_fallback_route", "_cached_system_prompt", "_compression_feasibility_checked",
+    "_last_feasibility_notice", "_compression_warning", "_bedrock_region", "_bedrock_guardrail_config",
+)
 
 
-def _snapshot_switch_state(agent) -> Dict[str, Any]:
+def _snapshot_switch_state(agent, *, fields=()) -> Dict[str, Any]:
     """Snapshot every field the swap+rebuild mutates so a failed rebuild rolls back atomically
     (else a new model name + OLD client 400s next turn). The sentinel distinguishes unset from
     None: tests build bare agents via ``__new__`` without all fields."""
-    snapshot = {name: getattr(agent, name, _MISSING) for name in _SWITCH_SNAPSHOT_FIELDS}
+    snapshot = {name: getattr(agent, name, _MISSING) for name in (*_SWITCH_SNAPSHOT_FIELDS, *fields)}
     # Shallow-copy the dict so mutating the live one doesn't poison the rollback target.
-    snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    kwargs = getattr(agent, "_client_kwargs", _MISSING)
+    snapshot["_client_kwargs"] = dict(kwargs or {}) if kwargs is not _MISSING else _MISSING
     return snapshot
 
 
 def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
     for name, value in snapshot.items():
         if value is _MISSING:
-            continue  # attribute did not exist before the swap; don't fabricate it
+            with contextlib.suppress(AttributeError):
+                delattr(agent, name)  # remove fields introduced by an unsuccessful swap
+            continue
         with contextlib.suppress(Exception):
             setattr(agent, name, value)
 

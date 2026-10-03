@@ -34,6 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.config import load_config
+from hermes_cli.config_read_errors import ConfigWriteRefusedError
 from hermes_cli.version_info import get_version_info
 
 try:
@@ -354,6 +355,13 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
 
 
 app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
+
+
+@app.exception_handler(ConfigWriteRefusedError)
+async def _config_write_refused(_request: Request, exc: ConfigWriteRefusedError):
+    # Every route that saves config can meet the fail-closed guard. Its message names the file
+    # and the fix; as a bare 500 a dashboard-only user had no way to learn the file was broken.
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.

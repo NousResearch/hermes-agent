@@ -219,7 +219,9 @@ class PlatformRegistry:
             event = self._inflight.get(scoped_key)
             load_key = scoped_key
             if event is None and name not in entries and self._loading.get():
-                return  # nested walk inside a loader: the outer walk resolves siblings
+                from hermes_cli.plugins_loader import in_plugin_load_worker
+                if in_plugin_load_worker():
+                    return  # nested walk on a deadline worker: the outer walk resolves siblings
             if event is None and name not in entries:
                 loader = deferred.pop(name, None)
             if event is None and loader is None and name not in entries:

@@ -42,7 +42,7 @@ BRANCH_EXPLICIT=0
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
+SELF_TEST_TCC_HEAL=0 SELF_TEST_RESULT=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -64,6 +64,7 @@ while [ $# -gt 0 ]; do
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
+    --self-test-result) SELF_TEST_RESULT=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
@@ -89,6 +90,7 @@ STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
 DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
+RETRYABLE=1  # result-protocol field: 0 = deterministic failure, retrying cannot help (#64577)
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
 
@@ -111,6 +113,9 @@ on_signal() {
   fi
   log "SIGNAL: $sig pid=$$ ppid=$PPID pgid=${pgid:-unknown}"
   FINAL_MSG="Update hand-off was interrupted by $sig (pid $$)."
+  RETRYABLE=0  # an interrupted hand-off is not a deterministic git failure,
+               # but retrying the same hand-off right now cannot fix what
+               # stopped it; the user should reopen and update deliberately.
   case "$sig" in
     HUP) FINAL_CODE=129 ;;
     INT) FINAL_CODE=130 ;;
@@ -471,9 +476,10 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
 write_result() {
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"retryable":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
+    "$([ "$RETRYABLE" -eq 1 ] && echo true || echo false)" \
     "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" "$(date +%s)" \
     > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
 }
@@ -862,6 +868,7 @@ if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
     log "hermes update skipped (checkout parked on a non-target branch); not retrying"
     FINAL_CODE=8
     FINAL_MSG="Update skipped: the git checkout is on a branch that isn't fully merged into $BRANCH. Switch to the target branch and update again (see the terminal output for the exact commands)."
+    RETRYABLE=0
     exit 8
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
@@ -887,12 +894,36 @@ fi
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # #64577 (Cause 4): a deterministic local-state failure — a stash/pull
+  # conflict, un-mergeable local commits, a parked branch — fails identically
+  # on every retry, so the result file must say retrying cannot help. The
+  # updater's own banners identify these classes; grep them out of the run's
+  # output. (The shim already refuses to retry these once; the RETRYABLE=0
+  # field is what stops the DESKTOP update card from offering the button.)
+  if printf '%s' "$OUT" | grep -q \
+    "Could not stash local changes\|would be overwritten by merge\|Automatic cherry-pick failed\|not possible to fast-forward\|diverged\|local changes.*overwritten"; then
+    RETRYABLE=0
+    log "update failed deterministically (git local-state class); marking result non-retryable"
+  fi
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).
   if [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
       && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python"; then
     FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
+    RETRYABLE=0
   fi
+fi
+
+if [ "$SELF_TEST_RESULT" -eq 1 ]; then
+  # Self-test epilogue (#64577): the real update-run + classification above
+  # has executed against the stub installation launcher; write the result
+  # and exit before finish()'s swap/relaunch half. tests/scripts/
+  # desktop_update/test_desktop_update_result_retryable.py drives this.
+  # (--self-test-result forces NO_UI and NO_MARKER_CLEANUP; DESKTOP_PID was
+  # 0 so no desktop wait ran.)
+  trap - EXIT
+  write_result
+  exit "$FINAL_CODE"
 fi
 exit "$FINAL_CODE"

@@ -28,10 +28,17 @@ export interface HandoffResult {
   ok: boolean
   exitCode: number
   /** Update succeeded but the user must act (reopen the app, reinstall the
-   * GUI package, fix the sandbox helper). The consumer must SURFACE these —
-   * an ok:true manual result that only gets logged never reaches the user
-   * on exactly the machines where no shim/notifier could show it live. */
+   *  GUI package, fix the sandbox helper). The consumer must SURFACE these —
+   *  an ok:true manual result that only gets logged never reaches the user
+   *  on exactly the machines where no shim/notifier could show it live. */
   manual: boolean
+  /** False when the hand-off classified its failure as deterministic
+   *  (#64577 Cause 4): a stash/pull conflict, un-mergeable local commits, a
+   *  parked branch, a bricked venv — retrying re-runs the whole (possibly
+   *  multi-GB) backup and fails identically. The consumer must not offer a
+   *  Retry button for these. Absent field (older scripts) → true: the
+   *  historical behavior, same shape as `manual`. */
+  retryable: boolean
   message: string
   branch: string
 }
@@ -87,6 +94,7 @@ export function readAndConsumeHandoffResult(
     ok: Boolean(parsed?.ok),
     exitCode: Number.isFinite(Number(parsed?.exit_code)) ? Number(parsed.exit_code) : 1,
     manual,
+    retryable: parsed?.retryable === undefined ? true : Boolean(parsed?.retryable),
     message: typeof parsed?.message === 'string' ? parsed.message : '',
     branch: typeof parsed?.branch === 'string' ? parsed.branch : ''
   }

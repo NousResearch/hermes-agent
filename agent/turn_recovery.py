@@ -1039,6 +1039,8 @@ def nonretryable_client_error_result(
         _vlines(agent, f"   💡 Model '{model}' isn't available on {_plabel}. Pick another with /model.")
         if _prefix_suggestion:
             _vlines(agent, f"      Did you mean '{_prefix_suggestion}'? It looks like the vendor prefix is missing.")
+    elif classified.error_context.get("governance_refusal") is True:
+        _vlines(agent, "   💡 Review the policy decision or required approval with the gateway administrator.")
     elif classified.reason not in _NONRETRYABLE_LABELS:
         _vlines(agent, f"   💡 Fix: pick another model (/model), or check `{display_hermes_home()}/logs/agent.log`.")
     # A WAF/CDN block (#53099, #70566): the key never reached the provider; the usual cause

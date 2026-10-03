@@ -118,7 +118,7 @@ export function UpdatesOverlay() {
       {/* This dialog has no inputs, so Radix's default autofocus would land on
           the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        bodyClassName="overflow-hidden p-0 gap-0"
+        bodyClassName="flex flex-col overflow-hidden p-0 gap-0"
         className="max-w-sm"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
@@ -297,56 +297,69 @@ function IdleView({
 
   const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 
+  // Long changelogs scroll inside their own box; the install actions live in a
+  // non-scrolling footer pinned under it, so they stay on screen at any UI
+  // scale instead of hiding below the fold (#128170).
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <BrandMark className="size-16" />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-4 pt-7 pr-8"
+        data-slot="update-scroll-area"
+      >
+        <div className="grid gap-5">
+          <div className="flex flex-col items-center gap-3 text-center">
+            <BrandMark className="size-16" />
 
-        <DialogTitle className="text-center text-xl">{title}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
-      </div>
-
-      <div className="grid gap-3">
-        {groups.map((group, index) => (
-          <div key={group.id}>
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
-              {index === 0 && commits.length > 0 && (
-                <CopyButton
-                  appearance="icon"
-                  buttonSize="icon-xs"
-                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
-                  iconClassName="size-3"
-                  label={u.copyFullLog}
-                  side="left"
-                  text={handleCopyFullLog}
-                />
-              )}
-            </div>
-            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
-              {group.items.map(item => (
-                <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
-                  <span className="leading-snug">{item}</span>
-                </li>
-              ))}
-            </ul>
+            <DialogTitle className="text-center text-xl">{title}</DialogTitle>
+            <DialogDescription className="text-center text-sm">{body}</DialogDescription>
           </div>
-        ))}
+
+          <div className="grid gap-3">
+            {groups.map((group, index) => (
+              <div key={group.id}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+                  {index === 0 && commits.length > 0 && (
+                    <CopyButton
+                      appearance="icon"
+                      buttonSize="icon-xs"
+                      className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                      iconClassName="size-3"
+                      label={u.copyFullLog}
+                      side="left"
+                      text={handleCopyFullLog}
+                    />
+                  )}
+                </div>
+                <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
+                  {group.items.map(item => (
+                    <li className="flex items-start gap-2" key={item}>
+                      <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
+                      <span className="leading-snug">{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+
+          <SyncStatusCard />
+        </div>
       </div>
 
-      <div className="grid gap-2">
+      <div
+        className="grid shrink-0 gap-2 border-t border-(--ui-stroke-tertiary) px-6 pb-6 pr-8 pt-4"
+        data-slot="update-actions"
+      >
         <Button className="font-semibold" onClick={onInstall} size="lg">
           {u.updateNow}
         </Button>
         <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}
         </Button>
+
+        {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
       </div>
-
-      {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
-
-      <SyncStatusCard />
     </div>
   )
 }

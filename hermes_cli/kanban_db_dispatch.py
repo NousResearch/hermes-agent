@@ -152,6 +152,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    completed_merged_prs: list[str] = field(default_factory=list)
+    """Review cards completed using verified merged-PR acceptance."""
+    pr_reconciliation: list[tuple[str, str, str]] = field(default_factory=list)
+    """Read-only diagnostics: task ID, PR URL, classification."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -1990,19 +1994,25 @@ def dispatch_once(
         )
 
     try:
-        db_path = _kb.kanban_db_path(board=board)
+        db_path = _kb.kanban_db_path(board=board).expanduser().resolve()
     except Exception:
         # Must not lose the tick — fall through to an unguarded dispatch.
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
+    from hermes_cli.kanban_pr_reconcile import snapshot_reviews, reconcile_reviews
+    snapshots = []
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
             result = DispatchResult(skipped_locked=True)
         else:
             result = _locked_tick()
+            if not dry_run:
+                snapshots = snapshot_reviews(conn, db_path)
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
             _kbc._maybe_checkpoint_wal(conn, db_path)
+    if snapshots:
+        reconcile_reviews(conn, db_path, snapshots, result)
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)

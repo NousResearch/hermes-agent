@@ -2823,6 +2823,20 @@ def complete_task(
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
     """
+    return _complete_task_with_acceptance(
+        conn, task_id, result=result, summary=summary, metadata=metadata,
+        created_cards=created_cards, expected_run_id=expected_run_id,
+        fire_lifecycle_hook=fire_lifecycle_hook, force=force,
+    )
+
+
+def _complete_task_with_acceptance(
+    conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
+    summary: Optional[str] = None, metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
+    fire_lifecycle_hook: bool = True, force: bool = False, acceptance=None,
+) -> bool:
+    """Internal completion path; only the reconciler supplies prepared evidence."""
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
@@ -2834,7 +2848,8 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
-    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
+    if acceptance is None:
+        acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
     with write_txn(conn):

@@ -124,6 +124,7 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_video(chat_id, path, caption)` | Send a video |
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
+| `send_transcript_echo(chat_id, transcript, metadata)` | Show what speech-to-text heard (`stt.echo_transcripts`). The default sends the localized `🎙️ "…"` line through `send`; override it to render the raw transcript natively |
 
 ### Interactive UX (recommended if your platform supports tappable buttons)
 

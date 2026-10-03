@@ -1538,10 +1538,15 @@ class GatewayInboundMixin:
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
+        """Send each transcript back through the adapter's ``send_transcript_echo`` (best-effort; failures
+        are logged, never raised). Duck-typed adapters without the hook get the ``🎙️ "…"`` line via ``send``."""
+        has_hook = getattr(type(adapter), "send_transcript_echo", None) is not None
         for tx in transcripts:
             try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
+                if has_hook:
+                    await adapter.send_transcript_echo(source.chat_id, tx, metadata=metadata)
+                else:
+                    await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 

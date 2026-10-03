@@ -2974,6 +2974,13 @@ class BasePlatformAdapter(ABC):
         """Send a notice privately when the platform supports it; default is a normal send."""
         return await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
 
+    async def send_transcript_echo(
+        self, chat_id: str, transcript: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Show the sender what speech-to-text heard (``stt.echo_transcripts``). The default sends the
+        localized ``🎙️ "…"`` line as a normal message; an adapter that renders transcripts natively
+        overrides this and receives the raw transcript instead of a translated string to parse."""
+        return await self.send(chat_id, t("gateway.voice.transcript_echo_short", text=transcript), metadata=metadata)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
 

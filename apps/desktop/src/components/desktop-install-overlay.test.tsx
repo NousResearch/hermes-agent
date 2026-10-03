@@ -567,9 +567,12 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     expect(await screen.findByText('Installation failed')).toBeTruthy()
 
-    fireEvent.keyDown(window, { key: 'Escape' })
-
-    await waitFor(() => expect(screen.queryByText('Installation failed')).toBeNull())
+    // The Escape listener is attached by an effect that runs after the failure renders. A key
+    // pressed between the commit and that effect is dropped, so press it until it lands.
+    await waitFor(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(screen.queryByText('Installation failed')).toBeNull()
+    })
   })
 })
 

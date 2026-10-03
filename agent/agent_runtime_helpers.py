@@ -268,11 +268,19 @@ def sanitize_tool_call_arguments(
                 function["arguments"] = "{}"
                 msg.pop(_DB_PERSISTED_MARKER, None)
                 continue
-            if not isinstance(arguments, str):
+            if isinstance(arguments, str):
+                try:
+                    if isinstance(json.loads(arguments), dict):
+                        continue
+                except (json.JSONDecodeError, ValueError):
+                    pass  # corrupted JSON falls through to the repair path below
+            elif isinstance(arguments, dict):
                 continue
-            with contextlib.suppress(json.JSONDecodeError):
-                json.loads(arguments)
-                continue
+            # Non-object arguments: corrupted JSON, or valid-but-scalar/list JSON the model
+            # emitted (e.g. arguments="code"). The executor rejects these ("Tool arguments must
+            # be a valid JSON object"), yet replaying them verbatim 400s every later request on
+            # object-strict wires (MiniMax /anthropic: "tool_use.input: Input should be a valid
+            # dictionary (2013)") and wedges the session.
             # Canonical ``call_id || id`` precedence so scan and stub share the id the pipeline
             # uses; bare ``id`` misses Codex call_id results and orphans a stub.
             # Keying on bare ``id`` here would fail to find a result built with ``call_id`` (Codex Responses
@@ -285,7 +293,7 @@ def sanitize_tool_call_arguments(
                 "Corrupted tool_call arguments repaired before request "
                 "(session=%s, message_index=%s, tool_call_id=%s, function=%s, "
                 "original_arguments=%r)", session_id or "-", message_index, tool_call_id or "-",
-                function_name, arguments[:_FULL_ARGS_LOG_BOUND],
+                function_name, str(arguments)[:_FULL_ARGS_LOG_BOUND],
             )
             function["arguments"] = "{}"
             # The persisted row for a stamped dict still holds the corrupted args; pop the

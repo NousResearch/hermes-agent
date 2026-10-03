@@ -21,7 +21,7 @@ def no_ca_env(monkeypatch):
 def test_missing_explicit_bundle_falls_back_to_the_platform_store(tmp_path, caplog, no_ca_env):
     missing = str(tmp_path / "nope.pem")
 
-    assert resolve_httpx_verify(ca_bundle=missing) is True
+    assert resolve_httpx_verify(ca_bundle=missing) is resolve_httpx_verify()
     assert "does not exist" in caplog.text
 
 
@@ -170,3 +170,26 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
+
+
+def test_platform_store_is_one_shared_context_under_truststore(monkeypatch, no_ca_env):
+    """With truststore in force every default caller gets the SAME context, so
+    httpx does not build a new SSLContext per transport (~30 ms each)."""
+    import ssl
+
+    from agent import ssl_verify
+
+    monkeypatch.setattr(ssl_verify, "_installed", True)
+    monkeypatch.setattr(ssl_verify, "_CA_CONTEXTS", {})
+
+    first = resolve_httpx_verify()
+    assert isinstance(first, ssl.SSLContext)
+    assert resolve_httpx_verify(base_url="https://example.invalid") is first
+
+
+def test_platform_store_stays_httpx_default_without_truststore(monkeypatch, no_ca_env):
+    """Positive control: without truststore httpx keeps its own default trust."""
+    from agent import ssl_verify
+
+    monkeypatch.setattr(ssl_verify, "_installed", False)
+    assert resolve_httpx_verify() is True

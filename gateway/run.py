@@ -1152,6 +1152,15 @@ def _build_replay_entry(
     # not just the timestamp-rendering guard below.
     if msg.get("_compressed_summary"):
         entry["_compressed_summary"] = True
+    # Proactive pruning can persist this projected history again. Keep the
+    # producer-owned restatement flag until the provider boundary strips it.
+    from agent.context_compressor import INFLIGHT_TASK_REPLAY_METADATA_KEY
+
+    metadata = msg.get("display_metadata")
+    if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_REPLAY_METADATA_KEY):
+        entry["display_metadata"] = {
+            INFLIGHT_TASK_REPLAY_METADATA_KEY: metadata[INFLIGHT_TASK_REPLAY_METADATA_KEY],
+        }
     # Replay rebuilds the SAME conversation for its next turn: every role keeps its uid and merge witness, so a
     # context engine sees the uids the store holds. Tool-call uid maps stay with the rows that still carry
     # their calls (those pass through whole); on a plain row a leftover map would name calls it no longer has.

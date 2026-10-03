@@ -174,3 +174,34 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     assert not adapter._pending_messages
 
 
+@pytest.mark.asyncio
+async def test_goal_progress_extension_sends_notice_and_enqueues_continuation(hermes_home):
+    """#109804: with goals.auto_extend on, a budget boundary that earns another window
+    delivers the extension notice AND re-enqueues the continuation — same surface
+    contract as a plain 'continue' verdict, so the loop keeps going without typing
+    /goal resume."""
+    (hermes_home / "config.yaml").write_text("goals:\n  auto_extend: true\n", encoding="utf-8")
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    mgr.set("polish the docs", max_turns=1)
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "more pages left", False, None, False)), \
+         patch("hermes_cli.goals.review_progress", return_value=("extend", "3 of 6 pages edited")):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="edited 3 of 6 pages",
+        )
+        await _drain_until(lambda: adapter.sends and adapter._pending_messages)
+
+    assert len(adapter.sends) == 1
+    content = adapter.sends[0]["content"]
+    assert "Goal extended" in content
+    assert "3 of 6 pages edited" in content
+    assert adapter._pending_messages, "the extension must enqueue the continuation for the next turn"
+    assert GoalManager(session_entry.session_id).state.status == "active"
+
+

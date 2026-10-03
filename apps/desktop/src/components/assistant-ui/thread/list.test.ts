@@ -181,6 +181,33 @@ describe('buildGroups', () => {
 
     expect(groups).toEqual([{ id: 'a', index: 0, kind: 'standalone', weight: 1 }])
   })
+
+  it('collapses a transient store-replacement duplicate standalone id into one group (#119131)', () => {
+    const groups = buildGroups(
+      signature([
+        ['a1', 'assistant', 4],
+        ['a1', 'assistant', 4]
+      ])
+    )
+
+    expect(groups).toEqual([{ id: 'a1', index: 0, kind: 'standalone', weight: 4 }])
+  })
+
+  it('keeps row keys unique when the store exposes a duplicated turn message (#119131)', () => {
+    const groups = buildGroups(
+      signature([
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 4],
+        ['t1', 'tool', 2],
+        ['t1', 'tool', 2]
+      ])
+    )
+
+    const ids = groups.map(group => group.id)
+
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(groups).toEqual([{ id: 'u1', indices: [0, 1, 2], kind: 'turn', weight: 7 }])
+  })
 })
 
 describe('resolveThreadScrollTarget', () => {

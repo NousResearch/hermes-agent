@@ -2276,7 +2276,8 @@ DEFAULT_CONFIG = {
         "auto_prune": True,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
+        # at CLI/gateway startup and on the `hermes serve` (Desktop) maintenance tick.
+        # Activity is the freshest of live activity (last_activity_at) / latest
         # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
         # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
         # whose process died without closing them; those are *closed*, not deleted, and get a further full

@@ -1086,6 +1086,18 @@ class GroupAtGuardMiddleware(InboundMiddleware):
             "and answer it directly."
         )
 
+    @staticmethod
+    def _attribution_name(name: str) -> str:
+        """Nicknames and forwarded senders are member-chosen: a newline or a ``[``/``|``/``]`` in one
+        would end a header early, or start a line that passes as another member's ``[name|id]``."""
+        from gateway.session import neutralize_untrusted_inline_text
+        return " ".join(neutralize_untrusted_inline_text(name or "").translate(str.maketrans("", "", "[]|")).split())
+
+    @classmethod
+    def _attribution_header(cls, nickname: str, user_id: Optional[str]) -> str:
+        uid = user_id or "unknown"
+        return f"[{cls._attribution_name(nickname) or uid}|{uid}]"
+
     @classmethod
     def _observe_group_message(cls, adapter, source, sender_display: str, text: str, *, ctx: InboundContext,
                                msg_id: Optional[str] = None, forwarded_records: Optional[dict] = None) -> None:
@@ -1102,7 +1114,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
                 if summary:
                     body_text = f"{text}\n{summary}" if text else summary
             entry: dict = {
-                "role": "user", "content": f"[{sender_display}|{source.user_id or 'unknown'}]\n{body_text}",
+                "role": "user", "content": f"{cls._attribution_header(sender_display, source.user_id)}\n{body_text}",
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True,
             }
             if msg_id:
@@ -1132,7 +1144,8 @@ class GroupAttributionMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         if ctx.chat_type == "group" and not ctx.owner_command:
             ctx.channel_prompt = GroupAtGuardMiddleware._build_group_channel_prompt(ctx.msg_body, ctx.adapter._bot_id)
-            ctx.raw_text = f"[{ctx.sender_nickname or ctx.from_account or 'unknown'}|{ctx.from_account or 'unknown'}]\n{ctx.raw_text}"
+            header = GroupAtGuardMiddleware._attribution_header(ctx.sender_nickname or ctx.from_account, ctx.from_account)
+            ctx.raw_text = f"{header}\n{ctx.raw_text}"
             if ctx.source is not None:
                 ctx.source = dataclasses.replace(ctx.source, user_name=None)
         await next_fn()
@@ -1309,9 +1322,10 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
     def build_forward_text(cls, forward_data: dict, *, ctx: InboundContext, is_dispatch: bool) -> str:
         """Render ``ForwardMsgData`` as ``发送人：正文`` lines with media markers. When ``is_dispatch``,
         refs go to ``ctx.media_refs`` and a ``用户附言：`` footer is added (observe-time callers skip both)."""
-        lines = [f"当前用户的昵称为{ctx.sender_nickname or '用户'}", "以下为用户的聊天记录"]
+        name_of = GroupAtGuardMiddleware._attribution_name
+        lines = [f"当前用户的昵称为{name_of(ctx.sender_nickname) or '用户'}", "以下为用户的聊天记录"]
         for sender, body, refs in cls._walk_forward_msgs(forward_data):
-            lines.append(f"{sender}：{body}")
+            lines.append(f"{name_of(sender)}：{body}")
             if is_dispatch:
                 ctx.media_refs.extend(refs)
         text = "\n".join(lines)

@@ -29,10 +29,12 @@ hermes chat --toolsets all              # everything
 ### 按平台（config.yaml）
 
 ```yaml
-toolsets:
-  - hermes-cli          # default for CLI
-  # - hermes-telegram   # override for Telegram gateway
+platform_toolsets:
+  cli: [hermes-cli]                 # default for CLI
+  telegram: [web, file, terminal]   # override for Telegram gateway
 ```
+
+某个平台的列表会替换该平台的默认工具集。`hermes tools` 写入的也是这个键。
 
 ### 交互式管理
 
@@ -137,19 +139,19 @@ mcp_servers:
 
 ### 自定义工具集
 
-在 `config.yaml` 中定义自定义工具集，以创建项目专属的工具集合：
+配置无法把现有工具集组合成一个新名称；新的工具集名称只来自 MCP 服务器（见上文）和插件。要为项目准备专属的工具组合，请在该平台下列出它需要的工具集：
 
 ```yaml
-toolsets:
-  - hermes-cli
-custom_toolsets:
-  data-science:
+platform_toolsets:
+  cli:
     - file
     - terminal
     - code_execution
     - web
     - vision
 ```
+
+若只针对单次会话，可用 `hermes chat --toolsets file,terminal,code_execution,web,vision` 传入相同的名称。若想让这套组合与日常配置分开，把该列表写进另一个 [profile](../user-guide/profiles.md) 的 `config.yaml`。
 
 ### 通配符
 

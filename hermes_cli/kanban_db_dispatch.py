@@ -70,6 +70,17 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Narrow quota-only subset of ``_RESPAWN_BLOCKER_RE`` for ``crashed`` runs
+# (#126701): a worker that died against the quota wall before the requeue
+# could classify it ``rate_limited`` gets the same cooldown spacing as a
+# classified run. Deliberately excludes the auth family — a crash's persisted
+# error is worker context, not a diagnosis (#117097) — so this only adds retry
+# spacing and never parks the card.
+_RESPAWN_QUOTA_CRASH_RE = re.compile(
+    r"\b(quota|rate[\s_\-]?limit|429)\b",
+    re.IGNORECASE,
+)
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1530,10 +1541,12 @@ def check_respawn_guard(
     Called per ready/review row before any claim attempt. Priority order:
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown,
+    or a ``crashed`` run whose error matches the narrow quota-only pattern of
+    #126701 — the worker died against the quota wall before the requeue could
+    classify it; checked BEFORE ``blocker_auth`` because the requeue stamps a
+    quota-flavored ``last_failure_error`` that would otherwise park the task
+    forever — that path never increments ``consecutive_failures``), ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1556,7 +1569,11 @@ def check_respawn_guard(
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
     #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    reaches the breaker.  A crash whose captured output names the quota wall
+    #    (#126701) shares it too: the worker died before the requeue could
+    #    classify it ``rate_limited``, so without this the card would respawn on
+    #    the next tick straight into the same wall, burning a spawn per tick
+    #    until the breaker trips.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
@@ -1569,7 +1586,14 @@ def check_respawn_guard(
             ended_at = latest_run["ended_at"]
             if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
                 return "infrastructure_cooldown"
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
+    quota_flavored_crash = (
+        latest_run is not None
+        and latest_run["outcome"] == "crashed"
+        and bool(_RESPAWN_QUOTA_CRASH_RE.search(_kb._lossy_text(row["last_failure_error"])))
+    )
+    if latest_run is not None and (
+        latest_run["outcome"] == "rate_limited" or quota_flavored_crash
+    ):
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.

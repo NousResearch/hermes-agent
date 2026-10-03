@@ -52,20 +52,14 @@ def test_pruned_tool_payload_keeps_one_display_identity(db):
     assert len(tool_rows) == 1
 
 
-def test_distinct_assistant_calls_with_same_args_are_not_merged(db):
-    """The widened key keys assistant rows on their call IDS: two different calls
-    that happen to share arguments and timestamp stay separate display events."""
-    sid = "distinct-calls"
+def test_distinct_idless_assistant_calls_are_not_merged(db):
+    """Only a complete set of call ids replaces the content key: two id-less calls
+    sharing a timestamp but differing in arguments stay separate display events."""
+    sid = "idless-calls"
     db.create_session(sid, source="test")
-    db._execute_write(lambda conn: [
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content, tool_calls, timestamp,"
-            " active, compacted) VALUES (?, ?, ?, ?, ?, 1, 0)",
-            (sid, "assistant", "working",
-             json.dumps([{"id": cid, "type": "function",
-                          "function": {"name": "demo_tool",
-                                       "arguments": json.dumps({"q": "same"})}}]),
-             1700000000.0))
-        for cid in ("call-1", "call-2")])
-    msgs = db.get_messages(sid, include_compacted=True)
-    assert len(msgs) == 2
+    db.append_messages_batch(sid, [
+        {"role": "assistant", "content": "working", "timestamp": 1700000000.0,
+         "tool_calls": [{"type": "function", "function":
+                         {"name": "demo_tool", "arguments": json.dumps({"q": q})}}]}
+        for q in ("a", "b")])
+    assert len(db.get_messages(sid, include_compacted=True)) == 2

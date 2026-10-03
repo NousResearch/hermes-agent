@@ -99,6 +99,7 @@ import {
   TERMINAL_FONT_FAMILY,
 } from "@/lib/terminal-font-refit";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
+import { scaledTerminalFontSize } from "@/lib/terminal-font-scale";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -157,21 +158,6 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   const vvw = vv?.width ?? inner;
   const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
   return Math.max(1, Math.round(layout));
-}
-
-function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
-  return 14;
-}
-
-function scaledTerminalFontSize(layoutWidthPx: number, scale: number): number {
-  const base = terminalFontSizeForWidth(layoutWidthPx);
-  return Math.max(1, Math.round(base * scale));
 }
 
 function terminalLineHeightForWidth(layoutWidthPx: number): number {

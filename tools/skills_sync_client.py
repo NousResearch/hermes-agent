@@ -286,7 +286,7 @@ def write_sync_state(data: Dict[str, Any]) -> None:
         from utils import atomic_write_text
         atomic_write_text(_skills_dir() / ".sync_state",
                           json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False),
-                          tmp_prefix=".sync_state_")
+                          tmp_prefix=".sync_state_", newline="")  # LF state file, no CRLF on Windows
     except Exception as e:
         logger.debug("skills_sync_client: sync state write failed: %s", e)
 

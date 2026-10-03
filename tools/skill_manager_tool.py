@@ -35,6 +35,7 @@ from tools.skill_manager_guards import (
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+from tools.file_operations_common import _detect_line_ending, _normalize_line_endings
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,11 @@ def _skill_lock_path(name: str) -> Path:
     """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
     ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
     waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
-    lock and no name can hit a filesystem limit (callers validate the basename first)."""
-    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
+    lock and no name can hit a filesystem limit (callers validate the basename first). The digest
+    is case-folded because ``_find_skill`` resolves case variants to ONE directory: two spellings
+    of the same skill must serialize on one lock, not race on two."""
+    digest = hashlib.sha256(
+        Path(name).name.casefold().encode("utf-8", "surrogatepass")).hexdigest()
     return _skills_dir() / ".locks" / f"{digest}.lock"
 
 
@@ -111,8 +115,17 @@ MAX_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # filesystem-safe, URL-friendly
+# Existing (on-disk) skills may carry uppercase or a leading underscore — the name the agent was
+# shown is whatever skills_list()/skill_view() report, and a name this tool refuses is a skill it
+# cannot maintain. Only the SHAPE is guarded here; _find_skill decides existence. The space in the
+# character class is deliberate: a directory named ``my skill`` is resolvable by exact match, so
+# spaces must pass shape and fail (if unresolvable) at the lookup with "not found". Frontmatter-only
+# spellings like ``Word / DOCX`` are still rejected HERE — pathlib keeps the space after the slash
+# (Path("Word / DOCX").name == " DOCX") and the leading space fails the first-character class.
+VALID_EXISTING_NAME_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9._ -]*$')
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}  # for write_file/remove_file
 _FRONTMATTER_END_RE = re.compile(r'\n---\s*\n')
+_FRONTMATTER_PROBE_CHARS = 8192  # frontmatter sits at the top; SKILL.md may be ~100 KB
 _NAME_RULE = "Use lowercase letters, numbers, hyphens, dots, and underscores."
 
 
@@ -129,6 +142,30 @@ def _validate_name(name: str) -> Optional[str]:
         return "Skill name is required."
     return _check_identifier(
         name, "Skill name", f"Invalid skill name '{name}'. {_NAME_RULE} Must start with a letter or digit.")
+
+
+def _validate_existing_name(name: str) -> Optional[str]:
+    """Shape guard for actions that target an EXISTING skill (``category/name`` allowed).
+
+    The lowercase rule is a CREATE-time convention. Skills created outside skill_manage keep the
+    name their author chose (``Beckhoff-TwinCAT3-Programming``), and skills_list()/skill_view()
+    report exactly that name; rejecting it here made those skills unmaintainable — the caller was
+    told "Invalid skill name", retried lowercase, got "not found", and burned the turn. Existence
+    is decided by ``_find_skill``; this only rejects shapes no lookup could safely resolve.
+    """
+    if not name:
+        return "Skill name is required."
+    normalized = str(name).replace("\\", "/")
+    if any(part == ".." for part in Path(normalized).parts):
+        return f"Invalid skill name '{name}'. Path traversal ('..') is not allowed."
+    base = Path(normalized).name
+    if len(base) > MAX_NAME_LENGTH:
+        return f"Skill name exceeds {MAX_NAME_LENGTH} characters."
+    if VALID_EXISTING_NAME_RE.match(base):
+        return None
+    return (f"Invalid skill name '{name}'. Use the name skills_list() shows (letters, numbers, "
+            f"hyphens, dots, underscores; a leading underscore is allowed), or a 'category/name' "
+            f"path.")
 
 
 def _validate_category(category: Optional[str]) -> Optional[str]:
@@ -216,12 +253,46 @@ def _iter_skill_dirs(root: Path):
             yield skill_md.parent
 
 
-def _find_skill(name: str) -> Optional[Dict[str, Any]]:
-    """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
+def _skill_frontmatter_name(skill_md: Path) -> Optional[str]:
+    """Frontmatter ``name:`` of a skill file, or None (unreadable/unset). Reads a head window
+    first — this runs once per candidate directory during a lookup miss, and the frontmatter block
+    sits at the top of a file that may be ~100 KB."""
+    def _name_of(text: str) -> Optional[str]:
+        parsed = _parse_frontmatter(text)[0]
+        value = parsed.get("name") if isinstance(parsed, dict) else None
+        return str(value).strip() if value is not None and str(value).strip() else None
 
-    Accepts the bare dir name (``axolotl``; matches category-nested skills too) and the
-    categorized relative path (``mlops/axolotl``) — the two forms skill_view resolves. The
-    categorized form matches RELATIVE to the local root only (relative_to raises for external dirs)."""
+    try:
+        with skill_md.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_FRONTMATTER_PROBE_CHARS)
+    except OSError:
+        return None
+    if name := _name_of(head):
+        return name
+    try:  # window held no closed frontmatter fence — a correctness fallback for non-conformant
+        # or oversized (~100 KB) frontmatter blocks, never the performance path.
+        return _name_of(skill_md.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+
+
+def _find_skill(name: str) -> Optional[Dict[str, Any]]:
+    """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path", "name"}`` | None.
+
+    Accepts the bare dir name (``axolotl``; matches category-nested skills too), the categorized
+    relative path (``mlops/axolotl``), and the DISPLAY name skills_list()/skill_view() report (the
+    frontmatter ``name:``, which differs from the directory name for dozens of bundled/hub skills)
+    — the same forms skill_view resolves. The categorized form matches RELATIVE to the local root
+    only (relative_to raises for external dirs). ``name`` is always the DIRECTORY name: it is the
+    key every name-based side effect in this tool (locks, usage counters, pinned/curator probes,
+    the ledger) already uses, so a variant spelling maps onto that existing key.
+
+    Fallback tiers run only when nothing matched exactly: first a case-insensitive match (on a
+    case-insensitive filesystem the two spellings ARE the same directory, so refusing one made the
+    skill unmaintainable under the name the agent was shown), then the frontmatter name. A
+    fallback applies only when UNIQUE — silently picking one of several candidates would write to
+    the wrong skill, so an ambiguous lookup refuses (None) and logs instead.
+    """
     from agent.skill_utils import get_all_skills_dirs
     local_root = None
     if "/" in name or "\\" in name:
@@ -232,18 +303,44 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
                 "skills dir resolve failed; categorized lookups fall back to the unresolved path",
                 exc_info=True)
             local_root = _skills_dir()
-    for skills_dir in get_all_skills_dirs():
-        if not skills_dir.exists():
-            continue
-        for skill_dir in _iter_skill_dirs(skills_dir):
-            if skill_dir.name == name:
-                return {"path": skill_dir}
-            if local_root is not None:
-                resolved = skill_dir.resolve()
-                if (resolved.is_relative_to(local_root)
-                        and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
-                    return {"path": skill_dir}
-    return None
+    roots = [d for d in get_all_skills_dirs() if d.exists()]
+
+    def _categorized_path(skill_dir: Path) -> Optional[str]:
+        """``category/skill`` POSIX path relative to the local root, or None (external dir)."""
+        if local_root is None:
+            return None
+        try:
+            resolved = skill_dir.resolve()
+        except OSError:
+            return None
+        return (resolved.relative_to(local_root).as_posix()
+                if resolved.is_relative_to(local_root) else None)
+
+    def _hit(skill_dir: Path) -> Dict[str, Any]:
+        return {"path": skill_dir, "name": skill_dir.name}
+
+    def _unique(candidates: List[Path]) -> Optional[Dict[str, Any]]:
+        candidates = list(dict.fromkeys(candidates))  # ordered unique; seeds may overlap
+        if len(candidates) == 1:
+            return _hit(candidates[0])
+        if candidates:
+            logger.warning(
+                "Skill lookup for %r is ambiguous (%d matches: %s) — refusing so a write cannot "
+                "land on the wrong skill", name, len(candidates),
+                ", ".join(str(c) for c in candidates))
+        return None
+
+    for skill_dir in (d for root in roots for d in _iter_skill_dirs(root)):
+        if skill_dir.name == name or _categorized_path(skill_dir) == name:
+            return _hit(skill_dir)
+    folded = name.casefold()
+    case_matches = [
+        d for d in (d for root in roots for d in _iter_skill_dirs(root))
+        if d.name.casefold() == folded or (_categorized_path(d) or "").casefold() == folded]
+    if case_matches:
+        return _unique(case_matches)
+    return _unique([d for d in (d for root in roots for d in _iter_skill_dirs(root))
+                    if (_skill_frontmatter_name(d / "SKILL.md") or "").casefold() == folded])
 
 
 def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
@@ -347,23 +444,52 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
     return (None, guard) if guard else (skill_dir, None)
 
 
+def _target_line_ending(target: Path) -> Optional[str]:
+    """Line ending to write ``target`` with, or None when it has no previous style.
+
+    ``atomic_write_text`` writes text-mode; with the platform default (``newline=None``)
+    Windows translates every ``\\n`` to ``\\r\\n``, so patching one line rewrote a whole LF
+    file as CRLF — a dirty git worktree on Windows, and (through ``core.autocrlf``) the
+    "changed one line, got a whole-file diff" confusion. Writers here therefore normalize
+    content to this ending and pass ``newline=""``, so the same bytes land on Windows and
+    on Linux CI. None (new file) means "no style to preserve": the caller's own bytes are
+    written as-is — models emit LF, so new skills are LF, while an explicitly CRLF payload
+    (a Windows ``scripts/*.bat``) is still honored.
+    """
+    if not target.exists():
+        return None
+    try:
+        sample = target.read_bytes()[:4096]
+    except OSError:
+        return None
+    return _detect_line_ending(sample.decode("utf-8", "surrogateescape"))
+
+
+def _write_skill_text(target: Path, content: str, ending: Optional[str], **write_kwargs: Any) -> None:
+    """Write skill content atomically with *ending* line endings, byte-exact everywhere."""
+    if ending is not None:
+        content = _normalize_line_endings(content, ending)
+    atomic_write_text(target, content, newline="", **write_kwargs)
+
+
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
                    content: str) -> Optional[Dict[str, Any]]:
     """Read-before-write guard (existing targets only), atomic write, then the security scan;
     a blocked scan restores the original (or unlinks a new file). Error dict or None."""
     original = None
+    ending = _target_line_ending(target)
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    _write_skill_text(target, content, ending, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
         return None
     if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
+        _write_skill_text(target, original, ending, preserve_mode=True)
     else:
         target.unlink(missing_ok=True)
     return _err(scan_error)
@@ -774,6 +900,14 @@ def skill_manage(
     if operations is not None:
         return _skill_manage_batch(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
+    requested_name = name
+    # Resolve a spelling variant (a case difference, or the display name skills_list() reports
+    # when it differs from the directory name) to the skill's DIRECTORY name BEFORE any guard
+    # runs: the pinned / curator-managed / essential probes and the usage ledger key on that name,
+    # so a variant must not decide "this skill is not pinned / not curator-managed" for a spelling
+    # no other caller uses.
+    if action != "create" and name and (found := _find_skill(name)):
+        name = str(found.get("name") or name)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
@@ -785,9 +919,12 @@ def skill_manage(
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
         return tool_error(shape_err, success=False)
-    # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
-    # (create takes a bare name; the other actions also accept ``category/name``).
-    if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
+    # Validate before the lock is keyed on the name, so a rejected name never touches .locks/.
+    # ``create`` mints a new name and keeps the lowercase convention; the other actions target an
+    # already-existing skill, so their guard checks the SHAPE of what the caller asked for and
+    # leaves existence to the lookup (skills the user named with uppercase stay maintainable).
+    if (name_err := _validate_name(requested_name) if action == "create"
+            else _validate_existing_name(requested_name)) is not None:
         return json.dumps(_err(name_err), ensure_ascii=False)
     # A mutation is read-modify-write even when its action eventually delegates
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
@@ -837,7 +974,10 @@ def _skill_manage_description() -> str:
     )
 
 
-_NAME = {"type": "string"}
+_NAME = {"type": "string",
+         "description": ("Skill name as skills_list() shows it (the frontmatter name). For existing "
+                         "skills the directory name and a case difference resolve to the same "
+                         "skill.")}
 _OLD_STRING = {"type": "string",
                "description": "Text to find (same matching semantics as the patch tool)."}
 _NEW_STRING = {"type": "string", "description": "Replacement; empty string deletes the match."}

@@ -313,8 +313,10 @@ def append_entry(
             "before": before or [], "after": after or []}
         path = ledger_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # newline="": the ledger is LF-canonical (committed, diffed, byte-compared). The text-mode
+        # default would land every appended line as CRLF on Windows, leaving a mixed-ending file.
         with _ledger_lock():
-            with open(path, "a", encoding="utf-8") as fh:
+            with open(path, "a", encoding="utf-8", newline="") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
             _maintain_size()
         return entry["id"]

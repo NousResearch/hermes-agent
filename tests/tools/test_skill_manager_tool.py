@@ -1,5 +1,6 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
+import hashlib
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ import pytest
 
 from tools.skill_manager_tool import (
     _validate_name,
+    _validate_existing_name,
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
@@ -370,6 +372,181 @@ word word
         assert outside_file.read_text() == "old text here"
 
 
+# ---------------------------------------------------------------------------
+# Name resolution for EXISTING skills (dir name vs frontmatter name, case)
+# ---------------------------------------------------------------------------
+
+def _seed_skill(tmp_path, dir_name, frontmatter_name, body="Step 1: Do the thing.\n"):
+    """Write a skill directory directly — how a hand-authored or hub skill looks on disk.
+
+    ``_create_skill`` can only mint lowercase names, so an uppercase-named skill (the real
+    ``Beckhoff-TwinCAT3-Programming``) or a dir/frontmatter mismatch can only be seeded."""
+    skill_dir = tmp_path / dir_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {frontmatter_name}\ndescription: Seeded skill for name-resolution tests.\n---\n\n"
+        f"# Seeded\n\n{body}", encoding="utf-8")
+    return skill_dir
+
+
+class TestValidateExistingName:
+    """The lowercase rule is a CREATE-time convention: a skill that already exists keeps the name
+    its author gave it, and refusing that name is what made it unmaintainable."""
+
+    @pytest.mark.parametrize("name", [
+        "Beckhoff-TwinCAT3-Programming", "CivilLabClaw-AI", "_text-to-cad-repo",
+        "devops/my-Skill", "a"])
+    def test_registered_forms_accepted(self, name):
+        assert _validate_existing_name(name) is None
+
+    @pytest.mark.parametrize("name", ["", "../../etc/passwd", "devops/../escape", "skill@name",
+                                      "a" * 300, "Word / DOCX"])
+    def test_malformed_shapes_rejected(self, name):
+        """``Word / DOCX`` is a frontmatter-only spelling and stays out of reach (its dir name
+        ``word-docx`` is the usable handle); everything else malformed is refused up front."""
+        assert _validate_existing_name(name) is not None
+
+
+class TestExistingSkillNameResolution:
+    """skill_view() resolves the frontmatter name and case variants; skill_manage resolved only the
+    exact directory name, so a skill whose displayed name carried uppercase was unmaintainable —
+    "Invalid skill name" (registered spelling) → "not found" (lowercased retry) → the caller
+    changed tack and the write it meant to make was silently dropped."""
+
+    def test_patch_by_uppercase_registered_name(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "Beckhoff-TwinCAT3-Programming", "Beckhoff-TwinCAT3-Programming")
+            result = _patch_skill("Beckhoff-TwinCAT3-Programming", "Do the thing.", "Do the new thing.")
+
+        assert result["success"] is True, result.get("error")
+        assert "Do the new thing." in (
+            tmp_path / "Beckhoff-TwinCAT3-Programming" / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_case_variant_patch_resolves_and_reports_the_directory_name(self, tmp_path):
+        """A different case spelling addresses the SAME directory on a case-insensitive filesystem,
+        so it must not fail as 'not found' — and the dispatch canonicalizes the name, because the
+        usage ledger / pin / curator state it is reported against is keyed on the resolved one."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "Beckhoff-TwinCAT3-Programming", "Beckhoff-TwinCAT3-Programming")
+            result = json.loads(skill_manage(
+                action="patch", name="beckhoff-twincat3-programming",
+                old_string="Do the thing.", new_string="Do the new thing."))
+
+        assert result["success"] is True, result.get("error")
+        assert "skill 'Beckhoff-TwinCAT3-Programming'" in result["message"]
+
+    def test_display_name_patch_canonicalizes_to_the_directory_name(self, tmp_path):
+        """Guards (pinned / curator-managed / essential) and the usage ledger key on the DIRECTORY
+        name — what a plain exact-name call has always passed — so resolving a frontmatter name
+        must map onto that key instead of inventing a second one for the same skill."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "ai-image-gen", "image-gen")
+            result = json.loads(skill_manage(
+                action="patch", name="image-gen",
+                old_string="Do the thing.", new_string="Do the new thing."))
+
+        assert result["success"] is True, result.get("error")
+        assert "skill 'ai-image-gen'" in result["message"]
+
+    def test_patch_by_frontmatter_name_when_it_differs_from_the_directory(self, tmp_path):
+        """Dozens of installed skills have dir != frontmatter name (ai-image-gen → image-gen), and
+        skills_list() advertises the frontmatter one."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "ai-image-gen", "image-gen")
+            result = _patch_skill("image-gen", "Do the thing.", "Do the new thing.")
+
+        assert result["success"] is True, result.get("error")
+        assert "Do the new thing." in (
+            tmp_path / "ai-image-gen" / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_batch_ops_accept_a_case_variant_of_the_registered_name(self, tmp_path):
+        """The daily sedimentation pass writes through operations[]; the same resolution applies."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "AI-Skill", "AI-Skill")
+            result = json.loads(skill_manage(action="", name="", operations=[
+                {"name": "ai-skill", "action": "patch",
+                 "old_string": "Do the thing.", "new_string": "Do the new thing."}]))
+
+        assert result["success"] is True, result
+        assert result["operations_applied"] == 1
+
+    def test_write_file_and_remove_file_accept_the_resolved_name(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "AI-Skill", "ai-skill")
+            written = _write_file("ai-skill", "references/api.md", "body\n")
+            removed = _remove_file("AI-Skill", "references/api.md")
+
+        assert written["success"] is True and removed["success"] is True
+        assert not (tmp_path / "AI-Skill" / "references" / "api.md").exists()
+
+    def test_delete_targets_the_right_directory_by_case_variant(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "Mixed-Case-Skill", "Mixed-Case-Skill")
+            result = json.loads(skill_manage(action="delete", name="mixed-case-skill"))
+
+        assert result["success"] is True, result.get("error")
+        assert not (tmp_path / "Mixed-Case-Skill").exists()
+
+    def test_find_skill_reports_the_directory_name(self, tmp_path):
+        """The returned ``name`` is the spelling the tool's name-keyed side effects use, even when
+        the lookup itself went through the frontmatter name."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "ai-image-gen", "image-gen")
+            found = _find_skill("ai-image-gen")
+
+        assert found["path"] == tmp_path / "ai-image-gen"
+        assert found["name"] == "ai-image-gen"
+
+    def test_ambiguous_frontmatter_name_refuses_instead_of_guessing(self, tmp_path):
+        """Two skills advertising the same frontmatter name: resolving the display name must not
+        pick one — a write to the wrong skill is worse than a not-found error."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "one", "shared-name")
+            _seed_skill(tmp_path, "two", "shared-name")
+            found = _find_skill("shared-name")
+            patched = json.loads(skill_manage(
+                action="patch", name="shared-name",
+                old_string="Do the thing.", new_string="Do the new thing."))
+
+        assert found is None
+        assert patched["success"] is False
+        assert "not found" in patched["error"]
+        for seeded in ("one", "two"):
+            assert "Do the new thing." not in (
+                tmp_path / seeded / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_exact_directory_name_still_wins_over_a_frontmatter_twin(self, tmp_path):
+        """The case/frontmatter tiers are fallbacks: an exact directory match resolves first, so a
+        skill literally named like another skill's frontmatter name stays reachable."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "shared-name", "other-name")
+            _seed_skill(tmp_path, "two", "shared-name")
+            found = _find_skill("shared-name")
+
+        assert found["path"] == tmp_path / "shared-name"
+
+    def test_create_still_requires_a_lowercase_new_name(self, tmp_path):
+        """The convention is enforced where a name is MINTED, so the library cannot drift
+        further into mixed case."""
+        with _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="Bad-Name", content=VALID_SKILL_CONTENT))
+
+        assert result["success"] is False
+        assert "Invalid skill name" in result["error"]
+
+    def test_create_refuses_a_case_variant_of_an_existing_skill(self, tmp_path):
+        """Resolution is shared with the duplicate check: a case variant must not slip a second
+        copy of the same skill past it."""
+        with _skill_dir(tmp_path):
+            _seed_skill(tmp_path, "Existing-Skill", "existing-skill")
+            result = json.loads(skill_manage(
+                action="create", name="existing-skill", content=VALID_SKILL_CONTENT))
+
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+
+
 class TestSkillMutationLock:
     def test_concurrent_patches_keep_both_updates(self, tmp_path):
         """Two writers patching the same SKILL.md serialize on the per-skill lock (#111578):
@@ -435,6 +612,11 @@ class TestSkillMutationLock:
             lock = _skill_lock_path("mlops/foo")
             assert lock == _skill_lock_path("foo")
             assert lock.parent == tmp_path / ".locks"
+            assert lock.name == hashlib.sha256(b"foo").hexdigest() + ".lock"
+            # Case variants resolve to ONE skill directory (_find_skill), so they must serialize
+            # on ONE lock instead of racing on two.
+            assert (_skill_lock_path("Beckhoff-TwinCAT3-Programming")
+                    == _skill_lock_path("beckhoff-twincat3-programming"))
 
 
 class TestDeleteSkill:
@@ -1261,3 +1443,127 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Line-ending preservation
+# ---------------------------------------------------------------------------
+
+LF_SKILL_BODY = VALID_SKILL_CONTENT.encode("utf-8")
+CRLF_SKILL_BODY = VALID_SKILL_CONTENT.replace("\n", "\r\n").encode("utf-8")
+
+
+def _write_skill_bytes(tmp_path, raw: bytes, name: str = "test-skill") -> Path:
+    """Lay down a skill directory whose SKILL.md has exactly *raw* bytes."""
+    skill_dir = tmp_path / name
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_bytes(raw)
+    return skill_md
+
+
+def _assert_only_endings(raw: bytes, ending: bytes) -> None:
+    """Every newline in *raw* is *ending* — no LF left over in a CRLF file."""
+    assert raw.count(b"\n") == raw.count(ending), raw
+
+
+class TestLineEndingPreservation:
+    """skill_manage must never rewrite a file's line endings.
+
+    Writers went through ``atomic_write_text`` in text mode with the platform default
+    (``newline=None``), so on Windows every ``\\n`` became ``\\r\\n``: patching one line
+    rewrote the whole file as CRLF — a dirty git worktree, and (through
+    ``core.autocrlf=input``) the "changed 1 line, got a whole-file diff" confusion.
+    Content is now normalized to the target's own ending and written with ``newline=""``,
+    so the bytes are identical on Windows and on Linux CI.
+    """
+
+    def test_patch_leaves_lf_file_lf(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_md = _write_skill_bytes(tmp_path, LF_SKILL_BODY)
+            result = _patch_skill("test-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is True, result.get("error")
+        raw = skill_md.read_bytes()
+        assert b"Do the new thing." in raw
+        assert b"\r\n" not in raw
+
+    def test_patch_leaves_crlf_file_crlf(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_md = _write_skill_bytes(tmp_path, CRLF_SKILL_BODY)
+            result = _patch_skill("test-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is True, result.get("error")
+        raw = skill_md.read_bytes()
+        assert b"Do the new thing." in raw
+        _assert_only_endings(raw, b"\r\n")
+
+    def test_patch_multiline_new_string_keeps_crlf_file_consistent(self, tmp_path):
+        """A bare-LF multi-line replacement must not leave mixed endings behind."""
+        with _skill_dir(tmp_path):
+            skill_md = _write_skill_bytes(tmp_path, CRLF_SKILL_BODY)
+            result = _patch_skill(
+                "test-skill", "# Test Skill\n", "# Test Skill\n\nNew line one.\nNew line two.\n")
+        assert result["success"] is True, result.get("error")
+        raw = skill_md.read_bytes()
+        assert b"New line two." in raw
+        _assert_only_endings(raw, b"\r\n")
+
+    def test_edit_leaves_lf_file_lf(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_md = _write_skill_bytes(tmp_path, LF_SKILL_BODY)
+            result = _edit_skill("test-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result.get("error")
+        raw = skill_md.read_bytes()
+        assert b"Updated description" in raw
+        assert b"\r\n" not in raw
+
+    def test_edit_leaves_crlf_file_crlf(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_md = _write_skill_bytes(tmp_path, CRLF_SKILL_BODY)
+            result = _edit_skill("test-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result.get("error")
+        raw = skill_md.read_bytes()
+        assert b"Updated description" in raw
+        _assert_only_endings(raw, b"\r\n")
+
+    def test_created_skill_md_is_lf(self, tmp_path):
+        """New skills are LF on every platform (never CRLF-wrapped on Windows)."""
+        with _skill_dir(tmp_path):
+            result = _create_skill("test-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True, result.get("error")
+        raw = (tmp_path / "test-skill" / "SKILL.md").read_bytes()
+        assert b"Step 1: Do the thing." in raw
+        assert b"\r\n" not in raw
+
+    def test_new_supporting_file_is_lf(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            result = _write_file("test-skill", "references/notes.md", "first\nsecond\n")
+        assert result["success"] is True, result.get("error")
+        raw = (tmp_path / "test-skill" / "references" / "notes.md").read_bytes()
+        assert raw == b"first\nsecond\n"
+
+    def test_new_file_keeps_an_explicit_crlf_payload(self, tmp_path):
+        """A brand-new file has no style to preserve: the caller's bytes win.
+
+        Without this, a CRLF payload (a Windows ``scripts/*.bat``) would be silently
+        rewritten to LF on Linux and mangled by translation on Windows.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            result = _write_file("test-skill", "scripts/run.bat", "@echo off\r\nrem hi\r\n")
+        assert result["success"] is True, result.get("error")
+        raw = (tmp_path / "test-skill" / "scripts" / "run.bat").read_bytes()
+        assert raw == b"@echo off\r\nrem hi\r\n"
+
+    def test_supporting_file_overwrite_keeps_crlf(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            refs = tmp_path / "test-skill" / "references"
+            refs.mkdir()
+            target = refs / "notes.md"
+            target.write_bytes(b"first\r\nsecond\r\n")
+            result = _write_file("test-skill", "references/notes.md", "first\nsecond\nthird\n")
+        assert result["success"] is True, result.get("error")
+        raw = target.read_bytes()
+        assert b"third" in raw
+        _assert_only_endings(raw, b"\r\n")

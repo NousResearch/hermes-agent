@@ -521,9 +521,14 @@ class MemoryStore:
     def _write_file(path: Path, entries: List[str]):
         """Atomic temp-file + rename: readers never see a truncated file. Callers
         hold ``_file_lock`` (via ``_mutate``): a bare write from an earlier snapshot
-        drops concurrent entries (#119668)."""
+        drops concurrent entries (#119668). Also used by agent/learning_mutations.py.
+
+        ``newline=""`` is deliberate: memory files are LF-canonical (shared, backed up and
+        diffed across platforms) and the text-mode default would translate every ``\n`` to
+        ``os.linesep`` — on Windows one entry edit would rewrite the whole file as CRLF.
+        """
         try:
-            atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_")
+            atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_", newline="")
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
@@ -538,7 +543,7 @@ class MemoryStore:
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
         try:
-            bak_path.write_text(raw, encoding="utf-8")
+            bak_path.write_text(raw, encoding="utf-8", newline="")  # byte copy of what was on disk
         except OSError:
             return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
         return str(bak_path)

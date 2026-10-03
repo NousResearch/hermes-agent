@@ -164,7 +164,7 @@ _CONSOLE_OUTPUT_LIMIT = 50000
 def _execute_console_line(
     engine: Any, line: str, *, confirmed: bool, profile: Optional[str], scope: Optional[InterruptScope] = None,
 ) -> Any:
-    # _profile_scope swaps process-global skill module paths; keep it inside
+    # _profile_scope holds a process-wide threading lock; keep it inside
     # the worker thread and never hold it across awaits.
     with _profile_scope(profile), bind_interrupt_scope(scope):
         return engine.execute(line, confirmed=confirmed)

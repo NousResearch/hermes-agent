@@ -1,5 +1,16 @@
-"""Custom / Ollama (local) provider profile: any endpoint registered as
-provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
+"""Custom / Ollama (local) provider profile.
+
+Covers any endpoint registered as provider="custom", including local
+Ollama instances and OpenAI-compatible reasoning endpoints (GLM-5.2 on
+Volcengine ARK, vLLM, llama.cpp, llmman). Key quirks:
+  - ollama_num_ctx → extra_body.options.num_ctx (local context window)
+  - reasoning_config disabled → top-level reasoning_effort="none"
+    (Ollama /v1/chat/completions ignores think=False — ollama#14820)
+    + extra_body.think = False only on Ollama URLs (/api/chat and proxies)
+  - reasoning_config enabled + effort → top-level reasoning_effort
+    (the native OpenAI-compatible format GLM/ARK expect; unset omits it
+    so the endpoint's server default applies)
+"""
 
 from typing import Any
 from urllib.parse import urlparse
@@ -93,7 +104,16 @@ class CustomProfile(ProviderProfile):
 
 
 custom = CustomProfile(
-    name="custom", aliases=("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    name="custom",
+    aliases=(
+        "ollama",
+        "local",
+        "vllm",
+        "llamacpp",
+        "llama.cpp",
+        "llama-cpp",
+        "llmman",
+    ),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured
     # An arbitrary client ceiling can exceed a local server's actual output limit.

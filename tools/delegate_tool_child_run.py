@@ -402,7 +402,7 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         )
     return None
 
-def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
+def _defer_close_after_timeout(child: Any, child_future: Any, child_task_id: Optional[str] = None) -> None:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
 
     The interrupt is cooperative: the worker still runs its finally path, so closing now could close SQLite under its
@@ -412,7 +412,14 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
     resources until process exit.
     """
-    child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
+    def _finish_deferred_close(_done: Any) -> None:
+        _close_child(child, "Failed to close timed-out child after worker exit")
+        if child_task_id:
+            with _quiet("Failed to clear timed-out child terminal state: %s"):
+                from tools.terminal_tool import clear_task_env_overrides
+                clear_task_env_overrides(child_task_id)
+
+    child_future.add_done_callback(_finish_deferred_close)
     # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
     # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
@@ -937,7 +944,7 @@ class _ChildRun:
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
-            _defer_close_after_timeout(child, future)
+            _defer_close_after_timeout(child, future, self.child_task_id)
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:
@@ -1045,6 +1052,10 @@ class _ChildRun:
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
         if not close_deferred:
             _close_child(child, "Failed to close child agent after delegation")
+            with _quiet("Failed to clear child terminal state: %s"):
+                from tools.terminal_tool import clear_task_env_overrides
+                if self.child_task_id:
+                    clear_task_env_overrides(self.child_task_id)
         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
         # cap while it runs); dispose them here so they never squat the cap after the child is gone.
         with _quiet("Failed to dispose child execute_code kernels: %s"):

@@ -29,3 +29,34 @@ def test_env_override_rejects_garbage(monkeypatch):
     assert limits.keepalive_expiry is not None and limits.keepalive_expiry > 0
     assert limits.max_keepalive_connections is not None
     assert limits.max_keepalive_connections > 0
+
+
+def test_max_keepalive_zero_disables_keepalive(monkeypatch):
+    """A zero override disables keepalive instead of silently reverting to 10.
+
+    Regression test for the env var being discarded: httpx accepts 0
+    (``max_keepalive_connections=0`` keeps no idle connections), so ``0``
+    must survive the env parse.
+    """
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "0")
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    limits = platform_httpx_limits()
+    assert limits.max_keepalive_connections == 0
+    # The expiry override keeps its own positive-only contract.
+    assert limits.keepalive_expiry is not None and limits.keepalive_expiry > 0
+
+
+def test_max_keepalive_negative_still_falls_back(monkeypatch):
+    """Negative values remain invalid and fall back to the default."""
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "-1")
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    limits = platform_httpx_limits()
+    assert limits.max_keepalive_connections == 10
+
+
+def test_keepalive_expiry_zero_falls_back(monkeypatch):
+    """The expiry knob stays strictly positive (0 would expire every idle)."""
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", "0")
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    limits = platform_httpx_limits()
+    assert limits.keepalive_expiry == 2.0

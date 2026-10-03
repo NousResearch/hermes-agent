@@ -3616,6 +3616,16 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+        # AIAgent.__init__ also pins the Nous welcome host to its one model (pin_model_for_route), whatever
+        # the chat configured. Apply it on the PRIMARY route: a fallback that lands on that host is drift.
+        _primary_route = getattr(_agent, '_primary_runtime', None) or {}
+        with suppress(Exception):
+            from hermes_cli.anon_auth import pin_model_for_route
+            _cfg_model = pin_model_for_route(
+                _primary_route.get("provider", getattr(_agent, 'provider', None)),
+                _primary_route.get("base_url", getattr(_agent, 'base_url', None)),
+                _cfg_model,
+            )
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 

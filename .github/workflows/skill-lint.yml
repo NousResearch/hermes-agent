@@ -1,0 +1,24 @@
+name: Skill Quality Gate
+on:
+  pull_request:
+    paths:
+      - 'skills/**/SKILL.md'
+      - 'skills/**/scripts/**'
+      - '.github/workflows/skill-lint.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+      - name: Install lintlang
+        run: uvx --from git+https://github.com/hermes-labs-ai/lintlang lintlang --version
+      - name: Lint all skills
+        run: |
+          find skills -name "SKILL.md" -exec uvx --from git+https://github.com/hermes-labs-ai/lintlang lintlang scan {} \;
+      - name: Validate index
+        run: python skills/scripts/build_skill_index.py
+      - name: Check duplicates
+        run: python skills/scripts/check_duplicates.py

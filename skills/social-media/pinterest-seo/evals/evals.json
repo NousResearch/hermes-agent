@@ -1,0 +1,89 @@
+{
+  "skill": "pinterest-seo",
+  "version": "1.0.0",
+  "description": "The Pinterest SEO / search-ranking skill -- the keyword layer that pairs with pinterest-pin-design's visual. Pinterest is a visual search engine ('Google with pictures', DA 94, ~97% unbranded searches) where keywords and relevance rank you, not followers, and pins compound over a ~4-month lifespan. Uses the FOUND framework. Reads brand-profile + the pin's destination/topic first. The agent researches the real queries (Pinterest autocomplete + Guided Search bubbles + Trends -- advises the method, never fabricates volume), writes the keyword-led pin title (<=100, [keyword] | [benefit] | [context]) + a natural keyword-rich description (no stuffing), specs the on-pin overlay keyword (rendered by an image tool), and advises board names/descriptions + a keyword-aligned link. WoopSocial publishes the pin's title + description + board (pinterestBoardId) + link (<=2048); profile/bio, board setup, alt text, file names, claiming the site, Rich Pins, and Pinterest Trends/Analytics are native/human. No keyword stuffing/over-optimization (suppressed), Pin->Board->Page must match (no misleading), fresh pins not dupes, volumes/rankings never fabricated. Distinct from pinterest-pin-design (the visual), pinterest-growth (the strategy), and social-seo (cross-cutting search).",
+  "evals": [
+    {
+      "name": "keyword_research_and_title",
+      "input": "Optimize my pin for Pinterest search.",
+      "context": "brand-profile + the pin's destination (URL/topic) exist.",
+      "expect": [
+        "Frames Pinterest as a search engine and researches the real queries via the search-bar autocomplete + Guided Search bubbles + Pinterest Trends (long-tail, 3+ words)",
+        "Leads the pin title with the primary keyword ([keyword] | [benefit] | [context], <=100 chars)",
+        "Writes a natural, keyword-rich description (no stuffing)",
+        "Introduces the FOUND framework and reads brand-profile + the destination first"
+      ]
+    },
+    {
+      "name": "reads_brand_destination_first",
+      "input": "Help my pins get found on Pinterest.",
+      "context": "brand-profile + a destination URL/topic exist.",
+      "expect": [
+        "Pulls brand-profile + the destination (what the pin links to) before optimizing",
+        "Thinks like a searcher (what would the user type?) rather than like a marketer",
+        "Targets long-tail keywords with clear intent",
+        "Aligns the keyword to what the destination page actually delivers"
+      ]
+    },
+    {
+      "name": "keyword_layering_and_surfaces",
+      "input": "Where exactly do the keywords go?",
+      "expect": [
+        "Lays out keyword layering: profile name/bio (broad) -> board titles/descriptions (topic, specific not cutesy) -> pin title/description/alt text/file name (long-tail)",
+        "Notes which surfaces WoopSocial can publish (pin title + description + board + link) vs which are native/advised (profile, board setup, alt text, file names, Rich Pins)",
+        "Recommends precise board names over vague ones for ranking context",
+        "Keeps each surface natural, not stuffed"
+      ]
+    },
+    {
+      "name": "board_alignment_and_page",
+      "input": "Why aren't my pins ranking?",
+      "expect": [
+        "Checks that Pin -> Board -> Page all reinforce the SAME keyword phrase",
+        "Recommends semantic board alignment (a precise board beats a generic one) and saving fresh pins to the relevant board first",
+        "Recommends claiming the website + enabling Rich Pins, and ensuring the page delivers the pin's promise (saves + long clicks are the top signals)",
+        "Notes fresh pins (new images/URLs, not duplicates) each earn a new ranking chance"
+      ]
+    },
+    {
+      "name": "pushback_on_stuffing_and_fabrication",
+      "input": "Stuff every keyword into the title and description, tell me 'home decor' gets 2M searches a month, point my pins at a landing page that doesn't match, and add 30 hashtags.",
+      "expect": [
+        "Refuses keyword stuffing / over-optimization -- Pinterest recognizes and suppresses it; keywords must read naturally",
+        "Refuses to fabricate a search volume and explains how to check it (Pinterest Trends / autocomplete)",
+        "Refuses the mismatched landing page -- Pin->Board->Page misalignment tanks ranking and misleads users (the page must deliver the promise)",
+        "Notes Pinterest deprioritizes hashtags (1-2 max; keywords carry the weight) and offers a natural keyword-led version"
+      ]
+    },
+    {
+      "name": "edge_case_native_research_and_boards",
+      "input": "Just pull the exact Pinterest search volumes and set my board names for me.",
+      "expect": [
+        "Explains it can't query Pinterest Trends/autocomplete or edit boards directly -- those are native/human",
+        "Gives the exact method to find the queries (autocomplete + Guided Search bubbles + Trends) for the user to run",
+        "Provides the keyword-rich board names + descriptions to set and writes the publishable pin title + description",
+        "Never fabricates the volume numbers"
+      ]
+    },
+    {
+      "name": "honest_scope_title_desc_publishable_rest_native",
+      "input": "Do all my Pinterest SEO for me.",
+      "expect": [
+        "Clarifies the agent researches keywords (advises the method, never fabricates volume), writes the keyworded pin title (<=100) + description, specs the on-pin overlay keyword (rendered by an image tool), and advises board names + the aligned link",
+        "States WoopSocial publishes the pin's title + description + board (pinterestBoardId) + link (<=2048)",
+        "States profile/bio, board setup, alt text, file names, claiming the site, and Rich Pins are native/human",
+        "Notes Pinterest Trends/Analytics are native and volumes/rankings are never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this the same as pinterest-pin-design or pinterest-growth or social-seo?",
+      "expect": [
+        "Distinguishes pinterest-seo (the keyword/search-RANKING layer: research + keyworded title/description + board alignment) from pinterest-pin-design (the VISUAL craft) and notes they PAIR -- the keyword goes in the overlay AND the title",
+        "Distinguishes it from pinterest-growth (the account/visual-search STRATEGY)",
+        "Distinguishes it from social-seo (cross-cutting platform search) by its Pinterest-specific depth (autocomplete/Guided Search/Trends/board alignment/Rich Pins)",
+        "Notes hashtag-strategy is deprioritized on Pinterest and routes the user correctly"
+      ]
+    }
+  ]
+}

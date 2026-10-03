@@ -2355,6 +2355,7 @@ cli:
     removed: "已移除佇列項目 {index}：{preview}"
     item_not_found: "找不到佇列項目 {index}。目前佇列長度：{size}"
     usage_edit: "用法：/queue edit <number> <new prompt>"
+    usage_remove: "用法：/queue rm <number>"
     updated: "已更新佇列項目 {index}：{preview}"
     usage_move: "用法：/queue move <from> <to>"
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
@@ -2720,6 +2721,7 @@ cli:
       restored: "已從 {snapshot_id} 還原狀態"
       restart_recommended: "建議重新啟動閘道／儀表板程序，以套用 state.db 的變更。"
       not_found: "找不到快照：{snapshot_id}"
+      restore_incomplete: "快照 {snapshot_id} 未完全還原：部分檔案被拒絕（請查看日誌）"
       usage_prune: "用法：/snapshot prune [keep-count]"
       pruned: "已清除 {deleted} 個舊快照（保留 {keep} 個）。"
     export:

@@ -593,6 +593,11 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from hermes_state import SessionDB
+
+    def _plain_text(content: Any) -> bool:
+        # never rewrite the persisted row around undecodable content
+        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
 
     repairs = 0
     merged: List[Dict] = []
@@ -607,8 +612,8 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
+            # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
+            and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (
@@ -663,17 +668,36 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
+def _normalize_sentinel_encoded_content(messages: List[Dict]) -> None:
+    """Decode any sentinel-encoded row content in place before the alternation passes run, so an
+    image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
+    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
+    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
+    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        decoded = SessionDB._decode_content(content)
+        if decoded is not content:
+            msg["content"] = decoded
+            # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
+            # it makes the append-only flush re-append this user turn as a duplicate (#125331).
+
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: merge consecutive assistant turns (BEFORE orphan detection so the merged
-    tool_call-id union is known); drop stray tool results; prune unanswered tool_calls; merge
-    consecutive user turns. A user turn directly after an assistant turn is valid and left alone.
+    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
+    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
+    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
+    turn directly after an assistant turn is valid and left alone.
     """
     if not messages:
         return 0
+    _normalize_sentinel_encoded_content(messages)
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
@@ -3385,6 +3409,21 @@ def _socket_from_candidate(candidate: Any):
     stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
     sock = _socket_from_stream(stream) if stream is not None else None
     return sock if sock is not None else _socket_from_stream(candidate)
+
+
+def _socket_from_response(response: Any):
+    """Raw socket behind an httpx response's network stream (``extensions["network_stream"]``
+    first, then ``response.stream``), or None. Callers own their error handling."""
+    exts = getattr(response, "extensions", None) or {}
+    direct = exts.get("network_stream") if isinstance(exts, dict) else None
+    for start in (direct, getattr(response, "stream", None)):
+        if start is None:
+            continue
+        for candidate in _connection_candidates(start):
+            sock = _socket_from_candidate(candidate)
+            if sock is not None:
+                return sock
+    return None
 
 
 def _socket_from_stream(stream: Any):

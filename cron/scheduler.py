@@ -646,6 +646,8 @@ _running_futures: dict = {}
 # Installed in ``_running_futures`` at claim time so a sweep landing before ``pool.submit`` returns
 # never sees ``missing`` and releases a claim about to get its future.
 _FUTURE_PENDING = object()
+# Identity tokens fence cleanup and late future attachment after recovery.
+_running_registration_owners: dict = {}
 
 # Forced-release count/history for ``get_inflight_guard_stats()``; mirrored to JSONL for probes.
 _forced_release_count: int = 0
@@ -825,10 +827,12 @@ def _record_external_cron_worker(job_id: str, pid: Any, *, scope_isolated: bool)
             _scope_isolated_job_ids.add(key)
 
 
-def try_register_running_job(job_id: str) -> bool:
+def try_register_running_job(job_id: str, *, owner=None, future=_FUTURE_PENDING) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
     jobs). Callers MUST pair success with ``release_running_job`` in a ``finally``.
+    Dispatchers pass a unique ``owner`` back on release. Direct workers register a running
+    ``future`` atomically because no executor submission will replace the pending sentinel.
 
     This is the single dedupe owner shared by the ticker's ``_submit_with_guard`` and manual runs
     (``tools/cronjob_tools``): the fire claim alone cannot prevent a double-fire because its TTL (300s) is
@@ -848,12 +852,15 @@ def try_register_running_job(job_id: str) -> bool:
         # Same critical section as the add: no window where an in-flight id lacks an age the sweep
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
         _running_since[key] = time.time()
-        _running_futures[key] = _FUTURE_PENDING
+        _running_futures[key] = future
+        _running_registration_owners[key] = owner
         return True
 
 
-def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) -> None:
-    """Remove ``job_id`` from the in-flight running set (idempotent).
+def release_running_job(
+    job_id: str, home: Optional[Union[Path, str]] = None, *, owner=None,
+) -> None:
+    """Remove the registration unless an explicit ``owner`` has been replaced.
 
     ``home`` MUST be passed by any caller that does not run inside the same cron scope the claim
     was registered under. The scope is a ContextVar the ticker binds per profile: a pool worker
@@ -862,6 +869,9 @@ def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) ->
     """
     key = _inflight_key(job_id, home)
     with _running_lock:
+        if owner is not None and _running_registration_owners.get(key) is not owner:
+            return
+        _running_registration_owners.pop(key, None)
         _running_job_ids.discard(key)
         _running_since.pop(key, None)
         _running_allowance_s.pop(key, None)
@@ -1110,6 +1120,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 reason = "age"
             else:
                 continue
+            _running_registration_owners.pop(key, None)
             _running_job_ids.discard(key)
             _running_since.pop(key, None)
             _running_allowance_s.pop(key, None)
@@ -4307,7 +4318,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _not_dispatched_shutdown()
         _clear_run_claim_best_effort()
         return None
-    if not try_register_running_job(job_id):
+    registration_owner = object()
+    if not try_register_running_job(job_id, owner=registration_owner):
         logger.info("Job '%s' already running — skipping", job_label)
         return None
     # The home the claim was registered under. The pool worker's ``finally`` runs OUTSIDE
@@ -4323,7 +4335,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _ctx = contextvars.copy_context()
     except Exception as execution_err:
         # Release the claim so the next tick retries instead of wedging "already running".
-        release_running_job(job_id, home=_claim_home)
+        release_running_job(job_id, home=_claim_home, owner=registration_owner)
         _clear_run_claim_best_effort()
         logger.exception(
             "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
@@ -4333,12 +4345,12 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         try:
             return ctx.run(process_job, j)
         finally:
-            release_running_job(j["id"], home=home)
+            release_running_job(j["id"], home=home, owner=registration_owner)
 
     try:
         fut = pool.submit(_run_and_release)
     except Exception as submit_err:
-        release_running_job(job_id, home=_claim_home)
+        release_running_job(job_id, home=_claim_home, owner=registration_owner)
         _clear_run_claim_best_effort()
         finish_execution(
             execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
@@ -4350,7 +4362,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
 
     with _running_lock:
         _submit_key = _inflight_key(job_id, _claim_home)
-        if _submit_key in _running_job_ids:
+        if _running_registration_owners.get(_submit_key) is registration_owner:
             _running_futures[_submit_key] = fut
     return fut
 

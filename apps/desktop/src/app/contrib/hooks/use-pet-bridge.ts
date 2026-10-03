@@ -2,7 +2,13 @@ import { useEffect, useRef } from 'react'
 
 import { setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
-import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
+import {
+  setPetOverlayDictateHandler,
+  setPetOverlayNewChatHandler,
+  setPetOverlayOpenAppHandler,
+  setPetOverlayScaleHandler,
+  setPetOverlaySubmitHandler
+} from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
 import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
@@ -31,6 +37,8 @@ interface PetBridgeParams {
   requestGateway: GatewayRequester
   resumeSession: (sessionId: string) => Promise<unknown> | unknown
   submitText: (text: string) => Promise<unknown> | unknown
+  transcribeAudio: (audio: Blob) => Promise<string>
+  newChat: () => unknown
 }
 
 /**
@@ -40,13 +48,23 @@ interface PetBridgeParams {
  * latest callbacks — re-registering on identity churn leaves a nulled-handler
  * window that can drop a submit. Primary window only.
  */
-export function usePetBridge({ requestGateway, resumeSession, submitText }: PetBridgeParams): void {
+export function usePetBridge({
+  newChat,
+  requestGateway,
+  resumeSession,
+  submitText,
+  transcribeAudio
+}: PetBridgeParams): void {
   const submitTextRef = useRef(submitText)
   submitTextRef.current = submitText
   const resumeSessionRef = useRef(resumeSession)
   resumeSessionRef.current = resumeSession
   const requestGatewayRef = useRef(requestGateway)
   requestGatewayRef.current = requestGateway
+  const transcribeAudioRef = useRef(transcribeAudio)
+  transcribeAudioRef.current = transcribeAudio
+  const newChatRef = useRef(newChat)
+  newChatRef.current = newChat
 
   useEffect(() => {
     if (isAuxiliaryWindow()) {
@@ -54,6 +72,11 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
     }
 
     setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // Overlay dictation: the overlay has no gateway, so its audio is
+    // transcribed here through the same STT path the main composer uses.
+    setPetOverlayDictateHandler(audio => transcribeAudioRef.current(audio))
+    // Pencil in the companion toolbar: start a clean conversation.
+    setPetOverlayNewChatHandler(() => void newChatRef.current())
     // Alt+wheel resize from the popped-out pet — persist through this window's
     // gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
@@ -69,6 +92,8 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
 
     return () => {
       setPetOverlaySubmitHandler(null)
+      setPetOverlayDictateHandler(null)
+      setPetOverlayNewChatHandler(null)
       setPetOverlayOpenAppHandler(null)
       setPetOverlayScaleHandler(null)
     }

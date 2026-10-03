@@ -1,8 +1,17 @@
 import { atom } from 'nanostores'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
+import { chatMessageText } from '@/lib/chat-messages/parts'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
+import {
+  $petActivity,
+  $petInfo,
+  $petUnread,
+  clearPetUnread,
+  markPetUnread,
+  type PetActivity,
+  type PetInfo
+} from '@/store/pet'
 
 /**
  * Controller for the pop-out pet overlay (main-renderer side).
@@ -48,12 +57,41 @@ export interface PetOverlayStatePayload {
   unread: boolean
   /** Latest reaction — bumping its id forwards a burst to the overlay. */
   reaction: PetReaction | null
+  /** Recent visible turns of the primary session, oldest first, so the
+   *  companion card reads as a continuing conversation. */
+  thread: PetOverlayTurn[]
+  /** Latest notice for the user (a reminder or "things need your attention"),
+   *  written to ~/.hermes/pet-notices.json by a cron job or script. */
+  notice: PetOverlayNotice | null
+  /** What dictation heard (or why it failed) — echoed into the balloon. */
+  heard: PetOverlayHeard | null
+}
+
+export interface PetOverlayTurn {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface PetOverlayNotice {
+  id: string
+  text: string
+}
+
+export interface PetOverlayHeard {
+  id: number
+  text: string
+  error?: boolean
 }
 
 export type PetOverlayControl =
   | { type: 'pop-in' }
   | { type: 'ready' }
   | { type: 'submit'; text: string }
+  | { type: 'dictate'; dataUrl: string; mime: string }
+  | { type: 'new-chat' }
+  | { type: 'mark-read' }
+  | { type: 'notice'; id: string; text: string }
   | { type: 'bounds'; bounds: PetOverlayBounds }
   | { type: 'open-app' }
   | { type: 'toggle-app' }
@@ -116,10 +154,10 @@ function saveBounds(bounds: PetOverlayBounds): void {
 // The overlay window is padded around the sprite so the bubble (above), the
 // drag area, and the pop-up composer all have room; the pet sits near the
 // bottom and the rest of the rectangle is transparent + click-through.
-const OVERLAY_PAD_X = 100
-const OVERLAY_PAD_Y = 200
-const OVERLAY_MIN_W = 240
-const OVERLAY_MIN_H = 300
+const OVERLAY_PAD_X = 260
+const OVERLAY_PAD_Y = 420
+const OVERLAY_MIN_W = 360
+const OVERLAY_MIN_H = 520
 
 /**
  * Window bounds (width/height) that fully contain the pet at a given scale, plus
@@ -139,6 +177,55 @@ let controlUnsub: (() => void) | null = null
 let submitHandler: ((text: string) => void) | null = null
 let openAppHandler: (() => void) | null = null
 let scaleHandler: ((scale: number) => void) | null = null
+let dictateHandler: ((audio: Blob) => Promise<string>) | null = null
+let newChatHandler: (() => void) | null = null
+let lastHeard: PetOverlayHeard | null = null
+let lastNotice: PetOverlayNotice | null = null
+
+
+const THREAD_MAX_TURNS = 12
+const THREAD_TURN_MAX_CHARS = 1200
+
+function recentThread(): PetOverlayTurn[] {
+  // One question → one answer: mid-turn narration ("Vou verificar…") and
+  // tool-round chatter are dropped; each user turn keeps only the LAST
+  // assistant text that followed it. While the turn is still running there is
+  // no answer yet, and the balloon shows "Pensando…" instead.
+  const messages = PRIMARY_SESSION_VIEW.$messages.get()
+  const turns: PetOverlayTurn[] = []
+  let pendingAnswer: PetOverlayTurn | null = null
+
+  const clip = (text: string) =>
+    text.length > THREAD_TURN_MAX_CHARS ? `${text.slice(0, THREAD_TURN_MAX_CHARS).trimEnd()}…` : text
+
+  for (const message of messages) {
+    if (message.hidden) {
+      continue
+    }
+
+    const text = chatMessageText(message).trim()
+
+    if (message.role === 'user') {
+      if (pendingAnswer) {
+        turns.push(pendingAnswer)
+        pendingAnswer = null
+      }
+
+      if (text) {
+        turns.push({ id: message.id, role: 'user', text: clip(text) })
+      }
+    } else if (message.role === 'assistant' && text) {
+      pendingAnswer = { id: message.id, role: 'assistant', text: clip(text) }
+    }
+  }
+
+  if (pendingAnswer && !PRIMARY_SESSION_VIEW.$busy.get()) {
+    turns.push(pendingAnswer)
+  }
+
+  return turns.slice(-THREAD_MAX_TURNS)
+}
+
 
 function currentPayload(): PetOverlayStatePayload {
   return {
@@ -147,7 +234,10 @@ function currentPayload(): PetOverlayStatePayload {
     busy: PRIMARY_SESSION_VIEW.$busy.get(),
     awaiting: PRIMARY_SESSION_VIEW.$awaitingResponse.get(),
     unread: $petUnread.get(),
-    reaction: $petReaction.get()
+    reaction: $petReaction.get(),
+    thread: recentThread(),
+    heard: lastHeard,
+    notice: lastNotice
   }
 }
 
@@ -184,7 +274,8 @@ function openOverlay(request: PetOverlayOpenRequest): void {
     PRIMARY_SESSION_VIEW.$busy.subscribe(pushNow),
     PRIMARY_SESSION_VIEW.$awaitingResponse.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
-    $petReaction.subscribe(pushNow)
+    $petReaction.subscribe(pushNow),
+    PRIMARY_SESSION_VIEW.$messages.subscribe(pushNow)
   ]
 }
 
@@ -254,6 +345,47 @@ export function setPetOverlaySubmitHandler(fn: ((text: string) => void) | null):
   submitHandler = fn
 }
 
+/** Register the handler that starts a fresh conversation from the overlay. */
+export function setPetOverlayNewChatHandler(fn: (() => void) | null): void {
+  newChatHandler = fn
+}
+
+/** Register the handler that turns overlay dictation audio into text. */
+export function setPetOverlayDictateHandler(fn: ((audio: Blob) => Promise<string>) | null): void {
+  dictateHandler = fn
+}
+
+function setHeard(text: string, error = false): void {
+  lastHeard = { error, id: (lastHeard?.id ?? 0) + 1, text }
+  pushNow()
+}
+
+/** Overlay dictation: transcribe through the app's STT path, echo what was
+ *  heard into the balloon, then send it like a typed message. */
+async function handleDictation(dataUrl: string): Promise<void> {
+  if (!dictateHandler) {
+    setHeard('Dictation needs the Hermes window open.', true)
+
+    return
+  }
+
+  try {
+    const audio = await (await fetch(dataUrl)).blob()
+    const text = (await dictateHandler(audio)).trim()
+
+    if (!text) {
+      setHeard("Didn't catch that. Try again.", true)
+
+      return
+    }
+
+    setHeard(text)
+    submitHandler?.(text)
+  } catch (error) {
+    setHeard(error instanceof Error && error.message ? error.message : 'Transcription failed.', true)
+  }
+}
+
 /** Register the handler that opens the app to the most recent thread (mail icon). */
 export function setPetOverlayOpenAppHandler(fn: (() => void) | null): void {
   openAppHandler = fn
@@ -283,6 +415,20 @@ export function initPetOverlayBridge(): () => void {
       pushNow()
     } else if (payload?.type === 'submit' && typeof payload.text === 'string') {
       submitHandler?.(payload.text)
+    } else if (payload?.type === 'notice' && typeof payload.text === 'string') {
+      // Sent by the main process when ~/.hermes/pet-notices.json changes.
+      lastNotice = { id: String(payload.id), text: payload.text }
+      markPetUnread()
+      pushNow()
+    } else if (payload?.type === 'mark-read') {
+      // Envelope opened in the companion balloon instead of the app.
+      clearPetUnread()
+    } else if (payload?.type === 'new-chat') {
+      lastHeard = null
+      newChatHandler?.()
+      pushNow()
+    } else if (payload?.type === 'dictate' && typeof payload.dataUrl === 'string') {
+      void handleDictation(payload.dataUrl)
     } else if (payload?.type === 'bounds' && payload.bounds) {
       // The user dragged the overlay to a new desktop spot — remember it.
       saveBounds(payload.bounds)

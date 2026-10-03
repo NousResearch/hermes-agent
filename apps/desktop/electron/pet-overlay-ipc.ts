@@ -1,5 +1,9 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { type BrowserWindow, ipcMain, screen } from 'electron'
 
 import { petOverlayClickThrough, resolvePetOverlayBounds } from './pet-overlay'
@@ -138,7 +142,24 @@ export function registerPetOverlayIpc({
     petOverlayWindow.setFocusable(Boolean(focusable))
 
     if (focusable) {
+      // macOS: focusing the overlay activates the whole app, which drags the
+      // main window over whatever the user was doing. When the main window was
+      // not the one in use, tuck it away while the companion has the keyboard;
+      // the Dock icon or a double-click on the pet brings it back.
+      const mainWindow = getMainWindow()
+
+      const hideMain =
+        process.platform === 'darwin' &&
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isFocused()
+
       petOverlayWindow.focus()
+
+      if (hideMain) {
+        mainWindow.hide()
+      }
     }
   })
   // Main renderer → overlay: forward the latest pet state for the overlay to render.
@@ -189,5 +210,46 @@ export function registerPetOverlayIpc({
     }
 
     mainWindow.webContents.send('hermes:pet-overlay:control', payload)
+  })
+
+  watchPetNotices(getMainWindow)
+}
+
+// Notices for the companion balloon: any process (a cron job, a script) writes
+// `{ id, text }` to ~/.hermes/pet-notices.json; a new id is forwarded to the
+// main renderer, which surfaces it on the popped-out pet. The notice present at
+// startup counts as already seen, so a relaunch never replays an old one.
+const PET_NOTICES_PATH = path.join(os.homedir(), '.hermes', 'pet-notices.json')
+
+function readPetNotice(): { id: string; text: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PET_NOTICES_PATH, 'utf8'))
+
+    if (parsed && typeof parsed.id === 'string' && typeof parsed.text === 'string' && parsed.text.trim()) {
+      return { id: parsed.id, text: parsed.text.trim() }
+    }
+  } catch {
+    // Missing or half-written file: nothing to show yet.
+  }
+
+  return null
+}
+
+function watchPetNotices(getMainWindow: () => BrowserWindow | null) {
+  let lastId = readPetNotice()?.id ?? null
+
+  fs.watchFile(PET_NOTICES_PATH, { interval: 3000 }, () => {
+    const notice = readPetNotice()
+
+    if (!notice || notice.id === lastId) {
+      return
+    }
+
+    lastId = notice.id
+    const mainWindow = getMainWindow()
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('hermes:pet-overlay:control', { ...notice, type: 'notice' })
+    }
   })
 }

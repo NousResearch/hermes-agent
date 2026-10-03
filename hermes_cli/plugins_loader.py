@@ -151,10 +151,17 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
 
 
 def _evict_modules(module_name: str) -> None:
-    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
+    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``.
+
+    Iterate a snapshot of ``sys.modules``: this runs on the plugin-load worker
+    thread while other threads import, and iterating the live dict raises
+    RuntimeError('dictionary changed size during iteration'). ``list()`` is a
+    single atomic copy under the GIL, and pop(..., None) tolerates a concurrent
+    eviction of the same name.
+    """
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    for name in [n for n in list(sys.modules) if n == module_name or n.startswith(prefix)]:
+        sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

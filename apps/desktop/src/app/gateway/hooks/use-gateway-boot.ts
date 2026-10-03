@@ -315,6 +315,13 @@ export function useGatewayBoot({
     // reconnect with backoff, and we nudge a reconnect on the OS/browser
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
+    let primaryConnection: HermesConnection | null = null
+
+    const recordPrimaryConnection = (connection: HermesConnection) => {
+      primaryConnection = connection
+      setPrimaryGatewayConnection(connection)
+    }
+
     let bootCompleted = false
     // The other way a cold boot concludes. Main keeps startHermes() available
     // after the renderer gave up, and every later getConnection() caller
@@ -457,17 +464,22 @@ export function useGatewayBoot({
           'Timed out revalidating the gateway connection'
         ).catch(() => undefined)
 
-        // Primary sleep/wake reconnect must dial the WINDOW-owned primary backend
-        // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget
-        // this primary socket at a secondary profile's backend after a live swap.
-        // Secondaries reconnect via reconnectSecondaryGateways().
+        // Reconnect the socket's own route, not main's mutable foreground route.
+        // Profile-less resolution remains intentional for boot/connection apply.
+        // A registry primary needs both identity fields; a legacy primary uses
+        // its explicit profile so a foreground secondary cannot retarget it.
         const conn = await withTimeout(
-          desktop.getConnection(),
+          primaryConnection?.registryScoped && primaryConnection.connectionId
+            ? (desktop.getConnectionFor?.({
+                connectionId: primaryConnection.connectionId,
+                profile: primaryConnection.profile
+              }) ?? Promise.reject(new Error('Registry gateway connection is unavailable')))
+            : desktop.getConnection(primaryConnection?.profile),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
 
-        setPrimaryGatewayConnection(conn)
+        recordPrimaryConnection(conn)
 
         if (cancelled) {
           return
@@ -809,7 +821,7 @@ export function useGatewayBoot({
         }
 
         publish(conn)
-        setPrimaryGatewayConnection(conn)
+        recordPrimaryConnection(conn)
 
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // ticket mint would otherwise hang the gateway switch forever.
@@ -1450,7 +1462,7 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
-        setPrimaryGatewayConnection(conn)
+        recordPrimaryConnection(conn)
 
         // Seed the workspace BEFORE the gateway opens: every session-restore
         // path is gated on gatewayState === 'open', so nothing can be active yet
@@ -1613,7 +1625,7 @@ export function useGatewayBoot({
 
       if (survivor?.connection) {
         publish(survivor.connection)
-        setPrimaryGatewayConnection(survivor.connection)
+        recordPrimaryConnection(survivor.connection)
       }
 
       const profile = survivor?.profile ?? $activeGatewayProfile.get()

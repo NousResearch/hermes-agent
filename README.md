@@ -30,6 +30,12 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
 
+### Turn completed work into reusable knowledge
+
+`/learn` can use a focused request together with a bounded operational trace of the active session. That gives teams a practical path from a long, tool-heavy session to a reusable skill: the request supplies the outcome to emphasize, while the trace preserves which operations mattered—even when the session crossed a compression boundary and retained ancestor context.
+
+The trace is intentionally limited. It records operation metadata such as roles, tool names, and redacted argument shapes; it excludes free-form message text and tool results, is bounded to a fixed number of recent records, and does not replace the current conversation. Treat the generated skill as a reviewable artifact before sharing it.
+
 ---
 
 ## Quick Install

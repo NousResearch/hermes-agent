@@ -65,6 +65,11 @@ def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
 
+# Relayed to the session's ORIGINATING messaging surface once a clarify resolves there (#103209),
+# mirroring the notice the native card shows on a click ("✅ answered: …", run_inbound).
+_CLARIFY_ORIGIN_ANSWER_PREFIX = "✅ answered: "
+
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1348,16 +1353,20 @@ class TurnRunner:
     def _clarify_callback_sync(self, questions) -> dict:
         """Answer the clarify tool's questions (clarify_tool's synchronous contract): one card per
         question, stop at the first the user never answers. The stream/typing re-arm waits for the
-        last question — between two cards it only opens a bubble the next boundary closes."""
+        last question — between two cards it only opens a bubble the next boundary closes.
+        Each question already reached the originating surface with its own card; the answers relay
+        once, here, after the last question is locked and in question order (#103209)."""
         from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
         from tools.clarify_gateway import CANCELLED, SKIPPED
         answers: Dict[str, Any] = {}
         reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
+        relayed: list = []
         last = len(questions) - 1
         for index, entry in enumerate(questions):
             question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"
             raw, answered = self._ask_clarify_question(
-                question, entry["choices"], bool(entry["multi_select"]), rearm=index == last)
+                question, entry["choices"], bool(entry["multi_select"]), rearm=index == last,
+                relay_answer=False)
             if raw == CANCELLED:
                 reply["outcome"] = "cancelled"
                 break
@@ -1369,9 +1378,104 @@ class TurnRunner:
                 reply.update(outcome="undelivered" if undelivered else "timed_out", notice=raw)
                 break
             answers[entry["qid"]] = None if raw == SKIPPED else raw
+            # The decision reached on this surface reaches the originating one too (#103209): a
+            # topic that asked the question must not show the reply as an answer to nothing. The
+            # batch relays once, below, after its last question, in question order; a skip is not
+            # a decision the origin surface can read.
+            if raw != SKIPPED:
+                relayed.append(raw)
+        self._relay_clarify_answers(self._ctx, relayed)
         return reply
 
-    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
+    # ── clarify relay to the originating messaging surface (#103209) ──────────────────────────
+    # A session can be DRIVEN from one surface while it ORIGINATED in another: a Desktop-driven
+    # turn inside a Telegram topic (or Discord thread) renders the clarify card on the desktop,
+    # so the topic shows the operator's prompt and the final reply with the question and the
+    # decision that shaped it missing. The relay below posts both to the chat that originated
+    # the session. Every step is a best-effort side effect: an unresolvable, dead or identical
+    # origin never delays the card, never raises, and is never a dependency of the card path.
+
+    def _clarify_origin_target(self, ctx):
+        """``(adapter, chat_id, metadata)`` for the chat that ORIGINATED this session, else None.
+
+        None covers every "do not relay" case: no session key, no persisted origin, the origin's
+        adapter IS the surface already being asked (a session native to its messaging chat), and
+        an origin chat id that is the card's own chat.
+        """
+        try:
+            session_key = str(getattr(ctx, "session_key", "") or "")
+            if not session_key:
+                return None
+            origin = self._clarify_origin_source(session_key)
+            if origin is None:
+                return None
+            adapter = self._runner._delivery_adapter_for(origin)
+            if adapter is None or adapter is ctx._status_adapter:
+                return None
+            chat_id = str(getattr(origin, "chat_id", "") or "")
+            if not chat_id or chat_id == str(getattr(ctx, "_status_chat_id", "") or ""):
+                return None
+            # ``status``-lane metadata: the origin's own thread is where the relay belongs.
+            _, _, metadata = self._runner._run_agent_progress_threading(origin, None, False)
+            return adapter, chat_id, metadata
+        except Exception:
+            logger.debug("Clarify origin relay target unresolvable", exc_info=True)
+            return None
+
+    def _clarify_origin_source(self, session_key: str):
+        """The persisted origin (the chat that created the session) for ``session_key``, else None.
+
+        The durable row first — ``entry.origin`` re-pinned through ``_restored_source``, the same
+        row every revive path reads — then the live cache for a session this process has served.
+        """
+        entry = None
+        with suppress(Exception):
+            store = self._runner.session_store
+            store._ensure_loaded()
+            entry = store._entries.get(session_key)
+        if entry is not None and getattr(entry, "origin", None) is not None:
+            with suppress(Exception):
+                return self._runner._restored_source(entry)
+        with suppress(Exception):
+            return self._runner._get_cached_session_source(session_key)
+        return None
+
+    def _relay_clarify_send(self, ctx, text: str, log_message: str) -> None:
+        """Schedule one relay ``send`` onto the origin surface; never raises, never blocks."""
+        target = self._clarify_origin_target(ctx)
+        if target is None:
+            return
+        adapter, chat_id, metadata = target
+        try:
+            self._schedule(adapter.send(chat_id, text, metadata=metadata), log_message)
+        except Exception:
+            logger.debug(log_message, exc_info=True)
+
+    def _relay_clarify_question(self, ctx, question: str, choices, multi_select) -> None:
+        """Post the pending question (numbered, exactly as the platform's own text prompt renders
+        it) to the originating surface while the card is still open."""
+        from gateway.platforms.base import format_clarify_prompt
+
+        self._relay_clarify_send(
+            ctx, format_clarify_prompt(question, list(choices) if choices else None,
+                                       multi_select=bool(multi_select)),
+            "Clarify origin relay (question) failed to schedule")
+
+    def _relay_clarify_answers(self, ctx, answers) -> None:
+        """Post the locked answers to the originating surface, once, in question order.
+
+        Only real answers: a timeout / undelivered sentinel is not something the operator chose,
+        and relaying it would read as a decision on that surface.
+        """
+        chosen = [str(answer) for answer in answers if answer]
+        if not chosen:
+            return
+        self._relay_clarify_send(
+            ctx, "\n".join(f"{_CLARIFY_ORIGIN_ANSWER_PREFIX}{answer}" for answer in chosen),
+            "Clarify origin relay (answer) failed to schedule")
+
+    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True,
+                              relay_answer: bool = True) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
         Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from gateway.run_turn_runner_clarify_delivery import (
@@ -1399,6 +1503,10 @@ class TurnRunner:
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
             multi_select=bool(multi_select),
         )
+        # The originating messaging surface learns the question as the card is emitted, before the
+        # renderer blocks on it (#103209): a phone reading the topic sees what the desktop is about
+        # to be asked. Best-effort by construction — the card below never waits on it.
+        self._relay_clarify_question(ctx, question, choices, multi_select)
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
         self._close_native_stream_boundary("Clarify", t("gateway.clarify.native_stream_placeholder"), reopen=True)
@@ -1426,6 +1534,11 @@ class TurnRunner:
         response, answered = _clarify_send_then_wait(
             fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
             fallback=_text_fallback)
+        # The decision reached on this surface reaches the originating one too — a topic that
+        # asked the question must not show the reply as an answer to nothing (#103209). Batches
+        # relay once, after their last question, through ``_relay_clarify_answers``.
+        if answered and relay_answer:
+            self._relay_clarify_answers(ctx, [response])
         # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
         # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
         if not answered:

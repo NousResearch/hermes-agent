@@ -300,6 +300,37 @@ def prune_pre_checkpoint_items(
                 if truncated["content"].strip():
                     retained_reversed.append(truncated)
                 user_remaining = 0
+            elif isinstance(item.get("content"), list) and not _has_retainable_image_content(item):
+                # Typed text-only content (e.g. Codex input_text parts): truncate the
+                # concatenated head within budget and re-split across parts in order,
+                # copy-on-write, so the newest ask is kept instead of an older one
+                # (fixes #131788). Mixed/image content is never sliced.
+                _parts = item.get("content")
+                if _parts and all(
+                    isinstance(p, dict) and str(p.get("type") or "").strip().lower()
+                    in {"input_text", "text", "output_text"} for p in _parts
+                ):
+                    _budget = user_remaining * 4
+                    _new_parts: list = []
+                    for p in _parts:
+                        if _budget <= 0:
+                            break
+                        for _key in ("text",):
+                            _val = p.get(_key)
+                            if isinstance(_val, str) and _val:
+                                _take = _val[:_budget]
+                                if _take:
+                                    _np = {**p, _key: _take}
+                                    _new_parts.append(_np)
+                                    _budget -= len(_take)
+                                break
+                        else:
+                            _new_parts.append({**p})
+                    if _new_parts and "".join(
+                        str(p.get("text") or "") for p in _new_parts
+                    ).strip():
+                        retained_reversed.append({**item, "content": _new_parts})
+                    user_remaining = 0
 
     result = items[first_cp : last_cp + 1] + list(reversed(retained_reversed)) + items[last_cp + 1 :]
     logger.debug("Pruned pre-checkpoint items: %d input -> %d retained (user_rem=%d, summary_rem=%d)",

@@ -2,6 +2,7 @@
 
 
 import pytest
+from pathlib import Path
 
 from agent.skill_utils import (
     get_disabled_skill_names,
@@ -152,11 +153,11 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
         {"key": "wiki.tilde_var", "default": "~/$LEAF"},
     ])
 
-    assert resolved["wiki.home_var"] == str(subprocess_home / "wiki")
-    assert resolved["wiki.braced_home"] == str(subprocess_home / "notes")
-    assert resolved["wiki.tilde"] == str(subprocess_home / "scratch")
+    assert Path(resolved["wiki.home_var"]) == subprocess_home / "wiki"
+    assert Path(resolved["wiki.braced_home"]) == subprocess_home / "notes"
+    assert Path(resolved["wiki.tilde"]) == subprocess_home / "scratch"
     assert resolved["wiki.other_var"] == "/proj/cache"
-    assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
+    assert Path(resolved["wiki.tilde_var"]) == subprocess_home / "leaf"
 
 
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):

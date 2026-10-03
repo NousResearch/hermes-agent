@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from functools import wraps
 
 from telegram import Update
-from telegram.ext import Application, ApplicationHandlerStop, BaseUpdateProcessor, ConversationHandler
+from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, SimpleUpdateProcessor
 
 from gateway.platforms.helpers import bounded_put
 from utils import atomic_json_write
@@ -125,7 +125,7 @@ class _ErrorCallback:
         return await self.__wrapped__(update, context)
 
 
-class PerChatUpdateProcessor(BaseUpdateProcessor):
+class PerChatUpdateProcessor(SimpleUpdateProcessor):
     """Concurrent across chats, FIFO within one chat.
 
     PTB's default processor (max_concurrent_updates=1) awaits every update inline, so one slow
@@ -165,16 +165,10 @@ class PerChatUpdateProcessor(BaseUpdateProcessor):
             else:
                 prev.add_done_callback(release)
 
-    async def initialize(self) -> None:
-        pass
-
-    async def shutdown(self) -> None:
-        pass
-
 
 def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
     """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
-    raw = (extra or {}).get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
+    raw = extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
     try:
         limit = int(raw)
     except (TypeError, ValueError):

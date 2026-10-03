@@ -22,6 +22,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageType
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
 
 class NoNetwork(BaseRequest):
@@ -800,14 +801,14 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     update deafens every other chat (and local commands) until it finishes. The adapter
     must enable a bounded concurrent processor, overridable via config extra (#125098)."""
     async with connected(monkeypatch) as (adapter, app, delivered):
-        assert app.concurrent_updates > 1
-        assert app._update_processor.max_concurrent_updates == app.concurrent_updates
+        assert isinstance(app.update_processor, PerChatUpdateProcessor)
+        assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
 
     async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (adapter, app, delivered):
         assert app.concurrent_updates == 7
 
     async with connected(monkeypatch, extra={"max_concurrent_updates": "lots"}) as (adapter, app, delivered):
-        assert app.concurrent_updates == 32
+        assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
 
     # Cancelling a waiting same-chat update must neither fail its running predecessor nor
     # let the next update of that chat overtake it.

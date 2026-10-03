@@ -358,11 +358,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Element index → (x, y, w, h) from the same snapshot. Drag has no
+        # element form on the driver (it takes from_x/from_y/to_x/to_y), so the
+        # input mixin turns these frames into coordinates.
+        self._snapshot_bounds: Dict[int, Tuple[int, int, int, int]] = {}
 
     def _set_active_target(self, target: Dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_bounds = {}
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,

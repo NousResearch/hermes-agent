@@ -1629,6 +1629,58 @@ class TestClickButtonPassthrough:
         assert scroll_args["window_id"] == 222
         assert scroll_args["x"] == 50 and scroll_args["y"] == 60
 
+    def test_element_drag_sends_frame_centers_not_element_indexes(self):
+        """The driver drag tool takes coordinates. Element indexes become the
+        centre of the last capture's frames, not from_element/to_element."""
+        backend = self._backend_with_active_target()
+        backend._snapshot_bounds = {3: (10, 20, 80, 40), 7: (100, 50, 20, 20)}
+        assert backend.drag(from_element=3, to_element=7).ok is True
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "drag"
+        assert "from_element" not in args and "to_element" not in args
+        assert (args["from_x"], args["from_y"]) == (50, 40)
+        assert (args["to_x"], args["to_y"]) == (110, 60)
+
+    def test_element_drag_without_frames_does_not_call_the_driver(self):
+        backend = self._backend_with_active_target()
+        backend._snapshot_bounds = {3: (0, 0, 0, 0), 7: (1, 2, 0, 8)}
+        result = backend.drag(from_element=3, to_element=7)
+        assert result.ok is False
+        backend._session.call_tool.assert_not_called()
+
+    def test_element_drag_without_frames_keeps_explicit_coordinates(self):
+        backend = self._backend_with_active_target()
+        backend._snapshot_bounds = {}
+        assert backend.drag(from_element=3, to_element=7, from_xy=(1, 2), to_xy=(3, 4)).ok is True
+        _, args = backend._session.call_tool.call_args.args
+        assert (args["from_x"], args["from_y"], args["to_x"], args["to_y"]) == (1, 2, 3, 4)
+        assert "from_element" not in args
+
+    def test_win_combo_is_a_hotkey_and_minus_is_a_key(self):
+        """Advertised win/super/meta modifiers must not be dropped, and cmd+-
+        is the minus key. Hyphenated modifier chains still parse."""
+        from tools.computer_use.cua_backend_parse import _parse_key_combo
+
+        assert _parse_key_combo("ctrl-alt-delete") == ("delete", ["ctrl", "option"])
+        assert _parse_key_combo("cmd+-") == ("-", ["cmd"])
+        assert _parse_key_combo("windows+d") == ("d", ["win"])
+        assert _parse_key_combo("super+d") == ("d", ["win"])
+
+        backend = self._backend_with_active_target()
+        assert backend.key("win+d").ok is True
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args["keys"] == ["win", "d"]
+
+        assert backend.key("cmd+-").ok is True
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args["keys"] == ["cmd", "-"]
+
+        backend._session.call_tool.reset_mock()
+        assert backend.key("banana+d").ok is False
+        backend._session.call_tool.assert_not_called()
+
     def test_coordinate_actions_without_window_id_fail_closed(self):
         backend = self._backend_with_active_target()
         backend._active_window_id = None
@@ -2065,6 +2117,9 @@ class TestElementTokenAttachment:
 
         # Stale 99 token is gone; only the two new tokens remain.
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
+        # Frames from this snapshot are what element-index drag resolves.
+        # These elements carried no frame, so the stored bounds are empty.
+        assert backend._snapshot_bounds == {1: (0, 0, 0, 0), 2: (0, 0, 0, 0)}
 
 
 class TestSessionLifecycle:

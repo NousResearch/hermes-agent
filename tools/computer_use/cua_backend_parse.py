@@ -130,19 +130,58 @@ def _split_tree_text(full_text: str) -> Tuple[str, str]:
     summary, _, tree = full_text.partition("\n")
     return summary, tree
 
-_MODIFIER_NAMES = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"})
-_KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
+# Canonical names the driver hotkey list can carry. Aliases collapse before the
+# membership check so "windows"/"super"/"meta" are the same modifier as "win"
+# (the name the safety block already uses) and are never thrown away.
+_MODIFIER_NAMES = frozenset({"cmd", "shift", "option", "ctrl", "fn", "win"})
+_KEY_ALIASES = {
+    "command": "cmd", "alt": "option", "control": "ctrl",
+    "windows": "win", "super": "win", "meta": "win",
+}
+
+def _combo_parts(keys: str) -> List[str]:
+    """Split a combo on ``+`` and on ``-`` used as a separator.
+
+    A ``-`` token is the minus key (``cmd+-``), not another separator. Hyphenated
+    modifier chains (``ctrl-alt-delete``) still split, so the safety block and
+    the driver see the same keys.
+    """
+    parts: List[str] = []
+    for plus_part in keys.split("+"):
+        token = plus_part.strip()
+        if token == "-":
+            parts.append("-")
+        elif "-" in token:
+            parts.extend(piece for piece in (p.strip() for p in token.split("-")) if piece)
+        elif token:
+            parts.append(token)
+    return parts
+
+def _normalize_key_part(part: str) -> str:
+    if part == "-":
+        return part
+    lowered = part.lower()
+    return _KEY_ALIASES.get(lowered, lowered)
 
 def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
-    """Parse 'cmd+s' / 'ctrl-alt-t' into (key, modifiers); last non-modifier wins."""
+    """Parse 'cmd+s' / 'ctrl-alt-t' / 'cmd+-' / 'win+d' into (key, modifiers).
+
+    Every part but the last must be a known modifier. An unknown one fails the
+    parse (the caller refuses) instead of being dropped while the bare key is
+    reported as a success. A lone modifier is not a key.
+    """
+    parts = _combo_parts(keys)
+    if not parts:
+        return None, []
     modifiers: List[str] = []
-    key = None
-    for part in (p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()):
-        normalized = _KEY_ALIASES.get(part, part)
-        if normalized in _MODIFIER_NAMES:
-            modifiers.append(normalized)
-        else:
-            key = part
+    for part in parts[:-1]:
+        normalized = _normalize_key_part(part)
+        if normalized not in _MODIFIER_NAMES:
+            return None, []
+        modifiers.append(normalized)
+    key = _normalize_key_part(parts[-1])
+    if key in _MODIFIER_NAMES:
+        return None, []
     return key, modifiers
 
 def _tool_envelope(data: Any, images: List[str], structured: Any, is_error: bool,

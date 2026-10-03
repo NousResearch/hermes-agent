@@ -238,6 +238,14 @@ class GatewayVoiceMixin:
         return False
 
     @staticmethod
+    def _cached_user_display_name(client, user_id: int) -> Optional[str]:
+        """``get_member`` is cache-only; a speaker it misses may still be a cached user, whose display
+        name (global name or username, no server nickname) beats a bare id."""
+        get_user = getattr(client, "get_user", None)
+        name = getattr(get_user(int(user_id)) if callable(get_user) else None, "display_name", None)
+        return name if isinstance(name, str) and name else None
+
+    @staticmethod
     def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
         """Bound text channel's own source when available (voice shares the text conversation's
         session), else a synthetic one."""
@@ -254,11 +262,13 @@ class GatewayVoiceMixin:
             # join, never another participant's.
             if user_name is None and source.user_id == str(user_id):
                 user_name = source.user_name
+            user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
             source.user_id, source.user_name = str(user_id), user_name or str(user_id)
             # The bound source is the `/voice join` message's; its id is not this turn's trigger
             # (run.py exports it as HERMES_SESSION_MESSAGE_ID for reply anchoring).
             source.message_id = None
         else:
+            user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
             source = SessionSource(
                 platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
                 user_name=user_name or str(user_id), chat_type="channel",

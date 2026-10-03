@@ -35,7 +35,15 @@ const renderRows = (text: string, width: number, theme = DEFAULT_THEME) => {
 it('fills added/removed visual rows, including wrapped Unicode, without painting the gutter', () => {
   for (const theme of [DEFAULT_THEME, LIGHT_THEME]) {
     for (const width of [12, 32]) {
-      for (const line of ['+x', '-old', '+中文🙂 more words that wrap across rows', '-']) {
+      for (const line of [
+        '+x',
+        '-old',
+        '+中文🙂 more words that wrap across rows',
+        '-',
+        '+\tx',
+        '-\t',
+        ...(width === 32 ? ['+\tab\tsep'] : [])
+      ]) {
         const rows = renderRows('```diff\n' + line + '\n```', width, theme)
         expect(rows.length).toBeGreaterThan(0)
 
@@ -45,7 +53,9 @@ it('fills added/removed visual rows, including wrapped Unicode, without painting
           // Wide glyph continuation cells inherit the terminal glyph's style;
           // Ink stores no separate SGR on those spacer cells.
           for (const cell of row.slice(2)) {
-            if (cell.width !== CellWidth.SpacerTail) {expect(cell.styleId & 1).toBe(1)}
+            if (cell.width !== CellWidth.SpacerTail) {
+              expect(cell.styleId & 1).toBe(1)
+            }
           }
         }
 
@@ -55,7 +65,7 @@ it('fills added/removed visual rows, including wrapped Unicode, without painting
             .map(cell => cell.char)
             .join('')
             .replaceAll(' ', '')
-        ).toBe(line.replaceAll(' ', ''))
+        ).toBe(line.replaceAll(/[ \t]/g, ''))
       }
     }
   }

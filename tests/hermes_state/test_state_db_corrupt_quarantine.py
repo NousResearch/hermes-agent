@@ -141,6 +141,74 @@ class TestQuarantinedHandleStopsTouchingTheFile:
             db.get_session("s1")
         reopen.assert_not_called()
 
+    def test_get_read_conn_refuses_fresh_open_when_quarantined(self, tmp_path, monkeypatch):
+        """The WAL read-pool's miss path (_get_read_conn) opens a brand-new
+        sqlite3 connection to the same file — the same "reopen a damaged
+        image" _reopen_after_close_locked already refuses on the write
+        side. It must refuse too, even while the handle is still live (not
+        yet close()d), instead of happily opening a fresh connection to a
+        file already known to be structurally damaged."""
+        from unittest.mock import MagicMock
+
+        db, real_conn = _quarantined_db(tmp_path)
+        try:
+            # This sandbox's SQLite build falls back to journal_mode=DELETE,
+            # so _wal_active is never really True here — force it to
+            # exercise the WAL-only miss path directly, per this file's own
+            # established technique for testing quarantine interactions.
+            db._wal_active = True
+            reopen = MagicMock()
+            monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
+            assert db._get_read_conn() is None
+            reopen.assert_not_called()
+        finally:
+            db.close()
+
+    def test_get_read_conn_refuses_fresh_open_when_replaced(self, tmp_path, monkeypatch):
+        """Same guard as the _db_corrupt case above, for the other halted
+        state _reopen_after_close_locked already refuses to reopen for: the
+        path resolving to a different file generation (_db_replaced,
+        #89332). _get_read_conn() must not open a fresh connection to a
+        file already known to be a different generation than the one this
+        handle opened."""
+        from unittest.mock import MagicMock
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli", model="test")
+            # This sandbox's SQLite build falls back to journal_mode=DELETE,
+            # so _wal_active is never really True here — force it to
+            # exercise the WAL-only miss path directly, per this file's own
+            # established technique for testing quarantine interactions.
+            db._wal_active = True
+            db._db_replaced = True
+            reopen = MagicMock()
+            monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
+            assert db._get_read_conn() is None
+            reopen.assert_not_called()
+        finally:
+            db.close()
+
+    def test_get_read_conn_refuses_fresh_open_when_wal_generation_lost(
+        self, tmp_path, monkeypatch
+    ):
+        """Same guard, for the third halted state _reopen_after_close_locked
+        already refuses to reopen for: this handle's WAL/SHM generation
+        deleted out from under it (_db_wal_generation_lost)."""
+        from unittest.mock import MagicMock
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli", model="test")
+            db._wal_active = True
+            db._db_wal_generation_lost = True
+            reopen = MagicMock()
+            monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
+            assert db._get_read_conn() is None
+            reopen.assert_not_called()
+        finally:
+            db.close()
+
 
 class TestQuarantineScope:
     def test_fts_scoped_corruption_does_not_trip_flag(self, tmp_path):

@@ -136,9 +136,60 @@ describe('MessageRenderBoundary', () => {
     spy.mockRestore()
   })
 
+  it('recovers when the store settles after the zero-ms burst', () => {
+    // Symptom A (#122167): the consistent store snapshot can arrive a few
+    // frames after the lookup race fires. Retries that all burn in one
+    // zero-ms burst exhaust the budget while the store is still
+    // inconsistent, and the turn row then stays null until an unrelated
+    // structural change. Retries must span the settle window.
+    vi.useFakeTimers()
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    let failing = true
+
+    function MaybeBoom() {
+      if (failing) {
+        throw new Error('useClientLookup: index 3 out of bounds')
+      }
+
+      return <div>late-settling content</div>
+    }
+
+    render(
+      <MessageRenderBoundary resetKey="0:m1:user">
+        <MaybeBoom />
+      </MessageRenderBoundary>
+    )
+
+    expect(screen.queryByText('late-settling content')).toBeNull()
+
+    // Burn the immediate burst while the store is still inconsistent: each
+    // zero-ms retry arms the next one, so one advance only spends one retry.
+    for (let burst = 0; burst < 6; burst += 1) {
+      act(() => {
+        vi.advanceTimersByTime(0)
+      })
+    }
+
+    expect(screen.queryByText('late-settling content')).toBeNull()
+
+    // The store settles a few frames later; the row must come back on its
+    // own, with no resetKey change.
+    failing = false
+
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(screen.getByText('late-settling content')).toBeTruthy()
+    spy.mockRestore()
+  })
+
   it('stops retrying after the transient retry cap', () => {
     // If the lookup stays out of bounds the boundary must give up instead of
-    // looping a setState/render cycle forever.
+    // looping a setState/render cycle forever: initial render plus 5 retries
+    // (spread over the backoff schedule), then it stays null and arms no
+    // further timer.
     vi.useFakeTimers()
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
@@ -155,11 +206,23 @@ describe('MessageRenderBoundary', () => {
       </MessageRenderBoundary>
     )
 
-    // Drain retries (bounded, so a boundary that never gives up fails here
-    // instead of hanging); the exact cap is an implementation choice.
-    for (let retry = 0; retry < 50 && vi.getTimerCount() > 0; retry += 1) {
+    // React dev mode replays a failed render once per attempt, and an error
+    // during the initial mount gets an extra sync retry from the root, so
+    // measure the per-attempt cost from the first retry instead of guessing.
+    const mountAttempts = attempts
+
+    act(() => {
+      vi.advanceTimersByTime(0)
+    })
+
+    const perRetry = attempts - mountAttempts
+
+    // The remaining retries are spread over the backoff schedule. Timer
+    // callbacks batch their setState inside act(), so each advance spends
+    // exactly one retry; step past the whole schedule.
+    for (let step = 0; step < 6; step += 1) {
       act(() => {
-        vi.advanceTimersByTime(0)
+        vi.advanceTimersByTime(1000)
       })
     }
 
@@ -170,7 +233,7 @@ describe('MessageRenderBoundary', () => {
     const settledAttempts = attempts
 
     act(() => {
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(10000)
     })
 
     expect(attempts).toBe(settledAttempts)

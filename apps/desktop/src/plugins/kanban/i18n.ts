@@ -168,6 +168,8 @@ type KanbanMessages = {
   copiedTitle: string
   close: string
   working: string
+  viewDrawer: string
+  viewExpanded: string
   // board switcher
   board: string
   newBoard: string
@@ -403,6 +405,8 @@ export const en: KanbanMessages = {
   copiedTitle: 'Copied title',
   close: 'Close',
   working: 'working',
+  viewDrawer: 'Drawer view',
+  viewExpanded: 'Expanded view',
   board: 'Board',
   newBoard: 'New board',
   switchBoard: 'Switch board',
@@ -630,6 +634,8 @@ const ja: KanbanMessages = {
   copiedTitle: 'タイトルをコピーしました',
   close: '閉じる',
   working: '作業中',
+  viewDrawer: 'ドロワービュー',
+  viewExpanded: '拡大ビュー',
   board: 'ボード',
   newBoard: '新しいボード',
   switchBoard: 'ボードを切り替え',
@@ -855,6 +861,8 @@ const zh: KanbanMessages = {
   copiedTitle: '已复制标题',
   close: '关闭',
   working: '进行中',
+  viewDrawer: '抽屉视图',
+  viewExpanded: '展开视图',
   board: '面板',
   newBoard: '新建面板',
   switchBoard: '切换面板',
@@ -1079,6 +1087,8 @@ const zhHant: KanbanMessages = {
   copiedTitle: '已複製標題',
   close: '關閉',
   working: '進行中',
+  viewDrawer: '抽屜視圖',
+  viewExpanded: '展開視圖',
   board: '面板',
   newBoard: '新增面板',
   switchBoard: '切換面板',

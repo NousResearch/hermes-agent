@@ -39,6 +39,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import {
   $boardSlug,
+  $taskView,
   addComment,
   boardKeyPrefix,
   deleteTask,
@@ -741,7 +742,11 @@ function FeedTabs({
               ))}
             </ul>
           )}
-          <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
+          {/* While the task runs the pinned box above owns the composer; two
+              live copies would each hold their own draft. */}
+          {!running && (
+            <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
+          )}
         </>
       )}
       {tab === 'activity' && (
@@ -845,6 +850,10 @@ export function TaskDrawer({
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  // Drawer <-> Expanded switch: classes only, the detail tree stays mounted
+  // so the task, feed tab and scroll positions survive the switch.
+  const view = useValue($taskView)
+  const drawerMode = view === 'drawer'
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
@@ -969,8 +978,19 @@ export function TaskDrawer({
     <Dialog onOpenChange={open => !open && onClose()} open>
       <DialogContent
         aria-describedby={undefined}
-        bodyClassName="flex max-h-[min(84vh,54rem)] flex-col gap-0 overflow-hidden p-0"
-        className="w-[min(62rem,94vw)] max-w-none"
+        bodyClassName={
+          drawerMode
+            ? 'flex h-full max-h-none flex-col gap-0 overflow-hidden p-0'
+            : 'flex max-h-[min(84vh,54rem)] flex-col gap-0 overflow-hidden p-0'
+        }
+        blurBackdrop={!drawerMode}
+        className={
+          drawerMode
+            ? 'top-0 right-0 left-auto h-full max-h-none w-[min(36rem,94vw)] max-w-none translate-x-0 translate-y-0 rounded-r-none'
+            : 'w-[min(62rem,94vw)] max-w-none'
+        }
+        data-task-view={view}
+        overlayClassName={drawerMode ? 'bg-black/5' : undefined}
         showCloseButton={false}
       >
         <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
@@ -1027,6 +1047,16 @@ export function TaskDrawer({
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
+              <Tip label={drawerMode ? k.viewExpanded : k.viewDrawer}>
+                <Button
+                  aria-label={drawerMode ? k.viewExpanded : k.viewDrawer}
+                  onClick={() => $taskView.set(drawerMode ? 'expanded' : 'drawer')}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={drawerMode ? 'screen-full' : 'layout-sidebar-right'} size="0.85rem" />
+                </Button>
+              </Tip>
               <Button aria-label={k.close} onClick={onClose} size="icon-xs" variant="ghost">
                 <Codicon name="close" />
               </Button>
@@ -1036,6 +1066,20 @@ export function TaskDrawer({
             {task ? task.title || task.id : shortId(id)}
           </DialogTitle>
         </header>
+
+        {running && task && (
+          <div
+            className="shrink-0 border-b border-(--ui-stroke-tertiary) px-5 pb-3"
+            data-testid="task-quick-comment"
+          >
+            <CommentComposer
+              onRequeue={body => requeueMut.mutate(body)}
+              onSubmit={body => commentMut.mutate(body)}
+              pending={commentMut.isPending || requeueMut.isPending}
+              running
+            />
+          </div>
+        )}
 
         <div className="flex min-h-0 flex-1 flex-col" data-selectable-text="true">
           {errorMessage ? (

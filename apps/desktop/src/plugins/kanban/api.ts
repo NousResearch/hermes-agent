@@ -64,6 +64,12 @@ export const $lanesByProfile = atom<boolean>(false)
  *  auto: empty lanes collapse to a rail, occupied lanes expand. Persisted. */
 export const $collapsedLanes = atom<Record<string, boolean>>({})
 
+/** Task detail layout: the centered expanded modal, or the narrow board-side
+ *  drawer for operator monitoring. One global preference, not per-card.
+ *  Persisted. */
+// ponytail: global view preference; per-card overrides if operators ask for them.
+export const $taskView = atom<'drawer' | 'expanded'>('expanded')
+
 /** Cache scope of the local pool — the SDK atom's own spelling. */
 const LOCAL_SCOPE = 'local'
 
@@ -73,6 +79,7 @@ const BOARD_SLUG_KEY = 'boardSlug'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
+const TASK_VIEW_KEY = 'taskView'
 
 // Last frame cursor per (connection, board) this plugin bind. The socket
 // reopens on every board switch and connection change; resuming from the last
@@ -225,6 +232,7 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+  persist($taskView, TASK_VIEW_KEY, 'expanded')
 
   eventCursorByBoard.clear()
 

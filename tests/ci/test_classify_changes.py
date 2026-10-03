@@ -24,7 +24,6 @@ if _spec is None or _spec.loader is None:
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 classify = _mod.classify
-ci_review_files = _mod.ci_review_files
 pull_request_changed_files = _mod.pull_request_changed_files
 pull_request_labels = _mod.pull_request_labels
 main = _mod.main
@@ -48,14 +47,12 @@ DEFAULT = {
     "bootstrap": True,
     "desktop_updater": True,
     "rust": True,
-    "mcp_catalog": False,
-    "ci_review": True,
 }
 
 SLOW_LANES = {"docker", "nix", "e2e", "e2e_upgrade", "e2e_desktop_core", "e2e_desktop_update"}
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -83,8 +80,6 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "bootstrap": bootstrap,
         "desktop_updater": desktop_updater,
         "rust": rust,
-        "mcp_catalog": mcp_catalog,
-        "ci_review": ci_review,
     }
 
 
@@ -256,44 +251,44 @@ CASES = {
     # Supply-chain lanes
     ".pth file → scan": (["evil.pth"], _lanes(python=True, scan=True)),
     "setup.py → scan": (["setup.py"], _lanes(python=True, scan=True, docker=True, nix=True, e2e_upgrade=True)),
-    "mcp catalog manifest → mcp_catalog": (
+    # Files CODEOWNERS owns carry no lane of their own: they only route as code.
+    "mcp catalog manifest → python only": (
         ["optional-mcps/foo/manifest.yaml"],
-        _lanes(python=True, mcp_catalog=True),
+        _lanes(python=True),
     ),
-    "mcp_catalog.py → mcp_catalog": (
+    "mcp_catalog.py → python + scan": (
         ["hermes_cli/mcp_catalog.py"],
-        _lanes(python=True, scan=True, mcp_catalog=True),
+        _lanes(python=True, scan=True),
     ),
-    # CI-sensitive files require explicit review label.
-    "eslint config → ci_review": (
+    "eslint config → frontend": (
         ["apps/desktop/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "shared eslint config → ci_review": (
+    "shared eslint config → python": (
         ["eslint.config.shared.mjs"],
-        _lanes(python=True, ci_review=True),
+        _lanes(python=True),
     ),
-    "ui-tui eslint config → ci_review": (
+    "ui-tui eslint config → frontend": (
         ["ui-tui/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "web eslint config → ci_review": (
+    "web eslint config → frontend": (
         ["web/eslint.config.js"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "shared package eslint config → ci_review": (
+    "shared package eslint config → frontend": (
         ["apps/shared/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "bootstrap-installer eslint config → ci_review": (
+    "bootstrap-installer eslint config → frontend + bootstrap": (
         ["apps/bootstrap-installer/eslint.config.mjs"],
-        _lanes(frontend=True, bootstrap=True, ci_review=True),
+        _lanes(frontend=True, bootstrap=True),
     ),
-    "prettier config → ci_review": (
+    "prettier config → python": (
         [".prettierrc"],
-        _lanes(python=True, ci_review=True),
+        _lanes(python=True),
     ),
-    "workflow yml → ci_review (also fail-open all)": (
+    "workflow yml → fail-open all": (
         [".github/workflows/typecheck.yml"],
         DEFAULT,
     ),
@@ -311,12 +306,11 @@ CASES = {
         ["apps/bootstrap-installer/src-tauri/src/lib.rs"],
         _lanes(frontend=True, bootstrap=True, rust=True),
     ),
-    "composite action → ci_review (also fail-open all)": (
+    "composite action → fail-open all": (
         [".github/actions/retry/action.yml"],
         DEFAULT,
     ),
-    # Normal desktop source doesn't trigger ci_review.
-    "desktop src → no ci_review": (
+    "desktop src → frontend only": (
         ["apps/desktop/src/app.tsx"],
         _lanes(frontend=True),
     ),
@@ -457,18 +451,6 @@ def _iter_if_expressions(job: object):
             yield cond
 
 
-def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
-    assert ci_review_files([
-        "apps/desktop/src/app.tsx",
-        ".github/workflows/ci.yml",
-        "apps/desktop/eslint.config.mjs",
-        ".github/workflows/ci.yml",
-    ]) == [
-        ".github/workflows/ci.yml",
-        "apps/desktop/eslint.config.mjs",
-    ]
-
-
 def _write_event(tmp_path, number: int | None = 88442) -> Path:
     payload = {"pull_request": {"number": number}} if number is not None else {}
     path = tmp_path / "event.json"
@@ -521,8 +503,8 @@ def test_pull_request_changed_files_returns_empty_when_gh_fails(tmp_path, monkey
     assert pull_request_changed_files() == []
 
 
-def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, capsys):
-    """A fork compare 404 must not demand ci-reviewed for a CLI-only install."""
+def test_main_recovers_pr_files_instead_of_fail_open(monkeypatch, capsys):
+    """A fork compare 404 must not turn every lane on for a CLI-only install."""
     monkeypatch.setattr(
         _mod,
         "pull_request_changed_files",
@@ -533,7 +515,7 @@ def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, caps
 
     assert main() == 0
     out = capsys.readouterr().out
-    assert "ci_review=false" in out
+    assert "frontend=false" in out
     assert "python=true" in out
     assert "python_prod=true" in out
 
@@ -545,11 +527,11 @@ def test_main_still_fail_opens_when_recovery_is_empty(monkeypatch, capsys):
 
     assert main() == 0
     out = capsys.readouterr().out
-    assert "ci_review=true" in out
+    assert "frontend=true" in out
 
 
 def test_main_reads_the_run_e2e_label(monkeypatch, capsys):
-    monkeypatch.setattr(_mod, "pull_request_labels", lambda: ["ci-reviewed", _mod.RUN_E2E_LABEL])
+    monkeypatch.setattr(_mod, "pull_request_labels", lambda: [_mod.RUN_E2E_LABEL])
     monkeypatch.setattr(sys, "stdin", io.StringIO("gateway/run.py\n"))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 

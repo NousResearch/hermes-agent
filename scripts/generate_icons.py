@@ -52,7 +52,7 @@ Dependencies:
     Pillow and resvg-py are core runtime dependencies; run this file with a
     Hermes runtime interpreter (scripts/generate-icons.mjs uses HERMES_PYTHON).
 
-Outputs (44 files):
+Outputs (99 files):
   assets/icon-master.svg                              generated light master
   assets/icon-master-dark.svg                         generated dark master
   apps/desktop/assets/icon.png                        1024x1024 squircle (light)
@@ -66,11 +66,9 @@ Outputs (44 files):
   apps/desktop/assets/icon.icon/Assets/art-*.png      1024 girl (+ commit badge), light/dark
   apps/desktop/assets/icon.icon/Assets/mono.png       1024 Clear/Tinted material (grayscale + opacity)
   apps/bootstrap-installer/src-tauri/icons/icon.icon/**  same package, unbranded (Tauri bundle.icon)
-  apps/desktop/assets/appx/Wide310x150Logo.png        310x150, squircle 100 centered
-  apps/desktop/assets/appx/StoreLogo.png              50x50 squircle
-  apps/desktop/assets/appx/Square44x44Logo.png        44x44 squircle
-  apps/desktop/assets/appx/Square150x150Logo.png      150x150 squircle
-  apps/desktop/assets/appx/*-dark.png                 dark-appearance logos
+  apps/desktop/assets/appx/<Logo>[.scale-N].png       MSIX logos at 100/125/150/200/400% (wide: squircle centered)
+  apps/desktop/assets/appx/Square44x44Logo.targetsize-N[_altform-(light)unplated].png
+                                                      taskbar/Start bitmaps 16..256; unplated = dark tile
   apps/desktop/public/apple-touch-icon.png            1024x1024 squircle
   apps/desktop/public/nous-girl.png                   256x256 squircle, black girl (light mark)
   apps/desktop/public/nous-girl-dark.png              256x256 squircle, white girl (dark mark)
@@ -153,8 +151,70 @@ GIRL_BOXES["icon.icon"] = ((_mx - 100.0) * _plate, (_my - 100.0) * _plate, _mw *
 # The brand-kit SVG canvas (both girl svgs share this viewBox).
 GIRL_VIEWBOX = 5487.0615
 
+# ─── MSIX (Windows) asset catalog ───────────────────────────────────────────
+# The manifest names only the base files; Windows resolves each through
+# resource qualifiers. targetsize-* is what the taskbar, Start and search
+# draw — an exact bitmap per slot, so nothing is ever upscaled (the bare 44px
+# tile was) — and altform-unplated / altform-lightunplated are the dark- and
+# light-theme forms Windows requires to exist even when identical (without
+# them it plates the icon itself). electron-builder runs makepri + `makeappx
+# /l` as soon as one qualified asset is staged (app-builder-lib
+# winAppUtil.isScaledAssetsProvided), so the qualifiers alone wire this in.
+APPX_DIR = "apps/desktop/assets/appx"
+APPX_SCALES = (100, 125, 150, 200, 400)
+APPX_TARGET_SIZES = (16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)
+# Base size at scale-100; the wide tile keeps its 100px squircle centered.
+APPX_LOGOS: dict[str, int | tuple[int, int]] = {
+    "Square44x44Logo": 44,
+    "Square150x150Logo": 150,
+    "StoreLogo": 50,
+    "Wide310x150Logo": (310, 150),
+}
+# Theme-qualified taskbar forms: (qualifier suffix, render kind). Dark theme
+# gets the dark tile like macOS dark mode does; the unqualified file stays the
+# light tile for hosts that ignore qualifiers.
+APPX_ALTFORMS = (("", "png"), ("_altform-unplated", "png_dark"), ("_altform-lightunplated", "png"))
+
+
+def appx_scaled(base: int, scale: int) -> int:
+    # Microsoft's tables round up (150 @ 125% = 188, 50 @ 125% = 63).
+    return math.ceil(base * scale / 100 - 1e-9)
+
+
+def appx_targets() -> list[tuple[str, str, object]]:
+    targets: list[tuple[str, str, object]] = []
+    for name, base in APPX_LOGOS.items():
+        for scale in APPX_SCALES:
+            qualifier = "" if scale == 100 else f".scale-{scale}"
+            if isinstance(base, tuple):
+                w, h = base
+                arg: object = (appx_scaled(w, scale), appx_scaled(h, scale), appx_scaled(100, scale))
+                targets.append((f"{APPX_DIR}/{name}{qualifier}.png", "wide", arg))
+            else:
+                targets.append((f"{APPX_DIR}/{name}{qualifier}.png", "png", appx_scaled(base, scale)))
+    for size in APPX_TARGET_SIZES:
+        for suffix, kind in APPX_ALTFORMS:
+            targets.append((f"{APPX_DIR}/Square44x44Logo.targetsize-{size}{suffix}.png", kind, size))
+    return targets
+
+
+APPX_TARGETS = appx_targets()
+
+
+def _appx_check_sizes() -> dict[str, tuple[str, tuple[int, int]]]:
+    sizes: dict[str, tuple[str, tuple[int, int]]] = {}
+    for rel, kind, arg in APPX_TARGETS:
+        if kind == "wide":
+            w, h, _tile = arg  # type: ignore[misc]
+            sizes[rel] = ("PNG", (w, h))
+        else:
+            sizes[rel] = ("PNG", (arg, arg))  # type: ignore[arg-type]
+    return sizes
+
+
 # Target sizes for --check's structural verification: relpath -> (format, size)
 CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
+    **_appx_check_sizes(),
     "apps/desktop/assets/icon.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon-dark.png": ("PNG", (1024, 1024)),
     "apps/desktop/packaging/dmg-volume.icns": ("ICNS", (1024, 1024)),
@@ -166,14 +226,6 @@ CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
     "apps/bootstrap-installer/src-tauri/icons/icon.icon/Assets/mono.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon.icon/Assets/art-light.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon.icon/Assets/art-dark.png": ("PNG", (1024, 1024)),
-    "apps/desktop/assets/appx/Wide310x150Logo.png": ("PNG", (310, 150)),
-    "apps/desktop/assets/appx/Wide310x150Logo-dark.png": ("PNG", (310, 150)),
-    "apps/desktop/assets/appx/StoreLogo.png": ("PNG", (50, 50)),
-    "apps/desktop/assets/appx/StoreLogo-dark.png": ("PNG", (50, 50)),
-    "apps/desktop/assets/appx/Square44x44Logo.png": ("PNG", (44, 44)),
-    "apps/desktop/assets/appx/Square44x44Logo-dark.png": ("PNG", (44, 44)),
-    "apps/desktop/assets/appx/Square150x150Logo.png": ("PNG", (150, 150)),
-    "apps/desktop/assets/appx/Square150x150Logo-dark.png": ("PNG", (150, 150)),
     "apps/desktop/public/apple-touch-icon.png": ("PNG", (1024, 1024)),
     "apps/desktop/public/nous-girl.png": ("PNG", (256, 256)),
     "apps/desktop/public/nous-girl-dark.png": ("PNG", (256, 256)),
@@ -209,14 +261,7 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/desktop/assets/icon.icon/Assets/art-light.png", "icon_art", "black"),
     ("apps/desktop/assets/icon.icon/Assets/art-dark.png", "icon_art", "white"),
     ("apps/desktop/assets/icon.icon/Assets/mono.png", "icon_mono", None),
-    ("apps/desktop/assets/appx/Wide310x150Logo.png", "wide", (310, 150)),
-    ("apps/desktop/assets/appx/StoreLogo.png", "png", 50),
-    ("apps/desktop/assets/appx/Square44x44Logo.png", "png", 44),
-    ("apps/desktop/assets/appx/Square150x150Logo.png", "png", 150),
-    ("apps/desktop/assets/appx/Wide310x150Logo-dark.png", "wide_dark", (310, 150)),
-    ("apps/desktop/assets/appx/StoreLogo-dark.png", "png_dark", 50),
-    ("apps/desktop/assets/appx/Square44x44Logo-dark.png", "png_dark", 44),
-    ("apps/desktop/assets/appx/Square150x150Logo-dark.png", "png_dark", 150),
+    *APPX_TARGETS,
     ("apps/desktop/public/apple-touch-icon.png", "png", 1024),
     # The dev-run Dock icon (app.dock.setIcon): same mac grid as the icns.
     ("apps/desktop/assets/icon-mac.png", "png_mac", 1024),
@@ -266,6 +311,9 @@ class IconArt:
         # squircle: same art, mac-grid backgrounds, icns targets only.
         self.master_mac = compose_svg(self, "black", "squircle-mac-light.svg")
         self.master_mac_dark = compose_svg(self, "white", "squircle-mac-dark.svg")
+        # Badge-free twins for direct renders below BADGE_MIN_SIZE.
+        self.master_small = compose_svg(self, "black", "squircle-light.svg", badge=False)
+        self.master_dark_small = compose_svg(self, "white", "squircle-dark.svg", badge=False)
 
 
 def girl_path(art: IconArt, girl: str) -> str:
@@ -346,18 +394,30 @@ HEX_GLYPHS = {
 }
 
 
+# Commit badge plate and glyph origin on the 1024 canvas.
+BADGE_RECT = (160, 28, 704, 152)
+BADGE_GLYPH_ORIGIN = (184, 48)
+# Below this edge length a direct render carries no badge: the plate's top
+# row is then under one device pixel from the badge, whose anti-aliased edge
+# would stack coverage on the tile's own corner pixels and change the alpha
+# channel between flavors. Nobody reads a SHA at 16px anyway.
+BADGE_MIN_SIZE = 32
+
+
 def commit_layer(commit: str, bg: str) -> str:
     cells = []
+    gx, gy = BADGE_GLYPH_ORIGIN
     for index, char in enumerate(commit[:7]):
         for row, bits in enumerate(HEX_GLYPHS[char]):
             for col in range(5):
                 if bits & (1 << (4 - col)):
-                    x, y = 184 + (index * 6 + col) * 16, 48 + row * 16
+                    x, y = gx + (index * 6 + col) * 16, gy + row * 16
                     cells.append(f"M{x} {y}h16v16h-16z")
     # The badge follows the tile's mac HIG inset, never the outer canvas.
     transform = f' transform="translate(100 100) scale({824 / 1024})"' if "-mac-" in bg else ""
+    bx, by, bw, bh = BADGE_RECT
     return (
-        f'<g{transform}><rect x="160" y="28" width="704" height="152" rx="24" fill="#29090c"/>'
+        f'<g{transform}><rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="24" fill="#000000"/>'
         f'<path fill="#ffffff" d="{"".join(cells)}"/></g>'
     )
 
@@ -414,7 +474,7 @@ def portrait_layer(art: IconArt, girl: str, bg: str, join_bottom: float) -> ET.E
     return portrait
 
 
-def compose_svg(art: IconArt, girl: str, bg: str) -> str:
+def compose_svg(art: IconArt, girl: str, bg: str, *, badge: bool = True) -> str:
     """Full svg text: background + girl layer, in the background's native
     coordinate space (resvg scales to whatever output size is requested, so
     the composition is size-agnostic — no manual box scaling)."""
@@ -440,13 +500,13 @@ def compose_svg(art: IconArt, girl: str, bg: str) -> str:
     inner = "".join(ET.tostring(child, encoding="unicode") for child in background)
     clip = ET.tostring(silhouette, encoding="unicode")
     portrait = portrait_layer(art, girl, bg, join_bottom)
-    badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
+    # The badge shares the portrait's clip so it can never paint past the plate.
+    badge_svg = commit_layer(art.commit, bg) if art.commit and badge else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
         f'  <defs><clipPath id="icon-silhouette">{clip}</clipPath></defs>\n'
         f"  {inner.strip()}\n"
-        f"{badge}"
-        f'  <g clip-path="url(#icon-silhouette)">{ET.tostring(portrait, encoding="unicode")}</g>\n'
+        f'  <g clip-path="url(#icon-silhouette)">{badge_svg}{ET.tostring(portrait, encoding="unicode")}</g>\n'
         "</svg>\n"
     )
 
@@ -742,11 +802,11 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
 
     buf = io.BytesIO()
     if kind == "png":
-        save_png(render(art.master, arg), buf)
+        save_png(render(art.master if arg >= BADGE_MIN_SIZE else art.master_small, arg), buf)
     elif kind == "png_mac":
         save_png(render(art.master_mac, arg), buf)
     elif kind == "png_dark":
-        save_png(render(art.master_dark, arg), buf)
+        save_png(render(art.master_dark if arg >= BADGE_MIN_SIZE else art.master_dark_small, arg), buf)
     elif kind == "png_white":
         render(art.master, arg, background="#ffffff").convert("RGB").save(buf, "PNG", optimize=True)
     elif kind == "png_dark_white":
@@ -780,14 +840,9 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
         frames = [img.resize((s, s), Image.LANCZOS) for s in (16, 32, 64, 128, 256, 512, 1024)]
         img.save(buf, format="ICNS", append_images=frames[1:])
     elif kind == "wide":
-        w, h = arg
+        w, h, tile = arg
         canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        paste_centered(canvas, render(art.master, 100))
-        canvas.save(buf, "PNG")
-    elif kind == "wide_dark":
-        w, h = arg
-        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        paste_centered(canvas, render(art.master_dark, 100))
+        paste_centered(canvas, render(art.master, tile))
         canvas.save(buf, "PNG")
     elif kind == "logo":
         build_logo_image(art, dark=False).save(buf, "PNG")

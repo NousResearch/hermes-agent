@@ -3009,11 +3009,17 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
 
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
-    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted."""
+    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
+
+    Only the which()-resolved tool dirs and the hardcoded System32 family belong here. The
+    shell PATH is deliberately NOT scraped: WSL appends every Windows PATH entry (Desktop app,
+    git, node dirs under ``/mnt/``) ahead of the interop defaults, and persisting those into the
+    unit makes the gateway open 9p (Plan 9 interop) connections to each of them at start — enough
+    to exhaust the 9p server connection limit (#73163). Interop tools don't need them."""
     if not is_wsl():
         return []
 
-    candidates = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.startswith("/mnt/")]
+    candidates: list[str] = []
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)
         if resolved:

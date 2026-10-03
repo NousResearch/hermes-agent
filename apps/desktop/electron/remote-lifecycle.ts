@@ -1743,9 +1743,13 @@ async function connect(deps) {
     // record. Inside the try: if this write itself fails, the catch still
     // kills the just-spawned process via the in-memory record.
     await writeLockfile(ssh, ownershipId, ownedSpawn)
+    // The spawn command returns the short-lived wrapper pid. The detached
+    // serve daemon can outlive that wrapper while it is still starting, so a
+    // wrapper liveness check races the READY line and rejects healthy boots.
+    // The bounded READY wait is the authoritative startup check; later
+    // requests verify the daemon through the established connection.
     remotePort = await scrapeReadyPort(ssh, logPath, {
       timeoutMs: readyTimeoutMs,
-      isAlive: () => remotePidAlive(ssh, pid),
       signal
     })
     assertBootstrapNotSuperseded(signal)

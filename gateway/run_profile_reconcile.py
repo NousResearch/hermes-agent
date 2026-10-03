@@ -214,6 +214,9 @@ class GatewayProfileReconcileMixin:
     async def _unserve_profile(self, name: str, home: "Path") -> None:
         """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
+        The releasing process is not always the deleter (#130244): under multiplexing THIS gateway
+        process routes the profile's logs and owns its scoped MCP servers, so both must be released
+        here too or the deleter's rmtree still fails on ``logs/.__agent.lock`` / ``mcp-stderr.log``.
 
         The whole teardown runs inside the removed profile's own runtime scope: adapter disconnect
         hooks, the agent-cache eviction (provider/memory shutdown) and the state/memory handle
@@ -256,6 +259,23 @@ class GatewayProfileReconcileMixin:
             with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                 from plugins.memory.holographic.store import MemoryStore
                 MemoryStore.release_all_under(home)
+            # The gateway process is a second holder the CLI-side delete cannot reach: its routed
+            # log files (logs/.__agent.lock, logs/.__errors.lock) and its scoped MCP servers'
+            # mcp-stderr.log handle live HERE, so unserve must release them in this process too
+            # (#130244) — the same two calls ``delete_profile`` makes for the deleting process.
+            # Both calls BLOCK (the log release stops/joins the QueueListener, which can be inside
+            # a ConcurrentRotatingFileHandler emit waiting on another process's rotation lock; the
+            # MCP shutdown waits on future.result for the MCP loop), so they run off the loop in a
+            # worker thread — otherwise every other served profile's events stall behind them.
+            # ``asyncio.to_thread`` copies the context, so the surrounding
+            # ``_profile_runtime_scope`` home/secret override stays visible in the worker.
+            with _log_suppressed(logging.DEBUG, "scoped MCP shutdown failed", exc_info=True):
+                from hermes_constants import hermes_home_key
+                from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+                await asyncio.to_thread(shutdown_mcp_servers, scope=hermes_home_key(home))
+            with _log_suppressed(logging.DEBUG, "profile log handler release failed", exc_info=True):
+                from hermes_logging import release_profile_log_handlers
+                await asyncio.to_thread(release_profile_log_handlers, home)
             logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 

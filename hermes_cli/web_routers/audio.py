@@ -549,12 +549,15 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     loop = asyncio.get_running_loop()
 
     def _resolve():
-        from tools.tts_streaming import resolve_streaming_provider
+        from tools.tts_streaming import resolve_streaming_provider, streaming_text_limit
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
+            provider = _get_provider(cfg)
+            cap = _resolve_max_text_length(provider, cfg)
+            if streamer is not None:
+                cap = streaming_text_limit(streamer, provider, cfg, cap)
         return streamer, cap, cfg
 
     try:

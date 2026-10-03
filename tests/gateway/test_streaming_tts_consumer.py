@@ -122,6 +122,7 @@ def _make_consumer(adapter, chat_id, loop, streamer):
         sample_width=int(getattr(streamer, "sample_width", 2)) if streamer is not None else 2,
     )
     consumer._streamer = streamer  # type: ignore[assignment]
+    consumer._text_limit = 4000
     consumer._chunker = SentenceChunker()
     consumer._queue = queue.Queue(maxsize=256)
     consumer._handle = None
@@ -333,6 +334,56 @@ class TestConsumerLifecycle:
 
         _run_test(run)
 
+    def test_gemini_clause_is_split_before_audio_continues(self, monkeypatch):
+        import tools.tts_streaming as tts_streaming
+        from tools.tts_tool_providers import _gemini_prompt_with_instructions
+
+        first = "The first sentence is already audible."
+        second = (
+            "The narrator reads every word of this carefully paced sentence so listeners hear the "
+            "entire response and never lose the ending after a long clause."
+        )
+        config = {
+            "provider": "gemini",
+            "instructions": "calm and measured",
+            "gemini": {"max_text_length": 280},
+        }
+        streamer = tts_streaming.GeminiStreamer(config, config["gemini"])
+        requests = []
+
+        def stream(text):
+            requests.append(text)
+            rendered = _gemini_prompt_with_instructions(
+                text, config["gemini"], config, "gemini-2.5-flash-preview-tts",
+            )
+            if len(rendered) > 280:
+                raise ValueError("Gemini TTS composed prompt exceeds the provider request limit")
+            yield b"\x00\x00"
+
+        monkeypatch.setattr(streamer, "stream", stream)
+        monkeypatch.setattr(tts_streaming, "resolve_streaming_provider", lambda *_args: streamer)
+
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            consumer = StreamingTTSConsumer(adapter, "chat1", config, loop)
+            consumer.start()
+            consumer.on_delta(f"{first} {second} ")
+            consumer.finish()
+
+            assert await consumer.wait_complete(timeout=5.0)
+            assert {
+                "requests": " ".join(requests),
+                "abort_count": adapter.abort_count,
+                "finish_count": adapter.finish_count,
+            } == {
+                "requests": f"{first} {second}",
+                "abort_count": 0,
+                "finish_count": 1,
+            }
+            assert len(requests) > 2
+
+        _run_test(run)
+
 
 
 
@@ -367,6 +418,25 @@ class TestStreamerFormatAndLooping:
             tts_streaming.resolve_streaming_provider = original_resolve
             loop.close()
 
+    def test_gemini_without_transcript_budget_is_inactive_before_audio(self, monkeypatch):
+        import tools.tts_streaming as tts_streaming
+
+        config = {
+            "provider": "gemini",
+            "instructions": "calm and measured",
+            "gemini": {"max_text_length": 20},
+        }
+        streamer = tts_streaming.GeminiStreamer(config, config["gemini"])
+        monkeypatch.setattr(tts_streaming, "resolve_streaming_provider", lambda *_args: streamer)
+        loop = asyncio.new_event_loop()
+        try:
+            adapter = FakeVoiceAdapter()
+            consumer = StreamingTTSConsumer(adapter, "chat1", config, loop)
+            assert consumer.active is False
+            assert adapter.begin_count == 0
+        finally:
+            loop.close()
+
 
 class TestGatewayIntegrationSeam:
     """The actual adapter seam is per-turn, not chat-only."""
@@ -397,6 +467,34 @@ class TestGatewayIntegrationSeam:
 
 class TestAbortAndCancellation:
     """Abort lifecycle: idempotent, prevents late chunks."""
+
+    def test_abort_during_split_clause_stops_remaining_requests(self):
+        requests = []
+
+        class RecordingStreamer(FakeStreamer):
+            def stream(self, text):
+                requests.append(text)
+                yield b"\x00\x00"
+
+        async def run(loop):
+            streamer = RecordingStreamer()
+
+            class AbortOnWrite(FakeVoiceAdapter):
+                async def write_streaming_tts(self, handle, chunk):
+                    await super().write_streaming_tts(handle, chunk)
+                    consumer.abort("barge-in")
+
+            adapter = AbortOnWrite()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+            consumer._text_limit = 15
+            consumer.start()
+            consumer.on_delta("Every word in this sentence needs more than one chunk. ")
+            consumer.finish()
+
+            await consumer.wait_complete(timeout=5.0)
+            assert requests == ["Every word in"]
+
+        _run_test(run)
 
     def test_abort_is_idempotent(self):
         async def run(loop):

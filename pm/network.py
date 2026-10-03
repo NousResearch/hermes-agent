@@ -22,6 +22,14 @@ _NETWORK_ERRNOS = frozenset({
     errno.ENETDOWN, errno.ENETRESET, errno.ENETUNREACH,
     errno.EHOSTUNREACH, errno.EPIPE, errno.ETIMEDOUT,
 })
+# Transient DNS codes, same set as cron.scheduler_preflight (getattr keeps it
+# portable: raw EAI literals are macOS-only and wrong on Linux).
+_TRANSIENT_EAI = frozenset(
+    code for code in (
+        getattr(socket, n, None)
+        for n in ("EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "EAI_NODATA")
+    ) if code is not None
+)
 
 
 def is_transient(exc: Exception) -> bool:
@@ -34,7 +42,10 @@ def is_transient(exc: Exception) -> bool:
     if isinstance(exc, ssl.SSLError):
         return False
     if isinstance(exc, socket.gaierror):
-        return exc.errno == socket.EAI_AGAIN
+        # ponytail: single DNS blip (macOS errno 8 EAI_NONAME on a pinned host
+        # sibling runners resolve fine) retries inside the bounded budget; a
+        # truly-invalid host just burns 3 backoffs then raises unchanged.
+        return exc.errno in _TRANSIENT_EAI
     if isinstance(exc, (TimeoutError, ConnectionError, http.client.IncompleteRead)):
         return True
     return isinstance(exc, OSError) and exc.errno in _NETWORK_ERRNOS

@@ -2,7 +2,8 @@
 
 When the model stops with a text answer, three gates may instead append the answer as an
 interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+the ``pre_verify`` plugin hook after code edits (opt-in for answer-only turns via
+``agent.pre_verify_without_edits``, #109815), and the kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -50,15 +51,23 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
 
 
 def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
-    """After code edits a registered ``pre_verify`` hook may keep the agent going one
-    more turn; no default continuation cost."""
+    """A registered ``pre_verify`` hook may keep the agent going one more turn — after code
+    edits, or (with ``agent.pre_verify_without_edits``, #109815) on an answer-only turn too;
+    no default continuation cost."""
     _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
     try:
-        from agent.verify_hooks import max_verify_nudges
+        from agent.verify_hooks import max_verify_nudges, pre_verify_without_edits
         from hermes_cli.lifecycle import has_hook
         from hermes_cli.plugins import get_pre_verify_continue_message
 
-        if _edited and has_hook("pre_verify") and attempt < max_verify_nudges():
+        # Edit-gated by default; the opt-in widens the gate to turns that edited nothing
+        # (unverified numbers/versions/paths) — the short-circuit keeps the config read off
+        # the normal edited path. The hook decides from ``changed_paths`` (empty here).
+        if (
+            (_edited or pre_verify_without_edits())
+            and has_hook("pre_verify")
+            and attempt < max_verify_nudges()
+        ):
             # Posture is fixed for the session — resolve once + cache.
             coding = getattr(agent, "_resolved_is_coding", None)
             if coding is None:

@@ -1,10 +1,12 @@
 """Verification-loop helpers for the ``pre_verify`` round-end gate.
 
 After code edits the loop fires ``pre_verify`` (directives resolved by
-:func:`hermes_cli.plugins.get_pre_verify_continue_message`). The shipped coding
-guidance rides on the evidence-based verification-stop nudge rather than a second
-default stop gate, so default token cost stays tied to the "missing verification
-evidence" decision while ``pre_verify`` remains free for user/plugin policy.
+:func:`hermes_cli.plugins.get_pre_verify_continue_message`); with
+``agent.pre_verify_without_edits`` an answer-only turn (no file edits) is eligible too
+(#109815). The shipped coding guidance rides on the evidence-based verification-stop
+nudge rather than a second default stop gate, so default token cost stays tied to the
+"missing verification evidence" decision while ``pre_verify`` remains free for
+user/plugin policy.
 """
 
 from __future__ import annotations
@@ -41,6 +43,13 @@ def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[
     return CODING_VERIFY_GUIDANCE
 
 
+def pre_verify_without_edits(config: Optional[dict[str, Any]] = None) -> bool:
+    """Opt-in: consult ``pre_verify`` hooks on turns that edited no files too, so a hook can
+    gate an answer-only turn's unverified claims (#109815). Off by default — the gate stays
+    edit-only, and no hook is paid for on ordinary answer turns."""
+    return is_truthy_value(_agent_cfg(config).get("pre_verify_without_edits"), default=False)
+
+
 def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     if config is None:
         try:
@@ -53,4 +62,7 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     return agent_cfg if isinstance(agent_cfg, dict) else {}
 
 
-__all__ = ["CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance", "max_verify_nudges"]
+__all__ = [
+    "CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance",
+    "max_verify_nudges", "pre_verify_without_edits",
+]

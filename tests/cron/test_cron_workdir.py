@@ -50,6 +50,13 @@ class TestNormalizeWorkdir:
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 
+    def test_remote_backend_rejects_host_tilde_before_expansion(self, monkeypatch):
+        from cron.jobs import _normalize_workdir
+
+        monkeypatch.setattr("tools.cronjob_job_args._terminal_backend_is_local", lambda: False)
+        with pytest.raises(ValueError, match="absolute backend path"):
+            _normalize_workdir("~/project", target="backend")
+
     def test_relative_path_rejected(self):
         from cron.jobs import _normalize_workdir
         with pytest.raises(ValueError, match="absolute path"):
@@ -67,6 +74,28 @@ class TestNormalizeWorkdir:
         f.write_text("hi")
         with pytest.raises(ValueError, match="not a directory"):
             _normalize_workdir(str(f))
+
+    def test_remote_backend_ignores_host_file_collision(self, tmp_path, monkeypatch):
+        """A backend-visible directory may collide with a scheduler-host file."""
+        from cron.jobs import _normalize_workdir
+
+        backend_workdir = tmp_path / "backend-visible"
+        backend_workdir.write_text("this is only a host-side collision")
+        monkeypatch.setattr("tools.cronjob_job_args._terminal_backend_is_local", lambda: False)
+
+        assert _normalize_workdir(str(backend_workdir), target="backend") == str(backend_workdir)
+
+    def test_remote_backend_does_not_resolve_host_symlink(self, tmp_path, monkeypatch):
+        """Host symlinks must not rewrite a path interpreted by a remote backend."""
+        from cron.jobs import _normalize_workdir
+
+        host_target = tmp_path / "host-target"
+        host_target.mkdir()
+        backend_workdir = tmp_path / "backend-visible"
+        backend_workdir.symlink_to(host_target, target_is_directory=True)
+        monkeypatch.setattr("tools.cronjob_job_args._terminal_backend_is_local", lambda: False)
+
+        assert _normalize_workdir(str(backend_workdir), target="backend") == str(backend_workdir)
 
 
 # ---------------------------------------------------------------------------

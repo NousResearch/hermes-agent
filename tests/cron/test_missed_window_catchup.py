@@ -59,7 +59,7 @@ def slot_env(tmp_path, monkeypatch):
         f"#!/bin/sh\necho fired >> {counter}\necho fired\n", encoding="utf-8")
     (home / "scripts" / "fire.sh").chmod(0o755)
     job = J.create_job(prompt=None, schedule="every 1h", name="slot", script="fire.sh",
-                       no_agent=True, deliver="local")
+                       target="scheduler", no_agent=True, deliver="local")
     slot = (J._hermes_now() - timedelta(minutes=1)).replace(microsecond=0).isoformat()
     stored = J.load_jobs()
     next(r for r in stored if r["id"] == job["id"])["next_run_at"] = slot

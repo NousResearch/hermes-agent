@@ -10,6 +10,49 @@ from tools.cronjob_tools import (
 )
 
 
+class TestBackendScriptValidationRedaction:
+    def test_backend_validation_redaction_is_forced(self, monkeypatch):
+        from agent import redact
+        from tools import cronjob_job_args as args_mod
+
+        calls = []
+        monkeypatch.setattr(
+            redact, "redact_sensitive_text",
+            lambda text, **kwargs: (calls.append(kwargs) or "OPENAI_API_KEY=***"),
+        )
+
+        assert args_mod._redact_backend_validation_text("OPENAI_API_KEY=sk-proj-test-secret") == "OPENAI_API_KEY=***"
+        assert calls == [{"force": True}]
+
+    def test_backend_preflight_error_is_redacted(self, monkeypatch):
+        from tools import cronjob_job_args as args_mod
+        from tools import terminal_tool as terminal_mod
+
+        monkeypatch.setattr(
+            terminal_mod, "terminal_tool",
+            lambda **kwargs: json.dumps({"exit_code": 1, "error": "OPENAI_API_KEY=sk-proj-test-secret"}),
+        )
+
+        message = args_mod._validate_backend_script("/backend-visible/collect.py")
+
+        assert "sk-proj-test-secret" not in message
+        assert "OPENAI_API_KEY=***" in message
+
+    def test_backend_preflight_exception_is_redacted(self, monkeypatch):
+        from tools import cronjob_job_args as args_mod
+        from tools import terminal_tool as terminal_mod
+
+        def raise_secret(**kwargs):
+            raise RuntimeError("OPENAI_API_KEY=sk-proj-test-secret")
+
+        monkeypatch.setattr(terminal_mod, "terminal_tool", raise_secret)
+
+        message = args_mod._validate_backend_script("/backend-visible/collect.py")
+
+        assert "sk-proj-test-secret" not in message
+        assert "OPENAI_API_KEY=***" in message
+
+
 # =========================================================================
 # Cron prompt scanning
 # =========================================================================

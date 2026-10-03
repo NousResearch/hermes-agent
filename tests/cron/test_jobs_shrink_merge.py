@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,7 @@ def test_stale_empty_save_preserves_concurrent_no_agent_create(hermes_env):
         schedule="every 2m",
         script="watch.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
         name="watchdog",
         repeat=0,
@@ -77,6 +79,7 @@ def test_remove_other_job_preserves_concurrent_create(hermes_env):
         schedule="every 2m",
         script="watch.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
         name="watchdog",
         repeat=0,
@@ -97,6 +100,7 @@ def test_intentional_remove_still_deletes(hermes_env):
         schedule="every 2m",
         script="watch.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
         name="watchdog",
         repeat=0,
@@ -113,6 +117,7 @@ def test_replace_flag_allows_wholesale_rewrite(hermes_env):
         schedule="every 2m",
         script="watch.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
         name="watchdog",
         repeat=0,
@@ -121,6 +126,22 @@ def test_replace_flag_allows_wholesale_rewrite(hermes_env):
     assert load_jobs() == []
 
 
+def test_jobs_json_on_disk_matches_merge(hermes_env):
+    from cron.jobs import create_job, save_jobs
+
+    job = create_job(
+        prompt=None,
+        schedule="every 2m",
+        script="watch.sh",
+        no_agent=True,
+        target="scheduler",
+        deliver="local",
+        name="watchdog",
+        repeat=0,
+    )
+    save_jobs([])
+    payload = json.loads((Path(hermes_env) / "cron" / "jobs.json").read_text())
+    assert [j["id"] for j in payload["jobs"]] == [job["id"]]
 
 
 def test_sibling_write_inside_section_is_merged(hermes_env):
@@ -134,6 +155,7 @@ def test_sibling_write_inside_section_is_merged(hermes_env):
         schedule="every 2m",
         script="watch.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
         name="watchdog",
         repeat=0,
@@ -160,6 +182,7 @@ def test_merge_does_not_mutate_caller_list(hermes_env):
         schedule="every 2m",
         script="watch.sh",
         no_agent=True,
+        target="scheduler",
         deliver="local",
         name="watchdog",
         repeat=0,

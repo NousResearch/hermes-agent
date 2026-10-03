@@ -483,6 +483,21 @@ class TestNamedProfileHintIntegration:
         assert f"under {root}/profiles/<name>/." in prompt
 
 
+def test_profile_line_marks_create_dir_shared_writable(tmp_path, monkeypatch):
+    from agent import system_prompt
+    """A configured skills.create_dir is announced as shared/writable, not 'another session's'."""
+    shared = tmp_path / "shared-skills"
+    monkeypatch.setattr("agent.skill_utils.get_skill_create_dir", lambda: shared)
+    assert f"{shared}/ is configured as skills.create_dir" in system_prompt._shared_skills_note()
+    monkeypatch.setattr("agent.skill_utils.get_skill_create_dir", lambda: None)
+    assert system_prompt._shared_skills_note() == ""
+    line = system_prompt._active_profile_line(_make_agent(valid_tool_names=["read_file"]))
+    assert "skills.create_dir" not in line
+    monkeypatch.setattr("agent.skill_utils.get_skill_create_dir", lambda: shared)
+    line = system_prompt._active_profile_line(_make_agent(valid_tool_names=["read_file"]))
+    assert "SHARED, writable" in line
+
+
 def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
     """The profile line names the home path, so it must live outside the stable tier:
     every home/profile on a host then shares one cacheable stable prefix."""

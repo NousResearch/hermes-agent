@@ -4238,7 +4238,9 @@ def _inject_platform_plugin_env_vars() -> "frozenset[str] | None":
                 "prompt": meta.get("prompt") or name,
                 "url": meta.get("url") or None,
                 "password": is_secret,
-                "category": meta.get("category") or "messaging"}
+                "category": meta.get("category") or "messaging",
+                **{key: meta[key] for key in ("default", "options", "visible_when", "config_key") if key in meta},
+            }
     return _manifest_secret_envs(bundled) if bundled is not None else None
 
 

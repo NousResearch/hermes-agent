@@ -21,10 +21,10 @@ _THUMBS_UP = "\U0001f44d"
 _THUMBS_DOWN = "\U0001f44e"
 
 
-def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
+def _make_adapter(monkeypatch: pytest.MonkeyPatch, *, mode: str = "cloud") -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
-    cfg = PlatformConfig(enabled=True, token="", extra={})
+    cfg = PlatformConfig(enabled=True, token="", extra={"imessage_mode": mode})
     return PhotonAdapter(cfg)
 
 
@@ -140,6 +140,23 @@ async def test_reaction_failure_is_soft(monkeypatch: pytest.MonkeyPatch) -> None
     assert await adapter._remove_reaction("+1", "m") is False
 
 
+@pytest.mark.asyncio
+async def test_local_reaction_action_reports_unsupported_without_sidecar_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch, mode="local")
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.add_reaction("+15551234567", _EYES, "target-msg-1")
+
+    assert result == {
+        "success": False,
+        "error": "reactions are not supported by local iMessage",
+    }
+    assert adapter._reactions_enabled() is False
+    assert calls == []
+
+
 # -- Lifecycle hooks ---------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -191,5 +208,4 @@ async def test_inbound_reaction_on_bot_message_routed(
     assert event.reply_to_message_id == "bot-msg-1"
     assert event.reply_to_text == "the bot's earlier reply"
     assert event.reply_to_is_own_message is True
-
 

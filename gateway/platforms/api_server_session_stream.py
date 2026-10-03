@@ -15,6 +15,8 @@ are ``queued``/``running``/``completed``/``failed``/``cancelled``.
 """
 
 import asyncio
+import json
+from collections.abc import Mapping
 from contextlib import suppress
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -103,6 +105,66 @@ def session_run_key(
     return f"fp-{sha256(seed.encode('utf-8')).hexdigest()}"
 
 
+def canonical_execution_value(value: Any) -> Any:
+    """Deterministically canonicalise a JSON-ish value for fingerprinting.
+
+    Mapping keys are ordered by their TEXT form (so equivalent
+    ``model_options`` dicts built in a different insertion order hash the
+    same), sequences keep their order, and scalars pass through unchanged.
+    Crucially this replaces the old order-sensitive ``repr()`` of nested
+    mappings, which made semantically identical retries look like changed
+    requests (review F2).
+    """
+    if isinstance(value, Mapping):
+        return {
+            str(key): canonical_execution_value(item)
+            for key, item in sorted(value.items(), key=lambda kv: str(kv[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [canonical_execution_value(item) for item in value]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, (str, int, float)):
+        return value
+    return str(value)
+
+
+# Fields of the resolved runtime request that define what will be executed.
+# ``requested`` carries the aliases already resolved (``model`` OR ``model_id``,
+# ``provider`` OR ``provider_id``, plus the raw alias and the provider/model
+# split), ``route`` is the concrete route execution will take, and
+# ``require_model_lock``/``lock_active`` capture the confirmed-lock semantics
+# that forward that resolved route into the turn (review F2).
+_RUNTIME_IDENTITY_FIELDS = (
+    "requested",
+    "route",
+    "route_source",
+    "runtime_options",
+    "require_model_lock",
+    "model_options",
+)
+
+
+def resolved_execution_identity(
+    runtime_request: Optional[Dict[str, Any]],
+    lock_active: Any = None,
+) -> Dict[str, Any]:
+    """Project the RESOLVED execution request onto a stable comparison shape.
+
+    Only the request-defining fields are kept: adding a new field to the
+    runtime request cannot silently change fingerprints, and no volatile
+    per-request bookkeeping leaks into the identity.
+    """
+    runtime_request = runtime_request if isinstance(runtime_request, Mapping) else {}
+    identity: Dict[str, Any] = {
+        field: runtime_request.get(field) for field in _RUNTIME_IDENTITY_FIELDS
+    }
+    identity["lock_active"] = bool(lock_active)
+    return identity
+
+
 def session_request_fingerprint(
     session_id: str,
     user_message: Any,
@@ -110,26 +172,45 @@ def session_request_fingerprint(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     model_options: Optional[Dict[str, Any]] = None,
+    *,
+    runtime_request: Optional[Dict[str, Any]] = None,
+    lock_active: Any = None,
 ) -> str:
     """Fingerprint of the canonical execution request for an idempotency key.
 
     Key vs fingerprint mirrors POST /v1/runs: the idempotency KEY identifies
     the client's retry token, the FINGERPRINT identifies what was asked. A
-    replayed key with a changed request is a conflict, not a replay. The
-    fingerprint binds everything that changes execution (review P2):
-    session, system prompt, message, model, provider and model options —
-    a same-key retry with a different model silently replaying the old
-    run would violate the contract.
+    replayed key with a changed request is a conflict, not a replay.
+
+    The identity is the execution request the prelude ACTUALLY RESOLVED
+    (``runtime_request``: aliases, route, lock semantics, runtime options),
+    not the raw request fields — a direct ``model`` and its ``model_id`` alias
+    that resolve to different routes must not collide, and equivalent
+    ``model_options`` in a different key order must not look changed
+    (review F2). Raw ``model``/``provider``/``model_options`` remain supported
+    as a fallback for callers without a resolved prelude.
     """
+    if runtime_request is not None:
+        execution: Any = resolved_execution_identity(runtime_request, lock_active)
+    else:
+        execution = {
+            "model": model,
+            "provider": provider,
+            "model_options": model_options,
+        }
     canonical = {
         "session_id": session_id,
         "system_prompt": system_prompt or "",
         "user_message": user_message,
-        "model": model,
-        "provider": provider,
-        "model_options": model_options,
+        "execution": canonical_execution_value(execution),
     }
-    seed = repr(sorted(canonical.items(), key=lambda kv: kv[0]))
+    seed = json.dumps(
+        canonical_execution_value(canonical),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
     return f"fp-{sha256(seed.encode('utf-8')).hexdigest()}"
 
 
@@ -223,6 +304,35 @@ def release_header_run_reservation(
     scope = adapter._run_idempotency_scope(request)
     with suppress(Exception):
         store.release(scope, run_key, fingerprint, run_id)
+
+
+async def durable_session_run_claim_holds(
+    adapter: Any, session_id: str, run_id: str
+) -> Optional[bool]:
+    """Whether the durable session row already records ``run_id`` as its run.
+
+    Used to RECONCILE an ambiguous pre-launch claim before compensating its
+    idempotency receipt (review F1):
+
+    ``True``  — the claim landed before the failure, so the run may have been
+                admitted: never delete its receipt.
+    ``False`` — the row is readable and holds no such run: the claim never
+                landed, so the reserved receipt is a false acceptance record
+                and must go.
+    ``None``  — unknown (no DB handle, read failure, unreadable row): treat as
+                ambiguous and keep the receipt rather than risk erasing work
+                that was admitted.
+    """
+    try:
+        db = await adapter._ensure_session_db_async()
+        if db is None:
+            return None
+        row = await asyncio.to_thread(db.get_session, session_id)
+    except Exception:
+        return None
+    if not isinstance(row, Mapping):
+        return None
+    return str(row.get("active_run_id") or "") == run_id
 
 
 def run_already_active_error(run_id: str) -> Dict[str, Any]:
@@ -371,19 +481,24 @@ async def admit_session_stream_run(
 
     On every pre-launch rejection the just-reserved receipt is released, so a
     refused request never leaves a durable "queued" receipt behind (review P1).
+    Unsuccessful exits at the claim seam are exception-safe and RECONCILED: an
+    exception or cancellation compensates the receipt only when the durable
+    session row proves the run was never admitted, so admitted work is never
+    erased by a blind delete (review F1).
     """
     body = ctx["body"]
     system_prompt = body.get("system_message") or body.get("instructions")
-    # Fingerprint binds the FULL canonical execution request (review P2): model,
-    # provider and model options change what the turn will do, so a same-key
-    # retry with different execution parameters is a conflict, not a replay.
+    # Fingerprint the RESOLVED execution request (review F2): the prelude has
+    # already normalised aliases (model_id/provider_id), split provider-prefixed
+    # models and resolved the route/lock semantics, and those are what actually
+    # executes. Raw body fields would let a changed alias select a different
+    # runtime request under an identical fingerprint.
     request_fingerprint = session_request_fingerprint(
         session_id=session_id,
         user_message=user_message,
         system_prompt=system_prompt,
-        model=body.get("model"),
-        provider=body.get("provider"),
-        model_options=body.get("model_options"),
+        runtime_request=ctx.get("runtime_request"),
+        lock_active=ctx.get("lock_active"),
     )
     run_key = session_run_key(
         session_id=session_id,
@@ -392,21 +507,40 @@ async def admit_session_stream_run(
         idempotency_header=request.headers.get("Idempotency-Key"),
     )
     idempotency_header = request.headers.get("Idempotency-Key")
-    reserved = bool(idempotency_header)
-    if idempotency_header:
-        receipt = await replay_or_reserve_header_run(
-            adapter, request, run_key, request_fingerprint, run_id,
-            adapter._run_statuses[run_id],
+    reserved = False
+    conflict_run_id: Optional[str] = None
+    # Reservation ownership must follow admission across EVERY unsuccessful
+    # exit, not just a returned busy conflict (review F1): an exception or
+    # cancellation at the claim seam used to leave a queued receipt behind, so
+    # a later healthy retry replayed a run that never launched. The failure is
+    # AMBIGUOUS (the durable claim may have landed before it), so reconcile
+    # against the session row and only compensate when the row proves this run
+    # was never admitted — never blind-delete a possibly-admitted receipt.
+    try:
+        if idempotency_header:
+            receipt = await replay_or_reserve_header_run(
+                adapter, request, run_key, request_fingerprint, run_id,
+                adapter._run_statuses[run_id],
+            )
+            if receipt is not None:
+                kind, payload = receipt
+                return {"conflict": kind == "conflict", "payload": payload}
+            reserved = True
+        conflict_run_id = await claim_session_run_or_conflict(
+            adapter, session_id, run_id, run_key
         )
-        if receipt is not None:
-            kind, payload = receipt
-            return {"conflict": kind == "conflict", "payload": payload}
-    conflict_run_id = await claim_session_run_or_conflict(
-        adapter, session_id, run_id, run_key
-    )
+    except BaseException:
+        if reserved:
+            admitted = await durable_session_run_claim_holds(
+                adapter, session_id, run_id)
+            if admitted is False:
+                release_header_run_reservation(
+                    adapter, request, run_key, request_fingerprint, run_id)
+        raise
     if conflict_run_id:
-        # Pre-launch rejection: release the just-reserved receipt so the
-        # refused request never 202-replays later (review P1).
+        # Pre-launch rejection: the claim is known NOT to have been taken by
+        # this run (another live run holds the session), so the just-reserved
+        # receipt is released (review P1/F1).
         if reserved:
             release_header_run_reservation(
                 adapter, request, run_key, request_fingerprint, run_id)

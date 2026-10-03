@@ -2281,3 +2281,254 @@ async def test_session_stream_disconnect_during_approval_then_stop(
     assert decision.get("choice") == "deny", decision
     assert "stop" in str(decision.get("cancelled")), decision
     assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Review round 3 (andrexibiza, head 97a00f18cb5e) — F1: an unsuccessful
+# pre-launch claim must compensate its receipt (reconciled, never blind);
+# F2: the fingerprint must be the RESOLVED execution identity.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_failure_releases_reserved_receipt(
+    adapter, session_db,
+):
+    """F1: an exception at the claim seam must not leave a replayable receipt.
+
+    The receipt is reserved, then the session claim RAISES before accepting the
+    run (reviewer's injected OSError). No execution task exists, so the queued
+    receipt is a false acceptance record: the durable session row proves this
+    run was never admitted, so admission compensates it. A later healthy retry
+    with the same key must EXECUTE — not 202-replay a run that never launched.
+    """
+    session_id = session_db.create_session("claim-fail-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    executed = {"count": 0}
+
+    async def fake_run(**kwargs):
+        del kwargs
+        executed["count"] += 1
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    real_claim = adapter._claim_session_active_run_async
+    state = {"fail": True}
+
+    async def flaky_claim(*args, **kwargs):
+        if state["fail"]:
+            state["fail"] = False
+            raise OSError("injected claim-seam failure")
+        return await real_claim(*args, **kwargs)
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run), \
+            patch.object(adapter, "_claim_session_active_run_async",
+                         side_effect=flaky_claim), \
+            suppress(Exception):
+        async with TestClient(TestServer(app)) as cli:
+            failed = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "F"}, headers={"Idempotency-Key": "key-claimfail"})
+            assert failed.status == 500, failed.status
+            assert executed["count"] == 0, "no execution may start on a failed claim"
+
+            # Same key + same body, healthy claim: must EXECUTE, not replay.
+            retry = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "F"}, headers={"Idempotency-Key": "key-claimfail"})
+            assert retry.status == 200, (
+                f"retry must execute after a failed claim, got {retry.status}")
+            body = await retry.text()
+            assert "replayed" not in body
+            assert "run.started" in body
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+    assert run_started.is_set(), "the healthy retry must launch a real execution"
+    allow_finish.set()
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_failure_after_claim_keeps_receipt(
+    adapter, session_db,
+):
+    """F1 (control): when the claim LANDED before the failure, the receipt is
+    ambiguous and must NOT be blindly deleted.
+
+    The claim is taken durably, then the seam raises. The session row names
+    this run, so admission reconciles instead of compensating: a later same-key
+    retry replays the recorded run and never starts a second execution.
+    """
+    session_id = session_db.create_session("claim-landed-session", "api_server")
+    executed = {"count": 0}
+
+    async def fake_run(**kwargs):
+        del kwargs
+        executed["count"] += 1
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    real_claim = adapter._claim_session_active_run_async
+    state = {"fail": True}
+
+    async def claim_then_fail(*args, **kwargs):
+        if state["fail"]:
+            state["fail"] = False
+            await real_claim(*args, **kwargs)   # the durable claim LANDS first
+            raise OSError("injected failure AFTER the claim landed")
+        return await real_claim(*args, **kwargs)
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run), \
+            patch.object(adapter, "_claim_session_active_run_async",
+                         side_effect=claim_then_fail), \
+            suppress(Exception):
+        async with TestClient(TestServer(app)) as cli:
+            failed = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "G"}, headers={"Idempotency-Key": "key-claimlanded"})
+            assert failed.status == 500, failed.status
+
+            retry = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "G"}, headers={"Idempotency-Key": "key-claimlanded"})
+            assert retry.status == 202, (
+                f"an admitted (ambiguous) receipt must survive, got {retry.status}")
+            payload = json.loads(await retry.text())
+    assert payload.get("replayed") is True
+    assert executed["count"] == 0, "a replay must never start a second execution"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_cancellation_releases_reserved_receipt(
+    adapter, session_db,
+):
+    """F1 (cancellation): a cancelled pre-launch claim compensates too.
+
+    Cancellation is the same ambiguous exit as a raise, so the receipt goes
+    only because the durable row proves the run was never admitted — and the
+    cancellation still propagates to the caller.
+    """
+    from gateway.platforms import api_server_session_stream as _sess_stream
+
+    session_id = session_db.create_session("claim-cancel-session", "api_server")
+    request = MagicMock()
+    request.headers = {"Idempotency-Key": "key-claimcancel"}
+    ctx = {"body": {"message": "C"}, "runtime_request": None, "lock_active": False}
+    run_id = "run_cancel_test"
+    adapter._set_run_status(run_id, "queued", session_id=session_id)
+
+    async def cancelled_claim(*args, **kwargs):
+        del args, kwargs
+        raise asyncio.CancelledError
+
+    with patch.object(adapter, "_claim_session_active_run_async",
+                      side_effect=cancelled_claim):
+        with pytest.raises(asyncio.CancelledError):
+            await _sess_stream.admit_session_stream_run(
+                adapter, request, ctx, session_id, "C", run_id)
+
+    # Reconciliation said "not admitted" -> the reservation is gone.
+    scope = adapter._run_idempotency_scope(request)
+    run_key = _sess_stream.session_run_key(
+        session_id=session_id, user_message="C", system_prompt=None,
+        idempotency_header="key-claimcancel")
+    fingerprint = _sess_stream.session_request_fingerprint(
+        session_id=session_id, user_message="C", system_prompt=None,
+        runtime_request=None, lock_active=False)
+    outcome, _record = adapter._run_idempotency_store.lookup(
+        scope, run_key, fingerprint)
+    assert outcome == "missing", f"reservation must be compensated, got {outcome}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_resolved_identity_binds_alias_and_options(
+    adapter, session_db,
+):
+    """F2: the fingerprint is the resolved execution identity.
+
+    A changed ``model_id`` alias selects a different runtime request and must
+    conflict under the same key; equivalent ``model_options`` in a different
+    key order (including nested) resolve to the same execution and must replay.
+    """
+    session_id = session_db.create_session("resolved-identity-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+
+    async def fake_run(**kwargs):
+        del kwargs
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run), \
+            suppress(Exception):
+        async with TestClient(TestServer(app)) as cli:
+            # --- changed alias model => conflict (was an identical fingerprint)
+            first = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model_id": "model-a"},
+                headers={"Idempotency-Key": "key-alias"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            first.cancel()
+            with suppress(Exception):
+                await first
+
+            changed_alias = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model_id": "model-b"},
+                headers={"Idempotency-Key": "key-alias"})
+            assert changed_alias.status == 409, (
+                f"changed alias must conflict, got {changed_alias.status}")
+            assert json.loads(await changed_alias.text())["error"]["code"] == \
+                "idempotency_key_conflict"
+
+            # --- equivalent reordered options => replay (was a false conflict)
+            run_started.clear()
+            options_a = {"service_tier": "priority",
+                         "reasoning": {"enabled": True, "effort": "high"}}
+            options_b = {"reasoning": {"effort": "high", "enabled": True},
+                         "service_tier": "priority"}
+            second = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "o", "model_options": options_a},
+                headers={"Idempotency-Key": "key-options"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            second.cancel()
+            with suppress(Exception):
+                await second
+
+            reordered = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "o", "model_options": options_b},
+                headers={"Idempotency-Key": "key-options"})
+            assert reordered.status == 202, (
+                f"equivalent reordered options must replay, got {reordered.status}")
+            assert json.loads(await reordered.text()).get("replayed") is True

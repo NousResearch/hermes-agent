@@ -78,6 +78,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.location import format_location_content
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -2068,8 +2069,10 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
             await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
-        elif msgtype in ("m.text", "m.notice"):
-            await self._handle_text_message(room_id, sender, event_id, event_ts, source_content, relates_to)
+        elif msgtype in ("m.text", "m.notice", "m.location"):
+            await self._handle_text_message(
+                room_id, sender, event_id, event_ts, source_content, relates_to
+            )
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
@@ -2093,7 +2096,8 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+                is_command = source_content.get("msgtype") != "m.location" and body.startswith("/")
+                if not is_mentioned and not is_command:
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
                         self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)
                     logger.debug(
@@ -2188,11 +2192,24 @@ class MatrixAdapter(BasePlatformAdapter):
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict) -> None:
         body = source_content.get("body", "") or ""
-        if not body:
+        location_text = None
+        if source_content.get("msgtype") == "m.location":
+            if not isinstance(body, str):
+                body = ""
+            location_body = body
+            if relates_to.get("m.in_reply_to"):
+                _, location_body = _split_reply_fallback(body)
+            if self._require_mention and self._content_mentions_bot(body, source_content):
+                location_body = self._strip_mention(location_body)
+            location_text = format_location_content({**source_content, "body": location_body})
+            if location_text is None:
+                logger.debug("Matrix: ignoring invalid location %s in %s", event_id, room_id)
+                return
+        if not body and location_text is None:
             return
         # Dict lookup first: the mention regexes only run when a voice is parked or being gated
         # (both only happen under require_mention).
-        if (self._parked_voices.pending(room_id, sender)
+        if (location_text is None and self._parked_voices.pending(room_id, sender)
                 and not self._strip_mention(body).strip() and self._content_mentions_bot(body, source_content)):
             limit = self._parked_voices.mark()  # never claim a voice sent after this mention
             await self._parked_voices.settle(room_id, sender)  # same-/sync-batch voice still gating
@@ -2208,6 +2225,9 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
             return
+        if location_text is not None:
+            msg_event.text = location_text
+            msg_event.message_type = MessageType.TEXT
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:

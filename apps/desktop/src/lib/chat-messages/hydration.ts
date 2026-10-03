@@ -33,6 +33,8 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const LEGACY_CONTINUATION_NUDGE_RE =
+  /^\[System: (?:The previous response was cut off|Your previous response was truncated)/
 
 // Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
 // Current gateways persist the authored text; this heals rows written before that fix. Only
@@ -153,7 +155,10 @@ function transcriptContent(
     return null
   }
 
-  return role === 'user' && LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) ? null : content
+  if (role === 'user' && (LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) || LEGACY_CONTINUATION_NUDGE_RE.test(content.trim()))) {
+    return null
+  }
+  return content
 }
 
 /**

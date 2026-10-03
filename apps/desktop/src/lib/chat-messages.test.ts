@@ -469,6 +469,39 @@ describe('toChatMessages', () => {
     }
   })
 
+  it('hides synthetic continuation nudges both when marked hidden and on legacy untyped rows', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'build the feature', timestamp: 1 },
+      { role: 'assistant', content: 'starting...', timestamp: 2 },
+      {
+        role: 'user',
+        content:
+          '[System: The previous response was cut off by a network error mid-stream — a transport interruption, NOT a change in your capabilities. Your tools are still fully available; call them as normal and ignore any earlier claim that you lack tool access. Continue the task from where you left off. Do not restart or repeat prior text.]',
+        display_kind: 'hidden',
+        timestamp: 3
+      },
+      {
+        role: 'user',
+        content:
+          '[System: The previous response was cut off by a network error mid-stream. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
+        timestamp: 4
+      },
+      {
+        role: 'user',
+        content:
+          '[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
+        timestamp: 5
+      },
+      { role: 'assistant', content: 'done!', timestamp: 6 }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual([
+      'build the feature',
+      'starting...',
+      'done!'
+    ])
+  })
+
   it('projects persisted composite compaction carriers to their live user turn', () => {
     const messages = toChatMessages([
       {

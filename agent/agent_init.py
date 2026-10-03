@@ -2147,18 +2147,11 @@ def _inject_context_engine_tools(agent):
         _existing_tool_names = {
             t.get("function", {}).get("name") for t in agent.tools if isinstance(t, dict)
         }
-        from agent.memory_manager import normalize_tool_schema
-        for _raw_schema in agent.context_compressor.get_tool_schemas():
-            _schema = normalize_tool_schema(_raw_schema)
-            if _schema is None:
-                # A nameless tool makes strict providers 400 and disables the whole toolset.
-                _ra().logger.warning(
-                    # Skip it. See #47707.
-                    "Context engine returned a tool schema with no resolvable "
-                    "name; skipping to avoid poisoning the request (%r)",
-                    _raw_schema,
-                )
-                continue
+        # Shared guarded entry point (also used by tools.mcp_tool_agent on snapshot rebuild): an
+        # engine exception degrades to no engine tools, nameless schemas are skipped (#47707) and
+        # reserved core tool names are refused, mirroring the memory-provider registry.
+        from agent.context_engine import collect_engine_tool_schemas
+        for _schema in collect_engine_tool_schemas(agent.context_compressor):
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path

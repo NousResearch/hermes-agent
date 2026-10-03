@@ -312,10 +312,15 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     # See #5544.
     staged_engine_names: set = set()
     try:
-        get_schemas = _schema_getter("context_compressor", "get_tool_schemas")
-        if (enabled is None or "context_engine" in enabled) and get_schemas is not None:
+        compressor = getattr(agent, "context_compressor", None)
+        if (enabled is None or "context_engine" in enabled) and compressor is not None:
+            # Same guarded entry point agent_init uses, so the two sites cannot diverge (reserved
+            # core names refused, nameless schemas skipped, engine exceptions contained).
+            from agent.context_engine import collect_engine_tool_schemas
+
             # Claim the routing name only when WE appended the schema.
-            staged_engine_names.update(s["name"] for s in get_schemas() if _add(s))
+            staged_engine_names.update(
+                s["name"] for s in collect_engine_tool_schemas(compressor) if _add(s))
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
     return staged_engine_names

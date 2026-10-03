@@ -114,6 +114,7 @@ def test_cleanup_leaves_a_worktree_cwd_before_removal(
     assert not wt.exists()
 
 
+@pytest.mark.platforms("posix")
 def test_cleanup_proceeds_when_cwd_was_deleted(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

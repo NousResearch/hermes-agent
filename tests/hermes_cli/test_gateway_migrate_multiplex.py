@@ -672,6 +672,7 @@ def test_every_installed_unit_of_a_secondary_is_removed_and_recorded(fleet, caps
     assert "more than one installed service" in capsys.readouterr().out and fleet.ops == []
 
 
+@pytest.mark.platforms("posix")
 def test_unresolvable_system_unit_user_is_unknown_principal_not_directory_owner(fleet, tmp_path, monkeypatch, capsys):
     """A system unit pinned to a User= this host cannot resolve: the principal is unknown, never the
     profile directory's owner, and unknown blocks the unattended path."""
@@ -790,6 +791,7 @@ def test_failure_anywhere_in_the_destructive_phase_restores_the_removed_secondar
     assert not after.blocked and after.eligible_for_migration()
 
 
+@pytest.mark.platforms("posix")
 def test_known_bringup_refusal_is_rejected_before_any_secondary_is_touched(fleet, monkeypatch, capsys):
     """A system-unit fleet with no recorded User= run by root is the #110850 refusal: known from the plan,
     so it is refused before a working gateway is stopped rather than discovered and rolled back."""
@@ -806,6 +808,7 @@ def test_known_bringup_refusal_is_rejected_before_any_secondary_is_touched(fleet
     assert fleet.ops == [] and _config_flag(fleet.root) is None and not (fleet.root / gm.MANIFEST_NAME).exists()
 
 
+@pytest.mark.platforms("posix")
 def test_unknown_default_system_principal_blocks_the_update_hook(fleet, tmp_path, monkeypatch, capsys):
     """Mirror of the unknown-secondary case: the default's system unit names a User= this host cannot
     resolve while both secondaries are known root system units. Folding INTO an unidentifiable

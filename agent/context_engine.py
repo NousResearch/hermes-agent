@@ -232,7 +232,7 @@ class ContextEngine(ABC):
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",
-        provider: str = "", api_mode: str = "",
+        provider: str = "", api_mode: str = "", max_tokens: int | None = None,
     ) -> None:
         """Model switch / fallback: recompute threshold_tokens (override for more).
 
@@ -241,6 +241,7 @@ class ContextEngine(ABC):
         value, not the previous model's override.
         """
         self.context_length = context_length
+        self.max_tokens = max_tokens
         from agent.context_compressor import resolve_model_threshold
         if not hasattr(self, "_config_threshold_percent"):
             self._config_threshold_percent = self.threshold_percent

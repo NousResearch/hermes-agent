@@ -442,7 +442,17 @@ def test_task_dto_carries_created_by_attribution(client: TestClient) -> None:
     """created_by lets an external control plane attribute fan-out: it names
     the creating profile/surface, not just the assigned executor."""
     created = _create(client, idempotency_key="attribution-key")
-    assert created["task"]["created_by"] == "external-api"
+    assert created["task"]["created_by"].startswith("api:")
+
+
+def test_api_actor_can_never_be_a_profile_name(client: TestClient) -> None:
+    """A worker skips comments authored under its own profile name, so the API's
+    provenance must not be a name a profile could carry."""
+    from hermes_cli.profiles import validate_profile_name
+
+    created_by = _create(client, idempotency_key="actor-key")["task"]["created_by"]
+    with pytest.raises(ValueError):
+        validate_profile_name(created_by)
 
 
 def test_runs_expose_executing_profile(client: TestClient) -> None:

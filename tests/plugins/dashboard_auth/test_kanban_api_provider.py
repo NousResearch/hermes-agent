@@ -307,8 +307,8 @@ class TestGatedEndToEnd:
         with kbc.connect(board="default") as conn:
             authors = [c.author for c in kanban_db.list_comments(conn, task_id)]
             created_by = kanban_db.get_task(conn, task_id).created_by
-        assert authors == ["kanban-api"]
-        assert created_by == "kanban-api"
+        assert authors == ["api:kanban-api"]
+        assert created_by == "api:kanban-api"
 
     def test_missing_or_wrong_token_is_401(self, gated_kanban_app):
         client, _, _ = gated_kanban_app

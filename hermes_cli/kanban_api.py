@@ -119,12 +119,13 @@ class BlockRequest(_RequestModel):
 
 
 def _actor(request: Request) -> str:
-    """Durable provenance (comment author, task creator) for this request: the principal the
-    token seam verified, else the fixed ``external-api`` surface. Never caller-supplied: the
-    live comment bridge skips comments whose author equals the worker's identity as its own
-    (``inject_new_comments_from_env``), so a chosen author could silence an operator steer."""
+    """Durable provenance (comment author, task creator) for this request: ``api:`` + the
+    principal the token seam verified, else ``api:external``. Never caller-supplied, and never
+    a valid profile name (the colon): the live comment bridge skips comments whose author
+    equals the worker's profile as its own (``inject_new_comments_from_env``), so an author
+    that could match a profile would silence an operator steer."""
     principal = getattr(request.state, "token_principal", None)
-    return getattr(principal, "principal", None) or "external-api"
+    return f"api:{getattr(principal, 'principal', None) or 'external'}"
 
 
 @contextmanager
@@ -209,7 +210,7 @@ def _task_dto(conn: sqlite3.Connection, task: kanban_db.Task) -> dict[str, Any]:
         "id": task.id,
         "title": task.title,
         "assignee": task.assignee,
-        # Attribution: which profile (or surface, e.g. "external-api" /
+        # Attribution: which profile (or surface, e.g. "api:external" /
         # "dashboard") created the card — this is what lets an external
         # control plane visualise orchestrator fan-out, not just who the
         # work was routed to.

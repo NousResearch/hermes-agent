@@ -74,15 +74,16 @@ exposed. Use it to populate an assignee picker; there is still no endpoint
 that manages or executes a profile.
 
 For attribution, task payloads include `created_by` — the profile (or surface,
-e.g. `kanban-api` / `dashboard`) that created the card — alongside
+e.g. `api:kanban-api` / `dashboard`) that created the card — alongside
 `assignee`, so an external control plane can visualise which orchestrator
 created which work, not just who executes it. Each entry in
 `GET /tasks/{id}/runs` likewise names the `profile` that executed that
 attempt (relevant when a task was reassigned between retries).
 
 Cards created and comments posted through this API are attributed to the
-authenticated principal — `kanban-api` for the service credential, or
-`external-api` when the request carried no service token. The caller cannot
+authenticated principal with an `api:` prefix — `api:kanban-api` for the service
+credential, or `api:external` when the request carried no service token. The prefix keeps
+the identity from ever matching a profile name. The caller cannot
 choose this identity: `POST /tasks/{id}/comment` accepts only `body` and
 rejects an `author` field with 422. A running worker skips comments authored
 under its own profile name, so a caller-chosen author could silence a real

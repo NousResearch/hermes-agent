@@ -290,6 +290,8 @@ _INHERIT_PARENT_ROUTING_SQL = (
 class SessionSessionsMixin:
     """Session rows: create/inherit, lifecycle flags, model_config, listing, deletion."""
 
+    _drain_terminal_spill_cleanup: Any
+
     def _own_profile_name(self) -> Optional[str]:
         """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
         ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that
@@ -1635,6 +1637,8 @@ class SessionSessionsMixin:
             removed_ids.append(session_id)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            self._drain_terminal_spill_cleanup()
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
@@ -1711,6 +1715,8 @@ class SessionSessionsMixin:
             removed_ids.extend(existing)
             return len(existing)
         count = self._execute_write(_do)
+        if count:
+            self._drain_terminal_spill_cleanup()
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count

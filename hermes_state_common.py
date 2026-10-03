@@ -478,6 +478,26 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_uid TEXT
 );
 
+CREATE TABLE IF NOT EXISTS terminal_spill_references (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    spill_name TEXT NOT NULL,
+    PRIMARY KEY (session_id, spill_name)
+);
+
+CREATE TABLE IF NOT EXISTS terminal_spill_cleanup (
+    spill_name TEXT PRIMARY KEY
+);
+
+CREATE TRIGGER IF NOT EXISTS terminal_spill_reference_delete
+AFTER DELETE ON terminal_spill_references
+WHEN NOT EXISTS (
+    SELECT 1 FROM terminal_spill_references remaining
+    WHERE remaining.spill_name = old.spill_name
+)
+BEGIN
+    INSERT OR IGNORE INTO terminal_spill_cleanup (spill_name) VALUES (old.spill_name);
+END;
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,
@@ -614,6 +634,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_terminal_spill_references_name ON terminal_spill_references(spill_name);
 -- Partial index for the Insights assistant tool-call scan
 -- (agent/insights.py _get_tool_usage / _get_skill_usage): those queries filter
 -- messages by role='assistant' AND tool_calls IS NOT NULL, a small fraction of

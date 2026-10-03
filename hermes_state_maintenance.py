@@ -94,6 +94,8 @@ def _continued_ancestors_sql(candidates_where: str) -> str:
 class SessionMaintenanceMixin:
     """Retention pruning, stale-session archiving and VACUUM policy for SessionDB."""
 
+    _drain_terminal_spill_cleanup: Any
+
     def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
         cutoff = time.time() - 86400
@@ -327,6 +329,8 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            self._drain_terminal_spill_cleanup()
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count

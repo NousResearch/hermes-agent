@@ -189,7 +189,9 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         return []
     note = ("Output exceeded the capture window (head+tail shown). "
             f"Full output ({total_chars:,} chars) saved to {path} — search it with "
-            "search_files or page it with read_file instead of re-running the command.")
+            "search_files or page it with read_file instead of re-running the command. "
+            "The private spill is kept while a stored session references it and is removed "
+            "after its final owning session is deleted.")
     return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
 
 

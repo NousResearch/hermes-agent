@@ -72,6 +72,7 @@ from hermes_state_repair import _claim_repair_attempt, preflight_db_writability,
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
+from hermes_state_terminal_spills import SessionTerminalSpillsMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_search import SessionSearchMixin
@@ -451,7 +452,8 @@ def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
-    SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
+    SessionGatewayMixin, SessionMaintenanceMixin, SessionTerminalSpillsMixin,
+    SessionUsageMixin, SessionTitlesMixin,
     SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
@@ -647,6 +649,11 @@ class SessionDB(
                     self._retire_connection = _prepare_connection_retirement()
                 self._open_writer()
             self._record_db_file_identity()
+            if not read_only:
+                try:
+                    self._drain_terminal_spill_cleanup()
+                except Exception:
+                    logger.debug("Deferred terminal spill cleanup could not run at startup", exc_info=True)
             initialization_complete = True
         except Exception as exc:
             # Surface WHY via /resume and friends; callers keep their ``_session_db = None`` path.

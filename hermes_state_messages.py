@@ -120,6 +120,8 @@ def _stale_holder(row, now: float) -> bool:
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
 
+    _record_terminal_spill_references: Any
+
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
         ``_RESET_END_REASONS`` count (compression continues one conversation). Never derived from session
@@ -405,6 +407,8 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            if role == "tool" and tool_name == "terminal":
+                self._record_terminal_spill_references(conn, session_id, (content,))
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
@@ -763,6 +767,8 @@ class SessionMessagesMixin:
             self._stamp_tool_call_uids(msg, tool_calls, batch_tool_index)
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
+            if role == "tool" and msg.get("tool_name") == "terminal":
+                self._record_terminal_spill_references(conn, session_id, (msg.get("content"),))
             # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
             # timestamp (notably mid-turn steers) may be carried through several compaction generations; if
             # the generated timestamp exists only in SQLite, every copy receives a new identity and renders
@@ -916,6 +922,15 @@ class SessionMessagesMixin:
         # still display-visible (the source may just have become rewind-only).
         skip = ("id", "active", "compacted", "display_order") + (("session_id",) if retarget else ())
         col_list = ", ".join(c for c in self._message_column_names(conn) if c not in skip)
+        if retarget:
+            spill_rows = conn.execute(
+                "SELECT content FROM messages WHERE role = 'tool' AND tool_name = 'terminal' "
+                f"AND id IN ({_placeholders(tail_ids)})",
+                tail_ids,
+            ).fetchall()
+            self._record_terminal_spill_references(
+                conn, session_id, (row["content"] for row in spill_rows),
+            )
         conn.execute(
             f"INSERT INTO messages ({col_list}, {'session_id, ' if retarget else ''}active, compacted) "
             f"SELECT {col_list}, {'?, ' if retarget else ''}1, 0 FROM messages "

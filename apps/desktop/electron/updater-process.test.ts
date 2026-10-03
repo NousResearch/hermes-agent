@@ -308,6 +308,12 @@ test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', (
   assert.deepEqual(collectRelaunchArgs(undefined), [])
 })
 
+test('collectRelaunchArgs drops --ignore-existing: a relaunch must resolve the installed runtime afresh (#124971)', () => {
+  const argv = ['--ignore-existing', '--no-sandbox', 'hermes://open/session/abc', '--ignore-existing=1']
+
+  assert.deepEqual(collectRelaunchArgs(argv), ['--no-sandbox', 'hermes://open/session/abc'])
+})
+
 test('sandboxFallbackFromEnv: ELECTRON_DISABLE_SANDBOX / --no-sandbox opt out', () => {
   assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: '1' }, []), true)
   assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: 'true' }, []), true)

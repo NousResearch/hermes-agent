@@ -99,7 +99,7 @@ import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
 import { SuggestionPills } from './suggestion-pills'
-import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
+import { extractClipboardImageBlobs, filePathsFromClipboardText, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
@@ -598,6 +598,35 @@ export function ChatBar({
       event.preventDefault()
 
       if (imageBlobs.length > 0) {
+        return
+      }
+
+      // A file paste reaches the DOM as `files` with NO text: Blink classifies
+      // a text/uri-list clipboard as Files inside a contenteditable, so the
+      // text branch above never sees a path and the paste silently vanished.
+      // Recover the path from the main-process clipboard (same bridge the WSL
+      // image fallback uses) and attach it through the drop pipeline.
+      const pastedFileCount = event.clipboardData.files?.length ?? 0
+
+      if (pastedFileCount > 0 && onAttachDroppedItems) {
+        const attach = onAttachDroppedItems
+        triggerHaptic('selection')
+
+        void (async () => {
+          const raw = (await window.hermesDesktop?.readClipboard?.()) ?? ''
+          const paths = filePathsFromClipboardText(raw)
+
+          if (!paths.length) {
+            return
+          }
+
+          const attached = await Promise.resolve(attach(paths.map(path => ({ path }))))
+
+          if (attached) {
+            requestMainFocus()
+          }
+        })()
+
         return
       }
 

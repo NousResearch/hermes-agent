@@ -30,7 +30,8 @@ from gateway.hosted_rooms import (
 from gateway.hosted_room_safety import (
     EVIDENCE_STATEMENT_FIELDS, HANDOVER_STATEMENT_FIELDS, PROOF_KINDS, _prune_disbanded_replicas_locked,
     _raise_if_quarantined, mark_verified_transition, transition_proof_digest)
-from gateway.hosted_rooms_common import DbPath, bounded_int, clock, exact_fields, table_columns, utf8_len
+from gateway.hosted_rooms_common import (
+    DbPath, bounded_int, clock, exact_fields, table_columns, table_exists, utf8_len)
 from gateway.hosted_rooms_common import display_label
 from gateway.hosted_rooms_common import text as bounded_text
 
@@ -202,7 +203,12 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
             continue
         reasons: list[str] = []
         last_seq, latest_seq = int(row["last_seq"]), int(row["latest_seq"])
-        if int(row["authority_epoch"]) != 1:
+        header = (str(row["authority_gateway_id"]), int(row["authority_epoch"]))
+        # The copy follows later authorities only through transitions whose marks these events used.
+        verified = {(int(used[0]), str(used[1])): int(used[2]) for used in conn.execute(
+            "SELECT seq, event_id, to_epoch FROM hosted_room_verified_transition_uses WHERE room_id=?", (room_id,))
+        } if table_exists(conn, "hosted_room_verified_transition_uses") else {}
+        if header[1] != 1 and header[1] not in verified.values():
             reasons.append("unverified_authority_epoch")
         if stats["count"] != last_seq:
             reasons.append("non_contiguous_history")
@@ -223,6 +229,7 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
                 reasons.append("duplicate_event_id")
             try:
                 _validate_identifier(row["authority_gateway_id"], label="authority_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
+                span_epoch, host, entered = 1, None, False
                 for index, event in enumerate(conn.execute(
                     """SELECT seq,event_id,authority_epoch,kind,actor_json,payload_json,created_at
                        FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""", (room_id,)), 1):
@@ -233,17 +240,30 @@ def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
                             reasons.append("events_after_disband")
                         if last_seq != latest_seq:
                             reasons.append("incomplete_terminal_history")
-                    if event["authority_epoch"] != int(row["authority_epoch"]):
+                    if (event["kind"] == "authority.transition"
+                            and verified.get((int(event["seq"]), str(event["event_id"]))) == event["authority_epoch"]):
+                        span_epoch, entered = int(event["authority_epoch"]), True
+                        host = json.loads(event["payload_json"]).get("successor_gateway_id")
+                    elif event["authority_epoch"] != span_epoch:
                         reasons.append("mixed_authority_lineage")
                     kind = _validate_event_kind(event["kind"])
                     _validate_identifier(event["event_id"], label="event_id", max_chars=MAX_EVENT_ID_CHARS)
                     actor, _ = _validate_actor(json.loads(event["actor_json"]), kind=kind)
-                    if actor["kind"] == "gateway" and actor["id"] != str(row["authority_gateway_id"]):
+                    # One host per span: a transition's successor, else the first gateway actor.
+                    if actor["kind"] == "gateway" and host is None:
+                        host = actor["id"]
+                    elif actor["kind"] == "gateway" and actor["id"] != host:
                         reasons.append("gateway_actor_authority_mismatch")
                     if not isinstance(json.loads(event["payload_json"]), dict):
                         raise ReplicaError("event payload is not an object")
                     if not math.isfinite(float(event["created_at"])):
                         raise ReplicaError("event timestamp is not finite")
+                if span_epoch != header[1]:
+                    reasons.append("unverified_authority_epoch")
+                # The newest span's host is the copy's authority once it entered that span through a
+                # transition, or caught up with it (a copy still replaying an older span may lag it).
+                elif host is not None and host != header[0] and (entered or last_seq == latest_seq):
+                    reasons.append("gateway_actor_authority_mismatch")
             except (HostedRoomError, TypeError, ValueError, json.JSONDecodeError, RecursionError):
                 reasons.append("invalid_event_shape")
         if reasons:
@@ -495,9 +515,8 @@ def _validate_page(page: Any) -> tuple[list[dict[str, Any]], dict[str, Any], int
             raise ReplicaError("page repeats an event_id")
         event_ids.add(event_id)
         kind = _validate_event_kind(event.get("kind"))
-        actor, actor_json = _validate_actor(event.get("actor"), kind=kind)
-        if actor["kind"] == "gateway" and actor["id"] != gateway_id:
-            raise ReplicaError("gateway actor does not match page authority")
+        # A gateway actor names the host of its own span (checked once the copy's lineage is known).
+        _, actor_json = _validate_actor(event.get("actor"), kind=kind)
         payload = event.get("payload")
         if not isinstance(payload, dict):
             raise ReplicaError("event.payload must be an object")
@@ -525,14 +544,26 @@ def _event_row(room_id: str, event: dict[str, Any]) -> tuple[Any, ...]:
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None,
     _authorize: Callable[[sqlite3.Connection], None] | None = None, custody_report: Any = None,
+    _verify_transition: Callable[[sqlite3.Connection, dict[str, Any]], None] | None = None,
+    _from_custodian: bool = False,
 ) -> dict[str, Any]:
     """Persist one verbatim ``read_events()`` page idempotently.
 
     Refuses sequence gaps, overlap that differs from stored history, authority changes without a
     verified lineage, and events after a terminal ``room.disbanded``. ``_authorize`` admits a
     room-grant sender inside the writer (``hosted_room_replica_ingress``); such a sender may be
-    ahead of its page, so the stored name follows the page's own rename events. The result carries
-    the copy's durable custody watermark; ``custody_report`` is the authority's protection report.
+    ahead of its page, so the stored name follows the page's own rename events. So it does for a
+    page from another custodian (``_from_custodian``, ``hosted_room_custody``), which may also hold
+    less than the host once announced. The result carries the copy's durable custody watermark;
+    ``custody_report`` is the authority's protection report.
+
+    The copy's authority changes only through verified transitions, in page order: once every
+    earlier event of the page is stored (and the custodians it configured are pinned),
+    ``_verify_transition(conn, event)`` runs in this writer for the next ``authority.transition``,
+    checks its proof against that history and marks it (``mark_verified_transition``), or raises
+    to refuse the whole page. Without a verifier, a page that changes the authority is refused. A
+    page may lag its sender: a later authority relays the history before its own transition, and
+    the copy follows it once that transition arrives.
     """
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
@@ -541,12 +572,15 @@ def ingest_page(
     if any(event["room_id"] != room_id for event in events):
         raise ReplicaError("page contains an event for a different room")
     now = clock(now)
+    follow_renames = _authorize is not None or _from_custodian
     with _replica_transaction(db_path, _authorize=_authorize) as conn:
         from gateway.hosted_room_replica_retirement import copy_retired_locked, copy_scope_matches_locked
         if copy_retired_locked(conn, room_id):
             raise ReplicaHistoryExpiredError("Group Chat copy has been retired")
-        if not copy_scope_matches_locked(conn, room_id=room_id, authority_gateway_id=authority["gateway_id"],
-                                         authority_epoch=authority["epoch"], members_json=members_json):
+        scope = dict(room_id=room_id, authority_gateway_id=authority["gateway_id"],
+                     authority_epoch=authority["epoch"], members_json=members_json)
+        in_scope = copy_scope_matches_locked(conn, **scope)
+        if not in_scope and _verify_transition is None:
             raise ReplicaError("copy scope differs from owner enrollment")
         _prune_disbanded_replicas_locked(conn, now=now)
         if conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone():
@@ -562,24 +596,26 @@ def ingest_page(
                 raise ReplicaHistoryExpiredError("replica history expired; room_id remains permanently retired")
             if int(conn.execute("SELECT COUNT(*) FROM hosted_room_replicas").fetchone()[0]) >= MAX_REPLICA_ROOMS:
                 raise ReplicaCapacityError("replica room capacity exhausted")
-            if authority["epoch"] != 1:
+            if authority["epoch"] != 1 and _verify_transition is None:
                 raise ReplicaLineageUnverifiedError(
                     "replica lineage is incomplete; the first authority epoch is required")
-            stored_epoch, last_seq, disbanded_at = 0, 0, None
+            # A copy started after the room moved replays its lineage from the first epoch.
+            head, last_seq, disbanded_at = (authority["gateway_id"], 1), 0, None
         else:
-            stored_epoch, last_seq = int(row["authority_epoch"]), int(row["last_seq"])
-            disbanded_at = row["disbanded_at"]
+            head = (str(row["authority_gateway_id"]), int(row["authority_epoch"]))
+            last_seq, disbanded_at = int(row["last_seq"]), row["disbanded_at"]
             if row["quarantine_reason"] is not None:
                 raise ReplicaError("stored replica is quarantined: " + str(row["quarantine_reason"]))
-            if (row["name"] != room_name and _authorize is None) or row["members_json"] != members_json:
+            if (row["name"] != room_name and not follow_renames) or row["members_json"] != members_json:
                 raise ReplicaError("replica metadata conflicts with stored state")
-            if row["authority_gateway_id"] != authority["gateway_id"] or stored_epoch != authority["epoch"]:
+            if (authority["epoch"] < head[1] or (authority["epoch"] == head[1] and authority["gateway_id"] != head[0])
+                    or (authority["epoch"] > head[1] and _verify_transition is None)):
                 raise ReplicaLineageUnverifiedError("replica authority changed without a verified takeover lineage")
             if latest_seq < int(row["latest_seq"]):
-                raise ReplicaError("page.latest_seq regresses stored replica coverage")
+                if not _from_custodian:
+                    raise ReplicaError("page.latest_seq regresses stored replica coverage")
+                latest_seq = int(row["latest_seq"])  # what the host announced stays the coverage to reach
         for event in events:
-            if row is not None and event["authority_epoch"] != stored_epoch:
-                raise ReplicaError("event authority conflicts with stored replica lineage")
             stored = conn.execute(
                 """SELECT seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
                      FROM hosted_room_replica_events WHERE room_id=? AND (seq=? OR event_id=?)""",
@@ -591,6 +627,9 @@ def ingest_page(
         new_events = [event for event in events if event["seq"] > last_seq]
         if new_events and new_events[0]["seq"] != last_seq + 1:
             raise ReplicaGapError("page skips sequences the replica has not stored")
+        verified_head = _follow_lineage(head, new_events, authority, verifiable=_verify_transition is not None)
+        if not in_scope and not copy_scope_matches_locked(conn, **scope, verified_head=verified_head):
+            raise ReplicaError("copy scope differs from owner enrollment")
         if disbanded_at is not None and new_events:
             raise ReplicaError("a disbanded Group Chat cannot accept later events")
         disband_indexes = [index for index, event in enumerate(new_events) if event["kind"] == "room.disbanded"]
@@ -598,8 +637,8 @@ def ingest_page(
             raise ReplicaError("room.disbanded must be the terminal event")
         if disband_indexes and new_events[-1]["seq"] != latest_seq:
             raise ReplicaError("room.disbanded must complete the source history")
-        name = row["name"] if row is not None and _authorize is not None else room_name
-        if _authorize is not None:
+        name = row["name"] if row is not None and follow_renames else room_name
+        if follow_renames:
             for event in new_events:
                 if event["kind"] == "room.renamed":
                     name = _validate_room_name(json.loads(event["payload_json"]).get("name"))
@@ -607,24 +646,97 @@ def ingest_page(
             utf8_len(event["event_id"], event["kind"], event["actor_json"], event["payload_json"])
             for event in new_events)
         _reserve_replica_bytes(conn, added_bytes)
-        conn.executemany(_INSERT_REPLICA_EVENT, [_event_row(room_id, event) for event in new_events])
-        new_last = new_events[-1]["seq"] if new_events else last_seq
-        terminal_at = new_events[-1]["created_at"] if disband_indexes else disbanded_at
         if row is None:
+            # The header exists before the first event, so a verifier reads this copy's own history.
             conn.execute("""INSERT INTO hosted_room_replicas (room_id, name, members_json,
                     authority_gateway_id, authority_epoch, last_seq, latest_seq, event_bytes,
-                    created_at, updated_at, disbanded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (room_id, name, members_json, authority["gateway_id"], authority["epoch"], new_last,
-                 latest_seq, added_bytes, now, now, terminal_at))
-        else:
-            conn.execute("""UPDATE hosted_room_replicas SET last_seq=?, latest_seq=?, event_bytes=event_bytes+?,
-                    updated_at=?, disbanded_at=?, name=? WHERE room_id=?""",
-                (new_last, latest_seq, added_bytes, now, terminal_at, name, room_id))
+                    created_at, updated_at, disbanded_at) VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?, NULL)""",
+                (room_id, room_name, members_json, head[0], head[1], latest_seq, now, now))
+        _store_in_lineage_order(conn, room_id, new_events, head, _verify_transition)
+        new_last = new_events[-1]["seq"] if new_events else last_seq
+        terminal_at = new_events[-1]["created_at"] if disband_indexes else disbanded_at
+        conn.execute("""UPDATE hosted_room_replicas SET last_seq=?, latest_seq=?, updated_at=?, disbanded_at=?,
+                name=?, authority_gateway_id=?, authority_epoch=? WHERE room_id=?""",
+            (new_last, latest_seq, now, terminal_at, name, *verified_head, room_id))
         from gateway.hosted_room_custody import after_ingest_locked
         watermark = after_ingest_locked(conn, room_id, new_events, report=custody_report)
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
         "caught_up": new_last >= latest_seq, "watermark": watermark}
+
+
+def _follow_lineage(
+    head: tuple[str, int], events: list[dict[str, Any]], authority: dict[str, Any], *, verifiable: bool,
+) -> tuple[str, int]:
+    """The copy's authority after ``events``: it moves only at a transition from the current epoch.
+
+    Every other event belongs to the current span: its epoch, and for a gateway actor that span's
+    host. A span entered through a transition has its successor as host. While the page lags its
+    sender (the copy has not reached the sender's epoch), the span's host is not known yet, and its
+    gateway actors must name one host throughout.
+    """
+    gateway_id, epoch = head
+    host = gateway_id if epoch == authority["epoch"] else None
+    for event in events:
+        if event["kind"] == "authority.transition":
+            payload = json.loads(event["payload_json"])
+            to_epoch, successor = event["authority_epoch"], payload.get("successor_gateway_id")
+            if (not verifiable or payload.get("from_epoch") != epoch or payload.get("to_epoch") != to_epoch
+                    or to_epoch <= epoch or not isinstance(successor, str) or not successor):
+                raise ReplicaLineageUnverifiedError("replica authority changed without a verified transition")
+            gateway_id, epoch, host = successor, to_epoch, successor
+            continue
+        if event["authority_epoch"] != epoch:
+            raise ReplicaError("event authority conflicts with stored replica lineage")
+        actor = json.loads(event["actor_json"])
+        if actor["kind"] == "gateway":
+            if host is None:
+                host = actor["id"]
+            elif actor["id"] != host:
+                raise ReplicaError("gateway actor does not match page authority")
+    if epoch > authority["epoch"] or (epoch == authority["epoch"] and gateway_id != authority["gateway_id"]):
+        raise ReplicaLineageUnverifiedError("replica authority changed without a verified takeover lineage")
+    return gateway_id, epoch
+
+
+def _store_in_lineage_order(
+    conn: sqlite3.Connection, room_id: str, events: list[dict[str, Any]], head: tuple[str, int],
+    verify: Callable[[sqlite3.Connection, dict[str, Any]], None] | None,
+) -> None:
+    """Insert ``events`` so that each transition is verified against everything before it.
+
+    The events before a transition are stored first, with the custodians a ``custody.configured``
+    among them pinned and the header advanced to them; then ``verify`` checks and marks the
+    transition, whose insert the lineage trigger accepts only with that mark.
+    """
+    from gateway.hosted_room_custody import pin_configured_locked
+
+    def store(batch: list[dict[str, Any]], authority: tuple[str, int]) -> None:
+        if not batch:
+            return
+        try:
+            conn.executemany(_INSERT_REPLICA_EVENT, [_event_row(room_id, event) for event in batch])
+        except sqlite3.IntegrityError as exc:
+            if "not verified" in str(exc):
+                raise ReplicaLineageUnverifiedError("the authority transition was not verified") from exc
+            raise
+        conn.execute("""UPDATE hosted_room_replicas SET last_seq=?, event_bytes=event_bytes+?,
+                authority_gateway_id=?, authority_epoch=? WHERE room_id=?""",
+            (batch[-1]["seq"], sum(utf8_len(event["event_id"], event["kind"], event["actor_json"],
+                                            event["payload_json"]) for event in batch), *authority, room_id))
+        pin_configured_locked(conn, room_id, batch)
+
+    pending: list[dict[str, Any]] = []
+    for event in events:
+        if event["kind"] == "authority.transition":
+            store(pending, head)
+            pending = []
+            if verify is None:  # pragma: no cover - _follow_lineage refused it already
+                raise ReplicaLineageUnverifiedError("replica authority changed without a verified transition")
+            verify(conn, dict(event))
+            head = (str(json.loads(event["payload_json"])["successor_gateway_id"]), int(event["authority_epoch"]))
+        pending.append(event)
+    store(pending, head)
 
 
 def _reserve_replica_bytes(conn: sqlite3.Connection, added_bytes: int) -> None:
@@ -660,7 +772,6 @@ def copy_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
     """``replica_state`` plus what a participant keeps beside its copy: task evidence and retirement."""
     from gateway import hosted_room_work_records as work_records
     from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
-    from gateway.hosted_rooms_common import table_exists
     room_id = _room_id(room_id)
     with _replica_transaction(db_path) as conn:
         row, reservation = _read_replica_locked(conn, room_id)
@@ -684,7 +795,6 @@ def list_copies(db_path: DbPath) -> list[dict[str, Any]]:
     """Copies of other gateways' Group Chats held here, most recently updated first; retired ones excluded."""
     from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
     from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT
-    from gateway.hosted_rooms_common import table_exists
     with _replica_transaction(db_path) as conn:
         retired = {str(row[0]) for row in conn.execute(f"SELECT room_id FROM {RETIREMENT_TABLE}")} \
             if table_exists(conn, RETIREMENT_TABLE) else set()

@@ -97,6 +97,11 @@ class CatalogEntry:
     # Oldest llama.cpp release tag that can load this model (day-0 architectures need the release
     # where their support landed). Empty means any installed engine.
     min_engine: str = ""
+    # Declared engine block: why the managed engine cannot run this entry AT ALL until a
+    # different engine build ships (e.g. weight formats mainline llama.cpp rejects). Empty means
+    # no block. Carries the copy shown to the user, so the row explains itself — visible with a
+    # reason beats hidden.
+    blocked_reason: str = ""
     # Editorial quality ordering (higher = smarter), authored once at catalog time — Artificial
     # Analysis-informed where covered (scripts/aa_quality_sync.py proposes, the commit decides).
     # Ranks entries for the per-machine recommendation; never displayed as a score (it grades the
@@ -212,13 +217,17 @@ def recommended_entry(budget: HardwareBudget,
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
-    (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
-    the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
-    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
-    eligible entry runs resident; spilled models remain available for explicit selection.
+    (engine too old). A declared block is different: an entry no engine we ship can load is never
+    offered, whoever hands over the pool — a recommendation is an offer, and offering a model the
+    engine refuses turns a click into a failed download. Reasons: best-quality-resident (quality
+    won among resident entries clearing the pleasant floor); speed-gated-quality (same, but the
+    floor eliminated a HIGHER quality candidate); fastest-resident (nothing resident clears the
+    floor). Returns None when no eligible entry runs resident; spilled models remain available for
+    explicit selection.
     """
     pool = CATALOG if entries is None else entries
-    fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
+    fitting = [(e, c) for e in pool
+               if not e.blocked_reason and (c := select_variant(e, budget)) is not None]
     if not fitting:
         return None
 
@@ -267,6 +276,7 @@ _SCALAR_FIELDS = {
     "swa_layers": (int, 0), "swa_window": (int, 0),
     "moe": (bool, False), "mtp": (bool, False), "mtp_draft_depth": (int, 3),
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
+    "blocked_reason": (str, ""),
     "quality": (int, 0), "decode_fraction": (float, 1.0),
 }
 

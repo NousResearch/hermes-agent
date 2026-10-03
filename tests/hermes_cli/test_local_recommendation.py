@@ -225,3 +225,15 @@ def test_quality_decides_where_speed_permits():
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+def test_a_declared_block_is_never_the_recommendation():
+    """A recommendation is an offer: an entry no engine we ship can load
+    may never be the pick, whatever the card — and not only because the
+    router filters its pool. An offered model the engine refuses is a
+    click that ends in a failed download."""
+    for budget in (_unified(24), _unified(128), _discrete(16), _discrete(512)):
+        for pool in (None, CATALOG):
+            pick = recommended_entry(budget) if pool is None else recommended_entry(budget, pool)
+            assert pick is None or not pick[0].blocked_reason, (
+                f"{pick[0].id} offered from {'raw catalog' if pool is None else 'caller pool'}")

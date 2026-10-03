@@ -342,9 +342,24 @@ def _engine_too_old(min_engine: str) -> bool:
     return int(tag.removeprefix("b")) < int(min_engine.removeprefix("b"))
 
 
+def _blocked_reason(entry) -> "str | None":
+    """Why this entry cannot be activated on the installed engine, or None when it can.
+
+    Two gates, one answer: an engine *version* the entry needs (day-0 architectures land in a
+    llama.cpp release), and a *declared block* on entries no engine build we ship can load yet
+    (weight formats mainline llama.cpp rejects). Both keep the row visible with the reason and
+    keep the model out of every offer: recommendation, download, quickstart.
+    """
+    if entry.blocked_reason:
+        return entry.blocked_reason
+    if _engine_too_old(entry.min_engine):
+        return f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer — update the engine first"
+    return None
+
+
 def _eligible_entries():
-    """Catalog entries this engine can activate today (engine-gated ones can't be the recommendation either)."""
-    return tuple(e for e in catalog.CATALOG if not _engine_too_old(e.min_engine))
+    """Catalog entries this engine can activate today (blocked ones can't be the recommendation either)."""
+    return tuple(e for e in catalog.CATALOG if _blocked_reason(e) is None)
 
 
 def _entry_or_404(model_id: str):
@@ -352,6 +367,13 @@ def _entry_or_404(model_id: str):
     if entry is None:
         raise HTTPException(status_code=404, detail=f"unknown model {model_id}")
     return entry
+
+
+def _refuse_if_blocked(entry) -> None:
+    """409 with the declared reason when the installed engine cannot run this entry."""
+    reason = _blocked_reason(entry)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
 
 
 def _start_local_server(config: dict, fail_detail: str):
@@ -565,6 +587,7 @@ _QUANT_REASON_COMPACT = "Compact build sized for this machine ({quant}) — larg
 
 def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> Dict[str, Any]:
     choice = catalog.select_variant(entry, budget)
+    blocked = _blocked_reason(entry)
     # Any variant of this family on disk counts as downloaded.
     dl = next((v for v in entry.variants if v.model_id in staged_ids
                and all(dest.is_file() for _, dest, _ in _download_plan(entry, v))), None)
@@ -575,10 +598,13 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
         "recommended_reason": recommended_reason if entry.id == recommended else None,
         "downloaded": dl is not None, "downloaded_model_id": dl.model_id if dl else None,
         "downloaded_quant": dl.quant if dl else None, "mtp": entry.mtp, "vision": entry.mmproj is not None,
-        # Day-0 architectures need the llama.cpp release where their support landed: True gates
-        # download/activate until the engine updates, but the row still renders (visible + explained beats hidden).
-        "needs_engine": _engine_too_old(entry.min_engine),
+        # Day-0 architectures need the llama.cpp release where their support landed, and a declared
+        # block marks an entry no shipped engine can load: either way True gates download/activate
+        # until the engine changes, but the row still renders (visible + explained beats hidden) and
+        # blocked_reason carries the copy that explains which gate fired.
+        "needs_engine": blocked is not None,
         "min_engine": entry.min_engine or None,
+        "blocked_reason": blocked,
     }
     if choice is None:
         smallest = min(entry.variants, key=lambda v: v.size_bytes)
@@ -683,10 +709,11 @@ def _download_target(model_id: str):
     catalog, so the user downloads exactly the build the row advertised) or an exact variant model_id."""
     entry = catalog.catalog_by_id().get(model_id)
     if entry is None:  # exact variant id, or nothing we know (404)
-        return catalog.find_entry_for_model(model_id) or _entry_or_404(model_id)
-    if _engine_too_old(entry.min_engine):
-        raise HTTPException(status_code=409, detail=(
-            f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer — update the engine first"))
+        hit = catalog.find_entry_for_model(model_id) or _entry_or_404(model_id)
+        _refuse_if_blocked(hit[0])
+        return hit
+    # Both routes into a download (family id and exact variant id) pass the same engine gate.
+    _refuse_if_blocked(entry)
     choice = catalog.select_variant(entry, hardware.probe_budget(planning=True))
     if choice is None:
         raise HTTPException(status_code=409, detail=f"no variant of {entry.id} fits this machine")
@@ -757,7 +784,9 @@ def _quickstart_target(body: QuickstartBody, budget):
     With no recommendation, require an explicit choice before starting setup.
     """
     if body.model_id:
-        candidates = [_entry_or_404(body.model_id)]
+        explicit = _entry_or_404(body.model_id)
+        _refuse_if_blocked(explicit)
+        candidates = [explicit]
     else:
         picked = catalog.recommended_entry(
             budget, _eligible_entries(), backend=_runtime_section().get("backend", "auto"))
@@ -769,7 +798,7 @@ def _quickstart_target(body: QuickstartBody, budget):
         candidates = [picked[0]] + [e for e in catalog.CATALOG if e.id != picked[0].id]
     for candidate in candidates:
         choice = catalog.select_variant(candidate, budget)
-        if choice is not None and not _engine_too_old(candidate.min_engine):
+        if choice is not None and _blocked_reason(candidate) is None:
             return candidate, choice.variant
     raise HTTPException(status_code=409, detail=(
         "no catalog model fits this machine — open Local Models to browse for a smaller build"))

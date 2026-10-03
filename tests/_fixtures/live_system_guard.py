@@ -115,14 +115,19 @@ def _live_system_guard(request, monkeypatch):
         # Orphaned member of a group one of our spawns created (os.kill with
         # a member pid, or killpg with the group id itself — a dead group
         # leader's pid IS the group id). getpgid answers for a live orphan;
-        # the raw set covers killpg after the leader is gone.
+        # the raw set covers killpg after the leader is gone. getpgid is
+        # POSIX-only: resolve it defensively so a Windows host skips this
+        # probe instead of raising an AttributeError the handler below
+        # cannot intercept (same shape as agent/verify/runner.py).
         if pid in _spawned_pgroups:
             return True
-        try:
-            if _os.getpgid(pid) in _spawned_pgroups:
-                return True
-        except (OSError, ProcessLookupError):
-            pass
+        getpgid = getattr(_os, "getpgid", None)
+        if getpgid is not None:
+            try:
+                if getpgid(pid) in _spawned_pgroups:
+                    return True
+            except (OSError, ProcessLookupError):
+                pass
         if _psutil is None:
             return False
         try:
@@ -396,8 +401,14 @@ def _live_system_guard(request, monkeypatch):
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd, kwargs)
                 super().__init__(cmd, *args, **kwargs)
+                # getpgid is POSIX-only (see _is_own_subtree): on Windows the
+                # unguarded reference raised AttributeError after the child
+                # had already started, killing the Popen and leaking it.
+                getpgid = getattr(_os, "getpgid", None)
+                if getpgid is None:
+                    return
                 try:
-                    _spawned_pgroups.add(_os.getpgid(self.pid))
+                    _spawned_pgroups.add(getpgid(self.pid))
                 except (OSError, ProcessLookupError):
                     pass
 

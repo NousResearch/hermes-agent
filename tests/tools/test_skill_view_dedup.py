@@ -125,3 +125,57 @@ class TestSkillViewDedup:
         repeat = _view("demo-dedup-skill")
         assert repeat.get("dedup") is True
         assert repeat.get("content_returned") is False
+
+
+class TestSkillViewDedupSessionScope:
+    """The dedup cache is process-global, so it must be scoped to the active
+    session: a new session_id drops the cache, session_id=None is a no-op,
+    and the fork path (task_id=None) stays out of the cache."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_session_state(self):
+        from tools import skills_tool_dedup
+        skills_tool_dedup._active_session_id = None
+        skills_tool_dedup._skill_view_tracker.clear()
+        yield
+        skills_tool_dedup._active_session_id = None
+        skills_tool_dedup._skill_view_tracker.clear()
+
+    def _view(self, name, file_path=None, task="t-svd", session_id=None):
+        args = {"name": name}
+        if file_path:
+            args["file_path"] = file_path
+        return json.loads(_skill_view_with_bump(args, task_id=task, session_id=session_id))
+
+    def test_session_change_drops_cache(self, skills_home):
+        # Session A views the skill; a repeat within A dedups.
+        self._view("demo-dedup-skill", session_id="sess-A")
+        r = self._view("demo-dedup-skill", session_id="sess-A")
+        assert r.get("dedup") is True
+        # A fresh session reusing the SAME task_id must NOT inherit A's entry:
+        # it never loaded the skill into its own context, so it gets full content.
+        r2 = self._view("demo-dedup-skill", session_id="sess-B")
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None
+
+    def test_session_id_none_is_noop(self, skills_home):
+        # Views without a session_id never drop the cache and still dedup
+        # (the fork / pre-session path keeps working).
+        self._view("demo-dedup-skill", session_id=None)
+        r = self._view("demo-dedup-skill", session_id=None)
+        assert r.get("dedup") is True
+
+    def test_none_session_does_not_drop_populated_cache(self, skills_home):
+        # A None session_id must not clobber a cache populated by a real session.
+        self._view("demo-dedup-skill", session_id="sess-A")
+        r = self._view("demo-dedup-skill", session_id=None)
+        assert r.get("dedup") is True
+
+    def test_fork_path_stays_out_of_cache(self, skills_home):
+        # task_id=None (background-review fork) is never recorded and never dedups,
+        # regardless of session_id.
+        r1 = self._view("demo-dedup-skill", task=None, session_id="sess-A")
+        assert "Step one" in r1.get("content", "")
+        r2 = self._view("demo-dedup-skill", task=None, session_id="sess-A")
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None

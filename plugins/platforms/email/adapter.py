@@ -650,10 +650,8 @@ class EmailAdapter(BasePlatformAdapter):
         if status != "OK":
             logger.warning("[Email] Could not mark rejected UID %s seen", uid)
 
-    def _fetch_new_messages(
-        self, preauthorize: Optional[Callable[[Dict[str, Any]], bool]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Fetch unseen messages. When *preauthorize* is set, bounded headers are gated before RFC822."""
+    def _fetch_new_messages(self, preauthorize: Callable[[Dict[str, Any]], bool]) -> List[Dict[str, Any]]:
+        """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""
         results = []
         try:
             with self._inbox() as imap:
@@ -661,34 +659,33 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
-                    if preauthorize is not None:
-                        header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
-                        if header_status != "OK":
-                            continue
-                        try:
-                            raw_headers = header_data[0][1]
-                        except (IndexError, TypeError):
-                            logger.warning("[Email] Unexpected IMAP header response for UID %s, skipping", uid)
-                            self._mark_uid_consumed(imap, uid)
-                            continue
-                        if not isinstance(raw_headers, (bytes, bytearray)):
-                            logger.warning("[Email] Non-bytes IMAP header payload for UID %s, skipping", uid)
-                            self._mark_uid_consumed(imap, uid)
-                            continue
-                        if len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
-                            logger.warning("[Email] Pre-authorization headers exceed %d bytes for UID %s, skipping",
-                                           _MAX_PREAUTH_HEADER_BYTES, uid)
-                            self._mark_uid_consumed(imap, uid)
-                            continue
-                        try:
-                            candidate = self._parse_fetched_headers(uid, raw_headers)
-                            accepted = candidate is not None and preauthorize(candidate)
-                        except Exception as auth_exc:
-                            logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
-                            accepted = False
-                        if not accepted:
-                            self._mark_uid_consumed(imap, uid)
-                            continue
+                    header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
+                    if header_status != "OK":
+                        continue
+                    try:
+                        raw_headers = header_data[0][1]
+                    except (IndexError, TypeError):
+                        logger.warning("[Email] Unexpected IMAP header response for UID %s, skipping", uid)
+                        self._mark_uid_consumed(imap, uid)
+                        continue
+                    if not isinstance(raw_headers, (bytes, bytearray)):
+                        logger.warning("[Email] Non-bytes IMAP header payload for UID %s, skipping", uid)
+                        self._mark_uid_consumed(imap, uid)
+                        continue
+                    if len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
+                        logger.warning("[Email] Pre-authorization headers exceed %d bytes for UID %s, skipping",
+                                       _MAX_PREAUTH_HEADER_BYTES, uid)
+                        self._mark_uid_consumed(imap, uid)
+                        continue
+                    try:
+                        candidate = self._parse_fetched_headers(uid, raw_headers)
+                        accepted = candidate is not None and preauthorize(candidate)
+                    except Exception as auth_exc:
+                        logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
+                        accepted = False
+                    if not accepted:
+                        self._mark_uid_consumed(imap, uid)
+                        continue
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries

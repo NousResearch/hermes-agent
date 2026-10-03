@@ -119,6 +119,24 @@ class TestBuildToolPreview:
 
 
 class TestPrepareToolPreview:
+    def test_execute_code_long_path_previews_identify_script_without_changing_arguments(self):
+        opening = "path = " + repr("C:/AI/" + "shared-directory/" * 12 + "file.py") + "\n"
+        scripts = [opening + "print('inspect definitions')", opening + "print('inspect callers')"]
+        args = [{"code": script, "reset": False} for script in scripts]
+        originals = [dict(item) for item in args]
+        # The old shell builder shows the same opening path for both scripts.
+        assert len({display_module._preview_shell("code")(item, 80) for item in args}) == 1
+        previews = [build_tool_preview("execute_code", item, max_len=80) for item in args]
+        assert previews[0] != previews[1]
+        assert all(preview and len(preview) <= 80 for preview in previews)
+        assert build_tool_preview("execute_code", args[0], max_len=80) == previews[0]
+        prepared = [prepare_tool_preview("execute_code", item, fallback="code", max_len=80) for item in args]
+        assert prepared[0].text != prepared[1].text
+        assert all(preview.truncated for preview in prepared)
+        full = [build_tool_preview("execute_code", item, max_len=0) for item in args]
+        assert all(" ".join(script.split()) in preview for script, preview in zip(scripts, full))
+        assert args == originals
+
     def test_recovers_and_describes_truncated_url(self):
         url = "https://example.com/a/very/long/path/to/a/page"
         set_tool_preview_max_len(20)

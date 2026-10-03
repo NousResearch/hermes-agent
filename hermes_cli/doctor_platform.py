@@ -653,5 +653,5 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
     f.fixed += 1
     if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
-        check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")
+        check_warn(f"{display} is not on your PATH", f"(add it to your shell config: export PATH=\"{display}:$PATH\")")
         f.manual_issues.append(f"Add {display} to your PATH")

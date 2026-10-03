@@ -849,6 +849,10 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    # GOV-F25 durable notifications (Option B) — additive; both default so a legacy row
+    # migrates as non-durable ('default') with no in-flight fence (pending_event_id NULL).
+    ("retry_policy", "retry_policy TEXT NOT NULL DEFAULT 'default'"),
+    ("pending_event_id", "pending_event_id INTEGER DEFAULT NULL"),
 )
 
 _TASK_RUN_COLUMNS = (
@@ -1050,6 +1054,8 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " retry_policy TEXT NOT NULL DEFAULT 'default',"
+        " pending_event_id INTEGER DEFAULT NULL,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),
@@ -1098,13 +1104,21 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
             conn.execute(create_sql)
             new_cols = _column_names(conn, table)
             if table == "kanban_notify_subs":
-                # Cast the legacy TEXT cursor to INTEGER; NULL / non-numeric → 0.
-                drop, extra_cols = "last_event_id", ", last_event_id"
-                extra_select = ", COALESCE(CAST(last_event_id AS INTEGER), 0)"
+                # Transform-copied columns (excluded from the verbatim copy, re-added with a
+                # cast/COALESCE): the legacy TEXT cursor -> INTEGER (NULL / non-numeric -> 0), and a
+                # drifted DB that already carries retry_policy gets a NULL COALESCE'd to 'default'.
+                # pending_event_id is NOT special-cased — the generic copy below preserves a
+                # non-NULL in-flight fence through the rebuild.
+                _special = [("last_event_id", "COALESCE(CAST(last_event_id AS INTEGER), 0)")]
+                if "retry_policy" in old_cols:
+                    _special.append(("retry_policy", "COALESCE(retry_policy, 'default')"))
+                drop = {name for name, _ in _special}
+                extra_cols = "".join(f", {name}" for name, _ in _special)
+                extra_select = "".join(f", {expr}" for _, expr in _special)
             else:
                 # Drop the legacy TEXT id; AUTOINCREMENT reassigns it.
-                drop, extra_cols, extra_select = "id", "", ""
-            cols_csv = ", ".join(c for c in old_cols if c in new_cols and c != drop)
+                drop, extra_cols, extra_select = {"id"}, "", ""
+            cols_csv = ", ".join(c for c in old_cols if c in new_cols and c not in drop)
             conn.execute(
                 f"INSERT INTO {table} ({cols_csv}{extra_cols}) "
                 f"SELECT {cols_csv}{extra_select} FROM {table}_legacy"

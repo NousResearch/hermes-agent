@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { NEW_CHAT_ROUTE, primaryRouteSelectedSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import {
+  appViewForPath,
+  isWorkspacePageRoute,
+  NEW_CHAT_ROUTE,
+  primaryRouteSelectedSessionId,
+  PROJECTS_ROUTE,
+  routeSessionId,
+  sessionRoute,
+  SETTINGS_ROUTE
+} from './routes'
 
 const SESS_A = 'sess-a'
 const SESS_B = 'sess-b'
@@ -18,5 +27,15 @@ describe('primaryRouteSelectedSessionId', () => {
 
   it('falls back to the store selection on a non-chat route (settings, overlays)', () => {
     expect(primaryRouteSelectedSessionId(SETTINGS_ROUTE, SESS_A)).toBe(SESS_A)
+  })
+})
+
+describe('projects route', () => {
+  it('is a workspace page, never mistaken for a session id, with or without a selected project', () => {
+    for (const to of [PROJECTS_ROUTE, `${PROJECTS_ROUTE}?project=p_1`]) {
+      expect(appViewForPath(to)).toBe('projects')
+      expect(isWorkspacePageRoute(to)).toBe(true)
+      expect(routeSessionId(to)).toBeNull()
+    }
   })
 })

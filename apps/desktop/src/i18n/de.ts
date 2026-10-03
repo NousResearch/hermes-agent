@@ -696,6 +696,7 @@ export const deOverrides = {
       'nav.profiles': 'Profile öffnen',
       'nav.capabilities': 'Skills öffnen',
       'nav.messaging': 'Messaging öffnen',
+      'nav.projects': 'Projekte öffnen',
       'nav.artifacts': 'Artefakte öffnen',
       'nav.cron': 'Geplante Jobs öffnen',
       'nav.agents': 'Agenten öffnen',
@@ -3150,6 +3151,10 @@ export const deOverrides = {
         title: 'Messaging',
         detail: 'Telegram, Slack, Discord und mehr einrichten'
       },
+      projects: {
+        title: 'Projekte',
+        detail: 'Projektordner, Repositorys und Sessions durchsuchen'
+      },
       artifacts: {
         title: 'Artefakte',
         detail: 'Generierte Ausgaben durchstöbern'
@@ -3916,6 +3921,58 @@ export const deOverrides = {
     copyUrl: 'URL kopieren',
     copyPath: 'Pfad kopieren'
   },
+
+  projects: {
+    search: 'Projekte durchsuchen...',
+    refresh: 'Projekte aktualisieren',
+    refreshing: 'Projekte werden aktualisiert',
+    loading: 'Projekte werden geladen',
+    emptyTitle: 'Noch keine Projekte',
+    emptyDesc: 'Erstellen Sie ein Projekt, um Ordner, Repositorys und Sessions zusammenzuhalten.',
+    noMatchesTitle: 'Keine passenden Projekte',
+    unavailableTitle: 'Projekte sind nicht verfügbar',
+    unavailableDesc:
+      'Das verbundene Hermes-Backend unterstützt noch keine Projekte. Aktualisieren Sie Hermes, um sie zu nutzen.',
+    loadFailedTitle: 'Projekte konnten nicht geladen werden',
+    loadFailedDesc:
+      'Hermes hat die Projektliste nicht geliefert. Prüfen Sie die Verbindung und versuchen Sie es erneut.',
+    partialFailed: 'Nicht alle Projektdetails konnten aktualisiert werden. Angezeigt wird der zuletzt geladene Stand.',
+    incompleteProfiles:
+      'Einige Profile konnten nicht gelesen werden, daher ist diese Liste möglicherweise unvollständig.',
+    selectTitle: 'Projekt auswählen',
+    selectDesc: 'Wählen Sie ein Projekt, um seine Ordner, Repositorys und Sessions zu sehen.',
+    autoDiscovered: 'Automatisch erkanntes Repository',
+    sessionCount: count => (count === 1 ? '1 Session' : `${count} Sessions`),
+    primaryPath: 'Hauptordner',
+    noPath: 'Kein Ordner',
+    folders: 'Ordner',
+    primaryFolder: 'Primär',
+    repositories: 'Repositorys',
+    noRepositories: 'Noch keine Git-Repositorys in diesem Projekt.',
+    laneMain: 'Haupt-Checkout',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Kanban-Aufgaben-Worktrees',
+    activeSessions: 'Gerade aktiv',
+    noActiveSessions: 'Gerade arbeiten keine Agenten in diesem Projekt.',
+    activityUnknown:
+      'Welche Agenten gerade arbeiten, lässt sich erst bestätigen, wenn alle Sitzungen dieses Projekts geladen sind.',
+    sessions: 'Sessions',
+    noSessions: 'Noch keine Sessions in diesem Projekt.',
+    sessionsFailed: 'Nicht alle Sessions dieses Projekts konnten geladen werden. Die neuesten werden angezeigt.',
+    allProfilesLimited:
+      'In „Alle Profile“ lassen sich die Sessions eines Projekts nicht auflisten. Wählen Sie in der Seitenleiste ein einzelnes Profil, um alle Sessions dieses Projekts zu sehen.',
+    untitledSession: 'Unbenannte Session',
+    status: {
+      background: 'Läuft im Hintergrund',
+      'needs-input': 'Eingabe nötig',
+      stalled: 'Hängt',
+      working: 'In Arbeit'
+    },
+    openArtifacts: 'Artefakte',
+    openKanban: 'Kanban',
+    showInSidebar: 'In der Seitenleiste zeigen',
+    openOverview: 'Projektübersicht öffnen'
+  },
   artifactCard: {
     kind: {
       code: 'Code',
@@ -3987,7 +4044,8 @@ export const deOverrides = {
       capabilities: 'Fähigkeiten',
       messaging: 'Messaging',
       artifacts: 'Artefakte',
-      cron: 'Geplante Jobs'
+      cron: 'Geplante Jobs',
+      projects: 'Projekte'
     },
     searchAria: 'Sessions durchsuchen',
     searchPlaceholder: 'Sessions durchsuchen…',

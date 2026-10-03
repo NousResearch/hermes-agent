@@ -108,6 +108,7 @@ import {
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
+  PROJECTS_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE
 } from '../routes'
@@ -303,6 +304,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.profiles': () => navigate(PROFILES_ROUTE),
     'nav.capabilities': () => navigateToWorkspacePage(navigate, CAPABILITIES_ROUTE),
     'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
+    'nav.projects': () => navigateToWorkspacePage(navigate, PROJECTS_ROUTE),
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),

@@ -29,6 +29,7 @@ import {
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
+  $connection,
   $currentCwd,
   $selectedStoredSessionId,
   $sessions,
@@ -68,6 +69,19 @@ export const $projectTreeLoading = atom(false)
 // sibling worktree the git probe assigned to its repo project never re-files
 // under an umbrella folder by cwd.
 export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySessionId)
+
+// Whose caches these are: the connection plus the profile view (one profile,
+// or All Profiles). Project ids repeat across owners (auto-projects are folder
+// paths), so an id alone never says whose project a cached row describes.
+export const $projectsOwnerKey = computed(
+  [$connection, $profileScope],
+  (connection, scope) => `${connection?.connectionId ?? ''}\u0000${scope}`
+)
+// The owner `$projects` / `$projectTree` were last read for. The sidebar paints
+// the shared caches as they stand; a surface that must never show a departed
+// owner's rows (the Projects cockpit) shows them only while the tag matches.
+export const $projectsOwner = atom<null | string>(null)
+export const $projectTreeOwner = atom<null | string>(null)
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -133,6 +147,15 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
   } else {
     requestFreshSession()
   }
+}
+
+// Show a project in the sidebar from a read-only surface (the Projects
+// cockpit): grouped mode + the view scope, nothing durable. Unlike
+// `enterProject` it never writes the active-project pointer — in All Profiles
+// that write would land on whichever profile the live gateway serves.
+export function showProjectInSidebar(id: string): void {
+  setSidebarAgentsGrouped(true)
+  $projectScope.set(id)
 }
 
 // The cwd a NEW chat should start in.
@@ -377,12 +400,66 @@ function applyPayload(payload: ProjectsPayload): void {
   $activeProjectId.set(payload.active_id ?? null)
 }
 
-let projectsRefreshGeneration = 0
+/** How a project read ended for the owner it was made for.
+ * - `complete`: this owner's answer landed (its own, or a newer same-owner
+ *   read's that replaced it).
+ * - `incomplete`: an answer landed, but the backend reported parts it couldn't
+ *   read (All Profiles' per-profile `errors`), so it is not the whole picture.
+ * - `failed`: nothing landed for this owner; the caches keep their last good rows.
+ * - `departed`: the owner changed mid-read; the next owner's read reports. */
+export type ProjectsReadOutcome = 'complete' | 'departed' | 'failed' | 'incomplete'
+
+interface ProjectsRead {
+  outcome: Promise<ProjectsReadOutcome>
+  owner: string
+}
+
+// One tracker per kind of read (list, tree). Only the newest read may publish,
+// but a superseded read is not a success: its caller waits on the read that
+// replaced it (and whatever replaced that), so a background refresh that fails
+// after taking over can't be mistaken for the caller's answer.
+function projectsReadTracker() {
+  let generation = 0
+  let latest: null | ProjectsRead = null
+
+  const isCurrent = (read: number, owner: string): boolean => read === generation && $projectsOwnerKey.get() === owner
+
+  return {
+    isCurrent,
+    isNewest: (read: number): boolean => read === generation,
+    start(read: (generation: number, owner: string) => Promise<ProjectsReadOutcome>): Promise<ProjectsReadOutcome> {
+      const owner = $projectsOwnerKey.get()
+      const outcome = read(++generation, owner)
+      latest = { outcome, owner }
+
+      return outcome
+    },
+    /** The outcome of a read that did not publish. */
+    unpublished(read: number, owner: string): Promise<ProjectsReadOutcome> | ProjectsReadOutcome {
+      if ($projectsOwnerKey.get() !== owner) {
+        return 'departed'
+      }
+
+      if (read !== generation && latest?.owner === owner) {
+        return latest.outcome
+      }
+
+      return 'failed'
+    }
+  }
+}
+
+const projectListReads = projectsReadTracker()
 
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
-export async function refreshProjects(): Promise<void> {
-  const generation = ++projectsRefreshGeneration
+// The outcome lets a page that needs an honest error state tell "no projects"
+// from "no answer"; fire-and-forget callers ignore it.
+export function refreshProjects(): Promise<ProjectsReadOutcome> {
+  return projectListReads.start(readProjects)
+}
+
+async function readProjects(generation: number, owner: string): Promise<ProjectsReadOutcome> {
   let context: ActiveProjectsContext | null = null
 
   try {
@@ -394,17 +471,23 @@ export async function refreshProjects(): Promise<void> {
       projectParams({}, context.profile)
     )
 
-    if (generation !== projectsRefreshGeneration || !stillOnProjectsContext(context)) {
-      return
+    if (!projectListReads.isCurrent(generation, owner) || !stillOnProjectsContext(context)) {
+      return projectListReads.unpublished(generation, owner)
     }
 
     applyPayload(payload)
+    $projectsOwner.set(owner)
     markProjectsRpcSuccess()
+
+    return 'complete'
   } catch (err) {
-    if (context && generation === projectsRefreshGeneration && stillOnProjectsContext(context)) {
+    // No context means the connect itself failed (or the owner moved while
+    // connecting). Backend may not be ready; keep the last known list.
+    if (context && projectListReads.isCurrent(generation, owner) && stillOnProjectsContext(context)) {
       markProjectsRpcFailure(err)
     }
-    // Backend may not be ready; keep the last known list.
+
+    return projectListReads.unpublished(generation, owner)
   }
 }
 
@@ -412,6 +495,8 @@ interface ProjectTreePayload {
   projects: SidebarProjectTree[]
   active_id: null | string
   scoped_session_ids: string[]
+  /** All Profiles fan-out only: profiles whose databases couldn't be read. */
+  errors?: unknown[]
 }
 
 // Expanded previews need the complete existing tree window before the renderer
@@ -422,7 +507,7 @@ const projectTreePreviewLimit = () => ($sidebarShowAllSessions.get() ? 2000 : 3)
 // default.
 const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
-let projectTreeRefreshGeneration = 0
+const projectTreeReads = projectsReadTracker()
 
 function applyProjectTreePayload(res: ProjectTreePayload): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
@@ -446,8 +531,11 @@ function applyProjectTreePayload(res: ProjectTreePayload): void {
   }
 }
 
-async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<void> {
-  const generation = ++projectTreeRefreshGeneration
+async function readProjectTreeOn(
+  context: ActiveProjectsContext,
+  generation: number,
+  owner: string
+): Promise<ProjectsReadOutcome> {
   const { gateway, profile } = context
 
   if (activeGateway() === gateway) {
@@ -479,18 +567,23 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       )
     }
 
-    if (generation !== projectTreeRefreshGeneration || !stillOnProjectsContext(context)) {
-      return
+    if (!projectTreeReads.isCurrent(generation, owner) || !stillOnProjectsContext(context)) {
+      return projectTreeReads.unpublished(generation, owner)
     }
 
     applyProjectTreePayload(res)
+    $projectTreeOwner.set(owner)
     markProjectsRpcSuccess()
+
+    return 'complete'
   } catch (err) {
-    if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
+    if (projectTreeReads.isCurrent(generation, owner) && stillOnProjectsContext(context)) {
       markProjectsRpcFailure(err)
     }
+
+    return projectTreeReads.unpublished(generation, owner)
   } finally {
-    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+    if (projectTreeReads.isNewest(generation) && activeGateway() === gateway) {
       $projectTreeLoading.set(false)
     }
   }
@@ -498,27 +591,35 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
 
 // Pull the authoritative project tree (overview structure + counts + preview
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
-export async function refreshProjectTree(): Promise<void> {
-  if ($profileScope.get() === ALL_PROFILES) {
-    await refreshProjectTreeAcrossProfiles()
+// cached tree intact so the sidebar doesn't flicker. Same outcome contract as
+// `refreshProjects`.
+export function refreshProjectTree(): Promise<ProjectsReadOutcome> {
+  return projectTreeReads.start($profileScope.get() === ALL_PROFILES ? readProjectTreeAcrossProfiles : readProjectTree)
+}
 
-    return
-  }
+async function readProjectTree(generation: number, owner: string): Promise<ProjectsReadOutcome> {
+  let context: ActiveProjectsContext
 
   try {
-    await refreshProjectTreeOn(await activeProjectsContext())
+    context = await activeProjectsContext()
   } catch {
-    // Backend may not be ready; keep the last known tree.
+    // Backend may not be ready; keep the last known tree. As the newest read
+    // this one owns the loading flag a read it superseded may have raised.
+    if (projectTreeReads.isNewest(generation)) {
+      $projectTreeLoading.set(false)
+    }
+
+    return projectTreeReads.unpublished(generation, owner)
   }
+
+  return readProjectTreeOn(context, generation, owner)
 }
 
 // The grouped sidebar in all-profiles mode. `projects.tree` answers for one
 // backend's own profile, so it can only ever describe a slice of this view;
 // the REST fan-out reads every profile's databases directly instead of asking
 // us to hold a backend open per profile just to draw lanes.
-async function refreshProjectTreeAcrossProfiles(): Promise<void> {
-  const generation = ++projectTreeRefreshGeneration
+async function readProjectTreeAcrossProfiles(generation: number, owner: string): Promise<ProjectsReadOutcome> {
   $projectTreeLoading.set(true)
 
   try {
@@ -527,18 +628,36 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 
-    // A profile switch mid-flight leaves this payload describing the wrong
-    // scope; the newer refresh owns the tree.
-    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
-      return
+    // A profile or connection switch mid-flight leaves this payload describing
+    // the wrong owner; the newer refresh owns the tree.
+    if (!projectTreeReads.isCurrent(generation, owner)) {
+      return projectTreeReads.unpublished(generation, owner)
+    }
+
+    // The fan-out answers 200 even when some profiles couldn't be read, naming
+    // them in `errors`. With nothing read, an empty list is not "no projects":
+    // keep the last good tree. A partial read publishes what landed, flagged.
+    const unread = res.errors?.length ?? 0
+
+    if (unread && !res.projects?.length) {
+      return 'failed'
     }
 
     applyProjectTreePayload(res)
+    $projectTreeOwner.set(owner)
     markProjectsRpcSuccess()
+
+    return unread ? 'incomplete' : 'complete'
   } catch (err) {
-    markProjectsRpcFailure(err)
+    // A departed All Profiles read must not publish its failure over the
+    // newer read (or single-profile scope) that now owns availability.
+    if (projectTreeReads.isCurrent(generation, owner)) {
+      markProjectsRpcFailure(err)
+    }
+
+    return projectTreeReads.unpublished(generation, owner)
   } finally {
-    if (generation === projectTreeRefreshGeneration) {
+    if (projectTreeReads.isNewest(generation)) {
       $projectTreeLoading.set(false)
     }
   }
@@ -817,7 +936,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       // scanned list surfaces. Skip if the user moved on — a stale scan must
       // not publish into the newly focused profile.
       if (stillOnProjectsContext(context)) {
-        await refreshProjectTreeOn(context)
+        await projectTreeReads.start((generation, owner) => readProjectTreeOn(context, generation, owner))
       }
     } catch (err) {
       // Surface the failure (stale backend, RPC error, gateway drop) instead

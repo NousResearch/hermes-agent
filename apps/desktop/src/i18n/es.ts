@@ -697,6 +697,7 @@ export const esOverrides = {
       'nav.profiles': 'Abrir perfiles',
       'nav.capabilities': 'Abrir skills',
       'nav.messaging': 'Abrir mensajería',
+      'nav.projects': 'Abrir proyectos',
       'nav.artifacts': 'Abrir artefactos',
       'nav.cron': 'Abrir tareas programadas',
       'nav.agents': 'Abrir agentes',
@@ -3144,6 +3145,10 @@ export const esOverrides = {
         title: 'Mensajería',
         detail: 'Configura Telegram, Slack, Discord y más'
       },
+      projects: {
+        title: 'Proyectos',
+        detail: 'Explora carpetas, repositorios y sesiones del proyecto'
+      },
       artifacts: {
         title: 'Artefactos',
         detail: 'Explora salidas generadas'
@@ -3908,6 +3913,55 @@ export const esOverrides = {
     copyUrl: 'Copiar URL',
     copyPath: 'Copiar ruta'
   },
+
+  projects: {
+    search: 'Buscar proyectos...',
+    refresh: 'Actualizar proyectos',
+    refreshing: 'Actualizando proyectos',
+    loading: 'Cargando proyectos',
+    emptyTitle: 'Aún no hay proyectos',
+    emptyDesc: 'Crea un proyecto para mantener juntas sus carpetas, repositorios y sesiones.',
+    noMatchesTitle: 'No hay proyectos que coincidan',
+    unavailableTitle: 'Los proyectos no están disponibles',
+    unavailableDesc: 'El backend de Hermes conectado aún no admite proyectos. Actualiza Hermes para usarlos.',
+    loadFailedTitle: 'No se pudieron cargar los proyectos',
+    loadFailedDesc: 'Hermes no devolvió la lista de proyectos. Comprueba la conexión e inténtalo de nuevo.',
+    partialFailed: 'No se pudieron actualizar todos los detalles de los proyectos. Se muestra lo último que se cargó.',
+    incompleteProfiles: 'No se pudieron leer algunos perfiles, así que esta lista puede estar incompleta.',
+    selectTitle: 'Selecciona un proyecto',
+    selectDesc: 'Elige un proyecto para ver sus carpetas, repositorios y sesiones.',
+    autoDiscovered: 'Repositorio detectado automáticamente',
+    sessionCount: count => (count === 1 ? '1 sesión' : `${count} sesiones`),
+    primaryPath: 'Carpeta principal',
+    noPath: 'Sin carpeta',
+    folders: 'Carpetas',
+    primaryFolder: 'Principal',
+    repositories: 'Repositorios',
+    noRepositories: 'Este proyecto aún no tiene repositorios git.',
+    laneMain: 'Checkout principal',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Worktrees de tareas Kanban',
+    activeSessions: 'Activas ahora',
+    noActiveSessions: 'Ningún agente está trabajando en este proyecto ahora mismo.',
+    activityUnknown:
+      'No se puede confirmar qué agentes están trabajando hasta que se carguen todas las sesiones de este proyecto.',
+    sessions: 'Sesiones',
+    noSessions: 'Este proyecto aún no tiene sesiones.',
+    sessionsFailed: 'No se pudieron cargar todas las sesiones de este proyecto. Se muestran las más recientes.',
+    allProfilesLimited:
+      'Con «Todos los perfiles» no se pueden listar las sesiones de un proyecto. Elige un solo perfil en la barra lateral para ver todas las sesiones de este proyecto.',
+    untitledSession: 'Sesión sin título',
+    status: {
+      background: 'En segundo plano',
+      'needs-input': 'Requiere respuesta',
+      stalled: 'Detenida',
+      working: 'Trabajando'
+    },
+    openArtifacts: 'Artefactos',
+    openKanban: 'Kanban',
+    showInSidebar: 'Mostrar en la barra lateral',
+    openOverview: 'Abrir resumen del proyecto'
+  },
   artifactCard: {
     kind: {
       code: 'Código',
@@ -3979,7 +4033,8 @@ export const esOverrides = {
       capabilities: 'Capacidades',
       messaging: 'Mensajería',
       artifacts: 'Artefactos',
-      cron: 'Tareas programadas'
+      cron: 'Tareas programadas',
+      projects: 'Proyectos'
     },
     searchAria: 'Buscar sesiones',
     searchPlaceholder: 'Buscar sesiones…',

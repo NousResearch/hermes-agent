@@ -693,6 +693,7 @@ export const en: Translations = {
       'nav.profiles': 'Open profiles',
       'nav.capabilities': 'Open skills',
       'nav.messaging': 'Open messaging',
+      'nav.projects': 'Open projects',
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
@@ -2785,6 +2786,7 @@ export const en: Translations = {
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
       capabilities: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
+      projects: { title: 'Projects', detail: 'Browse project folders, repositories, and sessions' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
     sectionEntries: {
@@ -3492,6 +3494,54 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  projects: {
+    search: 'Search projects...',
+    refresh: 'Refresh projects',
+    refreshing: 'Refreshing projects',
+    loading: 'Loading projects',
+    emptyTitle: 'No projects yet',
+    emptyDesc: 'Create a project to keep its folders, repositories, and sessions together.',
+    noMatchesTitle: 'No matching projects',
+    unavailableTitle: 'Projects are unavailable',
+    unavailableDesc: 'The connected Hermes backend does not support projects yet. Update Hermes to use them.',
+    loadFailedTitle: "Couldn't load projects",
+    loadFailedDesc: "Hermes didn't return the project list. Check the connection and try again.",
+    partialFailed: "Couldn't refresh every project detail. Showing what loaded last.",
+    incompleteProfiles: "Some profiles couldn't be read, so this list may be incomplete.",
+    selectTitle: 'Select a project',
+    selectDesc: 'Choose a project to see its folders, repositories, and sessions.',
+    autoDiscovered: 'Auto-discovered repository',
+    sessionCount: count => (count === 1 ? '1 session' : `${count} sessions`),
+    primaryPath: 'Primary folder',
+    noPath: 'No folder',
+    folders: 'Folders',
+    primaryFolder: 'Primary',
+    repositories: 'Repositories',
+    noRepositories: 'No git repositories in this project yet.',
+    laneMain: 'Main checkout',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Kanban task worktrees',
+    activeSessions: 'Active now',
+    noActiveSessions: 'No agents are working in this project right now.',
+    activityUnknown: "Can't confirm which agents are working until every session in this project loads.",
+    sessions: 'Sessions',
+    noSessions: 'No sessions in this project yet.',
+    sessionsFailed: "Couldn't load every session for this project. Showing the most recent ones.",
+    allProfilesLimited:
+      "All Profiles can't list one project's sessions. Choose a single profile in the sidebar to see every session in this project.",
+    untitledSession: 'Untitled session',
+    status: {
+      background: 'Running in background',
+      'needs-input': 'Needs input',
+      stalled: 'Stalled',
+      working: 'Working'
+    },
+    openArtifacts: 'Artifacts',
+    openKanban: 'Kanban',
+    showInSidebar: 'Show in sidebar',
+    openOverview: 'Open project overview'
+  },
+
   artifactCard: {
     kind: { code: 'Code', html: 'Interactive page', svg: 'Graphic' },
     generating: lines => `Generating… ${lines} lines`,
@@ -3561,7 +3611,8 @@ export const en: Translations = {
       capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs'
+      cron: 'Scheduled jobs',
+      projects: 'Projects'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

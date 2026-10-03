@@ -2373,7 +2373,10 @@ export interface Translations {
     mcpServers: string
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
+    nav: Record<
+      'newChat' | 'settings' | 'capabilities' | 'messaging' | 'projects' | 'artifacts',
+      { title: string; detail: string }
+    >
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
@@ -2920,6 +2923,48 @@ export interface Translations {
     chat: string
     copyUrl: string
     copyPath: string
+  }
+
+  projects: {
+    search: string
+    refresh: string
+    refreshing: string
+    loading: string
+    emptyTitle: string
+    emptyDesc: string
+    noMatchesTitle: string
+    unavailableTitle: string
+    unavailableDesc: string
+    loadFailedTitle: string
+    loadFailedDesc: string
+    partialFailed: string
+    incompleteProfiles: string
+    selectTitle: string
+    selectDesc: string
+    autoDiscovered: string
+    sessionCount: (count: number) => string
+    primaryPath: string
+    noPath: string
+    folders: string
+    primaryFolder: string
+    repositories: string
+    noRepositories: string
+    laneMain: string
+    laneWorktree: string
+    laneKanban: string
+    activeSessions: string
+    noActiveSessions: string
+    activityUnknown: string
+    sessions: string
+    noSessions: string
+    sessionsFailed: string
+    allProfilesLimited: string
+    untitledSession: string
+    status: Record<'background' | 'needs-input' | 'stalled' | 'working', string>
+    openArtifacts: string
+    openKanban: string
+    showInSidebar: string
+    openOverview: string
   }
 
   artifactCard: {

@@ -8,6 +8,7 @@ import { arCommandCenter } from './ar_command_center'
 import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
+import { arProjects } from './ar_projects'
 import { arSettings } from './ar_settings'
 import { defineLocale } from './define-locale'
 
@@ -33,6 +34,7 @@ export const ar = defineLocale({
   modelAssignment: arSettings.modelAssignment,
   cron: arCommandCenter.cron,
   artifacts: arArtifacts.artifacts,
+  projects: arProjects.projects,
   artifactCard: arArtifacts.artifactCard,
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,

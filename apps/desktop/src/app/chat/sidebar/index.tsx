@@ -144,6 +144,7 @@ import {
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  PROJECTS_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution
 } from '../../routes'
@@ -227,8 +228,16 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: MESSAGING_ROUTE,
     keybindActionId: 'nav.messaging'
   },
-  // Artifacts and Scheduled jobs are outputs of running Hermes the developer
+  // Projects, Artifacts and Scheduled jobs are how you run Hermes the developer
   // way; Capabilities and Messaging are how anyone sets it up.
+  {
+    id: 'projects',
+    label: '',
+    icon: props => <Codicon name="folder-library" {...props} />,
+    route: PROJECTS_ROUTE,
+    keybindActionId: 'nav.projects',
+    tier: 'advanced'
+  },
   {
     id: 'artifacts',
     label: '',
@@ -1605,6 +1614,7 @@ export function ChatSidebar({
                   (item.id === 'capabilities' && currentView === 'capabilities') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'projects' && currentView === 'projects') ||
                   (item.id === 'cron' && currentView === 'cron') ||
                   // Contributed rows light up at their own route.
                   (currentView === 'extension' && Boolean(item.route) && pathname === item.route)

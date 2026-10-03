@@ -70,6 +70,7 @@ export const arChrome = {
       'nav.profiles': 'فتح الملفات الشخصية',
       'nav.capabilities': 'فتح المهارات',
       'nav.messaging': 'فتح المراسلة',
+      'nav.projects': 'فتح المشاريع',
       'nav.artifacts': 'فتح العناصر',
       'nav.cron': 'فتح المهام المجدولة',
       'nav.agents': 'فتح الوكلاء',
@@ -195,6 +196,7 @@ export const arChrome = {
       'new-session': 'جلسة جديدة',
       capabilities: 'المهارات',
       messaging: 'المراسلة',
+      projects: 'المشاريع',
       artifacts: 'العناصر',
       cron: 'المهام المجدولة'
     },

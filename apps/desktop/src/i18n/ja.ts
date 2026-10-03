@@ -1849,6 +1849,7 @@ export const ja = defineLocale({
       settings: { title: '設定', detail: 'Hermes デスクトップを設定' },
       capabilities: { title: 'スキルとツール', detail: 'スキル、ツールセット、プロバイダーを有効化' },
       messaging: { title: 'メッセージング', detail: 'Telegram、Slack、Discord などを設定' },
+      projects: { title: 'プロジェクト', detail: 'プロジェクトのフォルダー、リポジトリ、セッションを参照' },
       artifacts: { title: 'アーティファクト', detail: '生成された出力を閲覧' }
     },
     sectionEntries: {
@@ -2413,6 +2414,55 @@ export const ja = defineLocale({
     copyPath: 'パスをコピー'
   },
 
+  projects: {
+    search: 'プロジェクトを検索...',
+    refresh: 'プロジェクトを更新',
+    refreshing: 'プロジェクトを更新中',
+    loading: 'プロジェクトを読み込み中',
+    emptyTitle: 'プロジェクトはまだありません',
+    emptyDesc: 'プロジェクトを作成すると、フォルダー、リポジトリ、セッションをまとめて管理できます。',
+    noMatchesTitle: '一致するプロジェクトはありません',
+    unavailableTitle: 'プロジェクトを利用できません',
+    unavailableDesc:
+      '接続中の Hermes バックエンドはまだプロジェクトに対応していません。利用するには Hermes を更新してください。',
+    loadFailedTitle: 'プロジェクトを読み込めませんでした',
+    loadFailedDesc: 'Hermes からプロジェクト一覧が返されませんでした。接続を確認して、もう一度お試しください。',
+    partialFailed: 'プロジェクトの詳細をすべて更新できませんでした。最後に読み込んだ内容を表示しています。',
+    incompleteProfiles: '一部のプロファイルを読み込めなかったため、この一覧は不完全な可能性があります。',
+    selectTitle: 'プロジェクトを選択',
+    selectDesc: 'プロジェクトを選ぶと、フォルダー、リポジトリ、セッションが表示されます。',
+    autoDiscovered: '自動検出されたリポジトリ',
+    sessionCount: count => (count === 1 ? '1 件のセッション' : `${count} 件のセッション`),
+    primaryPath: 'メインフォルダー',
+    noPath: 'フォルダーなし',
+    folders: 'フォルダー',
+    primaryFolder: 'メイン',
+    repositories: 'リポジトリ',
+    noRepositories: 'このプロジェクトにはまだ git リポジトリがありません。',
+    laneMain: 'メインのチェックアウト',
+    laneWorktree: 'ワークツリー',
+    laneKanban: 'Kanban タスクのワークツリー',
+    activeSessions: '実行中',
+    noActiveSessions: '現在このプロジェクトで作業中のエージェントはいません。',
+    activityUnknown: 'このプロジェクトのすべてのセッションを読み込むまで、作業中のエージェントを確認できません。',
+    sessions: 'セッション',
+    noSessions: 'このプロジェクトにはまだセッションがありません。',
+    sessionsFailed: 'このプロジェクトのセッションをすべて読み込めませんでした。最新のものを表示しています。',
+    allProfilesLimited:
+      '「すべてのプロファイル」では、プロジェクトのセッションを一覧表示できません。サイドバーでプロファイルを 1 つ選ぶと、このプロジェクトのすべてのセッションを表示できます。',
+    untitledSession: '無題のセッション',
+    status: {
+      background: 'バックグラウンドで実行中',
+      'needs-input': '入力待ち',
+      stalled: '停止中',
+      working: '実行中'
+    },
+    openArtifacts: 'アーティファクト',
+    openKanban: 'Kanban',
+    showInSidebar: 'サイドバーに表示',
+    openOverview: 'プロジェクトの概要を開く'
+  },
+
   artifactCard: {
     kind: { code: 'コード', html: 'インタラクティブページ', svg: 'グラフィック' },
     generating: lines => `生成中… ${lines} 行`,
@@ -2483,7 +2533,8 @@ export const ja = defineLocale({
       capabilities: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ'
+      cron: 'スケジュール済みジョブ',
+      projects: 'プロジェクト'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

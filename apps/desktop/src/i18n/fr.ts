@@ -696,6 +696,7 @@ export const frOverrides = {
       'nav.profiles': 'Ouvrir les profils',
       'nav.capabilities': 'Ouvrir les skills',
       'nav.messaging': 'Ouvrir la messagerie',
+      'nav.projects': 'Ouvrir les projets',
       'nav.artifacts': 'Ouvrir les artefacts',
       'nav.cron': 'Ouvrir les tâches planifiées',
       'nav.agents': 'Ouvrir les agents',
@@ -3163,6 +3164,10 @@ export const frOverrides = {
         title: 'Messagerie',
         detail: 'Configurer Telegram, Slack, Discord et plus'
       },
+      projects: {
+        title: 'Projets',
+        detail: 'Parcourir les dossiers, dépôts et sessions du projet'
+      },
       artifacts: {
         title: 'Artéfacts',
         detail: 'Parcourir les sorties générées'
@@ -3928,6 +3933,57 @@ export const frOverrides = {
     copyUrl: "Copier l'URL",
     copyPath: 'Copier le chemin'
   },
+
+  projects: {
+    search: 'Rechercher des projets...',
+    refresh: 'Actualiser les projets',
+    refreshing: 'Actualisation des projets',
+    loading: 'Chargement des projets',
+    emptyTitle: 'Aucun projet pour le moment',
+    emptyDesc: 'Créez un projet pour regrouper ses dossiers, dépôts et sessions.',
+    noMatchesTitle: 'Aucun projet correspondant',
+    unavailableTitle: 'Les projets sont indisponibles',
+    unavailableDesc:
+      'Le backend Hermes connecté ne prend pas encore en charge les projets. Mettez à jour Hermes pour les utiliser.',
+    loadFailedTitle: 'Impossible de charger les projets',
+    loadFailedDesc: "Hermes n'a pas renvoyé la liste des projets. Vérifiez la connexion et réessayez.",
+    partialFailed:
+      'Impossible d’actualiser tous les détails des projets. Les dernières informations chargées sont affichées.',
+    incompleteProfiles: "Certains profils n'ont pas pu être lus, cette liste est donc peut-être incomplète.",
+    selectTitle: 'Sélectionnez un projet',
+    selectDesc: 'Choisissez un projet pour voir ses dossiers, dépôts et sessions.',
+    autoDiscovered: 'Dépôt détecté automatiquement',
+    sessionCount: count => (count === 1 ? '1 session' : `${count} sessions`),
+    primaryPath: 'Dossier principal',
+    noPath: 'Aucun dossier',
+    folders: 'Dossiers',
+    primaryFolder: 'Principal',
+    repositories: 'Dépôts',
+    noRepositories: 'Aucun dépôt git dans ce projet pour le moment.',
+    laneMain: 'Checkout principal',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Worktrees des tâches Kanban',
+    activeSessions: 'Actives maintenant',
+    noActiveSessions: "Aucun agent ne travaille sur ce projet pour l'instant.",
+    activityUnknown:
+      'Impossible de confirmer quels agents travaillent tant que toutes les sessions de ce projet ne sont pas chargées.',
+    sessions: 'Sessions',
+    noSessions: 'Aucune session dans ce projet pour le moment.',
+    sessionsFailed: 'Impossible de charger toutes les sessions de ce projet. Les plus récentes sont affichées.',
+    allProfilesLimited:
+      '« Tous les profils » ne peut pas lister les sessions d’un projet. Choisissez un seul profil dans la barre latérale pour voir toutes les sessions de ce projet.',
+    untitledSession: 'Session sans titre',
+    status: {
+      background: 'En arrière-plan',
+      'needs-input': 'Action requise',
+      stalled: 'Bloquée',
+      working: 'En cours'
+    },
+    openArtifacts: 'Artefacts',
+    openKanban: 'Kanban',
+    showInSidebar: 'Afficher dans la barre latérale',
+    openOverview: "Ouvrir l'aperçu du projet"
+  },
   artifactCard: {
     kind: {
       code: 'Code',
@@ -3999,7 +4055,8 @@ export const frOverrides = {
       capabilities: 'Capacités',
       messaging: 'Messagerie',
       artifacts: 'Artefacts',
-      cron: 'Tâches planifiées'
+      cron: 'Tâches planifiées',
+      projects: 'Projets'
     },
     searchAria: 'Rechercher des sessions',
     searchPlaceholder: 'Rechercher des sessions…',

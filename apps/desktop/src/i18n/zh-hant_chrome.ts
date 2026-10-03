@@ -86,6 +86,7 @@ export const zhHantChrome = {
       'new-session': '新工作階段',
       capabilities: '技能與工具',
       messaging: '訊息平台',
+      projects: '專案',
       artifacts: '成品',
       cron: '排程工作'
     },

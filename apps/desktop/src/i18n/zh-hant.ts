@@ -10,6 +10,7 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantProjects } from './zh-hant_projects'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHant = defineLocale({
@@ -91,6 +92,7 @@ export const zhHant = defineLocale({
   },
   cron: zhHantCommandCenter.cron,
   artifacts: zhHantArtifacts.artifacts,
+  projects: zhHantProjects.projects,
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,

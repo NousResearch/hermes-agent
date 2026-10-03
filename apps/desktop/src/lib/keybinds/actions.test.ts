@@ -46,6 +46,14 @@ describe('KEYBIND_ACTIONS', () => {
     expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'composer.dictate')).toHaveLength(1)
   })
 
+  it('registers Projects navigation with a label and no default chord', () => {
+    const action = keybindAction('nav.projects')
+
+    expect(action).toMatchObject({ category: 'navigation', defaults: [] })
+    expect(defaultBindings()['nav.projects']).toEqual([])
+    expect(en.keybinds.actions['nav.projects']).toBe('Open projects')
+  })
+
   // #71627: reasoning level up/down ship unbound (users pick their own chord)
   // and opt into firing from an editable target on MODIFIED combos only.
   it('registers reasoning level actions unbound, editable on modified combos only', () => {

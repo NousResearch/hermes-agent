@@ -96,6 +96,10 @@ export const arCommandCenter = {
         title: 'المراسلة',
         detail: 'إعداد Telegram وSlack وDiscord والمزيد'
       },
+      projects: {
+        title: 'المشاريع',
+        detail: 'استعرض مجلدات المشروع ومستودعاته وجلساته'
+      },
       artifacts: {
         title: 'العناصر',
         detail: 'استعراض المخرجات المولّدة'

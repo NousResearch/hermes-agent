@@ -312,10 +312,14 @@ describe('ChatSidebar section labels', () => {
     setSidebarAgentsGrouped(true)
     $projectTree.set([realProject])
 
-    renderSidebar('/', 'chat')
+    const { container } = renderSidebar('/', 'chat')
 
-    expect(screen.getByText('Projects')).toBeTruthy()
-    expect(screen.queryByText('Sessions')).toBeNull()
+    const sectionLabels = [...container.querySelectorAll('[class~="group/section-label"]')].map(node =>
+      node.textContent?.trim()
+    )
+
+    expect(sectionLabels).toContain('Projects')
+    expect(sectionLabels).not.toContain('Sessions')
   })
 
   it('keeps the "Sessions" label when grouping is on but no projects exist', () => {
@@ -325,10 +329,14 @@ describe('ChatSidebar section labels', () => {
     $projectTree.set([])
     $sessions.set(sessionRows)
 
-    renderSidebar('/', 'chat')
+    const { container } = renderSidebar('/', 'chat')
 
-    expect(screen.getByText('Sessions')).toBeTruthy()
-    expect(screen.queryByText('Projects')).toBeNull()
+    const sectionLabels = [...container.querySelectorAll('[class~="group/section-label"]')].map(node =>
+      node.textContent?.trim()
+    )
+
+    expect(sectionLabels).toContain('Sessions')
+    expect(sectionLabels).not.toContain('Projects')
   })
 
   it('keeps the "Sessions" label when the grouped tree is only the synthetic Home bucket', () => {
@@ -338,10 +346,14 @@ describe('ChatSidebar section labels', () => {
     $projectTree.set(homeOnly)
     $sessions.set(sessionRows)
 
-    renderSidebar('/', 'chat')
+    const { container } = renderSidebar('/', 'chat')
 
-    expect(screen.getByText('Sessions')).toBeTruthy()
-    expect(screen.queryByText('Projects')).toBeNull()
+    const sectionLabels = [...container.querySelectorAll('[class~="group/section-label"]')].map(node =>
+      node.textContent?.trim()
+    )
+
+    expect(sectionLabels).toContain('Sessions')
+    expect(sectionLabels).not.toContain('Projects')
   })
 })
 

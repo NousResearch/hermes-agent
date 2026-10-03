@@ -350,6 +350,7 @@ export const ru = defineLocale({
       'nav.profiles': 'Открыть профили',
       'nav.capabilities': 'Открыть навыки',
       'nav.messaging': 'Открыть мессенджеры',
+      'nav.projects': 'Открыть проекты',
       'nav.artifacts': 'Открыть артефакты',
       'nav.cron': 'Открыть запланированные задачи',
       'nav.agents': 'Открыть агенты',
@@ -1951,6 +1952,7 @@ export const ru = defineLocale({
       settings: { title: 'Настройки', detail: 'Настройка Hermes desktop' },
       capabilities: { title: 'Возможности', detail: 'Навыки, инструменты и MCP-серверы' },
       messaging: { title: 'Сообщения', detail: 'Настройка Telegram, Slack, Discord и других' },
+      projects: { title: 'Проекты', detail: 'Просмотр папок, репозиториев и сеансов проекта' },
       artifacts: { title: 'Артефакты', detail: 'Просмотр сгенерированных результатов' }
     },
     sectionEntries: {
@@ -2606,6 +2608,54 @@ export const ru = defineLocale({
     copyPath: 'Копировать путь'
   },
 
+  projects: {
+    search: 'Поиск проектов...',
+    refresh: 'Обновить проекты',
+    refreshing: 'Обновление проектов',
+    loading: 'Загрузка проектов',
+    emptyTitle: 'Проектов пока нет',
+    emptyDesc: 'Создайте проект, чтобы держать его папки, репозитории и сеансы вместе.',
+    noMatchesTitle: 'Нет подходящих проектов',
+    unavailableTitle: 'Проекты недоступны',
+    unavailableDesc: 'Подключённый бэкенд Hermes пока не поддерживает проекты. Обновите Hermes, чтобы использовать их.',
+    loadFailedTitle: 'Не удалось загрузить проекты',
+    loadFailedDesc: 'Hermes не вернул список проектов. Проверьте подключение и повторите попытку.',
+    partialFailed: 'Не удалось обновить все сведения о проектах. Показаны последние загруженные данные.',
+    incompleteProfiles: 'Не удалось прочитать некоторые профили, поэтому список может быть неполным.',
+    selectTitle: 'Выберите проект',
+    selectDesc: 'Выберите проект, чтобы увидеть его папки, репозитории и сеансы.',
+    autoDiscovered: 'Автоматически найденный репозиторий',
+    sessionCount: count => (count === 1 ? '1 сеанс' : `Сеансов: ${count}`),
+    primaryPath: 'Основная папка',
+    noPath: 'Без папки',
+    folders: 'Папки',
+    primaryFolder: 'Основная',
+    repositories: 'Репозитории',
+    noRepositories: 'В этом проекте пока нет git-репозиториев.',
+    laneMain: 'Основная копия',
+    laneWorktree: 'Рабочее дерево',
+    laneKanban: 'Рабочие деревья задач Kanban',
+    activeSessions: 'Активны сейчас',
+    noActiveSessions: 'Сейчас в этом проекте не работает ни один агент.',
+    activityUnknown: 'Нельзя подтвердить, какие агенты работают, пока не загрузятся все сеансы этого проекта.',
+    sessions: 'Сеансы',
+    noSessions: 'В этом проекте пока нет сеансов.',
+    sessionsFailed: 'Не удалось загрузить все сеансы этого проекта. Показаны самые недавние.',
+    allProfilesLimited:
+      'В режиме «Все профили» нельзя показать сеансы одного проекта. Выберите один профиль на боковой панели, чтобы увидеть все сеансы этого проекта.',
+    untitledSession: 'Сеанс без названия',
+    status: {
+      background: 'Выполняется в фоне',
+      'needs-input': 'Нужен ввод',
+      stalled: 'Завис',
+      working: 'В работе'
+    },
+    openArtifacts: 'Артефакты',
+    openKanban: 'Kanban',
+    showInSidebar: 'Показать на боковой панели',
+    openOverview: 'Открыть обзор проекта'
+  },
+
   artifactCard: {
     kind: { code: 'Код', html: 'Интерактивная страница', svg: 'Графика' },
     generating: lines => `Генерация… ${lines} ${RU_NOUN(lines, 'строка', 'строки', 'строк')}`,
@@ -2674,7 +2724,8 @@ export const ru = defineLocale({
       capabilities: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи'
+      cron: 'Запланированные задачи',
+      projects: 'Проекты'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',

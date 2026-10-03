@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
 
+import { openProjectOverview } from '@/app/projects/navigation'
 import {
   type ActionItemSpec,
   ActionsContextMenu,
@@ -141,7 +142,20 @@ function useProjectActions({
     />
   )
 
-  return { confirmDialog, dangerItem, identityItems, pathItems }
+  // The Projects page's detail for this row. The Home bucket is not a project,
+  // so it has no detail to open.
+  const overviewItems: ActionItemSpec[] = project.isNoProject
+    ? []
+    : [
+        {
+          icon: 'preview',
+          key: 'overview',
+          label: t.projects.openOverview,
+          onSelect: () => openProjectOverview(project.id)
+        }
+      ]
+
+  return { confirmDialog, dangerItem, identityItems, overviewItems, pathItems }
 }
 
 // Per-project actions. The kebab keeps its row-anchored Appearance popover; the
@@ -173,7 +187,7 @@ export function ProjectMenu({
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
 
-  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+  const { confirmDialog, dangerItem, identityItems, overviewItems, pathItems } = useProjectActions({
     isActive,
     onExitScope,
     project,
@@ -237,6 +251,12 @@ export function ProjectMenu({
           onCloseAutoFocus={event => event.preventDefault()}
           sideOffset={6}
         >
+          {overviewItems.length > 0 && (
+            <>
+              {overviewItems.map(item => renderActionItem(DROPDOWN_KIT, item))}
+              <DropdownMenuSeparator />
+            </>
+          )}
           {project.isAuto ? (
             // Inherited (auto) repos can still be themed — the change adopts the
             // repo as a real project. Rename / add-folder / set-active stay out
@@ -301,7 +321,7 @@ export function ProjectContextMenu({
   const { t } = useI18n()
   const p = t.sidebar.projects
 
-  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+  const { confirmDialog, dangerItem, identityItems, overviewItems, pathItems } = useProjectActions({
     isActive,
     onExitScope,
     project,
@@ -316,6 +336,8 @@ export function ProjectContextMenu({
 
   const items = (kit: MenuKit) => (
     <>
+      {overviewItems.map(item => renderActionItem(kit, item))}
+      {overviewItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
       {canTheme && (
         <kit.Sub>

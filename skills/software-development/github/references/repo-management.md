@@ -26,7 +26,9 @@ fi
 if [ "$AUTH" = "gh" ]; then
   GH_USER=$(gh api user --jq '.login')
 else
-  GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user | python -c "import sys,json; print(json.load(sys.stdin)['login'])")
+  GH_AUTH="Authorization: token $GITHUB_TOKEN"
+  GH_USER_JSON=$(curl -s -H "$GH_AUTH" https://api.github.com/user)
+  GH_USER=$(printf '%s' "$GH_USER_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['login'])")
 fi
 ```
 
@@ -290,9 +292,12 @@ curl -s -X PUT \
 
 **With gh:**
 
+Set `KEY_FILE` to the absolute path of the private deployment key you intend to store as the repository's `SSH_KEY` secret.
+
 ```bash
+KEY_FILE="/absolute/path/to/your/deployment-private-key"
 gh secret set API_KEY --body "your-secret-value"
-gh secret set SSH_KEY < ~/.ssh/id_rsa
+gh secret set SSH_KEY < "$KEY_FILE"
 gh secret list
 gh secret delete API_KEY
 ```

@@ -1550,7 +1550,7 @@ def _gui_build_patches(root: Path, run_side_effect):
     ]
 
 
-def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_path):
+def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1560,6 +1560,7 @@ def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_pat
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda _tree: [])
 
     promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
 
@@ -1610,10 +1611,9 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
 
 
+@pytest.mark.platforms("windows")
 def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
-    """#109643: a renderer alive through the promotion rename keeps fetching its
-    old hashed chunks from disk and dies on the next lazy import — the swap must
-    ask for running desktop processes to stop on EVERY platform."""
+    """windows must stop the live app to release the bundle's file lock."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1630,6 +1630,164 @@ def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
 
     assert promoted == live_exe
     stop.assert_called_once_with(desktop_dir, also_posix=True)
+
+
+@pytest.mark.platforms("posix")
+def test_posix_swap_keeps_previous_bundle_when_a_process_uses_it(tmp_path, monkeypatch, capsys):
+    """a leftover rollback bundle must not be removed while an app still uses it."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    live_root = main_desktop._desktop_unpacked_root(live_exe, desktop_dir / "release")
+    previous = live_root.with_name(live_root.name + main_desktop._DESKTOP_PREVIOUS_SUFFIX)
+    previous.mkdir(parents=True)
+    previous_file = previous / "still-needed-by-live-app"
+    previous_file.write_text("keep", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(
+        main_desktop,
+        "_desktop_processes_running_from",
+        lambda tree: [2468] if tree == previous else [],
+    )
+
+    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
+    assert live_exe.read_text(encoding="utf-8") == "old"
+    assert previous_file.read_text(encoding="utf-8") == "keep"
+    assert not staging.exists()
+    assert "still running (pid 2468)" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+def test_posix_swap_rolls_back_if_desktop_launch_races_the_precheck(tmp_path, monkeypatch, capsys):
+    """a desktop appearing during the rename must get the original bundle back."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    checked = []
+
+    def process_scan(tree):
+        checked.append(tree)
+        return [] if len(checked) == 1 else [9876]
+
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", process_scan)
+
+    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
+    assert live_exe.read_text(encoding="utf-8") == "old"
+    assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
+    assert not staging.exists()
+    assert "still running (pid 9876)" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize(
+    ("running", "message"),
+    [([4321], "still running (pid 4321)"), (None, "couldn't check whether hermes desktop is running")],
+)
+def test_posix_swap_leaves_a_running_desktop_untouched(tmp_path, monkeypatch, capsys, running, message):
+    """an unattended swap must not kill the desktop or replace files under it."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda _tree: running)
+    monkeypatch.setattr(
+        main_desktop,
+        "_stop_desktop_processes_locking_build",
+        lambda *args, **kwargs: pytest.fail("a live POSIX desktop must not be terminated"),
+    )
+
+    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
+    assert live_exe.read_text(encoding="utf-8") == "old"
+    assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
+    assert not staging.exists()
+    assert message in capsys.readouterr().out
+
+
+def test_desktop_process_scan_matches_only_processes_from_the_bundle(tmp_path, monkeypatch):
+    """the swap guard should match the live bundle, not other running apps."""
+    tree = tmp_path / "release" / "Hermes.app"
+    exe = tree / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.touch()
+
+    class _FakeProc:
+        def __init__(self, pid, path):
+            self.info = {"pid": pid, "exe": path}
+
+    class _FakePsutil:
+        @staticmethod
+        def process_iter(attrs):
+            assert attrs == ["pid", "exe", "name", "cmdline"]
+            return [
+                _FakeProc(41, str(exe)),
+                _FakeProc(42, "/usr/bin/other"),
+                types.SimpleNamespace(info={"pid": 43, "exe": None, "name": "Hermes Helper", "cmdline": []}),
+                types.SimpleNamespace(info={"pid": 44, "exe": None, "name": None, "cmdline": None}),
+            ]
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert main_desktop._desktop_processes_running_from(tree) is None
+
+    class _ReadablePsutil:
+        @staticmethod
+        def process_iter(attrs):
+            assert attrs == ["pid", "exe", "name", "cmdline"]
+            return [_FakeProc(41, str(exe)), _FakeProc(42, "/usr/bin/other")]
+
+    monkeypatch.setitem(sys.modules, "psutil", _ReadablePsutil)
+    assert main_desktop._desktop_processes_running_from(tree) == [41]
+
+    class _UnknownProcessPsutil:
+        @staticmethod
+        def process_iter(_attrs):
+            return [types.SimpleNamespace(info={"pid": 43, "exe": None, "name": None, "cmdline": None})]
+
+    monkeypatch.setitem(sys.modules, "psutil", _UnknownProcessPsutil)
+    assert main_desktop._desktop_processes_running_from(tree) is None
+
+    class _DeniedProc:
+        @property
+        def info(self):
+            raise PermissionError("process details are hidden")
+
+    class _DeniedPsutil:
+        @staticmethod
+        def process_iter(_attrs):
+            return [_DeniedProc()]
+
+    monkeypatch.setitem(sys.modules, "psutil", _DeniedPsutil)
+    assert main_desktop._desktop_processes_running_from(tree) is None
+
+
+def test_desktop_process_scan_fails_closed_when_psutil_cannot_enumerate(monkeypatch):
+    class _FakePsutil:
+        @staticmethod
+        def process_iter(_attrs):
+            raise OSError("process table unavailable")
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert main_desktop._desktop_processes_running_from(Path("release")) is None
 
 
 def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(tmp_path, monkeypatch):
@@ -1799,6 +1957,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
 def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda exe: None)
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda _tree: [])
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)

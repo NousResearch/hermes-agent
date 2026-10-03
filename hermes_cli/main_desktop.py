@@ -240,30 +240,69 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
 
 
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
-    """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
-    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
+    """promote a verified staged pack over ``release/`` by two renames (live → ``.previous``, staged →
+    live); a failure between them rolls back. posix leaves a running app untouched and skips the swap.
+    returns the live exe or None (live app kept). never raises."""
     staged_exe = _desktop_packaged_executable_in(staging_dir)
     if staged_exe is None:
         shutil.rmtree(staging_dir, ignore_errors=True)
         return None
+
+    def report_skipped_swap(running: Optional[list[int]]) -> None:
+        if running is None:
+            message = (
+                "couldn't check whether hermes desktop is running, so this build wasn't installed. "
+                "close the app and run the update again."
+            )
+        else:
+            pids = ", ".join(str(pid) for pid in running)
+            message = (
+                f"hermes desktop is still running (pid {pids}), so this build wasn't installed. "
+                "close the app and run the update again."
+            )
+        logger.warning("desktop stage-and-swap skipped: %s", message)
+        print(f"  {message}")
+
     release_dir = desktop_dir / "release"
     try:
         staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
         live_root = release_dir / staged_root.name
         previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
+        moved_aside = live_root.exists()
+        if previous.exists():
+            previous_running = _desktop_processes_running_from(previous)
+            if previous_running is None or previous_running:
+                report_skipped_swap(previous_running)
+                return None
+        if moved_aside and sys.platform != "win32":
+            # don't kill a live app just to finish an unattended update.
+            running = _desktop_processes_running_from(live_root)
+            if running is None or running:
+                report_skipped_swap(running)
+                return None
         release_dir.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(previous, ignore_errors=True)
-        moved_aside = live_root.exists()
         if moved_aside:
-            # A Desktop may have reopened during the long packaging step (Windows lock) or
-            # never exited at all (a manual `hermes update`/`hermes desktop` run does not
-            # wait for it — only the update hand-offs do). Either way a renderer alive
-            # past the rename below keeps fetching its old hashed chunks from disk and
-            # dies on the next lazy import, so stop it on every platform (#109643).
-            stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
-            if stopped:
-                logger.info("stopped desktop processes before staged app promotion: %s", stopped)
+            # a desktop may reopen during the long packaging step. windows stops it to
+            # release the bundle lock; posix refuses the swap while it is still running.
+            if sys.platform == "win32":
+                stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
+                if stopped:
+                    logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             _rename_riding_out_file_lock(live_root, previous)
+            if sys.platform != "win32":
+                # catch a launch that raced the first check before removing the old bundle.
+                # the normal launch path is absent now, so new launches can't start this old app.
+                in_previous = _desktop_processes_running_from(previous)
+                at_old_path = _desktop_processes_running_from(live_root)
+                if in_previous is None or at_old_path is None or in_previous or at_old_path:
+                    running = (
+                        None if in_previous is None or at_old_path is None
+                        else list(dict.fromkeys(in_previous + at_old_path))
+                    )
+                    _rename_riding_out_file_lock(previous, live_root)
+                    report_skipped_swap(running)
+                    return None
         try:
             _rename_riding_out_file_lock(staged_root, live_root)
         except OSError:
@@ -459,14 +498,57 @@ def _desktop_ancestor_in(desktop_dir: Path) -> Optional[int]:
     return None
 
 
-def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
+def _desktop_processes_running_from(tree: Path) -> Optional[list[int]]:
+    """return pids running from ``tree``, or None when the process scan is uncertain."""
+    try:
+        import psutil
+        tree = tree.resolve()
+        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline"])
+    except Exception:
+        return None
 
-    Windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
-    POSIX can rename a running app's files away, so the pack itself needs no stop — but a
-    renderer left alive through the stage-and-swap promotion keeps fetching its OLD hashed
-    chunks by path after the swap and dies on the next lazy import (#109643), so the swap
-    point passes ``also_posix=True``. Never raises; returns the PIDs asked to stop."""
+    pids = []
+    try:
+        for proc in proc_iter:
+            try:
+                info = proc.info
+            except getattr(psutil, "NoSuchProcess", ()):
+                continue
+            except Exception:
+                return None
+            try:
+                pid = info.get("pid")
+                if pid is None:
+                    return None
+                exe = info.get("exe")
+                if not exe:
+                    name = str(info.get("name") or "").casefold()
+                    cmdline = info.get("cmdline") or []
+                    tree_text = os.path.normcase(str(tree))
+                    mentions_tree = any(tree_text in os.path.normcase(str(arg)) for arg in cmdline)
+                    if name.startswith("hermes") or mentions_tree:
+                        return None
+                    if not name and not cmdline:
+                        return None
+                    continue
+                exe_path = Path(exe).resolve()
+            except Exception:
+                return None
+            if exe_path == tree or tree in exe_path.parents:
+                pids.append(int(pid))
+    except Exception:
+        return None
+    return pids
+
+
+def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
+    """terminate a running desktop app whose exe lives inside this build's ``release`` tree.
+
+    windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
+    posix can rename a running app's files away, but stage-and-swap now keeps that app
+    untouched and skips promotion until it exits (#131624). ``also_posix`` remains available
+    for callers that explicitly need to stop POSIX processes. Never raises; returns the PIDs
+    asked to stop."""
     if sys.platform != "win32" and not also_posix:
         return []
     try:
@@ -2065,5 +2147,3 @@ def _launch_bundled_desktop(
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)
     print(f"→ Launched Hermes Desktop: {' '.join(launch_command)} (pid {pid})")
     sys.exit(0)
-
-

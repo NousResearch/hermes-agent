@@ -31,8 +31,9 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
-    # The swap point now passes ``also_posix=True`` (#116504); the double must accept the keyword.
+    # the windows swap call passes this keyword, so keep the double flexible.
     monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d, **kw: [])
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda _tree: [])
     slept: list[float] = []
     monkeypatch.setattr(main_desktop._time_mod, "sleep", slept.append)
     return desktop_dir, staging, live_exe, slept
@@ -40,11 +41,12 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
 
 def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeypatch, caplog):
     desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
+    live_root = main_desktop._desktop_unpacked_root(live_exe, desktop_dir / "release")
     real_rename = os.rename
     locked = {"n": 0}
 
     def scanner_locked_rename(src, dst):
-        if Path(dst) == live_exe.parent and locked["n"] < 2:
+        if Path(dst) == live_root and locked["n"] < 2:
             locked["n"] += 1
             raise PermissionError(32, "being used by another process")
         return real_rename(src, dst)

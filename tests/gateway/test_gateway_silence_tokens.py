@@ -95,6 +95,30 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
     assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
 
 
+def test_failed_machinery_turn_marker_suppresses():
+    """#126581 Path 2: a FAILED machinery turn whose response is a bare marker must
+    suppress — the literal ``NO_REPLY`` was delivered 154 times in production."""
+    from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+
+    assert is_intentional_silence_agent_result(
+        {"failed": True}, "NO_REPLY", INTERNAL_NOTIFICATION_DISPLAY_KIND)
+    assert is_intentional_silence_agent_result(
+        {"failed": True}, "[SILENT]", INTERNAL_NOTIFICATION_DISPLAY_KIND)
+
+
+def test_failed_user_turn_keeps_the_strict_rule():
+    """A human turn's failed marker is NOT suppressed by the matcher (the #120051
+    warning path stays user-facing); no display kind keeps it too."""
+    assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY", None)
+    assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY", "user_message")
+
+
+def test_successful_turn_ignores_the_display_kind():
+    """The relaxation only widens FAILED turns; successful turns suppress regardless."""
+    assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY", None)
+    assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY", "user_message")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply_expected", [None, True], ids=["adapter-unknown", "addressed"])
 async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path, reply_expected):

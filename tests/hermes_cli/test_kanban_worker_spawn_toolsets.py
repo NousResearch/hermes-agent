@@ -84,6 +84,7 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+    assert "HERMES_KANBAN_PINNED_RUNTIME" not in captured["env"]
     assert "--toolsets" in captured["cmd"]
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
@@ -114,6 +115,7 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
     def fake_popen(cmd, *args, **kwargs):
         captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -134,6 +136,7 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"
     assert args.query == "work kanban task t_spawn_tools"
+    assert captured["env"]["HERMES_KANBAN_PINNED_RUNTIME"] == "1"
 
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):

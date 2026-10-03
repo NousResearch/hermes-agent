@@ -25,6 +25,15 @@ OSV_BATCH_MAX = 1000  # OSV documented hard cap per request
 HTTP_TIMEOUT = 20
 DETAIL_PARALLELISM = 8
 
+# The checkout's own dist is a placeholder: pyproject keeps ``version = "0.0.0"``
+# and uv.lock installs it as an editable self-install, so the metadata version a
+# git checkout carries never identifies a released hermes-agent. Asking OSV about
+# ``0.0.0`` returns every advisory ever published (all ``fixed`` versions sit
+# above it), which is how a current checkout audits as the most vulnerable
+# release in history.
+SELF_DIST_NAME = "hermes-agent"
+SELF_DIST_PLACEHOLDER_VERSION = "0.0.0"
+
 # Severity ordering for --fail-on gating. UNKNOWN sits below LOW so it never blocks.
 SEVERITY_ORDER = {"UNKNOWN": 0, "LOW": 1, "MODERATE": 2, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
@@ -64,8 +73,14 @@ def _discover_venv() -> list[Component]:
         except Exception:
             continue
         version = (dist.version or "").strip()
-        if name and version:
-            out.setdefault((name.lower(), version), Component(name=name, version=version, ecosystem="PyPI", source="venv"))
+        if not (name and version):
+            continue
+        # A checkout's editable self-install is not a PyPI release: its version
+        # is the static placeholder, so OSV has nothing meaningful to compare it
+        # against. Sealed and PyPI installs carry a real version and stay audited.
+        if name.lower() == SELF_DIST_NAME and version == SELF_DIST_PLACEHOLDER_VERSION:
+            continue
+        out.setdefault((name.lower(), version), Component(name=name, version=version, ecosystem="PyPI", source="venv"))
     return list(out.values())
 
 

@@ -129,6 +129,49 @@ class TestTodoToolFunction:
         result = json.loads(todo_tool())
         assert "error" in result
 
+    def test_write_and_read_report_mode(self):
+        store = TodoStore()
+        written = json.loads(todo_tool(
+            todos=[{"id": "1", "content": "Task", "status": "pending"}], store=store))
+        assert written["mode"] == "write"
+        read = json.loads(todo_tool(store=store))
+        assert read["mode"] == "read"
+
+    def test_empty_write_still_reports_write_mode(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending"}])
+        result = json.loads(todo_tool(todos=[], store=store))
+        assert result["mode"] == "write"
+        assert result["summary"]["total"] == 0
+        assert result["revision"] == 2
+
+class TestTodoDispatchStrictness:
+    """Unknown call shapes ({action, list}) used to have their keys dropped by the
+    dispatch wrapper, fall through to a read, and return an empty success-shaped
+    payload — the caller believed its plan had saved (#126656)."""
+
+    def test_unknown_params_are_rejected(self):
+        from tools.todo_tool import _todo_dispatch
+        result = json.loads(_todo_dispatch(
+            {"action": "add", "list": [{"content": "x"}]}, store=TodoStore()))
+        assert "error" in result
+        assert "action" in result["error"] and "list" in result["error"]
+        assert "todos" in result["error"]  # names the real parameter
+
+    def test_known_params_pass_through(self):
+        from tools.todo_tool import _todo_dispatch
+        store = TodoStore()
+        result = json.loads(_todo_dispatch(
+            {"todos": [{"id": "1", "content": "Task", "status": "pending"}]}, store=store))
+        assert result["mode"] == "write"
+        assert result["summary"]["total"] == 1
+
+    def test_no_params_reads(self):
+        from tools.todo_tool import _todo_dispatch
+        result = json.loads(_todo_dispatch({}, store=TodoStore()))
+        assert result["mode"] == "read"
+        assert result["summary"]["total"] == 0
+
 class TestTodoStoreSnapshots:
     def test_revision_only_advances_when_state_changes(self):
         store = TodoStore()

@@ -103,7 +103,7 @@ def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path):
 
 
 def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
-    """The wiring: a stale fleet matrix reaches signal_stale_fleet_survivors before exit 1."""
+    """The wiring: a stale fleet matrix reaches signal_stale_fleet_survivors; the restart stays owed."""
     import hermes_cli.update_cmd_fleet as fleet_mod
     import hermes_cli.update_cmd_stale_survivors as surv
     import hermes_cli.update_cmd as update_cmd
@@ -121,9 +121,10 @@ def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
         incomplete=False, phase_errors=[], pre_restart_gateway_pids=[4242], restarted_services=[],
         failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
     )
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+    with contextlib.redirect_stdout(io.StringIO()):
         fleet_mod._verify_fleet_after_update(
             restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )
-    assert exc.value.code == 1
+    # Contract C3: was SystemExit(1); now flagged incomplete (owed restart, marker kept).
+    assert restart.incomplete
     assert seen["fleet"] == stale_fleet

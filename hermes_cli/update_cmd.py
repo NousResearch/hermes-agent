@@ -544,7 +544,9 @@ def _log_only_write(text: str) -> None:
     log_file = getattr(stream, "_log", None)
     with suppress(Exception):
         if log_file is None:
-            log_path = get_hermes_home() / "logs" / "update.log"
+            from hermes_constants import get_default_hermes_root
+
+            log_path = get_default_hermes_root() / "logs" / "update.log"  # the root home's tee
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("a", encoding="utf-8") as fallback:
                 fallback.write(text)
@@ -749,8 +751,15 @@ def _complete_source_update(request: dict | None) -> None:
             _completion_receipt._current.reset(current.current_token)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])
-    if adopt_retired_channel(request):
-        print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
+    try:
+        if adopt_retired_channel(request):
+            print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
+    except Exception as exc:  # noqa: BLE001 — the code is committed (C3); the next update re-adopts
+        from hermes_cli.update_receipt import amend_terminal_followup, record_followup
+
+        reason = str(exc) or type(exc).__name__
+        record_followup("channel_adoption", reason, retry="the next `hermes update` adopts it again")
+        amend_terminal_followup(request["receipt"]["update_id"], "channel_adoption", reason)
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:

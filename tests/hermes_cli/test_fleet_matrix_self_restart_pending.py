@@ -96,9 +96,12 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     assert "restart pending" in out.getvalue()
     assert "Update not complete" not in out.getvalue()
     assert cleared == [True]
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
-        restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE, exit 1
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE
         fleet_mod._verify_fleet_after_update(
             restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )
-    assert exc.value.code == 1
+    # Contract C3: STALE is an owed restart (was SystemExit(1)): flagged, follow-up, marker kept.
+    assert restart.incomplete
+    assert "follow-up 'gateway_restart'" in out.getvalue()
+    assert cleared == [True]

@@ -401,7 +401,7 @@ def _marker_only_restart_obsolete() -> bool:
     undischargeable on every host that runs a dashboard. A manual-serve row still needs its
     durable handoff (``defer_manual_serve``), and an unclassified backend stays fail-closed.
     Discharging here strands nobody: the same row is still accounted at update time by
-    ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
+    ``update_inventory.report_unaccounted_runtimes``, which prints it and records an owed restart when the restart
     phase never touched it — this marker only stops re-warning about it on every later startup.
     """
     from hermes_cli.update_cmd_fleet_checkout import checkout_contains
@@ -1839,7 +1839,7 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     Gateways need time to rewrite gateway_state.json; Windows resumes DETACHED (~10s boot),
     so a single 2s sleep reported "no rows" on healthy resumes. A "down" row may be a
     detached replacement still booting: poll until none remain or the deadline passes.
-    Pre-restart PIDs make a gateway stopped WITHOUT verified replacement a DOWN row (exit 1)
+    Pre-restart PIDs make a gateway stopped WITHOUT verified replacement a DOWN row (owed restart)
     instead of no row at all. An ``unknown`` row whose pid is NOT a pre-restart pid is a successor
     that has not published its code identity yet (a relaunched gateway can sit ~10s between process
     start and its first runtime-status write, #112634) — keep polling; at the deadline it is flagged
@@ -1917,13 +1917,52 @@ def _live_gateway_pids_from_fleet(fleet_rows: list) -> dict:
     return live
 
 
+def _record_owed_gateway_inventory(plan) -> None:
+    """Name the pre-update gateways on an inventory-less obligation once their restart is owed.
+
+    The pull arms the obligation before the restart phase knows what it owes. An inventory-less
+    record on a host whose gateway then died at boot is settled by the gateway-less discharge
+    (nothing live, nothing named), which would silence the owed-restart warning that replaces a
+    failed update under contract C3. A named inventory keeps it until those gateways run HEAD.
+    """
+    if plan is None:
+        return
+    armed = _fleet_restart_obligation_armed()
+    fields = _obligation_fields() if armed else {}
+    if fields is None or fields.get("inventory") not in (None, "", "null"):
+        return  # unreadable terms stay fail-closed; a recorded inventory is never rewritten
+    from dataclasses import asdict
+    rows = [
+        asdict(runtime) for runtime in getattr(plan, "runtimes", ()) or ()
+        if getattr(runtime, "kind", None) == "gateway"
+        and isinstance(getattr(runtime, "profile", None), str)
+        and runtime.profile.strip() and runtime.profile != "unknown"
+    ]
+    if rows:
+        # Not armed any more (a pre-restart probe settled an inventory-less record): re-arm, the
+        # restart is owed. The SHA is the code the fleet must be proven current on.
+        sha = fields.get("expected_sha", "") if armed else (_current_checkout_sha() or "")
+        _write_fleet_restart_pending_marker(expected_sha=sha, runtimes=rows)
+
+
+def _named_gateways_still_owed() -> bool:
+    """True when the armed obligation NAMES gateways (recorded by an earlier owed restart) and the
+    live fleet still does not prove them current. An inventory-less record keeps its old rules."""
+    if not _fleet_restart_obligation_armed():
+        return False
+    fields = _obligation_fields()
+    if fields is None or fields.get("inventory") in (None, "", "null"):
+        return False
+    return not _marker_only_restart_obsolete()
+
+
 def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, update_complete):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
-    Exits 1 (leaving ``fleet_restart_pending`` for the next catch-up) when any gateway
-    may still be stale; otherwise clears the marker. A failed SQLite verdict also
-    exits 1, without retaining a fulfilled fleet-restart obligation.
+    Never fails the committed update (contract C3): when any gateway may still be stale it
+    records a ``gateway_restart`` follow-up and leaves ``fleet_restart_pending`` armed for the
+    next catch-up and the startup warning; otherwise clears the marker.
     """
     from hermes_cli.update_cmd import (
         _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
@@ -1943,13 +1982,13 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
     # dashboard cleanup so a respawned manual dashboard isn't a survivor. Rows feed
-    # reconciliation (survivor → exit 1); ``None`` = probe failed, stays fail-closed.
+    # reconciliation (survivor → owed restart); ``None`` = probe failed, stays fail-closed.
     # Check if any pre-update serve/dashboard runtimes survived on pre-update code generations (#100479).
     # This is the SUCCESS-path twin of the abort-recovery probe above: the restart phase only restarts
     # units, so an sshd-spawned `serve --isolated` or a manual `hermes serve` (no unit) is left running its
     # pre-update sys.modules graph — and its cron ticker keeps firing agent jobs that ImportError on every
     # symbol added in the pulled range. The rows also feed the plan-vs-execution reconciliation below, so a
-    # survivor is escalated (exit 1) instead of merely printed.
+    # survivor is escalated (an owed gateway_restart follow-up) instead of merely printed.
     _stale_serve_rows: "list | None" = None
     with _best_effort('Failed to check for surviving serve runtimes: %s'):
         _stale_serve_rows = _surviving_pre_update_serve_runtimes(_pre_update_plan)
@@ -1972,7 +2011,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # See #93406.
         # A gateway stopped WITHOUT a successor ("Restart manually") publishes no row by design,
         # so it must not count as an expected one — otherwise an update whose only live gateways
-        # were unmapped exits 1 with "no rows" after correctly stopping them.
+        # were unmapped reports "no rows" after correctly stopping them.
         _pre_restart, _killed = restart.fleet_probe_signals()
         _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
@@ -1986,14 +2025,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             signal_stale_fleet_survivors(_fleet_snapshot, restart, _gateway_drain_budget())
         elif not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
-            # expected runtimes is indistinguishable from health — fail (partial, exit 1).
+            # expected runtimes is indistinguishable from health — keep the restart owed.
             print(
                 # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
                 # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
                 # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
                 # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
                 # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
-                # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
+                # verification failure so the receipt carries a gateway_restart follow-up (#93406).
                 "\n⚠ Fleet version check returned no rows even though"
                 " gateway runtimes were expected — verification incomplete."
             )
@@ -2047,28 +2086,54 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _active is not None:
                     _active.data["runtime_outcomes"] = _runtime_outcomes
 
+    if not restart.incomplete:
+        with _best_effort('Owed-gateway check failed: %s'):
+            if _named_gateways_still_owed():
+                # A gateway a previous run could not restart is still not serving HEAD (nothing
+                # live to restart this time): keep owing it rather than clearing the obligation.
+                print("  ⚠ A gateway owed a restart by a previous update is still not serving this checkout.")
+                restart.incomplete = True
+    if getattr(restart, "stopped_unmapped_pids", None):
+        # A gateway stopped with no successor is owed a restart, not "accounted for": keep the
+        # fleet obligation armed so the startup warning names it until someone restarts it.
+        restart.incomplete = True
+    if restart.incomplete:
+        # Code is committed (contract C3): a gateway that may still run stale modules is a
+        # follow-up, never a failed update. The fleet obligation stays armed, every CLI start
+        # warns about it, and the next `hermes update` retries the restart.
+        from hermes_cli.update_receipt import record_followup
+        stopped = sorted(getattr(restart, "stopped_unmapped_pids", None) or ())
+        record_followup(
+            "gateway_restart",
+            "gateways may still run pre-update code or were stopped without a successor"
+            + (f" (stopped PIDs {', '.join(map(str, stopped))})" if stopped else "")
+            + "; recover with `hermes gateway restart`",
+        )
+        with _best_effort('Fleet restart inventory not recorded: %s'):
+            _record_owed_gateway_inventory(_pre_update_plan)
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
-        _receipt_path = finalize_update_receipt(
-            "partial" if restart.incomplete or not update_complete else "success",
-            fleet=_fleet_snapshot,
-        )
+        # ``update_complete`` is kept for the historical takeover caller; a False verdict (the
+        # SQLite runtime) is reported as a follow-up by the maintenance step, not a failed run.
+        _receipt_path = finalize_update_receipt("success", fleet=_fleet_snapshot)
         if _receipt_path is not None:
             logger.info("Update receipt written: %s", _receipt_path)
 
     if restart.incomplete:
-        # Code updated but a gateway may still run stale modules: fail so automation
-        # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
-        sys.exit(1)
+        return
     _clear_fleet_restart_pending_marker()
     if not update_complete:
-        # Fleet caught up, but the independently checked SQLite runtime is unsafe.
-        sys.exit(1)
+        # Fleet caught up, but the selected runtime's SQLite is unsafe (reported by maintenance):
+        # leave the topology alone until the runtime is repaired.
+        return
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
-    with _best_effort('Multiplex auto-migration after update failed: %s'):
+    try:
         from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
         maybe_auto_migrate_after_update()
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 — a SystemExit here must not fail a committed update
+        logger.warning('Multiplex auto-migration after update failed: %s', exc)
+        print(f"  ⚠ Gateway multiplex migration did not finish: {exc} (run `hermes gateway migrate` later)")
 
 
 def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:

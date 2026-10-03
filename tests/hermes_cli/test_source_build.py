@@ -299,21 +299,26 @@ def test_update_recompiles_only_products_whose_inputs_changed(source_products):
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("step", ["tui", "web", "desktop"])
 def test_update_failure_raises_without_retries_or_replacing_live_app(source_products, step):
-    from hermes_cli.source_build import build_update_products
+    from hermes_cli.source_build import ProductBuildError, build_update_products
 
     root, acquired = source_products
     app = root / "apps/desktop/release/linux-unpacked/hermes"
     app.parent.mkdir(parents=True)
     app.write_text("previous app")
     (root / f"fail-{step}").touch()
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(ProductBuildError) as failure:
         build_update_products(root, desktop=True)
-    assert app.read_text() == "previous app"
-    assert not list((root / "apps/desktop").glob(".staging-*"))
-    order = ["deps", "tui", "web", "desktop"]
-    assert [event["step"] for event in _events(root)] == order[:order.index(step) + 1]
+    # The failure is still raised, naming the one product that failed (no retries) ...
+    assert len(failure.value.failures) == 1
+    assert isinstance(failure.value.failures[0][1], subprocess.CalledProcessError)
+    # ... but it no longer skips the independent products after it (was order[:index + 1]).
+    assert [event["step"] for event in _events(root)] == ["deps", "tui", "web", "desktop"]
     assert acquired == ["npm"]
-    assert not (Path(os.environ["HERMES_HOME"]) / "desktop-build-stamp.json").exists()
+    assert not list((root / "apps/desktop").glob(".staging-*"))
+    if step == "desktop":
+        # A failed desktop build never replaces the live app nor stamps it.
+        assert app.read_text() == "previous app"
+        assert not (Path(os.environ["HERMES_HOME"]) / "desktop-build-stamp.json").exists()
 
 
 @pytest.mark.platforms("linux")

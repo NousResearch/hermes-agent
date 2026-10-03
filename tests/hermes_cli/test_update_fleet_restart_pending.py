@@ -412,8 +412,9 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     ``hermes-gateway.service``) and an unmanaged ``serve`` on the same
     default profile. The serve survives the update as the SAME process, so
     the update must (1) warn, (2) reconcile it as ``unaccounted`` instead of
-    borrowing the gateway's restart, and (3) exit 1 with a ``partial``
-    receipt — not print a clean success."""
+    borrowing the gateway's restart, and (3) under contract C3 (the code is
+    committed) end ``success`` with an owed ``gateway_restart`` follow-up and
+    the restart obligation still armed — never a silent clean success."""
     from hermes_cli.update_inventory import (
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
@@ -460,18 +461,24 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
         lambda **_k: [{"pid": 5555, "purpose": "serve", "create_time": 1000.0}],
     )
 
-    with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(args)
-    assert excinfo.value.code == 1
+    # Was SystemExit(1): the committed update no longer fails (contract C3).
+    hermes_main.cmd_update(args)
 
     out = capsys.readouterr().out
+    # (1) still warned, unchanged.
     assert "pid 5555" in out and "pre-update code" in out
     assert "Planned runtimes the restart phase never touched" in out
     assert "serve [default] pid 5555" in out
+    assert "follow-up 'gateway_restart'" in out
 
     latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(latest.read_text(encoding="utf-8"))
-    assert receipt["outcome"] == "partial"
+    # (3) was "partial": a success that names the owed restart.
+    assert receipt["outcome"] == "success"
+    assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
+    from hermes_cli import update_cmd_fleet
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+    # (2) the reconciliation verdict is unchanged.
     by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
     assert by_pid == {4444: "restarted", 5555: "unaccounted"}
 

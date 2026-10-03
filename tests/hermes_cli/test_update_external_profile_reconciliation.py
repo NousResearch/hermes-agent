@@ -94,20 +94,22 @@ def test_symlinked_external_profile_gateway_does_not_fail_update(external_profil
 
 
 def test_external_profile_does_not_mask_a_missed_own_gateway(external_profile_host):
-    """The root's own gateway missed by the restart phase still fails the update."""
+    """The root's own gateway missed by the restart phase is still an owed restart."""
     plan = UpdatePlan(runtimes=[_gateway("default", 1111), _gateway("work", 4242)])
     restart = _restart_outcome()
     restart.restarted_services.clear()
     update_receipt.begin_update_receipt()
 
-    with pytest.raises(SystemExit) as exc:
-        fleet._verify_fleet_after_update(
-            restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True,
-        )
+    # Contract C3: no longer SystemExit(1); the miss is flagged and owed instead.
+    fleet._verify_fleet_after_update(
+        restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True,
+    )
 
-    assert exc.value.code == 1
-    outcomes = {o["profile"]: o["outcome"] for o in update_receipt.read_latest_receipt()["runtime_outcomes"]}
+    assert restart.incomplete
+    receipt = update_receipt.read_latest_receipt()
+    outcomes = {o["profile"]: o["outcome"] for o in receipt["runtime_outcomes"]}
     assert outcomes == {"default": "unaccounted", "work": "external"}
+    assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
 
 
 def test_external_requires_verified_pid_evidence():

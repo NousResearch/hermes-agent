@@ -1,6 +1,5 @@
 """SQLite completion and fleet verification remain independent update outcomes."""
 
-from contextlib import nullcontext
 import json
 
 import pytest
@@ -45,17 +44,18 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
     healthy = update_complete and state == "current"
     with update_receipt.update_receipt_scope():
         update_receipt.begin_update_receipt()
-        with nullcontext() if healthy else pytest.raises(SystemExit) as exc:
-            update_cmd_fleet._verify_fleet_after_update(
-                restart, _pre_update_plan=None, _windows_gateway_resume=None,
-                update_complete=update_complete,
-            )
-        if not healthy:
-            assert exc.value.code == 1
+        # Contract C3: neither verdict fails the committed update any more (was SystemExit(1)).
+        update_cmd_fleet._verify_fleet_after_update(
+            restart, _pre_update_plan=None, _windows_gateway_resume=None,
+            update_complete=update_complete,
+        )
 
     receipt = json.loads((get_hermes_home() / "logs/update_receipts/latest.json").read_text())
-    assert receipt["outcome"] == ("success" if healthy else "partial")
+    # Was "partial" when not healthy: the run is a success; an owed fleet restart is a follow-up.
+    assert receipt["outcome"] == "success"
+    assert [f["step"] for f in receipt.get("followups", [])] == ([] if state == "current" else ["gateway_restart"])
     assert receipt["fleet"] == snapshot
+    # The two verdicts stay independent: only the fleet keeps the restart obligation armed.
     assert restart.incomplete is (state != "current")
     assert update_cmd_fleet._fleet_restart_obligation_armed() is (state != "current")
     assert migrated == ([True] if healthy else [])

@@ -132,8 +132,11 @@ def _resume_receipt(data: dict) -> None:
 
 
 def _read_terminal_receipt(request: dict) -> dict | None:
-    directory = Path(request["home"]) / "logs/update_receipts"
-    # Never latest.json: another profile/context may have finalized more recently.
+    from hermes_cli.update_receipt import _receipt_dir
+
+    # The ROOT home's receipts (the run's own file), never latest.json: another
+    # profile/context may have finalized more recently.
+    directory = _receipt_dir()
     for path in directory.glob(f"update_*_{request['receipt']['update_id']}.json"):
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         if data.get("update_id") == request["receipt"]["update_id"] and data.get("finished_at"):
@@ -181,9 +184,16 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
 
 def _complete_selected(request: dict) -> None:
+    """Everything after the commit point. Nothing here fails the update (contract C3).
+
+    Each step is independent; a failed one prints ``⚠``, lands on the receipt as a follow-up
+    and keeps its own obligation armed (``source-completion-pending`` for the tail, the fleet
+    restart obligation for gateways), so the next launch or ``hermes update`` retries it.
+    """
     from hermes_cli import main, update_cmd, update_cmd_config
     from hermes_cli.source_completion import complete_source_checkout
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+    from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_followup, record_skip, record_stage
 
     root = Path(request["source"])
     main.PROJECT_ROOT = root
@@ -194,50 +204,49 @@ def _complete_selected(request: dict) -> None:
     update_cmd._sweep_bytecode_after_update(request["branch"])
     # Launchers, products and post-build maintenance live in one place so an
     # install and an update cannot end in different states.
-    complete = complete_source_checkout(
-        root, desktop=request["desktop"], assume_yes=request["assume_yes"],
-        gateway_mode=request["gateway_mode"], pre_update_snapshot_id=request["snapshot_id"],
-        pre_update_version=request["pre_update_version"],
-        completion_message=request.get("completion_message"),
-        announce=None if request.get("completion_message") else "\n✓ Code updated!")
-    from hermes_cli.update_receipt import record_stage
-    record_stage("build", "success" if complete else "failed")
-    if complete:
+    followups: list[tuple[str, str]] = []
+    try:
+        complete_source_checkout(
+            root, desktop=request["desktop"], assume_yes=request["assume_yes"],
+            gateway_mode=request["gateway_mode"], pre_update_snapshot_id=request["snapshot_id"],
+            pre_update_version=request["pre_update_version"],
+            completion_message=request.get("completion_message"),
+            announce=None if request.get("completion_message") else "\n✓ Code updated!",
+            followups=followups)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 — e.g. the shared update lock refused the tail
+        reason = str(exc) or type(exc).__name__
+        record_followup("completion", reason)
+        followups.append(("completion", reason))
+    tail_owed = any(step in TAIL_FOLLOWUPS for step, _ in followups)
+    record_stage("build", "failed" if tail_owed else "success")
+    if not tail_owed:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)
     # systemctl's KillMode=mixed fallback can kill this whole cgroup. Publish the
-    # gateway watcher's status BEFORE that operation, and demote on later failure.
+    # gateway watcher's status BEFORE that operation: the code is committed, so it is 0.
     if request["gateway_mode"]:
-        update_cmd._write_gateway_update_exit_code(complete)
+        update_cmd._write_gateway_update_exit_code(True)
     if request.get("no_gateway_restart", False):
-        from hermes_cli.update_receipt import record_skip
-
         record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
         record_stage("restart", "skipped")
         print("→ Gateway restart deferred (--no-gateway-restart); restart gateways separately.")
-        if not complete:
-            raise SystemExit(1)
         return
     skip = update_cmd._fleet_restart_skip_reason(plan)
+    if skip and update_cmd._pending_fleet_restart_needed():
+        # A host already stamped "restarted" for this SHA whose fleet is still off the checkout
+        # (a stale sibling, a failed resume) gets the restart again instead of a dead end.
+        print(f"  → Gateway restart not skipped ({skip}): gateways are still off the checkout code.")
+        skip = None
     if skip:
-        from hermes_cli.update_receipt import record_skip
-
         record_skip("gateway_restart", skip)
         record_stage("restart", "skipped")
         print(f"  ✓ Gateway restart skipped: {skip}.")
-        # Discharges the obligation this run armed when the live fleet vouches for it; a
-        # fleet still owing the restart fails closed exactly like a stale matrix would.
-        if update_cmd._pending_fleet_restart_needed():
-            print("  ⚠ Gateways are still off the checkout code. Recover with: hermes gateway restart")
-            raise SystemExit(1)
-        if not complete:
-            raise SystemExit(1)
         return
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
     update_cmd._verify_fleet_after_update(
-        restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=complete)
+        restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=True)
 
 
 class _ForwardedOutput:
@@ -263,13 +272,15 @@ def _finish(request: dict, result_path: Path) -> int:
     code, reason = 0, "source update completion"
     try:
         _complete_selected(request)
+    except KeyboardInterrupt:
+        # An operator interrupt is not a step failure; the armed obligations finish the tail.
+        code, reason = 1, "KeyboardInterrupt: completion interrupted"
+        print("✗ Source update completion interrupted; the next launch or `hermes update` finishes it")
     except SystemExit as exc:
-        code = _exit_status(exc.code) if isinstance(exc.code, int) else 1
-        reason = f"completion exited {code}"
-    except BaseException as exc:
-        code = _exit_status(exc.returncode) if isinstance(exc, subprocess.CalledProcessError) else 1
-        reason = f"{type(exc).__name__}: {exc}"
-        print(f"✗ Source update completion failed: {reason}")
+        if exc.code not in (0, None):
+            update_receipt.record_followup("completion", f"completion exited {exc.code}")
+    except BaseException as exc:  # noqa: BLE001 — after the commit point nothing fails the update
+        update_receipt.record_followup("completion", f"{type(exc).__name__}: {exc}")
     finally:
         if code and request["gateway_mode"]:
             from hermes_cli.update_cmd import _write_gateway_update_exit_code
@@ -280,8 +291,10 @@ def _finish(request: dict, result_path: Path) -> int:
             from hermes_cli.update_cmd import _resume_windows_gateways_after_update
             _resume_windows_gateways_after_update(request["windows_resume"])
         except Exception as exc:
-            code, reason = 1, f"Windows gateway recovery failed: {exc}"
-            print(f"✗ {reason}")
+            step_reason = f"Windows gateway recovery failed: {exc}"
+            update_receipt.record_followup("windows_resume", step_reason)
+            if update_receipt._current.get() is None:  # verification already finalized this run
+                update_receipt.amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", step_reason)
         update_receipt.finalize_pending_update_receipt(code, reason)
         terminal_receipt = _read_terminal_receipt(request)
         if not terminal_receipt:

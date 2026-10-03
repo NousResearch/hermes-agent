@@ -155,6 +155,15 @@ def transition(tmp_path):
         "_current = contextvars.ContextVar('receipt', default=None)\n"
         "class UpdateReceipt: pass\n"
         "def record_stage(*args, **kwargs): pass\n"
+        "def record_skip(*args, **kwargs): pass\n"
+        "TAIL_FOLLOWUPS = frozenset({'launchers', 'build', 'maintenance', 'config_migration', 'completion'})\n"
+        "def record_followup(step, reason, **kwargs):\n"
+        "    print(f'  ⚠ Update follow-up {step!r} did not finish: {reason}')\n"
+        "    r = _current.get()\n"
+        "    if r is not None: r.data.setdefault('followups', []).append({'step': step, 'reason': reason})\n"
+        "def amend_terminal_followup(*args): pass\n"
+        "def _receipt_dir():\n"
+        "    return pathlib.Path(os.environ['HERMES_HOME']) / 'logs/update_receipts'\n"
         "def finalize_pending_update_receipt(code, reason):\n"
         "    r = _current.get()\n"
         "    if r is None: return\n"
@@ -370,7 +379,8 @@ def test_killed_selected_python_returns_signal_exit_status(transition):
     assert result["pm_receipt"]["update_id"] == request["receipt"]["update_id"]
 
 
-def test_failed_build_preserves_exit_status_without_maintenance(transition):
+def test_failed_build_after_commit_is_a_followup_and_later_steps_still_run(transition):
+    """Contract C3: the code is committed, so a failed product build cannot fail the update."""
     from hermes_cli import update_completion
 
     root, git, old, new, request = transition
@@ -380,13 +390,24 @@ def test_failed_build_preserves_exit_status_without_maintenance(transition):
         "def build_update_products(*a, **kw): raise subprocess.CalledProcessError(23, ['builder'])\n"
     )
     result = update_completion.run_completion(request)
-    assert result["exit_code"] == 23
-    assert result["receipt"]["outcome"] == "failed"
+    # Was 23 / "failed": a post-commit build failure exits 0 with a success receipt.
+    assert result["exit_code"] == 0
+    assert result["receipt"]["outcome"] == "success"
+    # The failure is not silent: it is a named receipt follow-up.
+    assert [f["step"] for f in result["receipt"]["followups"]] == ["build"]
+    # The tail obligation stays armed so the next launch / `hermes update` rebuilds.
     assert (Path(request["home"]) / "completion-pending").read_text() == "owed"
     events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
-    assert "maintenance" not in events
-    assert "restart" not in events
-    assert "emergency_resume" in events
+    # Was "not in": the failed build no longer skips maintenance (config migration) ...
+    assert "maintenance" in events
+    # ... nor the gateway restart and its verification.
+    assert "restart" in events and "verify" in events
+    # The tail was not complete, so the install stamp is not written.
+    assert "stamp" not in events
+    # The gateway watcher hears success: the code it runs is the committed code.
+    assert {"name": "exit_marker", "ok": True}.items() <= next(
+        json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["name"] == "exit_marker").items()
 
 
 def test_prepare_failure_preserves_correlated_pm_receipt(transition, monkeypatch):

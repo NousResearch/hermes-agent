@@ -37,11 +37,15 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         restart.failed_or_stale_units.append("hermes-serve-work.service")
         restart.incomplete = True
     if condition != "alive":
-        with pytest.raises(SystemExit) as exc:
-            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
-        assert exc.value.code == 1
+        # Contract C3: a restart that is still owed no longer fails the committed update (was
+        # SystemExit(1) + "partial") ...
+        fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+        # ... the obligation stays armed (unchanged) ...
         assert fleet._fleet_restart_obligation_armed()
-        assert update_receipt.read_latest_receipt()["outcome"] == "partial"
+        receipt = update_receipt.read_latest_receipt()
+        # ... and the receipt is a success naming the owed restart.
+        assert receipt["outcome"] == "success"
+        assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
         return
     fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
     receipt = update_receipt.read_latest_receipt()

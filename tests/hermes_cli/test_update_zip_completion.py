@@ -168,26 +168,24 @@ def test_zip_helper_propagates_completion_status_after_real_verification(zip_upd
             {"pid": plan.runtimes[0].pid, "profile": "default"}])
     request = update_cmd._source_completion_request(
         update_cmd._resolve_update_options(args, True), plan, snapshot, state.token, False, True)
-    if verdict == "healthy":
-        assert update_cmd_zip._update_via_zip(args, completion_request=request) is True
-    else:
-        with pytest.raises(SystemExit) as error:
-            update_cmd_zip._update_via_zip(args, completion_request=request)
-        assert error.value.code == 1
-    assert state.events == ["prepare", ("marker", verdict != "unsafe-sqlite"),
-                            "restart", "resume", "finalize"]
+    # Contract C3: the swapped code is committed, so neither verdict fails the update (was SystemExit(1)).
+    assert update_cmd_zip._update_via_zip(args, completion_request=request) is True
+    # The gateway watcher hears success for every verdict (was False for unsafe SQLite).
+    assert state.events == ["prepare", ("marker", True), "restart", "resume", "finalize"]
     receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
-    assert receipt["outcome"] == ("success" if verdict == "healthy" else "partial")
+    # Was "partial": a success that names what is still owed.
+    assert receipt["outcome"] == "success"
+    assert [f["step"] for f in receipt.get("followups", [])] == {
+        "healthy": [], "unsafe-sqlite": ["sqlite_runtime"], "stale-fleet": ["gateway_restart"]}[verdict]
     assert receipt["runtime_outcomes"][0]["outcome"] == (
         "unaccounted" if verdict == "stale-fleet" else "restarted")
     assert json.loads(state.jobs.read_text()) == state.original_jobs
 
 
 @pytest.mark.parametrize("route", ["direct", "git-failure"])
-@pytest.mark.parametrize("failure", ["swap", "late-swap", "stage", "preparation"])
+@pytest.mark.parametrize("failure", ["swap", "late-swap", "stage"])
 def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, monkeypatch, route, failure):
     import os
-    import pm
 
     state = zip_update
     before = {profile: (profile / "config.yaml").read_bytes()
@@ -225,12 +223,6 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
             return copytree(src, dst, *args, **kwargs)
         monkeypatch.setattr(shutil, "copytree", fail_copy)
         expected = SystemExit
-    else:
-        def fail_preparation(*args, **kwargs):
-            assert (state.root / "payload.txt").read_text() == "new"
-            raise pm.InstallError("venv", "preparation stopped")
-        monkeypatch.setattr("hermes_cli.source_build.build_update_products", fail_preparation)
-        expected = pm.InstallError
     with pytest.raises(expected) as raised:
         update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
     if failure in {"swap", "late-swap"}:
@@ -246,8 +238,39 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
     assert {profile: (profile / "config.yaml").read_bytes() for profile in before} == before
     assert not (state.sibling / ".env").exists()
     assert json.loads(state.jobs.read_text()) == state.original_jobs
-    assert not (state.active / "logs/update_receipts/latest.json").exists()
+    # The receipt is durable from the start (was: no latest.json at all). This direct
+    # ``_cmd_update_impl`` call has no command-boundary finalizer, so it is still the open
+    # record of THIS run, never a success.
+    latest = state.active / "logs/update_receipts/latest.json"
+    assert not latest.exists() or json.loads(latest.read_text())["outcome"] != "success"
     assert not list(state.root.glob("*.hermes-update-*"))
+
+
+@pytest.mark.parametrize("route", ["direct", "git-failure"])
+def test_zip_build_failure_after_swap_is_a_followup(zip_update, monkeypatch, route):
+    # Was the "preparation" case above (pm.InstallError propagated): the build runs after the
+    # swap committed the new tree, so under contract C3 it is an owed follow-up, not a failure.
+    import pm
+
+    state = zip_update
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (route == "direct", ["git"], False))
+    monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
+    monkeypatch.setattr(update_cmd, "_should_zip_fallback_on_update_error", lambda exc: True)
+
+    def fail_fetch(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "fetch"])
+    monkeypatch.setattr(update_cmd, "_git_run", fail_fetch)
+
+    def fail_build(*args, **kwargs):
+        assert (state.root / "payload.txt").read_text() == "new"
+        raise pm.InstallError("venv", "preparation stopped")
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", fail_build)
+    update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
+    assert (state.root / "payload.txt").read_text() == "new"
+    receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
+    assert receipt["outcome"] == "success"
+    assert "build" in [f["step"] for f in receipt["followups"]]
+    assert state.token["resume_needed"] is False
 
 
 @pytest.mark.parametrize("entry", ["payload.txt", "tools"])

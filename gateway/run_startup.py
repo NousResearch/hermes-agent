@@ -579,13 +579,22 @@ class GatewayStartupMixin:
         sessions with a running agent are skipped so none is resumed twice."""
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
+            _profile_runtime_scope,
         )
-        window = _auto_continue_freshness_window()
+        from contextlib import nullcontext
+
         candidates = self._resume_pending_candidates(platform)
         if candidates is None:
             return 0
         scheduled = 0
         for entry in candidates:
+            source = self._restored_source(entry)
+            home = self._profile_scope_key_for_source(source)
+            # Config belongs to the routed runtime. Only read local secret/config files here;
+            # external credential hydration belongs to the resumed turn's asynchronous scope.
+            scope = _profile_runtime_scope(home, hydrate_secrets=False) if home is not None else nullcontext()
+            with scope:
+                window = _auto_continue_freshness_window()
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
             marker = entry.last_resume_marked_at or entry.updated_at
@@ -594,7 +603,6 @@ class GatewayStartupMixin:
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
             if self._is_session_running(entry.session_key):
                 continue
-            source = self._restored_source(entry)
             adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug(

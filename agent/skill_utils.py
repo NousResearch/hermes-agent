@@ -105,8 +105,15 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
     (Windows editors) is stripped first or it would defeat the ``---`` fence check."""
     content = content.removeprefix("\ufeff")
-    end_match = re.search(r"\n---\s*\n", content[3:]) if content.startswith("---") else None
+    had_fence = content.startswith("---")
+    end_match = re.search(r"\n---\s*\n", content[3:]) if had_fence else None
     if not end_match:
+        if had_fence:
+            # Opening '---' with no closing fence. The file means to have frontmatter, so
+            # failing open here is how a skill loads with no trigger text and no warning.
+            logger.warning(
+                "frontmatter: opening '---' fence with no closing fence; parsed no frontmatter"
+            )
         return {}, content
     yaml_content = content[3 : end_match.start() + 3]
     body = content[end_match.end() + 3 :]
@@ -115,7 +122,12 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
             frontmatter = parsed
-    except Exception:
+        else:
+            logger.warning(
+                "frontmatter: parsed to %s, not a mapping; ignoring", type(parsed).__name__
+            )
+    except Exception as exc:
+        logger.warning("frontmatter: YAML parse failed (%s); falling back to line splitting", exc)
         for line in yaml_content.strip().split("\n"):
             if ":" in line:
                 key, value = line.split(":", 1)

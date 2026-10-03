@@ -1314,10 +1314,17 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     try:
         raw = skill_file.read_text(encoding="utf-8-sig")
         frontmatter, _ = parse_frontmatter(raw)
+        description = extract_skill_description(frontmatter)
+        if not description:
+            logger.warning(
+                "Skill %s parsed with no usable description; it enters the skill index "
+                "with no trigger text",
+                skill_file,
+            )
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
-            return False, frontmatter, extract_skill_description(frontmatter)
-        return True, frontmatter, extract_skill_description(frontmatter)
+            return False, frontmatter, description
+        return True, frontmatter, description
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""

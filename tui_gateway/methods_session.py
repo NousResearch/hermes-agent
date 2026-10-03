@@ -1703,7 +1703,7 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True})
 
 
-@_pet_method("pet.generate.status", scoped=False, fail_open={"available": False, "providers": []})
+@_pet_method("pet.generate.status", fail_open={"available": False, "providers": []})
 def _(rid, params: dict) -> dict:
     """Whether pet generation is possible: a reference-capable image backend is configured."""
     from agent.pet.generate.imagegen import GenerationError, list_sprite_providers, resolve_provider
@@ -1726,7 +1726,7 @@ def _pet_pick_provider(params: dict, *, require_references: bool):
     return resolve_provider(require_references=require_references, prefer=name) if name else None
 
 
-@_pet_method("pet.generate", scoped=False)
+@_pet_method("pet.generate")
 def _(rid, params: dict) -> dict:
     """Candidate base looks for a new pet (draft step; worker pool): ``prompt`` (or a ``referenceImage``
     data URL), ``count`` (≤4), ``style``, ``provider`` → ``{ok, token, drafts:[{index, dataUri}]}``."""
@@ -1783,7 +1783,7 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True, "token": token, "drafts": sorted(out, key=lambda d: d["index"])})
 
 
-@_pet_method("pet.hatch", scoped=False)
+@_pet_method("pet.hatch")
 def _(rid, params: dict) -> dict:
     """Turn a base draft (``token`` + ``index``) into a full pet — installed but NOT active (``pet.select``
     adopts, ``pet.remove`` discards) → ``{ok, slug, displayName, warnings, pet}``."""

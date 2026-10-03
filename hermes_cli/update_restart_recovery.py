@@ -1,11 +1,11 @@
 """Restart supervised gateway profiles from a clean Python generation.
 
 The normal update command keeps executing in the interpreter that started before
-``git pull``.  This module is deliberately small: it imports no gateway code
-itself and launches the regular per-profile gateway command in a new
-interpreter.  It is used only after the in-process restart phase has raised, so
-that the recovery path cannot inherit the stale ``sys.modules`` graph that
-caused the failure.
+``git pull``.  This module is deliberately small: it lazy-loads only the
+canonical process-identity helpers needed to validate a host rendezvous record,
+then launches the regular per-profile gateway command in a new interpreter.  It
+is used only after the in-process restart phase has raised, so that the recovery
+path cannot inherit the stale ``sys.modules`` graph that caused the failure.
 
 Outcome vocabulary (deliberately conservative):
 
@@ -162,8 +162,8 @@ def _systemd_verified_active(profile: str, *, run: Callable[..., Any]) -> bool:
 def _host_state_dir() -> str:
     """The path ``gateway.host_rendezvous.host_state_dir()`` resolves, computed locally.
 
-    This module imports no Hermes code at runtime — importing the freshly pulled tree is exactly
-    what aborted the phase that calls us — so the rule is duplicated here rather than shared.
+    This resolver imports no Hermes code — importing the freshly pulled tree is exactly what
+    aborted the phase that calls us — so the rule is duplicated here rather than shared.
     """
     override = os.environ.get("HERMES_GATEWAY_LOCK_DIR")
     if override:
@@ -174,27 +174,21 @@ def _host_state_dir() -> str:
     return os.path.join(state_home, "hermes", "gateway-locks")
 
 
-def _pid_is_live(pid: int) -> bool:
-    """Liveness of ``pid``: ``psutil`` when importable, else the POSIX signal-0 probe.
-
-    The signal probe is POSIX-only by construction — on Windows ``os.kill(pid, 0)`` sends a real
-    control event and can kill the target — so an unimportable psutil there means "cannot prove".
-    """
+def _pid_matches_gateway_record(pid: int, create_time: Any) -> bool:
+    """True only when the record still names this exact gateway process incarnation."""
     try:
         import psutil
+        from gateway.status import looks_like_gateway_command_line
+        from hermes_cli.process_identity import _same_incarnation
 
-        return bool(psutil.pid_exists(pid))
+        process = psutil.Process(pid)
+        return (
+            isinstance(create_time, (int, float)) and not isinstance(create_time, bool) and create_time > 0
+            and _same_incarnation(process, create_time)
+            and looks_like_gateway_command_line(" ".join(process.cmdline() or ()))
+        )
     except Exception:
-        pass
-    if os.name == "nt":
         return False
-    try:
-        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch, guarded by os.name above
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def _host_served_profiles() -> set[str]:
@@ -202,8 +196,8 @@ def _host_served_profiles() -> set[str]:
 
     Restarting any one of them restarts the same process, so they are a single restart target.
     Empty (no collapsing, today's per-profile behaviour) when the record is absent, unreadable,
-    dead, or when liveness cannot be probed — a missed collapse costs an extra restart, a wrong
-    one would skip a profile that really has its own process.
+    dead, identity-mismatched, or when liveness cannot be probed — a missed collapse costs an
+    extra restart, while a wrong one would skip a profile that really has its own process.
     """
     try:
         with open(os.path.join(_host_state_dir(), "host-gateway.json"), encoding="utf-8-sig") as handle:
@@ -214,7 +208,10 @@ def _host_served_profiles() -> set[str]:
         return set()
     pid = record.get("pid")
     profiles = record.get("profiles")
-    if not isinstance(pid, int) or pid <= 0 or not isinstance(profiles, list) or not _pid_is_live(pid):
+    if (
+        not isinstance(pid, int) or pid <= 0 or not isinstance(profiles, list)
+        or not _pid_matches_gateway_record(pid, record.get("createTime"))
+    ):
         return set()
     return {name for name in profiles if isinstance(name, str) and name}
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Set
+from typing import Dict, List, Set, Tuple
 
 from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
@@ -163,10 +163,18 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     _save_platform_tools(config, platform, updated)
 
 
-def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:
-    """Add or remove specific MCP tools from a server's exclude list."""
+def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Tuple[Set[str], Dict[str, str]]:
+    """Enable/disable specific MCP tools in the list the runtime filter honours: ``tools.include``
+    when the server is in include mode (``_make_tool_filter``: include wins and exclude is never
+    read — editing exclude there reported success and changed nothing), else ``tools.exclude``.
+
+    Returns ``(servers missing from config, {target: reason})``. A target whose tool a glob in that
+    list still matches after the exact-name edit (``include: [create_*]`` + disable) is left
+    untouched and returned with the pattern: the runtime filter would not honour the toggle."""
     failed_servers: Set[str] = set()
+    held: Dict[str, str] = {}
     mcp_servers = config.get("mcp_servers") or {}
+    match = _mcp_match_filter()
 
     for target in targets:
         server_name, tool_name = target.split(":", 1)
@@ -174,14 +182,22 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
             failed_servers.add(server_name)
             continue
         tools_cfg = mcp_servers[server_name].setdefault("tools", {})
-        exclude = list(tools_cfg.get("exclude") or [])
-        if action != "disable":
-            exclude = [t for t in exclude if t != tool_name]
-        elif tool_name not in exclude:
-            exclude.append(tool_name)
-        tools_cfg["exclude"] = exclude
+        key = "include" if isinstance(tools_cfg.get("include"), (str, list, tuple, set)) else "exclude"
+        raw = tools_cfg.get(key)
+        names = [raw] if isinstance(raw, str) else list(raw or [])
+        if (action == "disable") == (key == "include"):  # disable from include / enable from exclude
+            names = [t for t in names if t != tool_name]
+            patterns = sorted(str(p) for p in names if match(tool_name, {str(p)}))
+            if patterns:
+                held[target] = (f"cannot {action} '{target}': it matches the pattern '{patterns[0]}' in "
+                                f"mcp_servers.{server_name}.tools.{key} — edit that pattern or run "
+                                f"`hermes mcp configure {server_name}`")
+                continue
+        elif tool_name not in names:
+            names.append(tool_name)
+        tools_cfg[key] = names
 
-    return failed_servers
+    return failed_servers, held
 
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
@@ -276,14 +292,18 @@ def tools_disable_enable_command(args):
         _apply_toolset_change(config, platform, toolset_targets, action)
 
     failed_servers: Set[str] = set()
+    held: Dict[str, str] = {}
     if mcp_targets:
-        failed_servers = _apply_mcp_change(config, mcp_targets, action)
+        failed_servers, held = _apply_mcp_change(config, mcp_targets, action)
         for srv in failed_servers:
             _print_error(f"MCP server '{srv}' not found in config")
+        for reason in held.values():
+            _print_error(reason)
     save_config(config)
 
     successful = [t for t in targets
-                  if t not in rejected and (":" not in t or t.split(":")[0] not in failed_servers)]
+                  if t not in rejected and t not in held
+                  and (":" not in t or t.split(":")[0] not in failed_servers)]
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"
         _print_success(f"{verb}: {', '.join(successful)}")

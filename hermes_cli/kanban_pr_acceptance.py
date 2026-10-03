@@ -62,6 +62,12 @@ def _graphql_refusal(payload: dict, name: str) -> None:
                            and e.get("path", [])[:1] == ["repository"] for e in errors)
     if unresolved and (not errors or visibility_error):
         raise _GateAuthError(f"repository unresolved on {name}")
+    # GraphQL throttling is an error body even with HTTP 200 (or zero gh exit).
+    # Inspect only positive throttle signals, and never retain provider messages.
+    if any(e.get("type") == "RATE_LIMITED" or
+           (isinstance(e.get("message"), str) and
+            "api rate limit exceeded" in e["message"].lower()) for e in errors):
+        raise _GateRetryError(f"rate-limited on {name}")
     if errors:
         raise ValueError("GitHub returned incomplete GraphQL evidence")
 

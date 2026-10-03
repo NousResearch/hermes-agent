@@ -110,6 +110,9 @@ class SentenceChunker:
         """Drain the tail (end-of-text or long-idle flush)."""
         tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
         if m := _THINK_OPEN_RE.search(tail):
+            # An idle flush is not EOF: keep the opening tag so later deltas
+            # remain hidden until their closing tag arrives.
+            self.buf = tail[m.start():]
             tail = tail[: m.start()]  # unterminated reasoning block: never speak it
         tail = tail.strip()
         return [tail] if tail else []

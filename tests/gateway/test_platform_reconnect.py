@@ -647,6 +647,46 @@ class TestReconnectWatcherRaceGuard:
 # ── _connect_adapter_with_timeout detach-on-timeout ────────────────────
 
 
+class LegacyConnectAdapter(StubAdapter):
+    """Third-party adapters (keet-platform) override ``connect()`` with no
+    ``is_reconnect`` keyword — the base class contract it must tolerate (#97065)."""
+
+    async def connect(self):
+        self.connect_calls.append("legacy")  # type: ignore[arg-type]
+        return True
+
+
+class TestConnectAdapterDispatch:
+    """``_connect_adapter_with_timeout`` only forwards ``is_reconnect`` when accepted."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_connect_without_is_reconnect_connects(self):
+        """A plugin adapter whose ``connect()`` takes no keyword must connect, not TypeError."""
+        runner = _make_runner()
+        adapter = LegacyConnectAdapter()
+
+        success = await runner._connect_adapter_with_timeout(
+            adapter, Platform.TELEGRAM, is_reconnect=True
+        )
+
+        assert success is True
+        assert adapter.connect_calls == ["legacy"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_connect_without_is_reconnect_on_the_untimed_path(self):
+        """The ``timeout <= 0`` branch dispatches the same way."""
+        runner = _make_runner()
+        adapter = LegacyConnectAdapter()
+
+        with patch.object(runner, "_platform_connect_timeout_secs", return_value=0.0):
+            success = await runner._connect_adapter_with_timeout(
+                adapter, Platform.TELEGRAM, is_reconnect=True
+            )
+
+        assert success is True
+        assert adapter.connect_calls == ["legacy"]
+
+
 class TestConnectAdapterDetachOnTimeout:
     """Verify _connect_adapter_with_timeout uses the detach pattern."""
 

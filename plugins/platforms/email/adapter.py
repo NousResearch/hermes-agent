@@ -449,6 +449,12 @@ class EmailAdapter(BasePlatformAdapter):
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
     _seen_uids_snapshot: Dict[str, set] = {}
 
+    # Email cannot edit sent messages — each send creates a new, immutable
+    # message.  Without this flag the gateway treats email as an editable
+    # platform and sends interim/streaming messages as separate emails that
+    # can never be folded into the final reply.
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
         # Env first, then PlatformConfig.extra (config.yaml-only setups). Host/address are stripped: a stray

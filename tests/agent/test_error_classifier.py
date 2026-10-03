@@ -870,6 +870,46 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_compress is not True
 
+    def test_413_retry_wording_stays_payload_too_large(self):
+        """Generic retry copy on a real 413 must not take the rate-limit path."""
+        e = MockAPIError(
+            "Request Entity Too Large. Please try again in 30s",
+            status_code=413,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
+    def test_413_throttling_wording_stays_payload_too_large(self):
+        e = MockAPIError(
+            "Request too large, throttling disabled for this key",
+            status_code=413,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
+    def test_413_context_length_code_is_overflow(self):
+        e = MockAPIError(
+            "Request entity too large",
+            status_code=413,
+            body={"error": {"message": "Request entity too large", "code": "context_length_exceeded"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_413_free_quota_code_is_upstream_rate_limit(self):
+        e = MockAPIError(
+            "Request entity too large",
+            status_code=413,
+            body={"error": {"message": "Request entity too large", "code": "free_quota_exhausted"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_fallback is True
+        assert result.should_compress is not True
+
     # ── Context overflow ──
 
 

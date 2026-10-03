@@ -1112,18 +1112,32 @@ def _status_5xx(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
 
 
+# TPM / ITPM wording only. The broad ``_RATE_LIMIT_PATTERNS`` list includes
+# "try again in" and "throttling", which real entity-too-large 413s also say.
+_413_TPM_PHRASES = (
+    "tokens per minute", "input tokens per minute", "requests per minute", "itpm",
+)
+
+
 def _classify_413(c: _Ctx) -> Verdict:
     """HTTP 413 is entity-too-large unless the body is a token *rate* wall.
 
     Status handlers run before ``_by_error_code``, so a 413 whose structured
     code is ``rate_limit_exceeded`` (Groq ITPM, similar TPM walls) used to
     skip the rate-limit verdict and enter compress-until-death. Compression
-    cannot satisfy tokens-per-minute; backoff + fallback can.
+    cannot satisfy tokens-per-minute; backoff + fallback can. A context-length
+    or free-quota code on the same status keeps that code's verdict. Generic
+    retry wording stays payload-too-large.
     """
     code_verdict = _ERROR_CODE_VERDICTS.get(c.code)
     if code_verdict is not None and code_verdict.get("reason") == _R.rate_limit:
+        # The code table rotates without should_fallback. TPM recovery needs both.
         return _V_RATE_LIMIT
-    if any(p in c.msg for p in _RATE_LIMIT_PATTERNS):
+    if code_verdict is not None and code_verdict.get("reason") in (
+        _R.upstream_rate_limit, _R.context_overflow,
+    ):
+        return code_verdict
+    if any(p in c.msg for p in _413_TPM_PHRASES):
         return _V_RATE_LIMIT
     return _V_PAYLOAD_TOO_LARGE
 

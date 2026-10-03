@@ -272,6 +272,43 @@ done
 xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || { echo "Xvnc did not become ready" >&2; exit 1; }
 
 setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool assume a known layout
+# Latin letters and symbols a US map lacks (é, ñ, ß, €, «…). A keysym missing from the map makes Xvnc
+# remap a spare keycode at the moment of the keypress, and clients that have not processed the
+# resulting MappingNotify yet drop that character, a neighbour, or type a character remapped earlier
+# (measured: 4 lost and 1 wrong out of 12 first-time accented characters). Placing them once, here, on
+# media keys nobody presses on a headless screen, leaves Xvnc nothing to remap while a human types.
+# It must run before xfsettingsd and xfwm4 start: their shortcut grabs are keycode-based (XF86WWW,
+# XF86Mail…), and a grab left on a reused key swallows its unshifted character (seen: ï lost, Ï fine).
+# Keep in sync with tests/tools/test_bot_desktop_keymap.py.
+HERMES_BD_LATIN_KEYSYMS='agrave:Agrave aacute:Aacute acircumflex:Acircumflex atilde:Atilde adiaeresis:Adiaeresis
+aring:Aring ae:AE ccedilla:Ccedilla egrave:Egrave eacute:Eacute ecircumflex:Ecircumflex ediaeresis:Ediaeresis
+igrave:Igrave iacute:Iacute icircumflex:Icircumflex idiaeresis:Idiaeresis ntilde:Ntilde ograve:Ograve
+oacute:Oacute ocircumflex:Ocircumflex otilde:Otilde odiaeresis:Odiaeresis oslash:Oslash ugrave:Ugrave
+uacute:Uacute ucircumflex:Ucircumflex udiaeresis:Udiaeresis yacute:Yacute ssharp oe:OE EuroSign:sterling
+guillemotleft:guillemotright degree:section questiondown:exclamdown'
+# BEGIN latin-keymap (extracted by the test)
+bd_latin_keymap() {
+  HERMES_BD_LATIN_KEYSYMS="$HERMES_BD_LATIN_KEYSYMS" awk '
+    BEGIN { n = split(ENVIRON["HERMES_BD_LATIN_KEYSYMS"], want, /[ \t\n]+/); next_pair = 1 }
+    /xkb_symbols/ { in_symbols = 1 }
+    in_symbols && next_pair <= n && /^[ \t]*key <[A-Za-z0-9]+>[ \t]*\{[ \t]*\[[^]]*\][ \t]*\};[ \t]*$/ {
+      syms = $0; sub(/^[^[]*\[/, "", syms); sub(/\].*$/, "", syms)
+      count = split(syms, s, /[ \t,]+/); media = 0; other = 0
+      for (i = 1; i <= count; i++) if (s[i] != "") { if (s[i] ~ /^XF86/) media++; else other++ }
+      if (media && !other) {
+        while (next_pair <= n && want[next_pair] == "") next_pair++
+        if (next_pair <= n) {
+          name = $0; sub(/^[^<]*</, "", name); sub(/>.*$/, "", name)
+          levels = want[next_pair++]; gsub(/:/, ", ", levels)
+          print "    key <" name "> { [ " levels " ] };"
+          next
+        }
+      }
+    }
+    { print }'
+}
+# END latin-keymap
+xkbcomp -xkb "$DISPLAY" - 2>/dev/null | bd_latin_keymap | xkbcomp -w 0 - "$DISPLAY" 2>/dev/null || true
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true
 xset -display "$DISPLAY" s off -dpms s noblank 2>/dev/null || true
 

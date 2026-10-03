@@ -400,7 +400,7 @@ def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, st
             except OSError:
                 continue
             if stat.S_ISREG(st.st_mode) and (root != gen_root or st.st_mtime >= generated_cutoff):
-                entries.append(_mount(item, f"{root}/{item.relative_to(host_dir)}"))
+                entries.append(_mount(item, f"{root}/{item.relative_to(host_dir).as_posix()}"))
     return entries
 
 

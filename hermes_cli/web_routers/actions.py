@@ -307,14 +307,19 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         from hermes_cli.source_check import check_for_updates
 
         with _config_profile_scope(profile):
-            status = await asyncio.to_thread(check_for_updates, force=force)
+            # Background polls (no force) run passive so updates.check:false stops the periodic GitHub compare; an explicit Check-now always reaches the network (#126888).
+            status = await asyncio.to_thread(check_for_updates, force=force, passive=not force)
         behind = status.get("behind")
+        disabled = status.get("reason") == "disabled"
     except Exception:
         _log.exception("Update check failed")
         behind = None
+        disabled = False
 
     payload["behind"] = behind
-    if behind is None:
+    if disabled:
+        payload["message"] = "Update checks are disabled (updates.check: false)."
+    elif behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
     elif behind == 0:
         payload["message"] = "You're on the latest version."

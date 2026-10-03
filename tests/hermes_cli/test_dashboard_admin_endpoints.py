@@ -827,6 +827,38 @@ class TestUpdateCheckEndpoint:
         assert body["can_apply"] is True
 
 
+    def test_background_poll_is_passive_and_force_bypasses(self, monkeypatch):
+        # updates.check:false must stop the route's background polls (#126888):
+        # no-force polls go out passive, while an explicit Check-now (force) may
+        # still reach the network.
+        seen: list[dict] = []
+
+        def fake_check(**kwargs):
+            seen.append(kwargs)
+            return {"behind": 0, "commits": []}
+
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", fake_check)
+
+        assert self.client.get("/api/hermes/update/check").status_code == 200
+        assert seen[-1] == {"force": False, "passive": True}
+
+        assert self.client.get("/api/hermes/update/check?force=true").status_code == 200
+        assert seen[-1] == {"force": True, "passive": False}
+
+    def test_disabled_opt_out_reports_disabled_not_unreachable(self, monkeypatch):
+        # A passive check that the opt-out skipped must not read as a network
+        # failure to the dashboard.
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(
+            "hermes_cli.source_check.check_for_updates",
+            lambda **kw: {"behind": None, "commits": [], "reason": "disabled"},
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] is None
+        assert "disabled" in body["message"]
+
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
 
         monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: True)

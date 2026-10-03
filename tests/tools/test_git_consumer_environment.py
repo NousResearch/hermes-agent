@@ -89,3 +89,39 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
         assert result["success"] is True
         assert "+system git content" in result["diff"]
     assert calls
+
+
+def test_failed_git_environment_lookup_is_retried_after_bounded_cache(monkeypatch):
+    compat = importlib.import_module("hermes_cli._subprocess_compat")
+    selected_git_env = compat.selected_git_env
+
+    calls = []
+    now = [100.0]
+    base = {"PATH": "/missing", "HERMES_GIT_CACHE_TEST": "unique"}
+
+    def unavailable_once(name, *, base_env):
+        calls.append(name)
+        if len(calls) < 3:
+            raise RuntimeError("managed Git unavailable")
+        return pm.Runner(name, {**base_env, "PATH": "/managed"})
+
+    monkeypatch.setattr(pm, "ensure", unavailable_once)
+    monkeypatch.setattr(compat.time, "monotonic", lambda: now[0])
+
+    first = selected_git_env(base)
+    second = selected_git_env(base)
+    assert calls == ["git"]
+    assert first == base
+    assert second == base
+    assert second is not first
+
+    now[0] += compat._GIT_FALLBACK_CACHE_TTL
+    third = selected_git_env(base)
+    assert calls == ["git", "git"]
+    assert third == base
+
+    now[0] += compat._GIT_FALLBACK_CACHE_TTL
+    recovered = selected_git_env(base)
+    assert calls == ["git", "git", "git"]
+    assert recovered["PATH"] == "/managed"
+    assert recovered is not third

@@ -291,6 +291,15 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         _current.set(None)
     try:
         receipt.finalize(outcome)
+        # A checkout that did not move (pre SHA == post SHA) applied no code: failed
+        # channel-resolution aborts and already-up-to-date runs. Stamp it for readers;
+        # update_serve_obligations derives the same fact from the SHAs, so archived
+        # receipts need no migration.
+        pre = receipt.data.get("pre_update")
+        post = receipt.data.get("post_update")
+        pre_sha = pre.get("sha") if isinstance(pre, dict) else None
+        post_sha = post.get("sha") if isinstance(post, dict) else None
+        receipt.data["no_apply"] = bool(pre_sha and post_sha and pre_sha == post_sha)
         if stop_reason:
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:

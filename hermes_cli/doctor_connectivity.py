@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
@@ -263,6 +263,12 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
 
 
 def _probe_bedrock() -> ProbeResult:
+    """Probe the Bedrock **control** plane (``bedrock:ListFoundationModels``).
+
+    The row says which plane it checked, because a green tick here does not mean inference works: the
+    reporter of #87195 read this row as healthy while every request to the configured runtime endpoint
+    came back 401. ``_probe_bedrock_runtime`` below covers the data plane.
+    """
     name = "AWS Bedrock"
     try:
         from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
@@ -277,7 +283,7 @@ def _probe_bedrock() -> ProbeResult:
         # Trim retries so a transient failure doesn't pad the doctor run by 30+ seconds.
         client = boto3.client("bedrock", region_name=region, config=_BotoConfig(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1}))
         n = len(client.list_foundation_models().get("modelSummaries", []))
-        return _row(name, "ok", f"({auth_var}, {region}, {n} models)", label=label)
+        return _row(name, "ok", f"({auth_var}, {region}, {n} models, control plane)", label=label)
     except ImportError:
         hint = ("From the Hermes environment, run: "
                 f"{install_hint('bedrock')}. "
@@ -286,6 +292,92 @@ def _probe_bedrock() -> ProbeResult:
     except Exception as e:
         err_name = type(e).__name__
         return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
+
+
+# Hostname shape of the Bedrock API Key (OpenAI-compatible) endpoint, as written by
+# ``hermes_cli/model_setup_flows_bedrock.py``: ``bedrock-mantle.<region>.api.aws``. The region varies, so
+# this cannot be a literal host; kept a module constant so a test can point it at a local stand-in, the
+# same way ``GITHUB_API_PROBE_URL`` is used by the GitHub-token probe.
+_BEDROCK_RUNTIME_HOST_PARTS = ("bedrock-mantle.", ".api.aws")
+
+
+def _is_bedrock_runtime_url(base_url: str) -> bool:
+    prefix, suffix = _BEDROCK_RUNTIME_HOST_PARTS
+    host = base_url_hostname(str(base_url or ""))
+    return bool(host) and host.startswith(prefix) and host.endswith(suffix)
+
+
+def _configured_bedrock_runtime() -> tuple:
+    """``(base_url, key_var)`` when inference is routed at the Bedrock API Key endpoint, else ``("", "")``.
+
+    The Bedrock API Key flow saves itself as ``model.provider: custom:bedrock-mantle`` with the endpoint
+    and ``key_env`` under ``providers.bedrock-mantle``, so the host has to be read from config rather than
+    from an env var. An explicit ``model.base_url`` pointed at the same host wins, because that is the URL
+    the runtime will call.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return "", ""
+    if not isinstance(cfg, dict):
+        return "", ""
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    provider = str(model_cfg.get("provider") or "").strip().lower().removeprefix("custom:")
+    pdef = None
+    if provider:
+        try:
+            pdef = (resolve_user_provider(provider, cfg.get("providers") or {})
+                    or resolve_custom_provider(provider, cfg.get("custom_providers")))
+        except Exception:
+            pdef = None
+    base = str(model_cfg.get("base_url") or "").strip() or (str(getattr(pdef, "base_url", "") or "").strip())
+    if not _is_bedrock_runtime_url(base):
+        return "", ""
+    # The setup flow always writes key_env: AWS_BEARER_TOKEN_BEDROCK, so that is the fallback when the
+    # route came from a bare model.base_url with no providers: entry behind it.
+    key_var = next((v for v in (getattr(pdef, "api_key_env_vars", ()) or ()) if v), "") or "AWS_BEARER_TOKEN_BEDROCK"
+    return base, key_var
+
+
+def _probe_bedrock_runtime() -> ProbeResult:
+    """Probe the Bedrock endpoint the agent is actually configured to call (#87195).
+
+    ``_probe_bedrock`` above checks the control plane, which stays green while every inference request
+    401s — that is the whole defect. The Bedrock API Key route is OpenAI-compatible, so ``GET
+    <base>/models`` verifies the data plane's auth without billing an inference call. Measured against
+    ``bedrock-mantle.us-east-1.api.aws/v1`` and ``…us-east-2…`` on 2026-09-25 (identical answers): no
+    auth header returns 401 ``invalid_api_key`` "Missing 'authorization' or 'x-api-key' header"
+    (x-amzn-RequestId ``req_dbpbb4byxg2q3rof2fwgbiz4b7df3raj7lyftrgojjkos2prgrlq``), and a bad token
+    returns 401 ``invalid_api_key`` "Invalid bearer token"
+    (``req_q6kzumhrytxyn77vapjvsrulqch5humhe5fcfch72fdz7kun6qfq``).
+
+    Skipped unless the active config routes there, so the row never appears for SigV4/Converse users —
+    the data plane has no free list call on that route, and guessing would cost the user an inference.
+    """
+    name = "AWS Bedrock runtime"
+    label = name.ljust(20)
+    base, key_var = _configured_bedrock_runtime()
+    if not base:
+        return _skip(name)
+    key = os.getenv(key_var, "")
+    if not key:
+        return _row(name, "warn", f"({key_var} not set for {base})",
+                    [f"AWS Bedrock runtime: {base} is the configured route but {key_var} is not set"], label=label)
+    try:
+        import httpx
+        r = httpx.get(base.rstrip("/") + "/models", timeout=10,
+                      headers={"Authorization": f"Bearer {key}", "User-Agent": _HERMES_USER_AGENT})
+    except Exception as e:
+        return _row(name, "warn", f"({e})", ["Check network connectivity"], label=label)
+    if r.status_code == 200:
+        return _row(name, "ok", f"({key_var}, {base})", label=label)
+    if r.status_code in (401, 403):
+        return _row(name, "fail", f"(HTTP {r.status_code} — {key_var} rejected by {base})",
+                    [f"{key_var} is rejected by {base}. The AWS Bedrock row above only proves "
+                     "bedrock:ListFoundationModels works on the control plane, not that inference does"], label=label)
+    return _row(name, "warn", f"(HTTP {r.status_code} from {base})", label=label)
 
 
 def _probe_azure_entra() -> ProbeResult:
@@ -417,7 +509,8 @@ def build_probes() -> list:
         ("OpenRouter API", _probe_openrouter), ("Anthropic API", _probe_anthropic),
         # functools.partial binds each row's args so every callable keeps its own provider.
         *((row[0], functools.partial(_probe_apikey_provider, *row)) for row in _APIKEY_PROVIDERS_CACHE),
-        ("AWS Bedrock", _probe_bedrock), ("Azure Foundry (Entra ID)", _probe_azure_entra),
+        ("AWS Bedrock", _probe_bedrock), ("AWS Bedrock runtime", _probe_bedrock_runtime),
+        ("Azure Foundry (Entra ID)", _probe_azure_entra),
         ("GitHub token", _probe_github_token),
     ]
 

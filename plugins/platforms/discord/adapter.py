@@ -7220,126 +7220,6 @@ async def _standalone_send(
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
 
-def _clean_discord_user_ids(raw: str) -> list:
-    """Strip common Discord mention prefixes from a comma-separated ID string."""
-    cleaned = []
-    for uid in raw.replace(" ", "").split(","):
-        uid = uid.strip()
-        if uid.startswith("<@") and uid.endswith(">"):
-            uid = uid.lstrip("<@!").rstrip(">")
-        if uid.lower().startswith("user:"):
-            uid = uid[5:]
-        if uid:
-            cleaned.append(uid)
-    return cleaned
-
-
-def _discord_token_shape_error(token: str) -> Optional[str]:
-    """Reject a Discord bot token that is really the numeric application ID.
-
-    Users routinely paste the application ID from the Developer Portal's General
-    Information page instead of the bot token (Bot page); the gateway then fails
-    at runtime with an opaque 401. A real bot token is dot-separated base64 and
-    never purely numeric, so this is a safe, narrow shape check (port of
-    openclaw/openclaw#140531).
-    """
-    if token and token.strip().isdigit():
-        return ("That looks like a numeric application ID, not a bot token. "
-                "Paste the bot token from the Discord Developer Portal (Bot page), "
-                "not the application ID (General Information page).")
-    return None
-
-
-def _prompt_discord_bot_token(prompt) -> str:
-    """Prompt for the bot token, re-prompting once when the answer is a numeric app ID."""
-    from hermes_cli.cli_output import print_error
-    token = ""
-    for _attempt in range(2):
-        token = prompt("Discord bot token", password=True)
-        if not token:
-            return ""
-        error = _discord_token_shape_error(token)
-        if error is None:
-            return token
-        print_error(error)
-    # Second consecutive numeric answer: trust the user, keep the value.
-    return token
-
-
-def interactive_setup() -> None:
-    """Guide the user through Discord bot setup: token, allowlist, home channel (lazy CLI imports)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.cli_output import (
-        prompt, prompt_yes_no, print_header, print_info, print_success,
-    )
-    from hermes_cli.setup_platforms import declines_reconfigure
-    def _info_lines(*lines: str) -> None:
-        for line in lines:
-            print_info(line)
-
-    def _save_allowlist(allowed_users: str) -> None:
-        save_env_value("DISCORD_ALLOWED_USERS", ",".join(_clean_discord_user_ids(allowed_users)))
-        print_success("Discord allowlist configured")
-
-    print_header("Discord")
-    if declines_reconfigure("Discord", "Reconfigure Discord?", "DISCORD_BOT_TOKEN"):
-        if not get_env_value("DISCORD_ALLOWED_USERS"):
-            print_info(
-                "⚠️  Discord has no user allowlist. With the fail-closed default, "
-                "messages are denied unless you configure allowed users, roles, "
-                "or channels, or set DISCORD_ALLOW_ALL_USERS=true."
-            )
-            if prompt_yes_no("Add allowed users now?", True):
-                print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                allowed_users = prompt("Allowed user IDs (comma-separated)")
-                if allowed_users:
-                    _save_allowlist(allowed_users)
-        return
-    _info_lines(
-        "Create a bot at https://discord.com/developers/applications",
-        "On Bot → Privileged Gateway Intents, enable:",
-        "  - Message Content Intent (required — without it Discord rejects the connection)",
-        "  - Server Members Intent (required if you use usernames or role allowlists)",
-        "Save Changes in the Developer Portal before starting the gateway.",
-        "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
-    )
-    token = _prompt_discord_bot_token(prompt)
-    if not token:
-        return
-    save_env_value("DISCORD_BOT_TOKEN", token)
-    print_success("Discord token saved")
-    print()
-    _info_lines(
-        "🔒 Security: Restrict who can use your bot", "   To find your Discord user ID:",
-        "   1. Enable Developer Mode in Discord settings", "   2. Right-click your name → Copy ID",
-    )
-    print()
-    print_info("   You can also use Discord usernames (resolved on gateway start).")
-    print()
-    allowed_users = prompt("Allowed user IDs or usernames (comma-separated, leave empty for open access)")
-    if allowed_users:
-        _save_allowlist(allowed_users)
-    else:
-        print_info(
-            "⚠️  No allowlist set. Discord will deny messages until you set "
-            "DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES, DISCORD_ALLOWED_CHANNELS, "
-            "or DISCORD_ALLOW_ALL_USERS=true for open access."
-        )
-    print()
-    _info_lines(
-        "📬 Home Channel: where Hermes delivers cron job results,",
-        "   cross-platform messages, and notifications.",
-        "   To get a channel ID: right-click a channel → Copy Channel ID",
-        "   (requires Developer Mode in Discord settings)",
-        "   You can also set this later by typing /set-home in a Discord channel.",
-    )
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
-    if home_channel:
-        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
-    elif remove_env_value("DISCORD_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
-
-
 _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
@@ -7459,6 +7339,8 @@ _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from plugins.platforms.discord.onboarding import interactive_setup
+
     ctx.register_platform(
         name="discord",
         label="Discord",

@@ -195,7 +195,17 @@ class GatewayShutdownMixin:
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + self._active_async_delegation_count()
         )
+
+    @staticmethod
+    def _active_async_delegation_count() -> int:
+        """Process-local async delegations that a graceful restart must not amputate."""
+        try:
+            from tools.async_delegation import active_count
+            return active_count()
+        except Exception:
+            return 0
 
     @staticmethod
     def _running_cron_job_count() -> int:
@@ -1603,6 +1613,7 @@ class GatewayShutdownMixin:
         )
         return (
             max(0, non_cron - self._wedged_chat_agent_count())
+            + self._active_async_delegation_count()
             + self._restart_wait_cron_counts()["awaitable"]
         )
 
@@ -1611,8 +1622,8 @@ class GatewayShutdownMixin:
         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
 
         ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
-        handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
-        no identity). Best-effort: a source that can't be read is omitted, never raises.
+        handed to a restart-safe scope), ``api`` / ``deferred`` / ``async_delegation`` (count only —
+        those sources expose no identity). Best-effort: a source that can't be read is omitted, never raises.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         now = time.time()
@@ -1641,7 +1652,11 @@ class GatewayShutdownMixin:
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
+        for kind, count in (
+            ("api", self._active_api_run_count()),
+            ("deferred", self._active_deferred_agent_worker_count()),
+            ("async_delegation", self._active_async_delegation_count()),
+        ):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 

@@ -75,6 +75,40 @@ def test_merge_helper_reads_token_keys_into_restart_outcome(monkeypatch):
     assert outcome.incomplete is False
 
 
+def test_resume_retry_does_not_relaunch_completed_profiles(monkeypatch):
+    """A cold-start failure after relaunch must leave no completed profile pending for atexit."""
+    import atexit
+
+    from hermes_cli import gateway, update_cmd_windows
+
+    monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
+    monkeypatch.setattr(update_cmd_windows, "_resume_windows_services", lambda _token: None)
+    monkeypatch.setattr(update_cmd_windows, "_verify_relaunched_gateways_alive", lambda *_args: None)
+    monkeypatch.setattr(
+        update_cmd_windows,
+        "_cold_start_attested_profiles",
+        lambda _token: (_ for _ in ()).throw(RuntimeError("cold-start failed")),
+    )
+    monkeypatch.setattr(atexit, "unregister", lambda _fn: None)
+
+    launches = []
+    monkeypatch.setattr(
+        gateway,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, old_pid: launches.append((profile, old_pid)) or True,
+    )
+    token = {"resume_needed": True, "profiles": {"p1": 101, "p2": 202}, "unmapped": []}
+
+    with pytest.raises(RuntimeError, match="cold-start failed"):
+        update_cmd_windows._resume_windows_gateways_after_update(token)
+    assert token["profiles"] == {}
+
+    with pytest.raises(RuntimeError, match="cold-start failed"):
+        update_cmd_windows._resume_windows_gateways_after_update(token)
+    assert launches == [("p1", 101), ("p2", 202)]
+
+
 # ---------------------------------------------------------------------------
 # #115563: symmetric resume-failure handling + atexit double-fire
 # ---------------------------------------------------------------------------

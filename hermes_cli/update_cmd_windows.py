@@ -1194,15 +1194,21 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     with _abort_on_error("Could not load Windows gateway restart helper"):
         from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline, launch_detached_profile_gateway_restart
 
-    # An exception from a launch (incl. bad pid/argv coercion) logs at debug and reads as a failed relaunch.
+    # Keep the token as a live pending worklist: if a later recovery step fails and the
+    # atexit callback retries, already-launched profiles must not get another watcher.
     relaunched = []
-    failed_profiles = {}
-    for profile, old_pid in sorted(profiles.items()):
+    pending_profiles = {str(profile): int(old_pid) for profile, old_pid in profiles.items()}
+    token["profiles"] = pending_profiles
+    for profile, old_pid in sorted(pending_profiles.items()):
         if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(str(p), int(o)),
                      "Could not restart Windows gateway profile %s after update: %s", profile):
             relaunched.append(str(profile))
-        else:
-            failed_profiles[str(profile)] = int(old_pid)
+            pending_profiles.pop(str(profile), None)
+
+    # Apply the same pending-worklist rule to unmapped gateways. A retry should
+    # revisit only entries whose watcher was not started successfully.
+    pending_unmapped = list(unmapped)
+    token["unmapped"] = pending_unmapped
     # Surface the outcome on the token (#91277 Phase 2 plan-vs-execution reconciliation): the git-based
     # update path's fleet reconciliation cross-checks every planned runtime against restarted_services /
     # relaunched_profiles / externally_supervised_profiles / killed_pids — bookkeeping this Windows-specific
@@ -1213,17 +1219,13 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     # to restart it manually (Windows has no watcher to recover a failed relaunch).
     token["relaunched_profiles"] = relaunched
     unmapped_relaunched = 0
-    failed_unmapped = []
-    for entry in unmapped:
+    for entry in list(pending_unmapped):
         argv, old_pid = entry.get("argv"), entry.get("pid")
         if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(int(o), list(a)),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             unmapped_relaunched += 1
-        else:
-            failed_unmapped.append(entry)
-    token["profiles"] = failed_profiles
-    token["unmapped"] = failed_unmapped
-    if failed_profiles or failed_unmapped:
+            pending_unmapped.remove(entry)
+    if pending_profiles or pending_unmapped:
         raise RuntimeError("Could not restart every paused Windows gateway")
     return relaunched, unmapped_relaunched
 

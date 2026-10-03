@@ -1701,6 +1701,10 @@ def _sum_terminal(name, args, content, content_len, line_count):
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
+    # A refused write (stale-write guard, sensitive path, I/O error) changed nothing; summarized as
+    # "wrote to" it compresses into a success the post-compaction agent then reports.
+    if error := _json_dict(content).get("error"):
+        return f"[write_file] FAILED: {' '.join(str(error).split())[:80]} ({args.get('path', '?')})"
     written_lines = _str_arg(args, "content").count("\n") + 1 if args.get("content") else "?"
     return f"[write_file] wrote to {args.get('path', '?')} ({written_lines} lines)"
 

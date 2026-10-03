@@ -26,6 +26,17 @@ from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
 _REQ = httpx.Request("POST", "http://x")
 
 
+@pytest.mark.parametrize("result, expected", [
+    ({"error": "Refusing to overwrite a.md: stale", "stale_write_blocked": True, "path": "a.md"},
+     "[write_file] FAILED: Refusing to overwrite a.md: stale (a.md)"),
+    ({"bytes_written": 13, "path": "a.md"}, "[write_file] wrote to a.md (2 lines)"),
+])
+def test_write_file_stub_keeps_the_refusal(result, expected):
+    """A refused write changed nothing; its stub must not read as a successful write."""
+    args = json.dumps({"path": "a.md", "content": "line 1\nline 2"})
+    assert _summarize_tool_result("write_file", args, json.dumps(result)) == expected
+
+
 class StubProviderError(Exception):
     def __init__(self, message, *, status_code=None, response=None):
         super().__init__(message)

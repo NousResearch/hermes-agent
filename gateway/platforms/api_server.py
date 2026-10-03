@@ -103,6 +103,31 @@ _CAPABILITY_ENDPOINTS = (
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
 
+# A session counts as active while a turn is in flight. The agent stamps
+# ``last_activity_description`` during a turn and clears it when the turn exits
+# (``clear_session_activity_labels`` runs in the turn's ``finally``), so a
+# non-empty description is the authoritative live signal; the staleness window
+# only guards against labels stranded by a killed process.
+_SESSION_ACTIVE_STALE_AFTER_S = 900.0
+
+
+def _session_is_active(session: Dict[str, Any], *, now: Optional[float] = None) -> bool:
+    """Whether a persisted session has a turn in flight (client liveness).
+
+    Explicitly ended sessions are never active. ``last_activity_at`` keeps
+    advancing while a turn runs, so a live turn cannot age out; the window
+    only expires labels stranded by a killed process.
+    """
+    if session.get("ended_at") is not None:
+        return False
+    if not (session.get("last_activity_description") or "").strip():
+        return False
+    last = session.get("last_activity_at")
+    if last is None:
+        return False
+    clock = float(now if now is not None else time.time())
+    return (clock - float(last)) < _SESSION_ACTIVE_STALE_AFTER_S
+
 
 def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
     if smart_denied or not allow_session:
@@ -3040,6 +3065,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             isinstance(model_config, dict)
             and model_config.get("_delegate_from") is not None
         )
+        # Client liveness: a turn is in flight while the activity label is set
+        # (see _session_is_active).
+        payload["is_active"] = _session_is_active(session)
         return payload
 
     @staticmethod

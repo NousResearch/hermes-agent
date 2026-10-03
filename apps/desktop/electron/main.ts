@@ -271,6 +271,7 @@ import type {
 import {
   gatewayFilePath,
   gatewayFileRequestPaths,
+  nativeGatewayPath,
   resolveGatewayFileBackend,
   saveGatewayDownload
 } from './gateway-file-download'
@@ -8055,7 +8056,7 @@ function gatewayFileRequestPath(
 }
 
 async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<GatewayFileSaveResult> {
-  const filePath = gatewayFilePath(payload.path)
+  const filePath = nativeGatewayPath(gatewayFilePath(payload.path))
 
   if (!filePath) {
     throw new Error('Missing gateway file path')

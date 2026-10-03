@@ -146,3 +146,21 @@ def test_deb_rejects_traversal_before_touching_outside(tmp_path):
     with pytest.raises(InstallError, match="unsafe|escape|traversal"):
         DebPackage().unpack(deb, tmp_path / "staged", "linux-arm64-bionic")
     assert sentinel.read_bytes() == b"owned outside extraction"
+
+
+@pytest.mark.parametrize("name", ["gh", "iron-proxy"])
+def test_three_field_bionic_target_resolves(name):
+    """Regression: fetch_url must tolerate the libc-suffixed bionic target.
+
+    `linux-arm64-bionic` splits into three fields, so a bare `split("-")`
+    unpack raises ValueError and aborts the whole pm pin-apply step."""
+    from pm.registry import get_package
+    from pm.store import ALL_TARGETS
+
+    package = get_package(name)
+    url = package.fetch_url("1.0.0", "linux-arm64-bionic")
+    assert url.startswith("https://")
+    # every resolvable target must resolve, including the 3-field bionic row
+    for target in ALL_TARGETS:
+        if package.missing_reason(target) is None:
+            assert package.fetch_url("1.0.0", target).startswith("https://")

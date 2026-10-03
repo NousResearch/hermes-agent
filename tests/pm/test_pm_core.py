@@ -633,6 +633,24 @@ def test_python_package_url_carries_release_tag():
         pass
 
 
+def test_git_portable_url_omits_build_suffix_on_first_build():
+    """git-for-windows drops the build number in the asset name on a release's
+    first build (`v2.56.0.windows.1` -> `PortableGit-2.56.0-...`) but keeps it
+    from the second on (`v2.55.0.windows.5` -> `PortableGit-2.55.0.5-...`)."""
+    from pm.registry import get_package
+
+    git = get_package("git")
+    assert git.fetch_url("2.56.0+1", "win32-x64").endswith(
+        "/v2.56.0.windows.1/PortableGit-2.56.0-64-bit.7z.exe"
+    )
+    assert git.fetch_url("2.55.0+5", "win32-x64").endswith(
+        "/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe"
+    )
+    assert git.fetch_url("2.56.0+1", "win32-arm64").endswith(
+        "/v2.56.0.windows.1/PortableGit-2.56.0-arm64.7z.exe"
+    )
+
+
 @pytest.mark.platforms("macos")
 def test_python_package_stably_signs_macos_runtime(tmp_path):
     import shutil

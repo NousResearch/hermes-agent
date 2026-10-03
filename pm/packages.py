@@ -644,9 +644,13 @@ class Git(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         tag, build = version.split("+")
         arch = "arm64" if target.endswith("arm64") else "64-bit"
+        # The asset filename drops the build suffix on the first build of a
+        # release (v2.56.0.windows.1 -> PortableGit-2.56.0-64-bit.7z.exe) but
+        # keeps it from the second on (v2.55.0.windows.5 -> ...2.55.0.5...).
+        ver = tag if build == "1" else f"{tag}.{build}"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
+            f"v{tag}.windows.{build}/PortableGit-{ver}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -712,7 +716,9 @@ class Gh(BinaryPackage):
         # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
         # so the generic Linux archive is libc-independent.
         lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
-        osname, arch = lookup_target.split("-")
+        # Targets are "<osname>-<arch>" optionally followed by a libc suffix
+        # (e.g. "linux-arm64-bionic"), so only the first two fields matter.
+        osname, arch = lookup_target.split("-")[:2]
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"

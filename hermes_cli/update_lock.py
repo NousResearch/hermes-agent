@@ -12,7 +12,9 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -305,10 +307,95 @@ class UpdateLock:
     never deleted from under its new owner.
     """
 
-    def __init__(self, *, path: Path | None = None) -> None:
+    def __init__(
+        self, *, path: Path | None = None,
+        refresh_interval_seconds: float = UPDATE_MARKER_MAX_AGE_SECONDS / 4,
+    ) -> None:
         self.path = path or update_marker_path()
         self.acquired = False
         self.holder: UpdateHolder | None = None
+        self._fingerprint = uuid.uuid4().hex
+        self._refresh_interval_seconds = refresh_interval_seconds
+        self._stop_refresh = threading.Event()
+        self._refresh_thread: threading.Thread | None = None
+
+    def _payload(self) -> str:
+        return f"{os.getpid()}\n{int(time.time())}\n{self._fingerprint}\n"
+
+    def _ownership(self) -> str:
+        """``"ours"``, ``"missing"`` (nobody holds the marker), ``"other"`` (a successor or handoff
+        partner rewrote it; it is theirs now) or ``"unknown"`` (unreadable right now)."""
+        try:
+            lines = self.path.read_text(encoding="utf-8-sig").splitlines()
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "unknown"
+        if len(lines) >= 3 and lines[0].strip() == str(os.getpid()) and lines[2].strip() == self._fingerprint:
+            return "ours"
+        return "other"
+
+    def _still_owns(self) -> bool:
+        return self._ownership() == "ours"
+
+    def _publish(self, *, replace: bool) -> None:
+        """Write a complete payload beside the marker, fsync it, then publish it in one step.
+
+        ``replace=False`` is the claim: ``link()`` succeeds only while no marker exists
+        (``FileExistsError`` otherwise), so two contenders cannot both win. ``replace=True`` is
+        the renewal: ``os.replace`` swaps the whole file, so a concurrent reader sees the old or
+        the new payload and never the empty file an in-place ``O_TRUNC`` write exposes -- which
+        every reader (here, ``update-marker.ts``, ``update.rs``) treats as dead and deletes.
+        """
+        staged = self.path.with_name(f".{self.path.name}.{self._fingerprint}.{'renew' if replace else 'claim'}")
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as marker:
+                marker.write(self._payload())
+                marker.flush()
+                os.fsync(marker.fileno())
+            if replace:
+                os.replace(staged, self.path)
+            else:
+                os.link(staged, self.path)
+        finally:
+            with suppress(OSError):
+                staged.unlink()
+
+    def _refresh_once(self) -> bool:
+        """One renewal tick. ``False`` once the marker belongs to someone else (stop renewing)."""
+        state = self._ownership()
+        if state == "other":
+            return False  # a handoff partner or successor owns it now; never write over them
+        if state == "unknown":
+            return True  # e.g. a Windows sharing violation; look again next tick
+        try:
+            if state == "missing":
+                # The marker vanished while we still run (deleted by hand, or by an older reader).
+                # Claim it again, atomically: if someone else got there first, link() fails and
+                # the next tick sees "other".
+                self._publish(replace=False)
+            else:
+                self._publish(replace=True)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            # Transient (e.g. a Windows reader holding the file open): retry next tick; the
+            # ceiling allows several misses before the lease goes stale.
+            logger.debug("Could not refresh update marker %s: %s", self.path, exc)
+        return True
+
+    def _refresh_loop(self) -> None:
+        while not self._stop_refresh.wait(self._refresh_interval_seconds):
+            if not self._refresh_once():
+                return
+
+    def _start_refresh(self) -> None:
+        self._stop_refresh.clear()
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_loop, name="hermes-update-lease", daemon=True,
+        )
+        self._refresh_thread.start()
 
     def acquire(self) -> bool:
         """Claim the lock. Returns False (and sets ``holder``) if it's taken.
@@ -328,15 +415,34 @@ class UpdateLock:
                 return True
             self.holder = existing
             return False
+        if existing is not None:
+            # PID reuse can leave a prior run's claim naming us. It cannot belong to
+            # another live process, so remove it before the atomic fresh claim.
+            with suppress(OSError):
+                self.path.unlink()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+            # link() publishes a complete claim iff the marker does not exist. Unlike
+            # check-then-write, two contenders cannot both win or expose partial bytes.
+            self._publish(replace=False)
+        except FileExistsError:
+            if not self.path.parent.is_dir():
+                logger.debug("Could not create update marker directory %s", self.path.parent)
+                return True
+            existing = read_live_update(path=self.path)
+            if existing is None:
+                return self.acquire()
+            if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
+                return True
+            self.holder = existing
+            return False
         except OSError as exc:
             # Best-effort, like the Rust guard: an unwritable marker must not block the
             # update itself (worse than the race it prevents). Degrade to pre-lock behavior.
             logger.debug("Could not write update marker %s: %s", self.path, exc)
             return True
         self.acquired = True
+        self._start_refresh()
         return True
 
     def release(self) -> None:
@@ -344,11 +450,11 @@ class UpdateLock:
         if not self.acquired:
             return
         self.acquired = False
-        try:
-            owner = int(self.path.read_text(encoding="utf-8-sig").splitlines()[0].strip())
-        except (OSError, IndexError, ValueError):
-            return
-        if owner != os.getpid():
+        self._stop_refresh.set()
+        if self._refresh_thread is not None:
+            self._refresh_thread.join(timeout=max(1.0, self._refresh_interval_seconds + 0.1))
+            self._refresh_thread = None
+        if not self._still_owns():
             return  # a handoff partner took ownership — still a live update
         with suppress(OSError):
             self.path.unlink()

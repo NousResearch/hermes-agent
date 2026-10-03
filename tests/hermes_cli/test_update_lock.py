@@ -82,7 +82,92 @@ def test_acquire_writes_pid_and_start_time(marker):
         "the Electron gate probes this pid for liveness"
     )
     assert int(lines[1]) == pytest.approx(time.time(), abs=5)
-    assert len(lines) == 2, "wire format is exactly pid + started_at"
+    assert len(lines) == 3, "wire format is pid + renewable timestamp + owner fingerprint"
+    assert lines[2], "the fingerprint prevents a former owner releasing a successor's claim"
+
+
+def test_atomic_claim_has_one_winner_and_renews_its_lease(marker, tmp_path):
+    """Simultaneous contenders have one owner, whose lease stays fresh during long work."""
+    barrier = tmp_path / "go"
+    code = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.update_lock import UpdateLock
+marker, barrier = Path(sys.argv[2]), Path(sys.argv[3])
+while not barrier.exists(): time.sleep(.001)
+lock = UpdateLock(path=marker, refresh_interval_seconds=.05)
+won = lock.acquire()
+if won:
+    first = int(marker.read_text().splitlines()[1])
+    time.sleep(1.2)
+    renewed = int(marker.read_text().splitlines()[1])
+    print(f'won:{first}:{renewed}', flush=True)
+    lock.release()
+else:
+    print('lost', flush=True)
+"""
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-I", "-B", "-c", code, str(REPO_ROOT), str(marker), str(barrier)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for _ in range(2)
+    ]
+    barrier.touch()
+    outputs = [proc.communicate(timeout=10) for proc in procs]
+
+    winners = [out.strip() for out, _ in outputs if out.startswith("won:")]
+    assert len(winners) == 1, outputs
+    assert [out.strip() for out, _ in outputs].count("lost") == 1, outputs
+    _, first, renewed = winners[0].split(":")
+    assert int(renewed) > int(first), "the owner must renew before the stale ceiling"
+
+
+def test_lease_renewal_never_exposes_an_empty_marker(marker):
+    """Every reader deletes a marker it cannot parse, so a renewal must swap the whole file in:
+    an in-place truncating write showed readers 0 bytes once per tick (#129926 review)."""
+    lock = UpdateLock(path=marker, refresh_interval_seconds=0.002)
+    assert lock.acquire()
+    torn: list[str] = []
+    deadline = time.monotonic() + 1.5
+    try:
+        while time.monotonic() < deadline:
+            try:
+                text = marker.read_text(encoding="utf-8-sig")
+            except FileNotFoundError:
+                torn.append("<missing>")
+                continue
+            lines = text.splitlines()
+            if len(lines) < 3 or lines[0] != str(os.getpid()):
+                torn.append(text)
+        assert torn == [], f"{len(torn)} torn reads, e.g. {torn[:3]!r}"
+        assert lock._refresh_thread is not None and lock._refresh_thread.is_alive()
+    finally:
+        lock.release()
+    assert not marker.exists()
+    assert not list(marker.parent.glob(f".{marker.name}.*")), "staged claim/renewal files left behind"
+
+
+def test_a_vanished_marker_is_reclaimed_but_a_successor_is_left_alone(marker, other_pid):
+    """A marker deleted under a running owner is claimed again, not abandoned (abandoning it let a
+    second updater in); one rewritten by someone else ends the renewals and is never overwritten."""
+    lock = UpdateLock(path=marker, refresh_interval_seconds=3600)  # ticks driven by hand below
+    assert lock.acquire()
+    try:
+        fingerprint = marker.read_text().splitlines()[2]
+        marker.unlink()
+        assert lock._refresh_once() is True
+        lines = marker.read_text().splitlines()
+        assert lines[0] == str(os.getpid()) and lines[2] == fingerprint
+        assert int(lines[1]) == pytest.approx(time.time(), abs=5)
+
+        _claim(marker, other_pid)
+        assert lock._refresh_once() is False
+        assert marker.read_text().splitlines()[0] == str(other_pid)
+    finally:
+        lock.release()
+    assert marker.read_text().splitlines()[0] == str(other_pid), "release removed a successor's claim"
 
 
 def test_second_acquire_is_refused_while_the_first_is_live(marker, other_pid):

@@ -65,7 +65,7 @@ def _fake_invoke_jwt(ttl_seconds=3600):
 def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):
     """Copilot picked at runtime without a config write (`/model copilot/<m> --session`,
     `--provider copilot`) must still hand the EXCHANGED token and the enterprise base_url to the
-    client: the seeder leaves an ambient gh-CLI credential raw while copilot is not configured
+    client: the seeder leaves an ambient credential raw while copilot is not configured
     (#114740), and a raw token 400s on enterprise-only models."""
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -75,7 +75,7 @@ def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeyp
     from hermes_cli import config as _cfg
     _cfg._LOAD_CONFIG_CACHE.clear()
     _cfg._RAW_CONFIG_CACHE.clear()
-    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "GITHUB_TOKEN"))
     monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
                         lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
     monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")

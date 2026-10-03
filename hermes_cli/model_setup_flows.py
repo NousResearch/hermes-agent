@@ -553,7 +553,7 @@ def _copilot_obtain_token() -> bool:
 
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code. The reasoning-effort step
+    """GitHub Copilot flow using env vars or OAuth device code. The reasoning-effort step
     is the shared post-pick one in ``select_provider_and_model`` (Copilot's per-model level set
     comes from ``github_model_reasoning_efforts`` there)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
@@ -573,7 +573,7 @@ def _model_flow_copilot(config, current_model=""):
             from hermes_cli.env_loader import format_secret_source_suffix
             _say(f"  GitHub token: {api_key[:8]}... ✓ ({source}{format_secret_source_suffix(source)})", "")
         else:
-            _say("  GitHub token: ✓ (from `gh auth token`)" if source == "gh auth token" else "  GitHub token: ✓", "")
+            _say("  GitHub token: ✓", "")
 
     effective_base = pconfig.inference_base_url
     catalog, live_models, _normalize = _copilot_catalog(api_key)

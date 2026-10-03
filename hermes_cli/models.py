@@ -1253,7 +1253,7 @@ def _copilot_cli_config_tokens() -> list[str]:
 
 
 def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for the Copilot catalog: env vars / ``gh auth token`` via
+    """Best-effort GitHub token for the Copilot catalog: env vars via
     ``resolve_api_key_provider_credentials``, then ``auth.json`` ``credential_pool.copilot[]``, then
     ``~/.copilot/config.json`` ``copilotTokens`` (the ACP CLI's own store). Without the latter two,
     keyless users see the picker fall back to the stale curated list on a silent 401."""

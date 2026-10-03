@@ -2704,8 +2704,8 @@ def _reset_copilot_raw_degradation_warned() -> None:
 
 
 def _seed_copilot_singleton(seed: _Seeder) -> None:
-    # Copilot tokens are resolved dynamically via `gh auth token` or env vars
-    # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
+    # Copilot tokens are resolved dynamically via explicit env vars
+    # (COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN); they don't live in the auth store.
     try:
         from hermes_cli.copilot_auth import (
             COPILOT_ENV_VARS,

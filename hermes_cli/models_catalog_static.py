@@ -337,7 +337,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("tencent-tokenhub", "Tencent TokenHub", "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
     ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
     ("nvidia", "NVIDIA NIM", "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
-    ("copilot", "GitHub Copilot", "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
+    ("copilot", "GitHub Copilot", "GitHub Copilot (Uses COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN)"),
     ("copilot-acp", "GitHub Copilot ACP", "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ("huggingface", "Hugging Face", "Hugging Face Inference Providers"),
     ("gemini", "Google AI Studio", "Google AI Studio (Native Gemini API)"),

@@ -197,9 +197,12 @@ def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
 
 
 def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
-    """The same Copilot token is seeded as gh_cli AND env:<VAR> rows, so suppress
-    every variant or the duplicates resurrect the entry. gh CLI and shell state
-    are left untouched."""
+    """Copilot token comes from COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN.
+
+    The same token can be seeded as multiple source entries (a legacy
+    ``gh_cli`` row from before the `gh auth token` fallback was removed
+    plus env:<VAR> rows), so suppress every variant or the duplicates
+    resurrect the entry. gh CLI and shell state are left untouched."""
     from hermes_cli.auth import suppress_credential_source
 
     suppress_credential_source(provider, "gh_cli")
@@ -229,7 +232,7 @@ _REGISTRY: List[RemovalStep] = [
         provider="copilot", source_id="gh_cli",
         match_fn=lambda src: src == "gh_cli" or src.startswith("env:"),
         remove_fn=_remove_copilot_gh,
-        description="gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
+        description="legacy gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
     ),
     RemovalStep(
         provider="*", source_id="env:",

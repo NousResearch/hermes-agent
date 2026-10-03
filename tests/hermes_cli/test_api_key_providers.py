@@ -14,7 +14,6 @@ from hermes_cli.auth import (
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     _resolve_kimi_base_url,
 )
-from hermes_cli.copilot_auth import _try_gh_cli_token
 
 
 # =============================================================================
@@ -189,35 +188,6 @@ class TestApiKeyProviderStatus:
 class TestResolveApiKeyProviderCredentials:
 
 
-    def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch, tmp_path):
-        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
-        from hermes_platform.resolver import known_dirs
-
-        _invalidate_gh_cli_token_cache()
-        brew = tmp_path / "homebrew" / "bin"
-        brew.mkdir(parents=True)
-        gh = brew / "gh"
-        gh.write_text("#!/bin/sh\n", encoding="utf-8")
-        gh.chmod(0o755)
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr(known_dirs, "homebrew_dirs", lambda: (str(brew),))
-        monkeypatch.setattr(known_dirs, "user_local_bin", lambda: ())
-
-        calls = []
-
-        class _Result:
-            returncode = 0
-            stdout = "gh-cli-secret\n"
-
-        def _fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return _Result()
-
-        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
-
-        assert _try_gh_cli_token() == "gh-cli-secret"
-        assert calls == [[str(gh), "auth", "token"]]
-
 
     def test_resolve_stepfun_with_key(self, monkeypatch):
         monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-secret-key")
@@ -258,17 +228,16 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "auto-kimi-key"
 
-    def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+    def test_runtime_copilot_ignores_gh_cli_token(self, monkeypatch):
+        """No env token anywhere: resolution must not sneak in a gh CLI token,
+        it fails loudly with the env vars that would work (#25246)."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="copilot")
-        assert result["provider"] == "copilot"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "gho_cli_secret"
-        assert result["base_url"] == "https://api.githubcopilot.com"
+
+        with pytest.raises(AuthError, match="COPILOT_GITHUB_TOKEN"):
+            resolve_runtime_provider(requested="copilot")
 
     def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_env_secret")
         monkeypatch.setattr(
             "hermes_cli.runtime_provider._get_model_config",
             lambda: {"provider": "copilot", "default": "gpt-5.4"},

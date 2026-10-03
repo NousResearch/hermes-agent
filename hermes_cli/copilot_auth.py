@@ -1,5 +1,18 @@
-"""GitHub Copilot authentication utilities (credential order matches the Copilot CLI:
-COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, then ``gh auth token``)."""
+"""GitHub Copilot authentication utilities.
+
+Implements the OAuth device code flow used by the Copilot CLI and handles
+token validation/exchange for the Copilot API.
+
+Credential search order:
+  1. COPILOT_GITHUB_TOKEN env var
+  2. GH_TOKEN env var
+  3. GITHUB_TOKEN env var
+
+Generic ``gh auth token`` output is intentionally NOT used as a fallback:
+that token proves GitHub CLI login, not Copilot API entitlement, and made
+`hermes model` list Copilot as authenticated for users with no Copilot
+subscription (#25246).
+"""
 
 from __future__ import annotations
 
@@ -9,8 +22,6 @@ import json
 import logging
 import os
 import re
-import shutil
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -18,7 +29,6 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -46,7 +56,7 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
             "Copilot API. Use one of:\n"
             "  → `copilot login` or `hermes model` to authenticate via OAuth\n"
             "  → A fine-grained PAT (github_pat_*) with Copilot Requests permission\n"
-            "  → `gh auth login` with the default device code flow (produces gho_* tokens)")
+            "  → An explicit COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN value")
     if not token.startswith(_SUPPORTED_PREFIXES):
         return False, (
             "Unsupported GitHub token format for the Copilot API. "
@@ -59,93 +69,17 @@ def resolve_copilot_token() -> tuple[str, str]:
 
     Raises ValueError if only a classic PAT is available.
     """
-    any_env_var_set = False
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()
         if not val:
             continue
-        any_env_var_set = True
         valid, msg = validate_copilot_token(val)
         if valid:
             return val, env_var
         logger.warning("Token from %s is not supported: %s", env_var, msg)
-    # `gh auth token` fallback ONLY when no Copilot env var was set: an exported GITHUB_TOKEN
-    # (even a classic PAT) means the user intends *that* token; skipping also avoids a slow
-    # subprocess (up to 5s on Windows) on every cold start.
-    if any_env_var_set:
-        logger.debug("Copilot env var(s) set but none held a supported token; skipping `gh auth "
-                     "token` fallback to honor explicit env-var intent (and avoid the subprocess "
-                     "cost on cold start, #60800).")
-        return "", ""
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(f"Token from `gh auth token` is not usable with Copilot. {msg}")
-        return token, "gh auth token"
+    # Do NOT fall back to `gh auth token`: that token proves GitHub CLI login,
+    # not Copilot API access (#25246).
     return "", ""
-
-
-def _gh_cli_candidates() -> list[str]:
-    """Every present ``gh`` in probe order: PATH first, then Homebrew and ``~/.local/bin``."""
-    from hermes_platform.resolver import locate_command
-    from hermes_platform.resolver.known_dirs import homebrew_dirs, user_local_bin
-
-    res = locate_command("gh", known_dirs=(*homebrew_dirs(), *user_local_bin()))
-    seen: list[str] = []
-    for cand in res.present:
-        if cand.value not in seen:
-            seen.append(cand.value)
-    return seen
-
-
-# ``gh auth token`` cache (misses too). With no credential store the probe blocks its full 5s on
-# keyring / D-Bus, and provider inventory probes Copilot several times per request — an uncached
-# miss made one settings page a 4×5s stall past Desktop's 15s IPC budget. Short TTL keeps a
-# fresh ``gh auth login`` discoverable.
-_GH_CLI_TOKEN_CACHE_TTL_SECONDS = 300.0
-_gh_cli_token_cache: tuple[float, Optional[str]] | None = None
-
-
-def _invalidate_gh_cli_token_cache() -> None:
-    """Reset the ``gh auth token`` probe cache (used by tests and re-auth flows)."""
-    global _gh_cli_token_cache
-    _gh_cli_token_cache = None
-
-
-def _try_gh_cli_token() -> Optional[str]:
-    """Token from ``gh auth token`` when available; the result (incl. a miss) is cached per TTL."""
-    global _gh_cli_token_cache
-    now = time.monotonic()
-    cache = _gh_cli_token_cache
-    if cache is not None and now - cache[0] < _GH_CLI_TOKEN_CACHE_TTL_SECONDS:
-        return cache[1]
-    token = _probe_gh_cli_token()
-    _gh_cli_token_cache = (now, token)
-    return token
-
-
-def _probe_gh_cli_token() -> Optional[str]:
-    """Uncached ``gh auth token`` subprocess probe (see ``_try_gh_cli_token``)."""
-    hostname = os.getenv("COPILOT_GH_HOST", "").strip()
-    # gh must not short-circuit on GITHUB_TOKEN / GH_TOKEN, nor prompt from a backend process.
-    clean_env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
-    clean_env.setdefault("GH_PROMPT_DISABLED", "1")
-    clean_env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    host_args = ["--hostname", hostname] if hostname else []
-    for gh_path in _gh_cli_candidates():
-        cmd = [gh_path, "auth", "token", *host_args]
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
-                                    errors='replace', timeout=5, env=clean_env,
-                                    stdin=subprocess.DEVNULL, **_popen_kwargs)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
-            continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    return None
 
 
 _DEVICE_CODE_TERMINAL_ERRORS = {"expired_token": "  ✗ Device code expired. Please try again.",

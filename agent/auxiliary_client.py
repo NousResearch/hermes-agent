@@ -5310,7 +5310,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             if not api_key and is_actual_local_base_url(raw_base_url):
                 api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     if not api_key:
-        tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
+        tried_sources = list(pconfig.api_key_env_vars)
         logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",
                      provider, ", ".join(tried_sources))
         return None, None

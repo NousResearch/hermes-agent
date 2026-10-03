@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from datetime import datetime, timezone
@@ -62,8 +63,29 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
 
 
 def sample_memory() -> Dict[str, Any]:
-    """Cheap /proc snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used.  Linux-only
-    (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable."""
+    """Cheap memory snapshot (KiB), never raising.
+
+    Linux reports own RSS, physical-memory availability, and swap through
+    ``/proc``.  On macOS, reuse the local-runtime hardware probe so consumers
+    such as the kanban memory guards still receive total and available memory.
+    """
+    if sys.platform == "darwin":
+        try:
+            from hermes_cli.local_runtime.hardware import _ram_bytes
+
+            total, available = _ram_bytes()
+            if (
+                isinstance(total, int) and not isinstance(total, bool) and total > 0
+                and isinstance(available, int) and not isinstance(available, bool) and available >= 0
+            ):
+                return {
+                    "mem_total_kib": total // 1024,
+                    "mem_available_kib": available // 1024,
+                }
+        except Exception:
+            pass
+        return {}
+
     sample = _proc_fields("/proc/self/status", {"VmRSS": "rss_kib"})
     mem = _proc_fields("/proc/meminfo", {"MemTotal": "mem_total_kib", "MemAvailable": "mem_available_kib",
                                          "SwapTotal": "SwapTotal", "SwapFree": "SwapFree"})

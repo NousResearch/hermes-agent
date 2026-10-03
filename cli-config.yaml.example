@@ -1195,6 +1195,29 @@ agent:
   # the turn (see gateway_timeout). 0 = disable. Default 300.
   # session_stall_timeout: 300
 
+  # Progress messages sent by a long-running turn. Two independent clocks
+  # (#125887), so a short first receipt no longer forces a short repeat:
+  #
+  #   gateway_notify_ack_interval  ONE-TIME acknowledgement, seconds into the
+  #                                turn before the first "working on it" message.
+  #                                0/absent = off, i.e. the first status message
+  #                                waits for gateway_notify_interval as before.
+  #                                Skipped when the turn has already streamed or
+  #                                sent an interim message — a receipt next to a
+  #                                half-written answer is noise.
+  #   gateway_notify_interval      REPEAT interval for the "⏳ Working — N min"
+  #                                heartbeat, edited in place where the platform
+  #                                supports it. 0 = off. A NEGATIVE value means
+  #                                "acknowledge once, never repeat" — the whole
+  #                                point of the split: on Telegram a 3s interval
+  #                                is ~20 send/edit attempts a minute, which
+  #                                trips the flood envelope.
+  #
+  # Both are turned off by display.platforms.<p>.long_running_notifications: false.
+  # Default: no acknowledgement, heartbeat every 180s.
+  # gateway_notify_ack_interval: 3
+  # gateway_notify_interval: 180
+
   # Transcript-sanitiser repeated-heal escalation (#96870). The pre-send
   # sanitiser silently repairs empty non-final turns on the wire copy; after
   # this many heal passes within a 10-minute session window Hermes logs one

@@ -1974,6 +1974,7 @@ _AGENT_ENV_BRIDGE = {
     "gateway_turn_lease_timeout": "HERMES_TURN_LEASE_TIMEOUT",
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
+    "gateway_notify_ack_interval": "HERMES_AGENT_NOTIFY_ACK_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",

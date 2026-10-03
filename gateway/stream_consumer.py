@@ -271,6 +271,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+    # Whether the user has already been shown real content this turn: a landed send/edit, a
+    # delivered commentary, or a finalized segment. The one-time progress acknowledgement
+    # (#125887) reads this to stay silent beside an answer that is already arriving.
+    showed_user_content = property(
+        lambda self: bool(
+            self._already_sent
+            or self._delivered_commentary_texts
+            or self._delivered_segment_texts
+        )
+    )
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""

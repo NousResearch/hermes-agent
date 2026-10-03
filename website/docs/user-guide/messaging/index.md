@@ -903,6 +903,32 @@ display:
       long_running_notifications: false
 ```
 
+#### Acknowledging once, then repeating slowly
+
+The "⏳ Working — N min" heartbeat has two independent clocks, so a quick receipt no longer
+forces a quick repeat. On Telegram a 3-second interval is about 20 send/edit attempts a minute
+against a platform that refuses well below that, which is why `agent.gateway_notify_interval`
+is the *repeat* interval and not the delay before the first message.
+
+```yaml
+agent:
+  # ONE-TIME acknowledgement, 3s into the turn. 0 / absent = off, which means
+  # the first status message waits for gateway_notify_interval as it always has.
+  gateway_notify_ack_interval: 3
+  # REPEAT interval. A negative value means "acknowledge once, never repeat".
+  gateway_notify_interval: 180
+```
+
+`gateway_notify_ack_interval` buys exactly one message. It is skipped when the turn has already
+streamed or sent interim commentary (the turn is already talking to you), and it reuses the
+heartbeat's own guards, so it stands down on `/stop`, `/new`, drain and restart like the repeat
+does. The message is the same bubble the heartbeat then edits, so a run that gets both spends
+one send plus one edit per repeat rather than a new bubble each time.
+
+Set `gateway_notify_interval: -1` with an acknowledgement to get a pure "got it, I'll be back"
+receipt and silence for the rest of the turn. Both clocks are also turned off by
+`display.platforms.<platform>.long_running_notifications: false`.
+
 ### Warning and error notifications (opt-in suppression)
 
 Automatic warning and error notifications are shown by default. To suppress

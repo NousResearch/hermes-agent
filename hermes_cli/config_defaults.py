@@ -232,8 +232,19 @@ DEFAULT_CONFIG = {
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
         "clarify_timeout": 3600,
         # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
-        # 180 catches spinning weak-model runs before users /restart.
+        # 180 catches spinning weak-model runs before users /restart. This is the REPEAT interval only
+        # -- the one-time opening acknowledgement is agent.gateway_notify_ack_interval, so a short
+        # first receipt no longer forces a short repeat (which on Telegram means ~20 send/edit
+        # attempts per minute and a flood refusal). A NEGATIVE value here means "acknowledge once,
+        # never repeat"; 0 and positive values are unchanged from before the split (#125887).
         "gateway_notify_interval": 180,
+        # One-time progress acknowledgement (seconds into a turn before the first status message);
+        # absent/0 = off, i.e. the first status message still waits for gateway_notify_interval. This
+        # is the ONLY progress send its value buys: the repeat cadence stays on
+        # gateway_notify_interval. Turn-owned like the heartbeat, so it is suppressed by the same
+        # guard (session ownership, drain/restart) and skipped once the turn has already shown
+        # content (#125887).
+        "gateway_notify_ack_interval": 0,
         # Session stall watchdog (seconds): RECOVERY notifier for an in-process AIAgent with an
         # adapter-queued follow-up while its activity clock is stale — NOT a general stall detector
         # (ignores startup restore, build sentinels, leases, debounce, other processes; scan cadence

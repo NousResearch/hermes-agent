@@ -848,7 +848,10 @@ def run_process_limit_probe(bwrap_path: str, prlimit_path: str) -> bool:
         prlimit_path, f"--nproc={PROCESS_LIMIT_PROBE_VALUE}", "sh", "-c", "( : ) && exit 0",
     ]
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS)
+        # The exit status is the whole answer: no output is decoded.
+        result = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=PROBE_TIMEOUT_SECONDS,
+        )
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0

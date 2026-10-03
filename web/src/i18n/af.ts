@@ -129,8 +129,14 @@ export const af: Translations = {
     title: "Sessies",
     history: "Geskiedenis",
     overview: "Oorsig",
+    filterChats: "Geselse",
+    filterAutomation: "Outomatisering",
+    filterAll: "Alles",
+    sourceFilter: "Sessiebron",
+    anySource: "Enige bron",
     searchPlaceholder: "Soek boodskap-inhoud...",
     noSessions: "Nog geen sessies nie",
+    noSessionsInFilter: "Geen sessies in hierdie filter nie",
     noMatch: "Geen sessies stem ooreen met jou soektog nie",
     startConversation: "Begin 'n gesprek om dit hier te sien",
     noMessages: "Geen boodskappe",
@@ -156,9 +162,14 @@ export const af: Translations = {
     deleteSelectedConfirmMessage:
       "Dit verwyder {count} gekose sessies en al hul boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
     selectedSessionsDeleted: "{count} sessies geskrap",
+    selectedSessionsSkippedActive: "{deleted} geskrap; {count} behou omdat 'n beurt nog loop",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
     newChat: "Nuwe klets",
+    workspace: "werkruimte",
+    workspaceDefault: "Verstek",
+    workspaceRescan: "Herskandeer bewaarplekke",
+    workspaceCustom: "Ander pad…",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
     roles: {
@@ -318,6 +329,8 @@ export const af: Translations = {
     disableRuntime: "Deaktiveer",
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
+    toggleTakesEffectAfterRestart:
+      "Gestoor — herbegin die gateway om die verandering toe te pas.",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
     headline:
       "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
@@ -463,6 +476,8 @@ export const af: Translations = {
     copyCliCommand: "Kopieer CLI-opdrag (vir ekstern / terugval)",
     connect: "Koppel",
     sessionExpires: "Sessie verval oor {time}",
+    sessionExpiredNoError:
+      "Aanmelding het verval sonder om die verskaffer te bereik. Dit beteken gewoonlik dat die aanmeldbladsy in die oop oortjie vasgeval het ('n bedienerkant-probleem) — voltooi die aanmelding daar en klik dan Probeer weer. As dit aanhou misluk, gebruik eerder 'n API-sleutel of die CLI.",
     initiatingLogin: "Aanmeldvloei word begin…",
     exchangingCode: "Kode word vir tokens omgeruil…",
     connectedClosing: "Gekoppel! Besig om toe te maak…",
@@ -612,6 +627,12 @@ export const af: Translations = {
       "Borde laat u toe om onverwante werkstrome te skei — een per projek, repositorium of domein. Werkers op een bord sien nooit 'n ander bord se take nie.",
     slug: "Slug",
     slugHint: "— kleinletters, koppeltekens, bv. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Vertoonnaam",
     displayNameHint: "(opsioneel)",
     description: "Beskrywing",

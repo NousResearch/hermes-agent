@@ -10,6 +10,8 @@ import type {
   SubscriptionStepUpRetry
 } from '../app/interfaces.js'
 import type { SubscriptionStateResponse, SubscriptionTierOption, SubscriptionUpgradeResponse } from '../gatewayTypes.js'
+import { messages } from '../i18n/runtime.js'
+import { useT } from '../i18n/useT.js'
 import type { Theme } from '../theme.js'
 
 import { ActionRow, footer, MenuRow, type MenuRowSpec, UsageBars, useMenu } from './overlayPrimitives.js'
@@ -29,7 +31,7 @@ interface SubscriptionOverlayProps {
 /**
  * The /subscription modal — an in-terminal plan-change flow (V3). A small state
  * machine: overview → picker → confirm → result, with a stepup screen spliced in
- * when a mutation needs terminal billing. Downgrades / cancellations / resume are
+ * when a mutation needs remote spending. Downgrades / cancellations / resume are
  * chargeless; an upgrade charges the card on the subscription, and an SCA/decline
  * is handed off to the portal. Starting a NEW subscription still deep-links (needs
  * a fresh card). All RPCs live in subscription.ts, reached via `overlay.ctx`.
@@ -68,7 +70,7 @@ interface ScreenProps {
 
 /** ISO datetime → YYYY-MM-DD for display, or a soft fallback. */
 function shortDate(iso?: null | string): string {
-  return iso && iso.length >= 10 ? iso.slice(0, 10) : 'the end of the billing period'
+  return iso && iso.length >= 10 ? iso.slice(0, 10) : messages().subscription.shared.periodEndFallback
 }
 
 /** Integer cents → "$X.YY", or null when no amount is quoted. */
@@ -87,7 +89,7 @@ function isScopeDenial(r: { error?: string; ok?: boolean } | null): boolean {
  */
 function errorResult(r: { error?: string; message?: string; portal_url?: null | string } | null): SubscriptionResult {
   return {
-    message: r?.message || r?.error || 'Something went wrong. Try again, or manage on the portal.',
+    message: r?.message || r?.error || messages().subscription.result.genericError,
     ok: false,
     recoveryUrl: r?.portal_url ?? null
   }
@@ -100,21 +102,22 @@ function mutationResult(r: null | { message?: string; ok?: boolean }, okMessage:
 
 /** Map an upgrade response, routing SCA / decline to a portal recovery. */
 function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: null | string): SubscriptionResult {
+  const T = messages().subscription
+
   if (!r) {
     // null = a transport failure (WS drop / request timeout) on the CHARGING
     // route — NAS may have already prorated + charged. Report it as ambiguous and
     // steer to a safe re-check, never a blind retry (which #2's dedup can't cover
     // once the key is lost).
     return {
-      message:
-        'Couldn’t confirm the upgrade — your card may or may not have been charged. Re-run /subscription to check your plan before trying again.',
+      message: T.result.upgradeUnconfirmed,
       ok: false
     }
   }
 
   if (r.reason === 'authentication_required' || r.reason === 'subscription_payment_intent_requires_action') {
     return {
-      message: 'Please verify your card in the portal to finish this upgrade.',
+      message: T.result.verifyCard,
       ok: false,
       recoveryUrl: r.recovery_url ?? null
     }
@@ -122,7 +125,7 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
 
   if (r.reason === 'card_declined') {
     return {
-      message: 'Your card was declined — try a different card on the portal.',
+      message: T.result.cardDeclinedTryDifferent,
       ok: false,
       recoveryUrl: r.recovery_url ?? null
     }
@@ -130,14 +133,14 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
 
   if (r.ok && r.status === 'already_on_tier') {
     return {
-      message: `You are already on ${r.target_tier_name ?? 'this plan'}.`,
+      message: T.result.alreadyOn(r.target_tier_name ?? T.shared.thisPlan),
       ok: true
     }
   }
 
   if (r.ok && r.status === 'upgraded') {
     return {
-      message: `Upgraded to ${r.target_tier_name ?? 'your new plan'}. Your new monthly credits land in a moment.`,
+      message: T.result.upgraded(r.target_tier_name ?? T.shared.yourNewPlan),
       ok: true,
       pendingTierId: pendingTierId ?? null
     }
@@ -145,7 +148,7 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
 
   if (r.status === 'requires_action') {
     return {
-      message: 'This upgrade needs extra verification (3DS). Finish it on the portal.',
+      message: T.result.requiresAction,
       ok: false,
       recoveryUrl: r.recovery_url ?? null
     }
@@ -153,7 +156,7 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
 
   if (r.status === 'payment_failed') {
     return {
-      message: 'Your card was declined. Update your payment method on the portal and try again.',
+      message: T.result.paymentFailed,
       ok: false,
       recoveryUrl: r.recovery_url ?? null
     }
@@ -162,28 +165,27 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
   return errorResult(r)
 }
 
-/** Map a failed terminal-billing step-up to the right recovery copy (typed). */
+/** Map a failed remote-spending step-up to the right recovery copy (typed). */
 function stepUpDenialResult(res: { error?: string; message?: string }): SubscriptionResult {
+  const T = messages().subscription.stepUpDenial
+
   if (res.error === 'session_revoked') {
-    return { message: 'Your session expired — run /portal to log in again, then retry the change.', ok: false }
+    return { message: T.sessionRevoked, ok: false }
   }
 
   if (res.error === 'remote_spending_revoked') {
     return {
-      message:
-        res.message || 'Terminal spending was turned off for this session — reconnect from the portal, then retry.',
+      message: res.message || T.remoteSpendingRevoked,
       ok: false
     }
   }
 
   if (res.error === 'rate_limited') {
-    return { message: 'Too many attempts — wait a moment, then try again.', ok: false }
+    return { message: T.rateLimited, ok: false }
   }
 
   return {
-    message:
-      res.message ||
-      'Terminal billing was not enabled — someone with billing permissions (owner, admin, or finance admin) must allow it for this org. You can also make this change on the portal.',
+    message: res.message || T.notAllowed,
     ok: false
   }
 }
@@ -194,11 +196,11 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
 // stepup screen: we're already mounted there (in the 'resuming' phase), so an
 // onPatch({screen:'stepup'}) is a no-op that never remounts → the screen freezes.
 // Post-grant replays pass allowStepUp=false and surface this instead (mirrors the
-// CLI's allow_stepup=False cap).
-const scopeStillDeniedResult: SubscriptionResult = {
-  message: 'Terminal billing still isn’t enabled for this org — enable it on the portal, then retry.',
+// CLI's allow_stepup=False cap). Resolved per call so a locale swap is observed.
+const scopeStillDeniedResult = (): SubscriptionResult => ({
+  message: messages().subscription.result.scopeStillDenied,
   ok: false
-}
+})
 
 /** Preview a tier and route: confirm (ok), stepup (scope), or result (other error). */
 function previewAndRoute(
@@ -209,14 +211,17 @@ function previewAndRoute(
 ): Promise<void> {
   return ctx.preview(tierId).then(p => {
     if (!p) {
-      return onPatch({ result: { message: 'Could not preview that change.', ok: false }, screen: 'result' })
+      return onPatch({
+        result: { message: messages().subscription.result.couldNotPreview, ok: false },
+        screen: 'result'
+      })
     }
 
     if (!p.ok) {
       if (isScopeDenial(p)) {
         return allowStepUp
           ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'preview', tierId } })
-          : onPatch({ result: scopeStillDeniedResult, screen: 'result' })
+          : onPatch({ result: scopeStillDeniedResult(), screen: 'result' })
       }
 
       return onPatch({ result: errorResult(p), screen: 'result' })
@@ -255,7 +260,7 @@ function applyPendingAndRoute(
   const toStepUp = () =>
     allowStepUp
       ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'apply' } })
-      : onPatch({ result: scopeStillDeniedResult, screen: 'result' })
+      : onPatch({ result: scopeStillDeniedResult(), screen: 'result' })
 
   const finish = (result: SubscriptionResult) => onPatch({ result, screen: 'result' })
 
@@ -263,14 +268,7 @@ function applyPendingAndRoute(
     return ctx
       .scheduleCancellation()
       .then(r =>
-        isScopeDenial(r)
-          ? toStepUp()
-          : finish(
-              mutationResult(
-                r,
-                'Scheduled — your plan stays active until the end of the billing period, then it cancels. Nothing changes today.'
-              )
-            )
+        isScopeDenial(r) ? toStepUp() : finish(mutationResult(r, messages().subscription.result.cancellationScheduled))
       )
   }
 
@@ -283,14 +281,7 @@ function applyPendingAndRoute(
   return ctx
     .scheduleChange(pending.targetTierId ?? '')
     .then(r =>
-      isScopeDenial(r)
-        ? toStepUp()
-        : finish(
-            mutationResult(
-              r,
-              'Scheduled — your plan doesn’t change today. You keep your current plan until the end of the billing period, then it switches.'
-            )
-          )
+      isScopeDenial(r) ? toStepUp() : finish(mutationResult(r, messages().subscription.result.changeScheduled))
     )
 }
 
@@ -304,11 +295,11 @@ function resumeAndRoute(
     if (isScopeDenial(r)) {
       return allowStepUp
         ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'resume' } })
-        : onPatch({ result: scopeStillDeniedResult, screen: 'result' })
+        : onPatch({ result: scopeStillDeniedResult(), screen: 'result' })
     }
 
     return onPatch({
-      result: mutationResult(r, 'Your pending change was undone — you stay on your current plan.'),
+      result: mutationResult(r, messages().subscription.result.resumed),
       screen: 'result'
     })
   })
@@ -328,7 +319,10 @@ function pendingTransition(c: SubscriptionStateResponse['current']): null | Pend
   }
 
   if (c.cancel_at_period_end) {
-    return { to: 'cancels', when: c.cancellation_effective_display ?? shortDate(c.cancellation_effective_at) }
+    return {
+      to: messages().subscription.status.cancels,
+      when: c.cancellation_effective_display ?? shortDate(c.cancellation_effective_at)
+    }
   }
 
   if (c.pending_downgrade_tier_name) {
@@ -342,55 +336,61 @@ function pendingTransition(c: SubscriptionStateResponse['current']): null | Pend
 
 /** Status line — dollars-only, and echoes a pending "Ultra → Plus" transition. */
 function statusLine(s: SubscriptionStateResponse): string {
+  const T = messages().subscription.status
   const u = s.usage
   const c = s.current
   const plan = c?.tier_name ?? u?.plan_name ?? null
   const trans = pendingTransition(c)
-  const flip = plan && trans ? ` → ${trans.to}` : ''
+  const flip = plan && trans ? T.transition(trans.to) : ''
   const renewsRaw = u?.renews_display ?? null
-  const renews = renewsRaw ? ` · renews ${renewsRaw}` : ''
+  const renews = renewsRaw ? T.renews(renewsRaw) : ''
   const viewOnly = !s.can_change_plan
 
   if (!plan) {
-    return 'Plan: Free · free models only'
+    return T.freePlan
   }
 
   if (u?.status === 'low' && u.total_spendable_display) {
-    return `Plan: ${plan}${flip} · ${u.total_spendable_display} left`
+    return `${T.plan(plan)}${flip}${T.left(u.total_spendable_display)}`
   }
 
-  const left = u?.total_spendable_display ? ` · ${u.total_spendable_display} left` : ''
+  const left = u?.total_spendable_display ? T.left(u.total_spendable_display) : ''
 
-  return `Plan: ${plan}${flip}${left}${viewOnly ? ' · view only' : renews}`
+  return `${T.plan(plan)}${flip}${left}${viewOnly ? T.viewOnly : renews}`
 }
 
 function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
+  const T = useT().subscription
   const { ctx, state: s } = overlay
   const c = s.current
   const isFree = !c?.tier_id
-  const currentName = c?.tier_name ?? 'your plan'
+  const currentName = c?.tier_name ?? T.shared.yourPlan
   const trans = pendingTransition(c)
   const hasPendingChange = !!trans
   // Admin/owner on a personal paid plan can change it in-terminal; otherwise the
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
 
+  // On Free the catalog renders inline; picking a plan hands off to the portal,
+  // where starting a subscription needs card capture + checkout.
+  const freePlans = isFree
+    ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
+    : []
+
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
   const busyRef = useRef(false)
 
   const u = s.usage
-  const freeNudge = isFree ? 'Paid models need a subscription. Start one to reach them.' : null
+  const freeNudge = isFree ? T.overview.freeNudge : null
 
   const lowNudge =
-    u?.status === 'low'
-      ? `Low balance · ${u.total_spendable_display ?? 'under $5'} left. Top up or upgrade before a mid-run cutoff.`
-      : null
+    u?.status === 'low' ? T.overview.lowNudge(u.total_spendable_display ?? T.overview.lowNudgeAmountFallback) : null
 
   const doManage = () => {
     if (s.portal_url) {
       void ctx.openManageLink()
     } else {
-      ctx.sys('🔴 No portal URL available — manage your subscription on the Nous portal.')
+      ctx.sys(T.overview.noPortalUrl)
     }
 
     return onClose()
@@ -411,19 +411,45 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     // When a change is already scheduled, undo is the most likely next intent —
     // promote it to the first, highlighted action.
     if (hasPendingChange) {
-      rows.push({ color: t.color.ok, label: `Keep ${currentName} (undo this change)`, run: doResume })
-      rows.push({ label: 'Change plan', run: () => onPatch({ pending: null, screen: 'picker' }) })
+      rows.push({ color: t.color.ok, label: T.overview.keepPlanUndo(currentName), run: doResume })
+      rows.push({ label: T.overview.changePlan, run: () => onPatch({ pending: null, screen: 'picker' }) })
     } else {
-      rows.push({ label: 'Change plan', run: () => onPatch({ pending: null, screen: 'picker' }) })
+      rows.push({ label: T.overview.changePlan, run: () => onPatch({ pending: null, screen: 'picker' }) })
       rows.push({
-        label: 'Cancel subscription',
+        label: T.overview.cancelSubscription,
         run: () => onPatch({ pending: { kind: 'cancellation', preview: null, targetTierId: null }, screen: 'confirm' })
       })
     }
   }
 
-  rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
-  rows.push({ label: 'Close', run: onClose })
+  for (const tier of freePlans) {
+    // NAS sends a bare decimal string; tolerate pre-grouped ("1,000") too.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+
+    const suffix =
+      Number.isFinite(credits) && credits > 0 ? T.overview.creditsPerMonth(credits.toLocaleString('en-US')) : ''
+
+    rows.push({
+      label: `${T.overview.tierRow(tier.name, tier.dollars_per_month_display)}${suffix}`,
+      run: () => {
+        if (busyRef.current) {
+          return
+        }
+
+        busyRef.current = true
+        void ctx.openManageLink(tier.tier_id)
+        onClose()
+      }
+    })
+  }
+
+  // The inline plan rows are the subscribe path; only a catalog-less free state
+  // still needs the generic portal row.
+  if (!isFree || freePlans.length === 0) {
+    rows.push({ label: isFree ? T.overview.startSubscription : T.shared.manageOnPortal, run: doManage })
+  }
+
+  rows.push({ label: T.shared.close, run: onClose })
 
   const sel = useMenu(rows, onClose)
 
@@ -433,7 +459,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
       {trans && (
         <Box flexDirection="column" marginBottom={1}>
           <Text bold color={t.color.warn}>
-            ⏳ Scheduled change
+            {T.overview.scheduledChange}
           </Text>
           <Box>
             <Text color={t.color.text}>{currentName} </Text>
@@ -441,7 +467,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
             <Text color={t.color.text}>{trans.to}</Text>
             <Text color={t.color.muted}> · {trans.when}</Text>
           </Box>
-          <Text color={t.color.muted}>You keep {currentName} (and its credits) until then.</Text>
+          <Text color={t.color.muted}>{T.overview.keepUntilThen(currentName)}</Text>
         </Box>
       )}
 
@@ -467,7 +493,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
       )}
       {s.org_name && (
         <Text color={t.color.muted}>
-          Org: {s.org_name}
+          {T.overview.org(s.org_name)}
           {s.role ? ` · ${s.role}` : ''}
         </Text>
       )}
@@ -478,7 +504,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
       ))}
 
       <Text />
-      {footer('↑/↓ select · Enter confirm · Esc close', t)}
+      {footer(T.overview.hint, t)}
     </Box>
   )
 }
@@ -486,6 +512,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 // ── Screen: Picker (choose a tier → preview → confirm) ───────────────
 
 function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
+  const T = useT().subscription
   const { ctx, state: s } = overlay
   const currentOrder = s.tiers.find(tier => tier.is_current)?.tier_order ?? 0
 
@@ -510,33 +537,31 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
   const back = () => onPatch({ screen: 'overview' })
 
   const rows: MenuRowSpec[] = choices.map(tier => {
-    const direction = tier.tier_order > currentOrder ? 'upgrade' : 'downgrade'
+    const direction = tier.tier_order > currentOrder ? T.picker.upgrade : T.picker.downgrade
 
     return {
-      label: `${tier.name} · ${tier.dollars_per_month_display}/mo · ${direction}`,
+      label: T.picker.tierRow(tier.name, tier.dollars_per_month_display, direction),
       run: () => pick(tier)
     }
   })
 
-  rows.push({ label: 'Back', run: back })
+  rows.push({ label: T.shared.back, run: back })
 
   const sel = useMenu(rows, back)
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Change plan
+        {T.picker.title}
       </Text>
-      <Text color={t.color.muted}>
-        Current: {s.current?.tier_name ?? 'Free'}. Pick a plan to see the effect before confirming.
-      </Text>
+      <Text color={t.color.muted}>{T.picker.current(s.current?.tier_name ?? T.shared.freePlan)}</Text>
       <Text />
-      {choices.length === 0 && <Text color={t.color.muted}>No other plans are available to switch to right now.</Text>}
+      {choices.length === 0 && <Text color={t.color.muted}>{T.picker.noOtherPlans}</Text>}
       {rows.map((row, i) => (
         <MenuRow active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
       ))}
       <Text />
-      {footer('↑/↓ select · Enter preview · Esc back', t)}
+      {footer(T.picker.hint, t)}
     </Box>
   )
 }
@@ -544,6 +569,7 @@ function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
 // ── Screen: Confirm (show the previewed effect, then apply) ──────────
 
 function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
+  const T = useT().subscription
   const { ctx, state: s } = overlay
   const pending: null | SubscriptionPendingChange = overlay.pending ?? null
   const preview = pending?.preview ?? null
@@ -609,94 +635,82 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   }, [ctx, effect, isCancellation])
 
   const amount = centsDisplay(preview?.amount_due_now_cents)
-  const targetName = isCancellation ? null : (preview?.target_tier_name ?? 'the selected plan')
+  const targetName = isCancellation ? '' : (preview?.target_tier_name ?? T.shared.theSelectedPlan)
 
   let primary: MenuRowSpec | null = null
 
   if (isCancellation) {
-    primary = { color: t.color.warn, label: 'Cancel subscription', run: apply }
+    primary = { color: t.color.warn, label: T.overview.cancelSubscription, run: apply }
   } else if (effect === 'charge_now') {
     primary = {
       color: t.color.ok,
-      label: amount ? `Pay ${amount} & upgrade now` : 'Upgrade now (prorated charge)',
+      label: amount ? T.confirm.payAndUpgrade(amount) : T.confirm.upgradeNowProrated,
       run: apply
     }
   } else if (effect === 'scheduled') {
-    primary = { color: t.color.ok, label: `Schedule change to ${targetName}`, run: apply }
+    primary = { color: t.color.ok, label: T.confirm.scheduleChangeTo(targetName), run: apply }
   } else if (effect === 'blocked') {
-    primary = { label: 'Manage on portal', run: manage }
+    primary = { label: T.shared.manageOnPortal, run: manage }
   }
 
-  const rows: MenuRowSpec[] = primary ? [primary, { label: 'Back', run: back }] : [{ label: 'Back', run: back }]
+  const backRow: MenuRowSpec = { label: T.shared.back, run: back }
+  const rows: MenuRowSpec[] = primary ? [primary, backRow] : [backRow]
   const sel = useMenu(rows, back)
 
   // Chip contrasts an immediate charge vs a period-end schedule at a glance.
   const chip =
     effect === 'charge_now'
-      ? { color: t.color.ok, label: 'charged now' }
+      ? { color: t.color.ok, label: T.confirm.chipChargedNow }
       : effect === 'scheduled'
-        ? { color: t.color.warn, label: 'scheduled · not today' }
+        ? { color: t.color.warn, label: T.confirm.chipScheduled }
         : null
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text bold color={t.color.accent}>
-          {isCancellation ? 'Confirm cancellation' : 'Confirm plan change'}
+          {isCancellation ? T.confirm.titleCancellation : T.confirm.titleChange}
         </Text>
         {chip && <Text color={chip.color}> · {chip.label}</Text>}
       </Box>
-      {submitting && <Text color={t.color.muted}>Working…</Text>}
+      {submitting && <Text color={t.color.muted}>{T.confirm.working}</Text>}
 
       {isCancellation && (
         <>
           <Text color={t.color.text}>
-            Cancel {s.current?.tier_name ?? 'your plan'} — it stays active until {shortDate(s.current?.cycle_ends_at)},
-            then will not renew.
+            {T.confirm.cancelBody(s.current?.tier_name ?? T.shared.yourPlan, shortDate(s.current?.cycle_ends_at))}
           </Text>
-          <Text color={t.color.muted}>
-            You keep your remaining credits for this period. You can resume before it ends.
-          </Text>
+          <Text color={t.color.muted}>{T.confirm.cancelKeepCredits}</Text>
         </>
       )}
 
       {effect === 'charge_now' && !isCancellation && (
         <>
           <Text color={t.color.text}>
-            Upgrade to {targetName}.{' '}
-            {amount ? `You will be charged ${amount} now (prorated).` : 'You will be charged the prorated amount now.'}
+            {T.confirm.upgradeTo(targetName)} {amount ? T.confirm.chargedNow(amount) : T.confirm.chargedProrated}
           </Text>
           {preview?.monthly_credits_delta && (
-            <Text color={t.color.muted}>Monthly credits change: {preview.monthly_credits_delta}.</Text>
+            <Text color={t.color.muted}>{T.confirm.creditsDelta(preview.monthly_credits_delta)}</Text>
           )}
           <Text color={t.color.muted}>
-            {chargeCard
-              ? `${chargeCard} — the card on your subscription — will be charged.`
-              : 'The card on your subscription will be charged.'}
+            {chargeCard ? T.confirm.cardCharged(chargeCard) : T.confirm.cardChargedGeneric}
           </Text>
         </>
       )}
 
       {effect === 'scheduled' && !isCancellation && (
         <>
-          <Text color={t.color.text}>
-            Change to {targetName} — takes effect {shortDate(preview?.effective_at)}. No charge now; you keep your
-            current plan until then.
-          </Text>
+          <Text color={t.color.text}>{T.confirm.scheduledBody(targetName, shortDate(preview?.effective_at))}</Text>
           {preview?.monthly_credits_delta && (
-            <Text color={t.color.muted}>Monthly credits change: {preview.monthly_credits_delta}.</Text>
+            <Text color={t.color.muted}>{T.confirm.creditsDelta(preview.monthly_credits_delta)}</Text>
           )}
         </>
       )}
 
-      {effect === 'no_op' && !isCancellation && (
-        <Text color={t.color.muted}>You are already on {targetName} — nothing to change.</Text>
-      )}
+      {effect === 'no_op' && !isCancellation && <Text color={t.color.muted}>{T.confirm.noOp(targetName)}</Text>}
 
       {effect === 'blocked' && !isCancellation && (
-        <Text color={t.color.warn}>
-          {preview?.reason ?? 'That change cannot be made here — manage it on the portal.'}
-        </Text>
+        <Text color={t.color.warn}>{preview?.reason ?? T.confirm.blockedFallback}</Text>
       )}
 
       <Text />
@@ -704,7 +718,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
         <ActionRow active={sel === i} color={row.color} key={row.label} label={row.label} t={t} />
       ))}
       <Text />
-      {footer('↑/↓ select · Enter confirm · Esc back', t)}
+      {footer(T.confirm.hint, t)}
     </Box>
   )
 }
@@ -712,6 +726,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 // ── Screen: Result (outcome + optional portal recovery) ──────────────
 
 function ResultScreen({ onClose, overlay, t }: Omit<ScreenProps, 'onPatch'>) {
+  const T = useT().subscription
   const { ctx } = overlay
   const result = overlay.result ?? null
   const recoveryUrl = result?.recoveryUrl ?? null
@@ -778,9 +793,7 @@ function ResultScreen({ onClose, overlay, t }: Omit<ScreenProps, 'onPatch'>) {
   const applying = result?.ok && applyState === 'applying'
   const timedOut = result?.ok && applyState === 'timed_out'
 
-  const message = timedOut
-    ? 'Your upgrade succeeded and is still applying — refresh in a moment.'
-    : (result?.message ?? '')
+  const message = timedOut ? T.resultScreen.stillApplying : (result?.message ?? '')
 
   const openRecovery = () => {
     if (recoveryUrl) {
@@ -792,35 +805,40 @@ function ResultScreen({ onClose, overlay, t }: Omit<ScreenProps, 'onPatch'>) {
 
   const rows: MenuRowSpec[] = recoveryUrl
     ? [
-        { color: t.color.accent, label: 'Open the portal to finish', run: openRecovery },
-        { label: 'Close', run: onClose }
+        { color: t.color.accent, label: T.resultScreen.openPortalToFinish, run: openRecovery },
+        { label: T.shared.close, run: onClose }
       ]
-    : [{ label: 'Close', run: onClose }]
+    : [{ label: T.shared.close, run: onClose }]
 
   const sel = useMenu(rows, onClose)
 
   return (
     <Box flexDirection="column">
       <Text bold color={result?.ok ? t.color.ok : t.color.warn}>
-        {applying ? 'Applying…' : timedOut ? 'Still applying' : result?.ok ? 'Done' : 'Could not complete'}
+        {applying
+          ? T.resultScreen.titleApplying
+          : timedOut
+            ? T.resultScreen.titleStillApplying
+            : result?.ok
+              ? T.resultScreen.titleDone
+              : T.resultScreen.titleFailed}
       </Text>
       <Text color={t.color.text}>{message}</Text>
-      {result?.ok && !applying && !timedOut && (
-        <Text color={t.color.muted}>Re-run /subscription anytime to review it.</Text>
-      )}
+      {result?.ok && !applying && !timedOut && <Text color={t.color.muted}>{T.resultScreen.rerunHint}</Text>}
       <Text />
       {rows.map((row, i) => (
         <ActionRow active={sel === i} color={row.color} key={row.label} label={row.label} t={t} />
       ))}
       <Text />
-      {footer('↑/↓ select · Enter · Esc close', t)}
+      {footer(T.resultScreen.hint, t)}
     </Box>
   )
 }
 
-// ── Screen: Step-up (grant terminal billing inline, then replay) ──────
+// ── Screen: Step-up (allow remote spending inline, then replay) ───────
 
 function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
+  const T = useT().subscription
   const { ctx } = overlay
   const retry: null | SubscriptionStepUpRetry = overlay.stepUpRetry ?? null
   const [phase, setPhase] = useState<'granted' | 'prompt' | 'resuming' | 'waiting'>('prompt')
@@ -903,13 +921,17 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
   const rows: MenuRowSpec[] =
     phase === 'granted'
       ? [
-          { color: t.color.ok, label: retry?.kind === 'apply' ? 'Continue the change' : 'Continue', run: resume },
-          { label: 'Cancel', run: back }
+          {
+            color: t.color.ok,
+            label: retry?.kind === 'apply' ? T.stepUp.continueChange : T.stepUp.continue,
+            run: resume
+          },
+          { label: T.shared.cancel, run: back }
         ]
       : phase === 'prompt'
         ? [
-            { color: t.color.ok, label: 'Enable terminal billing', run: enable },
-            { label: 'Cancel', run: back }
+            { color: t.color.ok, label: T.stepUp.allow, run: enable },
+            { label: T.shared.cancel, run: back }
           ]
         : []
 
@@ -918,36 +940,24 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Terminal billing
+        {T.stepUp.title}
       </Text>
       {phase === 'prompt' && (
         <>
-          <Text color={t.color.text}>
-            Changing your plan needs terminal billing enabled for this org. Enable it here, then continue.
-          </Text>
-          <Text color={t.color.muted}>
-            Someone with billing permissions (owner, admin, or finance admin) approves it once in the browser.
-          </Text>
+          <Text color={t.color.text}>{T.stepUp.promptBody}</Text>
+          <Text color={t.color.muted}>{T.stepUp.promptNote}</Text>
         </>
       )}
-      {phase === 'waiting' && (
-        <Text color={t.color.muted}>
-          Opening your browser to approve… finish there, then come back — nothing is charged until you continue.
-        </Text>
-      )}
-      {phase === 'granted' && <Text color={t.color.ok}>Terminal billing enabled. Continue to finish your change.</Text>}
-      {phase === 'resuming' && <Text color={t.color.muted}>Applying your change…</Text>}
+      {phase === 'waiting' && <Text color={t.color.muted}>{T.stepUp.waiting}</Text>}
+      {phase === 'granted' && <Text color={t.color.ok}>{T.stepUp.granted}</Text>}
+      {phase === 'resuming' && <Text color={t.color.muted}>{T.stepUp.resuming}</Text>}
       <Text />
       {rows.map((row, i) => (
         <ActionRow active={sel === i} color={row.color} key={row.label} label={row.label} t={t} />
       ))}
       <Text />
       {footer(
-        phase === 'waiting'
-          ? 'Waiting for approval… · Esc to cancel'
-          : phase === 'resuming'
-            ? 'Working…'
-            : '↑/↓ select · Enter · Esc back',
+        phase === 'waiting' ? T.stepUp.hintWaiting : phase === 'resuming' ? T.stepUp.hintWorking : T.stepUp.hint,
         t
       )}
     </Box>
@@ -963,6 +973,7 @@ interface TeamContextScreenProps {
 }
 
 function TeamContextScreen({ onClose, s, t }: TeamContextScreenProps) {
+  const T = useT().subscription
   useInput((_ch, key) => {
     if (key.escape || key.return) {
       return onClose()
@@ -972,23 +983,20 @@ function TeamContextScreen({ onClose, s, t }: TeamContextScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Team subscription
+        {T.team.title}
       </Text>
       {s.org_name && (
         <Text color={t.color.muted}>
-          Org: {s.org_name}
+          {T.overview.org(s.org_name)}
           {s.role ? ` · ${s.role}` : ''}
         </Text>
       )}
       <Text />
-      <Text color={t.color.text}>
-        This terminal is connected to {s.org_name ?? 'a team org'}. Teams run on a shared balance · use /topup to add
-        funds.
-      </Text>
-      <Text color={t.color.muted}>Personal subscriptions live on your personal account.</Text>
+      <Text color={t.color.text}>{T.team.body(s.org_name ?? T.team.orgFallback)}</Text>
+      <Text color={t.color.muted}>{T.team.personalNote}</Text>
 
       <Text />
-      {footer('Enter/Esc close', t)}
+      {footer(T.team.hint, t)}
     </Box>
   )
 }

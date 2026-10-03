@@ -1,10 +1,17 @@
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
-export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
+export type ToolStatus = 'error' | 'notice' | 'running' | 'success' | 'warning'
 
 export interface ToolPart {
+  toolResultMetadata?: ToolResultMetadata
   args?: unknown
+  completedAt?: number
+  innerToolName?: string
+  interrupted?: boolean
   isError?: boolean
   result?: unknown
+  timestamp?: number
   toolCallId?: string
   toolName: string
   type: 'tool-call'
@@ -40,11 +47,17 @@ export interface ToolView {
    *  (terminal/execute_code) so the renderer knows to run them through
    *  the ANSI parser instead of printing them as literals. */
   rendersAnsi?: boolean
+  /** Original query, shown above structured web-search results. */
+  searchQuery?: string
   searchHits?: SearchResultRow[]
   /** When the backend reports stderr as a separate stream (terminal /
    *  execute_code), the renderer shows it as its own labeled, neutrally
    *  tinted block under stdout — distinct from an error tone. */
   stderr?: string
+  /** Terminal-only command shown as the prompt in the expanded transcript. */
+  terminalCommand?: string
+  /** Terminal-only process exit code, when the backend reported one. */
+  terminalExitCode?: number
   /** When set, the renderer uses stdout+stderr as separate sections and
    *  ignores the merged `detail`. */
   stdout?: string

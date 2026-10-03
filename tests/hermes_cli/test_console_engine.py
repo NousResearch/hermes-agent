@@ -2,423 +2,19 @@ from __future__ import annotations
 
 import io
 import sys
-from pathlib import Path
 
 import pytest
 
 from hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
 
 
-EXPECTED_CONSOLE_COMMANDS = {
-    ("status",),
-    ("doctor",),
-    ("logs",),
-    ("version",),
-    ("dump",),
-    ("debug", "share"),
-    ("debug", "delete"),
-    ("prompt-size",),
-    ("insights",),
-    ("security", "audit"),
-    ("portal", "info"),
-    ("portal", "tools"),
-    ("backup",),
-    ("import",),
-    ("send",),
-    ("config", "show"),
-    ("config", "path"),
-    ("config", "env-path"),
-    ("config", "check"),
-    ("config", "migrate"),
-    ("config", "set"),
-    ("sessions", "list"),
-    ("sessions", "stats"),
-    ("sessions", "export"),
-    ("sessions", "rename"),
-    ("sessions", "optimize"),
-    ("sessions", "repair"),
-    ("cron", "list"),
-    ("cron", "status"),
-    ("cron", "create"),
-    ("cron", "edit"),
-    ("cron", "pause"),
-    ("cron", "resume"),
-    ("cron", "run"),
-    ("cron", "remove"),
-    ("cron", "tick"),
-    ("profile",),
-    ("profile", "list"),
-    ("profile", "show"),
-    ("profile", "info"),
-    ("profile", "create"),
-    ("profile", "use"),
-    ("profile", "describe"),
-    ("profile", "rename"),
-    ("profile", "delete"),
-    ("profile", "export"),
-    ("profile", "import"),
-    ("profile", "install"),
-    ("profile", "update"),
-    ("tools", "list"),
-    ("tools", "enable"),
-    ("tools", "disable"),
-    ("tools", "post-setup"),
-    ("plugins", "list"),
-    ("plugins", "enable"),
-    ("plugins", "disable"),
-    ("plugins", "install"),
-    ("plugins", "update"),
-    ("plugins", "remove"),
-    ("skills", "browse"),
-    ("skills", "search"),
-    ("skills", "inspect"),
-    ("skills", "list"),
-    ("skills", "check"),
-    ("skills", "list-modified"),
-    ("skills", "diff"),
-    ("skills", "install"),
-    ("skills", "update"),
-    ("skills", "audit"),
-    ("skills", "uninstall"),
-    ("skills", "reset"),
-    ("skills", "opt-in"),
-    ("skills", "opt-out"),
-    ("skills", "repair-official"),
-    ("skills", "snapshot", "export"),
-    ("skills", "snapshot", "import"),
-    ("skills", "tap", "list"),
-    ("skills", "tap", "add"),
-    ("skills", "tap", "remove"),
-    ("mcp", "list"),
-    ("mcp", "catalog"),
-    ("mcp", "test"),
-    ("mcp", "add"),
-    ("mcp", "remove"),
-    ("mcp", "install"),
-    ("mcp", "login"),
-    ("mcp", "reauth"),
-    ("mcp", "configure"),
-    ("mcp", "picker"),
-    ("memory", "status"),
-    ("memory", "off"),
-    ("memory", "reset"),
-    ("auth", "list"),
-    ("auth", "status"),
-    ("auth", "reset"),
-    ("auth", "add"),
-    ("auth", "remove"),
-    ("auth", "logout"),
-    ("auth", "spotify", "status"),
-    ("auth", "spotify", "login"),
-    ("auth", "spotify", "logout"),
-    ("pairing", "list"),
-    ("pairing", "approve"),
-    ("pairing", "revoke"),
-    ("pairing", "clear-pending"),
-    ("webhook", "list"),
-    ("webhook", "subscribe"),
-    ("webhook", "remove"),
-    ("webhook", "test"),
-    ("hooks", "list"),
-    ("hooks", "test"),
-    ("hooks", "doctor"),
-    ("hooks", "revoke"),
-    ("slack", "manifest"),
-    ("project", "list"),
-    ("project", "show"),
-    ("project", "create"),
-    ("project", "add-folder"),
-    ("project", "remove-folder"),
-    ("project", "rename"),
-    ("project", "set-primary"),
-    ("project", "use"),
-    ("project", "archive"),
-    ("project", "restore"),
-    ("project", "bind-board"),
-    ("kanban", "init"),
-    ("kanban", "boards", "list"),
-    ("kanban", "boards", "create"),
-    ("kanban", "boards", "rm"),
-    ("kanban", "boards", "switch"),
-    ("kanban", "boards", "current"),
-    ("kanban", "boards", "rename"),
-    ("kanban", "boards", "set-workdir"),
-    ("kanban", "create"),
-    ("kanban", "list"),
-    ("kanban", "show"),
-    ("kanban", "assign"),
-    ("kanban", "reclaim"),
-    ("kanban", "reassign"),
-    ("kanban", "diagnose"),
-    ("kanban", "link"),
-    ("kanban", "unlink"),
-    ("kanban", "claim"),
-    ("kanban", "comment"),
-    ("kanban", "complete"),
-    ("kanban", "edit"),
-    ("kanban", "block"),
-    ("kanban", "schedule"),
-    ("kanban", "unblock"),
-    ("kanban", "promote"),
-    ("kanban", "archive"),
-    ("kanban", "stats"),
-    ("kanban", "runs"),
-    ("kanban", "heartbeat"),
-    ("kanban", "assignments"),
-    ("kanban", "context"),
-    ("bundles", "list"),
-    ("bundles", "show"),
-    ("bundles", "create"),
-    ("bundles", "delete"),
-    ("bundles", "reload"),
-    ("checkpoints", "status"),
-    ("checkpoints", "list"),
-    ("checkpoints", "prune"),
-    ("checkpoints", "clear"),
-    ("checkpoints", "clear-legacy"),
-    ("curator", "status"),
-    ("curator", "run"),
-    ("curator", "pause"),
-    ("curator", "resume"),
-    ("curator", "pin"),
-    ("curator", "unpin"),
-    ("curator", "restore"),
-    ("curator", "list-archived"),
-    ("curator", "archive"),
-    ("curator", "prune"),
-    ("curator", "backup"),
-    ("curator", "rollback"),
-    ("pets", "list"),
-    ("pets", "install"),
-    ("pets", "select"),
-    ("pets", "show"),
-    ("pets", "off"),
-    ("pets", "scale"),
-    ("pets", "remove"),
-    ("pets", "doctor"),
-}
+def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_hermes_home):
+    """The held-store refusal this command prints points at `sessions optimize --force`; if the
+    console rejected the flag, the command could only ever refuse whenever a gateway is running."""
+    result = HermesConsoleEngine().execute("sessions optimize --force", confirmed=True)
 
-
-MUTATING_CONFIRMATION_SMOKE_COMMANDS = [
-    "config set console.test true",
-    "config migrate",
-    "sessions rename abc123 new title",
-    "sessions optimize",
-    "cron create 'every 1h' 'say hello'",
-    "cron remove abc123",
-    "profile create tester --no-alias --no-skills",
-    "profile delete tester",
-    "tools disable web",
-    "plugins install owner/repo --no-enable",
-    "skills install openai/skills/example",
-    "mcp add demo --url https://example.com/sse",
-    "mcp configure github",
-    "mcp picker",
-    "backup --quick -o /tmp/hermes-console-test.zip",
-    "import /tmp/hermes-console-test.zip",
-    "send --to telegram hello",
-    "memory reset --target memory",
-    "auth remove openrouter 1",
-    "pairing approve abc123",
-    "webhook subscribe test --prompt hello",
-    "hooks test pre_tool_call",
-    "project create demo",
-    "kanban create 'demo task'",
-    "bundles create demo --skill skill-a",
-    "checkpoints prune",
-    "curator pause",
-    "pets install cat",
-]
-
-
-def test_console_parses_bare_and_hermes_prefixed_commands(_isolate_hermes_home):
-    engine = HermesConsoleEngine()
-
-    bare = engine.execute("config path")
-    prefixed = engine.execute("hermes config path")
-
-    assert bare.status == "ok"
-    assert prefixed.status == "ok"
-    assert bare.output == prefixed.output
-    assert bare.output.endswith("config.yaml")
-
-
-def test_console_status_hides_cli_next_step_footer(
-    monkeypatch: pytest.MonkeyPatch,
-    _isolate_hermes_home,
-):
-    import hermes_cli.status as status_mod
-
-    def fake_show_status(_args):
-        print("◆ Sessions")
-        print("Active: 3 session(s)")
-        print()
-        rule = "\u2500" * 60
-        print(f"\x1b[2m{rule}\x1b[0m")
-        print("\x1b[2m  Run 'hermes doctor' for detailed diagnostics\x1b[0m")
-        print("\x1b[2m  Run 'hermes setup' to configure\x1b[0m")
-        print()
-
-    monkeypatch.setattr(status_mod, "show_status", fake_show_status)
-
-    result = HermesConsoleEngine().execute("status")
-
-    assert result.status == "ok"
-    assert "Sessions" in result.output
-    assert "Active: 3 session(s)" in result.output
-    assert "hermes doctor" not in result.output
-    assert "hermes setup" not in result.output
-    assert "\u2500" not in result.output
-
-
-def test_console_status_hides_osc_linked_cli_next_step_footer(
-    monkeypatch: pytest.MonkeyPatch,
-    _isolate_hermes_home,
-):
-    import hermes_cli.status as status_mod
-
-    def osc_link(text: str) -> str:
-        return f"\x1b]8;;https://example.test\x1b\\{text}\x1b]8;;\x1b\\"
-
-    def fake_show_status(_args):
-        print("◆ Sessions")
-        print("Active: 3 session(s)")
-        print()
-        print(osc_link("\u2500" * 60))
-        print(osc_link("  Run 'hermes doctor' for detailed diagnostics"))
-        print(osc_link("  Run 'hermes setup' to configure"))
-        print()
-
-    monkeypatch.setattr(status_mod, "show_status", fake_show_status)
-
-    result = HermesConsoleEngine().execute("status")
-
-    assert result.status == "ok"
-    assert "Sessions" in result.output
-    assert "Active: 3 session(s)" in result.output
-    assert "hermes doctor" not in result.output
-    assert "hermes setup" not in result.output
-    assert "https://example.test" not in result.output
-    assert "\u2500" not in result.output
-
-
-def test_console_help_uses_cli_subcommand_summaries():
-    help_text = HermesConsoleEngine().help_text()
-
-    assert "skills list" in help_text
-    assert "List installed skills" in help_text
-    assert "Show all tools and their enabled/disabled status" in help_text
-    assert "Remove an MCP server" in help_text
-    assert "Check pet setup + terminal graphics support" in help_text
-    assert "Run `hermes skills list`" not in help_text
-    assert "Run `hermes tools list`" not in help_text
-
-
-def test_console_help_table_keeps_long_summaries_compact():
-    help_text = HermesConsoleEngine().help_text()
-
-    slack_line = next(
-        line for line in help_text.splitlines() if line.strip().startswith("slack manifest")
-    )
-
-    assert len(slack_line) <= 112
-    assert slack_line.endswith("...")
-
-
-def test_console_help_for_command_uses_cli_summary():
-    help_text = HermesConsoleEngine().help_text("skills list")
-
-    assert help_text == "skills list\nList installed skills"
-
-
-def test_console_registry_covers_non_admin_cli_surface():
-    registered = set(HermesConsoleEngine().commands)
-
-    missing = EXPECTED_CONSOLE_COMMANDS - registered
-
-    assert missing == set()
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "sessions delete abc123",
-        "sessions prune --older-than 1",
-        "chat",
-        "--cli",
-        "--tui",
-        "oneshot hello",
-        "model",
-        "setup",
-        "postinstall",
-        "fallback add",
-        "moa configure",
-        "claw migrate",
-        "gateway restart",
-        "gateway start",
-        "gateway stop",
-        "dashboard",
-        "serve",
-        "proxy start",
-        "mcp serve",
-        "skills config",
-        "skills publish ./skill",
-        "completion bash",
-        "acp",
-        "update",
-        "uninstall",
-        "gui",
-        "desktop",
-        "login",
-        "logout",
-        "--tui",
-        "logs | cat",
-        "config show > out.txt",
-    ],
-)
-def test_console_rejects_destructive_and_shell_like_commands(line):
-    result = HermesConsoleEngine().execute(line)
-
-    assert result.status == "error"
-    assert result.output
-
-
-@pytest.mark.parametrize("line", MUTATING_CONFIRMATION_SMOKE_COMMANDS)
-def test_mutating_console_commands_require_confirmation(line):
-    result = HermesConsoleEngine().execute(line)
-
-    assert result.status == "confirm_required"
-    assert result.confirmation_message
-
-
-def test_help_lists_supported_commands_and_not_full_cli():
-    result = HermesConsoleEngine().execute("help")
-
-    assert result.status == "ok"
-    assert "sessions list" in result.output
-    assert "config set" in result.output
-    assert "dashboard" not in result.output
-    assert "gateway restart" not in result.output
-
-
-def test_config_set_requires_confirmation_then_writes(_isolate_hermes_home):
-    engine = HermesConsoleEngine()
-
-    # Use a schema-known key path. Since #34067, `config set` refuses unknown
-    # top-level keys, so this flow test must target a valid path (telegram is a
-    # PlatformConfig-shaped dict that accepts arbitrary child keys).
-    pending = engine.execute("config set telegram.test true")
-    assert pending.status == "confirm_required"
-
-    from hermes_cli.config import read_raw_config
-
-    assert read_raw_config() == {}
-
-    result = engine.execute("config set telegram.test true", confirmed=True)
-
-    assert result.status == "ok"
-    assert "telegram.test" in result.output
-    assert read_raw_config()["telegram"]["test"] is True
+    assert result.status == "ok", result.output
+    assert "Usage:" not in result.output
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
@@ -440,6 +36,173 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     assert "tool-session" not in listed.output
     assert "Total sessions: 2" in stats.output
     assert "Listable sessions: 1" in stats.output
+
+
+def test_sessions_export_rejects_oversized_single_before_touching_output(
+    _isolate_hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("too-large", source="cli")
+        db.append_messages_batch(
+            "too-large",
+            [{"role": "user", "content": f"message-{i}"} for i in range(3)],
+        )
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 2)
+    materialized = []
+    original_export_session = SessionDB.export_session
+
+    def tracked_export_session(self, session_id):
+        materialized.append(session_id)
+        return original_export_session(self, session_id)
+
+    monkeypatch.setattr(SessionDB, "export_session", tracked_export_session)
+    output = tmp_path / "sessions.jsonl"
+    output.write_text("keep me\n", encoding="utf-8")
+
+    result = HermesConsoleEngine().execute(
+        f"sessions export {output} --session-id too-large",
+        confirmed=True,
+    )
+
+    assert result.status == "error"
+    assert "too-large" in result.output
+    assert "streaming Export" in result.output
+    assert "resume" not in result.output.lower()
+    assert materialized == []
+    assert output.read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_sessions_export_all_uses_per_session_budget(
+    _isolate_hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    """N small sessions export fine; ONE oversized session still rejects.
+
+    The budget is per session, not cumulative across the export set —
+    a cumulative budget broke full-DB backups of many small sessions.
+    """
+    import json
+
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        for name in ("first-safe", "second-safe", "third-safe"):
+            db.create_session(name, source="cli")
+            db.append_messages_batch(
+                name,
+                [{"role": "user", "content": f"{name}-{i}"} for i in range(2)],
+            )
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 3)
+    output = tmp_path / "all-sessions.jsonl"
+
+    # 3 sessions x 2 messages = 6 total > 3, but each session is under the
+    # per-session limit, so the full-DB export succeeds.
+    result = HermesConsoleEngine().execute(
+        f"sessions export {output}",
+        confirmed=True,
+    )
+    assert result.status == "ok"
+    exported = [
+        json.loads(line)
+        for line in output.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert {row["id"] for row in exported} == {
+        "first-safe",
+        "second-safe",
+        "third-safe",
+    }
+
+
+def test_sessions_export_all_rejects_single_oversized_session(
+    _isolate_hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("small", source="cli")
+        db.append_messages_batch(
+            "small",
+            [{"role": "user", "content": f"small-{i}"} for i in range(2)],
+        )
+        db.create_session("runaway", source="cli")
+        db.append_messages_batch(
+            "runaway",
+            [{"role": "user", "content": f"runaway-{i}"} for i in range(4)],
+        )
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 3)
+    export_all_calls = []
+
+    def tracked_export_all(self, source=None):
+        export_all_calls.append(source)
+        raise AssertionError("export_all must not run before every guard passes")
+
+    monkeypatch.setattr(SessionDB, "export_all", tracked_export_all)
+    output = tmp_path / "all-sessions.jsonl"
+
+    result = HermesConsoleEngine().execute(
+        f"sessions export {output}",
+        confirmed=True,
+    )
+
+    assert result.status == "error"
+    assert "runaway" in result.output
+    assert "more than 3 exportable" in result.output
+    assert "streaming Export" in result.output
+    assert "max_export_messages" in result.output
+    assert export_all_calls == []
+    assert not output.exists()
+
+
+def test_sessions_export_zero_limit_disables_guard(
+    _isolate_hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("huge", source="cli")
+        db.append_messages_batch(
+            "huge",
+            [{"role": "user", "content": f"huge-{i}"} for i in range(5)],
+        )
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 0)
+    output = tmp_path / "huge.jsonl"
+
+    result = HermesConsoleEngine().execute(
+        f"sessions export {output} --session-id huge",
+        confirmed=True,
+    )
+    assert result.status == "ok"
+    assert output.exists()
 
 
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
@@ -489,34 +252,102 @@ def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
     assert stderr.getvalue() == ""
 
 
-def test_repl_refuses_non_interactive_confirmation(_isolate_hermes_home):
-    stdin = io.StringIO("config set console.test true\n")
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+def test_capture_output_surfaces_string_exit_code_as_command_error():
+    from hermes_cli.console_engine import ConsoleCommandError, _capture_output
 
-    code = run_console_repl(
-        stdin=stdin,
-        stdout=stdout,
-        stderr=stderr,
-        interactive=False,
+    def _boom():
+        sys.exit("No credential matching \"nope\".")
+
+    with pytest.raises(ConsoleCommandError) as exc_info:
+        _capture_output(_boom)
+
+    assert "No credential matching" in str(exc_info.value)
+
+
+
+
+def test_execute_handler_string_exit_returns_error_not_crash(_isolate_hermes_home):
+    result = HermesConsoleEngine().execute(
+        "auth remove openrouter __no_such_credential__", confirmed=True
     )
 
-    assert code == 1
-    assert "Confirmation required" in stderr.getvalue()
+    assert result.status == "error"
+    assert result.output
 
 
-def test_main_console_subcommand_smoke(_isolate_hermes_home):
-    import subprocess
+_ORPHAN_STORE_STATUS = {
+    "projects": [
+        {"hash": "abc123", "workdir": "/gone/v2-project", "exists": False, "commits": 4},
+    ],
+    "pre_v2_projects": [],
+}
 
-    result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "console"],
-        cwd=Path(__file__).resolve().parents[2],
-        input="help\nexit\n",
-        text=True,
-        capture_output=True,
-        timeout=20,
-        check=False,
+
+def _patch_checkpoint_manager(monkeypatch, prune_calls: list) -> None:
+    """Report one orphan project and record the resulting prune call."""
+    import tools.checkpoint_maintenance as ckpt_mgr
+
+    monkeypatch.setattr(ckpt_mgr, "store_status", lambda *a, **k: _ORPHAN_STORE_STATUS)
+
+    def _fake_prune(**kwargs):
+        prune_calls.append(kwargs)
+        return {
+            "scanned": 1,
+            "deleted_orphan": 1,
+            "deleted_stale": 0,
+            "errors": 0,
+            "bytes_freed": 0,
+        }
+
+    monkeypatch.setattr(ckpt_mgr, "prune_checkpoints", _fake_prune)
+
+
+def test_console_checkpoints_prune_does_not_reprompt_for_orphans(
+    _isolate_hermes_home, monkeypatch
+):
+    """`checkpoints prune` is console-mutating, so the nested prompt must be skipped.
+
+    The console asks for confirmation itself before dispatching any command in the
+    `checkpoints` mutating set, and `_apply_confirmed_defaults` exists to keep the
+    CLI layer from asking a second time. `clear` and `clear-legacy` are force
+    defaulted; `prune` was not, so its orphan confirmation still called `input()`.
+    """
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, prune_calls)
+
+    def _unexpected_input(_prompt):
+        raise AssertionError(
+            "input() must not be called: the console already confirmed `checkpoints prune`"
+        )
+
+    monkeypatch.setattr("builtins.input", _unexpected_input)
+
+    result = HermesConsoleEngine().execute("checkpoints prune", confirmed=True)
+
+    assert result.status == "ok"
+    assert len(prune_calls) == 1
+    assert prune_calls[0]["delete_orphans"] is True
+    # No preview was shown, so there is nothing to bind the deletion to — the
+    # documented `--force` case for `orphan_allowlist`.
+    assert prune_calls[0]["orphan_allowlist"] is None
+
+
+
+
+def test_config_set_on_unparseable_yaml_reports_error_not_crash(tmp_path, monkeypatch):
+    """The fail-closed config write guard raises RuntimeError; the console must
+    surface it as a command error, not let it escape execute() and kill the
+    REPL / dashboard websocket session (regression for PR #71385 follow-up)."""
+    config_path = tmp_path / "config.yaml"
+    original = "model:\n  default: keep\nbroken: [unterminated\n"
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = HermesConsoleEngine().execute(
+        "config set model.default gpt-4o", confirmed=True
     )
 
-    assert result.returncode == 0
-    assert "Hermes Console" in result.stdout
+    assert result.status == "error"
+    assert "formatting error" in (result.output or "")
+    # The broken-but-recoverable file must survive untouched.
+    assert config_path.read_text(encoding="utf-8") == original

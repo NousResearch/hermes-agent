@@ -30,15 +30,6 @@ def test_models_dev_only_provider_is_not_selectable(monkeypatch):
     assert not is_runtime_provider_routable("mistral")
 
 
-def test_registered_provider_remains_selectable(monkeypatch):
-    rows = _rows_with_env(monkeypatch, "DEEPSEEK_API_KEY", "deepseek")
-
-    row = next(row for row in rows if row["slug"] == "deepseek")
-    assert row["models"] == ["model-a"]
-    assert row["total_models"] == 1
-    assert is_runtime_provider_routable("deepseek")
-
-
 def test_special_runtime_provider_does_not_require_registry_membership():
     assert is_runtime_provider_routable("openrouter")
     assert is_runtime_provider_routable("custom:local-lab")

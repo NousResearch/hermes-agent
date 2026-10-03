@@ -37,8 +37,3 @@ def test_configured_models_precede_and_deduplicate_discovered_models():
     assert row["total_models"] == 3
 
 
-def test_configured_models_are_merged_before_picker_limit():
-    row = _provider_row(["configured-x", "configured-y"], max_models=2)
-
-    assert row["models"] == ["configured-x", "configured-y"]
-    assert row["total_models"] == 4

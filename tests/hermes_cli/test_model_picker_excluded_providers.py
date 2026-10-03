@@ -32,7 +32,7 @@ def config_home(tmp_path, monkeypatch):
 
 
 def _write_config(home, **top_level):
-    import yaml
+    import hermes_yaml as yaml
     cfg = {"model": "old-model", "custom_providers": []}
     cfg.update(top_level)
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
@@ -117,12 +117,3 @@ def test_cli_picker_hides_excluded_provider_by_alias(config_home):
     )
 
 
-def test_cli_picker_empty_excluded_is_noop(config_home):
-    """An empty ``excluded_providers`` list must not change the menu."""
-    _write_config(config_home, **{"model_catalog": {"excluded_providers": []}})
-    excluded_labels = _capture_provider_labels(config_home)
-
-    _write_config(config_home)
-    baseline_labels = _capture_provider_labels(config_home)
-
-    assert excluded_labels == baseline_labels

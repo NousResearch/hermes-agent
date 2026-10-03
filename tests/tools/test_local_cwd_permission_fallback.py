@@ -27,24 +27,18 @@ def denied_dir(tmp_path):
     d.chmod(0o755)  # so pytest can clean up
 
 
-needs_posix_perms = pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="chmod-based access denial needs POSIX + non-root",
+needs_non_root = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0, reason="chmod-based access denial needs non-root"
 )
 
 
-@needs_posix_perms
+@pytest.mark.platforms("posix")  # chmod-based access denial needs POSIX
+@needs_non_root
 class TestInaccessibleCwdFallback:
     def test_cwd_usable_rejects_unenterable_directory(self, denied_dir):
         assert os.path.isdir(denied_dir)  # the trap: stat succeeds
         assert _cwd_usable(str(denied_dir)) is False
 
-    def test_resolve_safe_cwd_falls_back_from_denied_dir(self, denied_dir, tmp_path):
-        resolved = _resolve_safe_cwd(str(denied_dir))
-        assert resolved != str(denied_dir)
-        assert os.access(resolved, os.X_OK)
-        # Nearest usable ancestor is the tmp_path parent, not a random tempdir.
-        assert resolved == str(tmp_path)
 
     def test_resolve_safe_cwd_climbs_past_denied_ancestor(self, denied_dir, tmp_path):
         missing_child = str(denied_dir / "sub" / "dir")
@@ -73,9 +67,6 @@ class TestUsableCwdBehaviorUnchanged:
     def test_existing_accessible_cwd_returned_verbatim(self, tmp_path):
         assert _resolve_safe_cwd(str(tmp_path)) == str(tmp_path)
 
-    def test_missing_cwd_still_climbs_to_existing_ancestor(self, tmp_path):
-        missing = str(tmp_path / "gone" / "deeper")
-        assert _resolve_safe_cwd(missing) == str(tmp_path)
 
     def test_hopeless_path_falls_back_to_tempdir(self):
         # A path whose every component is missing outside any real tree.

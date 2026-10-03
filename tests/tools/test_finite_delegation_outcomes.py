@@ -165,16 +165,32 @@ def test_finite_batch_returns_timeout_while_child_unwinds(harness, monkeypatch):
     assert slow.closed.wait(2)
 
 
-def test_finite_batch_returns_parent_interruption(harness):
+def test_finite_batch_returns_parent_interruption(harness, monkeypatch):
+    from tools import delegate_tool_dispatch as dispatch_mod
+
     parent, children, dispatch = harness
     children.extend([_Child(), _Child("slow")])
     slow = children[1]
     stop_errors = []
+    # ``closed`` fires inside the child's finally-path cleanup, BEFORE its future
+    # resolves; a poll tick landing in that window sees the parent interrupt with
+    # child 0 still pending and books a finished child as interrupted. The
+    # interrupt must land once child 0's entry is in the batch's results, which
+    # ``_report_child_done`` marks (called right after ``results.append``).
+    first_recorded = threading.Event()
+    real_report = dispatch_mod._report_child_done
+
+    def report(parent_agent, spinner_ref, entry, *args):
+        real_report(parent_agent, spinner_ref, entry, *args)
+        if entry["task_index"] == 0:
+            first_recorded.set()
+
+    monkeypatch.setattr(dispatch_mod, "_report_child_done", report)
 
     def stop_parent():
         try:
             assert slow.started.wait(3)
-            assert children[0].closed.wait(3)
+            assert first_recorded.wait(5)
             parent.hard_interrupt("test parent stop")
         except Exception as exc:
             stop_errors.append(exc)

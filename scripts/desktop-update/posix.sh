@@ -887,10 +887,16 @@ fi
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # The fork-history guard (hermes_cli/update_history.py) refuses on purpose:
+  # exit 2 plus this banner. It is not a bug, so no debug-share advice; and
+  # the banner proves the interpreter ran, so the bricked-venv text can't apply.
+  if [ "$CODE" -eq 2 ] && printf '%s' "$OUT" | grep -q "HERMES_UPDATE_HISTORY_REVIEW_REQUIRED"; then
+    FINAL_MSG="Update refused: this checkout has local git history that a fast-forward to $BRANCH can't keep, so nothing was changed (recovery refs are under refs/hermes-update-backups/). Reconcile your commits with origin/$BRANCH by hand, then update again; --yes does not override this."
+    log "$FINAL_MSG"
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).
-  if [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
+  elif [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
       && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python"; then
     FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
   fi

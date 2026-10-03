@@ -1740,6 +1740,12 @@ try {
     } else {
         $finalCode = $res.Code
         $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        # The fork-history guard (hermes_cli/update_history.py) refuses on purpose:
+        # exit 2 plus this banner. It is not a bug, so no debug-share advice.
+        if ($res.Code -eq 2 -and "$($res.Output)" -match 'HERMES_UPDATE_HISTORY_REVIEW_REQUIRED') {
+            $finalMsg = "Update refused: this checkout has local git history that a fast-forward to $Branch can't keep, so nothing was changed (recovery refs are under refs/hermes-update-backups/). Reconcile your commits with origin/$Branch by hand, then update again; --yes does not override this."
+            Write-HandoffLog $finalMsg
+        }
     }
     exit $finalCode
 } finally {

@@ -777,9 +777,17 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
     fast-forward failures (locks, object transport errors) must never reach this destructive path.
     Merge on a custom branch (local commits survive) or reset --hard on the same branch after
     parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
+    merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
+    from hermes_cli.update_history import guard_fork_history, has_fork_ancestry
+    # A checkout with no fork history takes upstream's rescue-ref path below.
+    if (_is_fork(_get_origin_url(git_cmd, _m().PROJECT_ROOT))
+            and has_fork_ancestry(git_cmd, _m().PROJECT_ROOT)):
+        guard_fork_history(git_cmd, _m().PROJECT_ROOT, merge_ref)
+        # Even a failed FF on an unchanged/local-ahead fork is not a reset permit.
+        print("Fork fast-forward failed; checkout preserved. Inspect the Git failure before retrying.")
+        sys.exit(1)
     # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
     # would discard that work: merge instead, stop on conflict.
-    merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
     _cur_branch = (_git_run(git_cmd, ["branch", "--show-current"]).stdout or "").strip()
     if _cur_branch and _cur_branch != branch:
         print(
@@ -1066,6 +1074,9 @@ def _prepare_checkout_for_update(
         # rewrites the user's branch. Branch-policy machinery is main-only.
         parked_branch_switched, in_place_update, switch_block_reason = False, True, None
     else:
+        if is_fork:
+            from hermes_cli.update_history import guard_fork_history
+            guard_fork_history(git_cmd, _m().PROJECT_ROOT, f"origin/{branch}")
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
             _windows_gateway_resume=_windows_gateway_resume)

@@ -104,7 +104,8 @@ const STREAM_INTERRUPTED_DEGRADE_COUNT =
 // been silent past this threshold, drive a cheap authenticated probe. Silence
 // alone NEVER degrades the stream (shared lines can be quiet for hours) and a
 // rejected probe is INCONCLUSIVE, never proof either way — degradation
-// requires silence past the threshold plus a probe-proven live channel.
+// requires silence past the threshold plus a probe-proven live channel plus an
+// overdue outbound echo (a quiet healthy line is silent+alive for hours).
 // A non-positive threshold disables the watchdog.
 const STREAM_SILENCE_PROBE_MS = (() => {
   const raw = Number(process.env.PHOTON_STREAM_SILENCE_PROBE_MS);
@@ -114,6 +115,13 @@ const STREAM_PROBE_COOLDOWN_MS =
   Number(process.env.PHOTON_STREAM_PROBE_COOLDOWN_MS) || 2 * 60 * 1000;
 const STREAM_PROBE_TIMEOUT_MS =
   Number(process.env.PHOTON_STREAM_PROBE_TIMEOUT_MS) || 10 * 1000;
+// A sent message's stream echo normally arrives in seconds; only treat a
+// missing echo as evidence once it is overdue by this grace. Override via
+// PHOTON_STREAM_ECHO_GRACE_MS.
+const STREAM_ECHO_GRACE_MS = (() => {
+  const raw = Number(process.env.PHOTON_STREAM_ECHO_GRACE_MS);
+  return Number.isFinite(raw) ? raw : 2 * 60 * 1000;
+})();
 const STREAM_WATCHDOG_TICK_MS = 30 * 1000;
 
 const streamHealth = {
@@ -127,16 +135,30 @@ const streamHealth = {
 let streamRestartTimer = null;
 
 // Zombie-watchdog runtime state (see stream-staleness.mjs for the rules).
+// echoPending tracks the only positive proof of a deaf stream: an outbound
+// message send whose echo never came back on the inbound iterator (which
+// yields our own outbound echoes too). Set after every successful message
+// send, cleared by ANY iterator yield.
 const staleness = {
   lastInboundAt: Date.now(),
   lastProbeAt: 0,
   lastProbeOutcome: null, // "alive" | "inconclusive" | null
   zombieSuspected: false,
+  lastOutboundAt: 0,
+  echoPending: false,
 };
+
+function noteOutboundSent() {
+  staleness.lastOutboundAt = Date.now();
+  staleness.echoPending = true;
+}
 
 function noteInboundYield() {
   staleness.lastInboundAt = Date.now();
   staleness.zombieSuspected = false;
+  // Any yield — inbound, or our own outbound echo — proves the stream is
+  // live, so no send is awaiting its echo any more.
+  staleness.echoPending = false;
 }
 
 function stalenessSnapshot(now) {
@@ -150,6 +172,11 @@ function stalenessSnapshot(now) {
         : null,
     lastProbeOutcome: staleness.lastProbeOutcome,
     zombieSuspected: staleness.zombieSuspected,
+    echoPending: staleness.echoPending,
+    lastOutboundAt:
+      staleness.lastOutboundAt > 0
+        ? new Date(staleness.lastOutboundAt).toISOString()
+        : null,
   };
 }
 
@@ -720,8 +747,11 @@ function inboundStreamErrorMessage(e) {
 // STREAM_SILENCE_PROBE_MS, drive a cheap unary read (space.getMessage on a
 // synthetic id) over the same authenticated channel. Decision rules (see
 // stream-staleness.mjs):
-//   probe proves connectivity while the stream is silent -> the stream itself
-//     is the dead part -> markStreamDegraded -> existing exit-75 restart path.
+//   probe proves connectivity while the stream is silent AND an outbound
+//     send is still awaiting its stream echo past the echo grace -> the
+//     stream itself is the dead part -> markStreamDegraded -> existing
+//     exit-75 restart path. Silence+alive alone is the normal state of a
+//     quiet dedicated line (#124010) and never degrades.
 //   probe inconclusive (rejected/hung) -> do NOTHING: the network may just be
 //     down, and in that case the iterator eventually throws and the
 //     re-subscribe loop recovers on its own. Never restart on silence alone —
@@ -778,11 +808,20 @@ async function zombieWatchdogTick() {
   watchdogProbeInFlight = true;
   try {
     const outcome = await probeUpstream();
-    if (isZombieSuspect(silentForMs, STREAM_SILENCE_PROBE_MS, outcome)) {
+    // The echo is the only positive proof the stream is deaf: the iterator
+    // yields our own outbound echoes, so a send still unacked past the grace
+    // means a message existed upstream that the stream failed to deliver.
+    // ponytail: single boolean gate; per-messageId echo correlation if a
+    // send type ever proves to echo unreliably.
+    const echoOverdue =
+      staleness.echoPending &&
+      now - staleness.lastOutboundAt >= STREAM_ECHO_GRACE_MS;
+    if (isZombieSuspect(silentForMs, STREAM_SILENCE_PROBE_MS, outcome, echoOverdue)) {
       staleness.zombieSuspected = true;
       const reason =
         `inbound stream silent for ${silentForMs}ms while an upstream probe ` +
-        "succeeded — half-open (zombie) gRPC stream suspected";
+        "succeeded and an outbound echo is overdue — half-open (zombie) " +
+        "gRPC stream suspected";
       console.error("photon-sidecar: " + reason);
       markStreamDegraded(reason);
     }
@@ -1068,6 +1107,9 @@ const server = http.createServer(async (req, res) => {
           ? spectrumMarkdown(text)
           : spectrumText(text);
       const result = await space.send(builder);
+      // Arm the zombie-watchdog echo check: this bubble must come back on
+      // the inbound iterator as our own echo (cleared by noteInboundYield).
+      noteOutboundSent();
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-richlink") {
@@ -1077,6 +1119,7 @@ const server = http.createServer(async (req, res) => {
       }
       const space = await resolveSpace(spaceId);
       const result = await space.send(spectrumRichlink(url.trim()));
+      noteOutboundSent();
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
@@ -1099,6 +1142,7 @@ const server = http.createServer(async (req, res) => {
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
       const result = await space.send(builder);
+      noteOutboundSent();
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.
@@ -1185,6 +1229,7 @@ const server = http.createServer(async (req, res) => {
       }
       const space = await resolveSpace(spaceId);
       const result = await space.send(spectrumPoll(title.trim(), choices));
+      noteOutboundSent();
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-effect") {
@@ -1201,6 +1246,7 @@ const server = http.createServer(async (req, res) => {
       const result = await space.send(
         imessageEffect(spectrumText(text.trim()), effectId)
       );
+      noteOutboundSent();
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/typing") {

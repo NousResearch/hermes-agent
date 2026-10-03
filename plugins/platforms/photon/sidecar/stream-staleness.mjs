@@ -20,6 +20,14 @@
 // be down, and in that case the iterator will eventually throw and the
 // existing re-subscribe loop recovers on its own.
 //
+// And since v2026.9.24 the probe id is a valid UUID, so the probe round-trips
+// on EVERY healthy line: "silent past threshold + probe alive" is then the
+// normal steady state of a quiet dedicated line, not evidence of anything.
+// The final guard is an overdue outbound echo — the iterator yields our own
+// outbound echoes too, so a send whose echo never comes back while the probe
+// says the channel is alive is the only positive proof the stream itself is
+// deaf (#124010).
+//
 // These helpers are pure (no SDK, no timers) so tests can execute them under
 // node — see tests/plugins/platforms/photon/test_zombie_stream_watchdog.py.
 
@@ -72,15 +80,20 @@ export function shouldProbe(silentForMs, thresholdMs, sinceLastProbeMs, probeCoo
 
 /**
  * Final classification: zombie only on silence past threshold + probe-proven
- * connectivity. Never on silence alone, never on an inconclusive probe.
+ * connectivity + an outbound send whose stream echo is overdue. Never on
+ * silence alone, never on an inconclusive probe, and never on silence+alive
+ * alone — a quiet healthy dedicated line sits in that state for hours.
  *
  * @param {number} silentForMs ms since the inbound iterator last yielded
  * @param {number} thresholdMs silence threshold (<= 0 disables the watchdog)
  * @param {{alive: boolean}} probeOutcome
+ * @param {boolean} echoOverdue an outbound send is still awaiting its stream
+ *   echo past the grace period (the only positive proof the stream is deaf)
  * @returns {boolean}
  */
-export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome) {
+export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome, echoOverdue = false) {
   if (!(thresholdMs > 0)) return false;
   if (silentForMs < thresholdMs) return false;
-  return probeOutcome != null && probeOutcome.alive === true;
+  if (probeOutcome == null || probeOutcome.alive !== true) return false;
+  return echoOverdue === true;
 }

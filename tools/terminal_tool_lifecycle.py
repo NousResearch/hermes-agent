@@ -7,7 +7,6 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
-import glob
 import logging
 import inspect
 import shutil
@@ -34,7 +33,19 @@ _DISK_USAGE_CACHE_TTL = 300.0  # seconds
 
 
 def _scratch_paths():
-    return glob.glob(str(_get_scratch_dir() / "hermes-*"))
+    # Path.glob keeps the base directory literal; embedding the configured root in a
+    # glob.glob pattern would re-interpret its metacharacters (e.g. a scratch dir
+    # named "run[1]" enumerates "run1"/hermes-* — a different directory's tree).
+    return [str(p) for p in _get_scratch_dir().glob("hermes-*")]
+
+
+def _persistent_scratch_roots() -> tuple:
+    """Scratch subtrees backends declare as outliving any single process (today:
+    Singularity's persistent overlays). The exit-time orphan sweep must never delete
+    them — they are backend-owned persistent state, not orphans of the exiting
+    process. Derived from the backends' own declarations, never a hand-copied name."""
+    from tools.environments.singularity import persistent_overlays_root
+    return (persistent_overlays_root().resolve(),)
 
 
 def _check_disk_usage_warning():
@@ -276,8 +287,20 @@ def cleanup_all_environments():
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
 
-    # Also clean any orphaned directories
+    # Also clean any orphaned directories — but never backend-declared persistent
+    # roots (Singularity overlays survive process exit by design; a name-only glob
+    # cannot tell them from orphans, so the declaration, not the name, decides).
+    persistent_roots = frozenset(_persistent_scratch_roots())
     for path in _scratch_paths():
+        candidate = Path(path).resolve()
+        # Skip anything whose deletion could touch a declared persistent root: exact
+        # match, the candidate sitting INSIDE a root, or the candidate being an
+        # ANCESTOR of one (e.g. hermes-overlays symlinked to hermes-storage/persistent
+        # — the glob selects hermes-storage itself, and exact-equality would not
+        # protect the real tree).
+        if any(candidate == root or candidate in root.parents or root in candidate.parents
+               for root in persistent_roots):
+            continue
         with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)

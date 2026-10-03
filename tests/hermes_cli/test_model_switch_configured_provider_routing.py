@@ -313,3 +313,41 @@ def test_aggregator_live_catalog_still_owns_model_it_declares_itself():
     assert result.success is True, result.error_message
     assert result.target_provider == "openrouter"
     assert result.new_model == "qwen/qwen3.8-flash"
+
+
+def test_aggregator_live_catalog_yields_to_multiple_declarers_fail_closed():
+    """Two configured providers declaring the same bare id, neither being the current aggregator:
+    the catalog must NOT swallow the name on the billable aggregator — step d.5's multi-match
+    failure with the ``--provider`` disambiguation hint is the correct outcome (#132117)."""
+    llama = dict(_LLAMA)
+    other = {"name": "other-server", "api": "http://127.0.0.1:9090/v1",
+             "transport": "chat_completions",
+             "models": {"qwen3.8-flash": {"context_length": 131072}}}
+    result = _run_switch(
+        raw_input="qwen3.8-flash",
+        current_provider="openrouter",
+        current_model="deepseek/deepseek-v4.1-flash",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={"llama-server": llama, "other-server": other},
+        catalog=_OPENROUTER_CATALOG,
+    )
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")
+
+
+def test_aggregator_current_declarer_plus_external_owner_keeps_canonical_slug():
+    """Current aggregator declares the name AND an external provider declares it too: the
+    catalog still canonicalizes the id to the vendor slug (session stays put); it must not
+    fall through to step d.5's current-provider branch and lose the canonical form."""
+    openrouter_cfg = {"name": "openrouter", "default_model": "qwen3.8-flash"}
+    result = _run_switch(
+        raw_input="qwen3.8-flash",
+        current_provider="openrouter",
+        current_model="deepseek/deepseek-v4.1-flash",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={"openrouter": openrouter_cfg, "llama-server": dict(_LLAMA)},
+        catalog=_OPENROUTER_CATALOG,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "qwen/qwen3.8-flash"

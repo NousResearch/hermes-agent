@@ -1372,12 +1372,14 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     # ids that coincidentally match native providers' static catalogs.
     resolved_in_current_catalog = False
     if is_aggregator(st.target_provider) and not st.resolved_alias:
-        # A bare name declared by a configured provider OTHER than the current one must stay
-        # unrouted here so step d.5 routes it there: the aggregator's live catalog would otherwise
-        # capture it on the current (billable) provider (#132117).
+        # A bare name declared by configured providers, none of which is the current
+        # provider, must stay unrouted here so step d.5 routes it to its declarer (or
+        # fails closed when several declare it): the aggregator's live catalog would
+        # otherwise capture it on the current, billable provider (#132117). When the
+        # current provider itself declares the name — alone or alongside others — the
+        # catalog keeps canonicalizing to its vendor slug.
         cfg_matches = _configured_provider_matches(st.new_model, st.user_providers, st.custom_providers)
-        current_slug = _current_provider_match(st, cfg_matches) if cfg_matches else None
-        if not any(slug != current_slug for slug in cfg_matches):
+        if not (cfg_matches and current_provider not in cfg_matches):
             catalog = list_provider_models(st.target_provider)
             if catalog:
                 matched = _aggregator_catalog_match(st.new_model, catalog)

@@ -240,3 +240,37 @@ def test_tally_evicts_oldest_sessions():
         with A._lock:
             A._denial_tally.clear()
             A._denial_tally.update(saved)
+
+
+# ---------------------------------------------------------------------------
+# (f) clear_session drops the tally: a recycled session key starts at zero
+# ---------------------------------------------------------------------------
+
+def test_clear_session_resets_denial_tally(breaker_session):
+    """A session key reused after a boundary (/new, /reset, /branch) must not
+    inherit the prior run's consecutive-denial count."""
+    _register_resolver(breaker_session, "deny")
+    for i in range(3):
+        last = _denied_terminal(f"dangerous {i}")
+        assert last["approved"] is False
+    assert BREAKER_MARKER in last["message"]
+
+    # A sibling session's tally must survive: clearing has to be per-key, not global.
+    with A._lock:
+        A._denial_tally["other-session"] = 2
+
+    A.clear_session(breaker_session)
+
+    with A._lock:
+        other = A._denial_tally.pop("other-session", None)
+    assert other == 2
+
+    # The recycled key really restarts at zero and still counts: the marker
+    # returns only on the third post-boundary denial, not the first or second.
+    first = _denied_terminal("dangerous again")
+    second = _denied_terminal("dangerous again 2")
+    third = _denied_terminal("dangerous again 3")
+    assert first["approved"] is False
+    assert BREAKER_MARKER not in first["message"]
+    assert BREAKER_MARKER not in second["message"]
+    assert BREAKER_MARKER in third["message"]

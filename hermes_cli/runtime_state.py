@@ -21,6 +21,7 @@ from pm.environments import dependency_home_root, install_state_dir, runtime_fac
 from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
+    is_junction,
     lock_fd as _lock,
     read_bytes_or_none as _bytes,
 )
@@ -197,7 +198,8 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
         if not generations.is_dir():
             return removed
         for generation in generations.iterdir():
-            if generation.is_symlink() or not generation.is_dir() or generation.resolve() == selected:
+            if (generation.is_symlink() or not generation.is_dir() or is_junction(generation)
+                    or generation.resolve() == selected):
                 continue
             marker = generation / ".lease-managed"
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from pm.filesystem import is_junction
 from agent.skill_utils import is_excluded_skill_path
 from agent.curator import _read_config_section
 from hermes_cli.sizefmt import format_bytes
@@ -327,9 +328,16 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 def _remove_entry(entry: Path) -> None:
-    if entry.is_dir() and not entry.is_symlink():
+    """Delete *entry* itself, never what a directory link points at.
+
+    ``is_symlink()`` is False for a Windows junction and ``shutil.rmtree`` refuses
+    one, so a junction has to be recognized explicitly to reach the unlink branch --
+    including a dangling one, where ``exists()`` is False as well.
+    """
+    link = entry.is_symlink() or is_junction(entry)
+    if entry.is_dir() and not link:
         shutil.rmtree(entry)
-    elif entry.exists() or entry.is_symlink():
+    elif link or entry.exists():
         entry.unlink()
 
 

@@ -187,7 +187,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     once every worker launched from it has exited; generations published before leases
     existed stay, as the application collector keeps its own.
     """
-    from pm.filesystem import lock_fd
+    from pm.filesystem import is_junction, lock_fd
     from hermes_cli.runtime_state import leases_held
 
     generations = root / "generations"
@@ -202,7 +202,8 @@ def collect_runtime_generations(root: Path) -> list[Path]:
         except FileNotFoundError:
             selected = ""
         for generation in sorted(generations.iterdir()):
-            if not generation.is_dir() or generation.is_symlink() or generation == root / selected:
+            if (not generation.is_dir() or generation.is_symlink() or is_junction(generation)
+                    or generation == root / selected):
                 continue
             published = (generation / "pm-runtime.json").is_file()
             if published and (not (generation / ".lease-managed").is_file() or leases_held(generation)):

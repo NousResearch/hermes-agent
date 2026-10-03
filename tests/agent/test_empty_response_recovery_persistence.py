@@ -225,6 +225,31 @@ def real_loop(tmp_path, monkeypatch):
     db.close()
 
 
+def test_nudge_buried_by_a_later_tool_round_is_not_replayed_next_turn(real_loop):
+    # Nudge -> another tool call -> answer leaves the "(empty)"/nudge pair mid-list, where the
+    # tail drop cannot reach it. CLI/TUI/ACP hand result["messages"] back as history (#92877).
+    def tool_round(call_id):
+        call = _write_file_call(real_loop.ledger)
+        call.id = call_id
+        return _response(finish_reason="tool_calls", tool_calls=[call])
+
+    first = real_loop.run(
+        [tool_round("call_1"), _response(), tool_round("call_2"), _response(content="Recorded.")],
+        "record the payment in ledger.txt",
+    )
+    sent = []
+    real_loop.agent.client.chat.completions.create.side_effect = (
+        lambda **kw: sent.append(kw["messages"]) or _response(content="Nothing else.")
+    )
+    real_loop.agent.run_conversation("anything else?", conversation_history=first["messages"])
+
+    replayed = [m for m in sent[0] if m.get("role") != "system"]
+    assert [m["role"] for m in replayed] == [
+        "user", "assistant", "tool", "assistant", "tool", "assistant", "user",
+    ]
+    assert all(m.get("content") != "(empty)" for m in replayed)
+
+
 def _assert_saved_tool_pairs_stay_live(result, db, sid):
     def ids(rows):
         calls = {tc["id"] for m in rows if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])}

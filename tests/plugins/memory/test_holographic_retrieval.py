@@ -108,3 +108,57 @@ def test_encode_functions_are_deterministic():
                           hrr.encode_text("deploy target", 1024))
     assert np.array_equal(hrr.encode_atom("__hrr_role_content__", 1024),
                           hrr.encode_atom("__hrr_role_content__", 1024))
+
+# ---------------------------------------------------------------------------
+# Relevance floor on the pure-vector paths (#132347) — probe/related/reason
+# ranked EVERY fact with a ~0-similarity noise score and sliced the top
+# `limit`, so any query (including the empty string and strings that match
+# nothing) returned the whole store. Rows must clear a similarity floor to be
+# returned; when no row does, the query falls back to the FTS5 path, which
+# only ever returns rows FTS5 actually matched.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def retriever_with_entities(tmp_path):
+    """MemoryStore seeded with facts about distinct multi-word entities (the
+    entity-extraction regex only links Capitalized Multi-Word names)."""
+    store = MemoryStore(str(tmp_path / "facts.db"))
+    for content in (
+        "Alice Johnson lives in Paris and works at BNP Paribas",
+        "Bob Smith prefers dark mode in every editor",
+        "Charlie Brown plays piano on weekends",
+        "Diana Reyes speaks four languages fluently",
+        "Erik Larsson runs marathons before sunrise",
+    ):
+        store.add_fact(content=content, category="general")
+    retriever = FactRetriever(store=store)
+    yield retriever
+    store.close()
+
+@pytest.mark.parametrize("query", ["", "Grimsdhal", "ZZQQ_TOTALLY_UNRELATED_STRING"])
+def test_vector_queries_do_not_leak_the_whole_store(retriever_with_entities, query):
+    """A query that matches nothing must return nothing, not the top slice of the store."""
+    r = retriever_with_entities
+    assert r.probe(query) == []
+    assert r.related(query) == []
+    assert r.reason([query, "another_nonexistent_entity"]) == []
+
+def test_related_keeps_true_structural_match(retriever_with_entities):
+    """related() has real signal (sim ~0.66 for a stored entity vs <=0.04 noise):
+    the matching fact survives the floor and ranks first."""
+    results = retriever_with_entities.related("Alice Johnson")
+    assert [f["content"] for f in results] == ["Alice Johnson lives in Paris and works at BNP Paribas"]
+
+def test_probe_falls_back_to_fts_when_vector_ranking_is_noise(retriever_with_entities):
+    """probe()'s per-fact vector score is noise-level even for a stored entity (the
+    bundle of content + entity roles buries the probe residual), so after the floor
+    filters every row it must degrade to the FTS5 path — which still finds the fact —
+    instead of returning unrelated rows."""
+    results = retriever_with_entities.probe("Alice Johnson")
+    assert [f["content"] for f in results] == ["Alice Johnson lives in Paris and works at BNP Paribas"]
+
+def test_probe_category_bank_does_not_leak(retriever_with_entities):
+    """The category-bank branch of probe() ranks the same rows against the bank
+    residual; an unrelated query must not leak the category through it either."""
+    assert retriever_with_entities.probe("ZZQQ_TOTALLY_UNRELATED_STRING", category="general") == []
+    assert retriever_with_entities.probe("", category="general") == []

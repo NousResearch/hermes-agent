@@ -2440,6 +2440,7 @@ class _CronAgentSetup:
     runtime: dict = None
     prefill_messages: Any = None
     max_iterations: Any = None
+    max_tokens: Any = None
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
@@ -2459,6 +2460,9 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if _mt is None:
         _mt = _cfg.get("max_turns")
     setup.max_iterations = _resolve_turn_limit(_mt)
+    _cron_cfg = _cfg.get("cron") if isinstance(_cfg, dict) else {}
+    _global_max_tokens = _cron_cfg.get("max_tokens_default") if isinstance(_cron_cfg, dict) else None
+    setup.max_tokens = job.get("max_tokens", _global_max_tokens)
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2470,6 +2474,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
+    setup.max_tokens = _resolve_cron_max_tokens(
+        setup.max_tokens,
+        provider=str(setup.runtime.get("provider") or ""),
+        model=setup.model,
+    )
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
@@ -2488,6 +2497,23 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     return setup
 
 
+def _resolve_cron_max_tokens(requested: Any, *, provider: str, model: str) -> int | None:
+    """Resolve the cron cap against the selected provider route default only."""
+    from providers import get_provider_profile
+
+    try:
+        requested = int(requested) if requested is not None else None
+    except (TypeError, ValueError):
+        requested = None
+    profile = get_provider_profile(provider)
+    route_default = profile.get_max_tokens(model) if profile is not None else None
+    if not isinstance(route_default, int) or isinstance(route_default, bool) or route_default <= 0:
+        route_default = None
+    if requested is None or requested <= 0:
+        return route_default
+    return min(requested, route_default) if route_default is not None else requested
+
+
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
@@ -2502,6 +2528,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         max_iterations=setup.max_iterations,
+        max_tokens=setup.max_tokens,
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,

@@ -116,6 +116,11 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
             cleaned.pop("required", None)
         elif len(valid_required) != len(required_val):
             cleaned["required"] = valid_required
+    # Gemini validates that array types MUST have an "items" field.
+    # Populate empty schema if missing (#69031, #71804).
+    if cleaned.get("type") == "array" and "items" not in cleaned:
+        cleaned["items"] = {}
+
     return cleaned
 
 

@@ -34,7 +34,9 @@ driver-side error mentioning `snapshot_id`, `element_token`, or "no reviewed
 risk classification", you (or a stale description) called the raw driver
 vocabulary — go back to the actions below.
 
-## The canonical workflow
+## The canonical workflow: Observe once, act once, verify
+
+**Rule: Observe once, act once, verify.** Never blindly fire actions in a sequence without verifying the state transition.
 
 **Step 1 — Capture first.** Almost every task starts with:
 
@@ -61,11 +63,17 @@ The role names match the host platform's accessibility framework
 (`AXButton` on macOS, `Button` on Windows UIA, `push button` on Linux
 AT-SPI) — treat them as labels, not as strict types.
 
-**Step 2 — Click by element index.** This is the single most important
-habit:
+On Windows, multi-window and UWP applications can be targeted directly
+by their native Win32 HWND using `window_id` alone (without requiring `pid`).
+
+**Step 2 — Act with strategy (Accessibility-First).**
+Hermes supports three targeting strategies via `strategy`:
+- `strategy="auto"` (default): prefers semantic element targeting if `element` is provided; falls back to `coordinate=[x, y]`.
+- `strategy="a11y"`: strictly enforces accessibility-first targeting (`element`). Rejects coordinate-only actions to guarantee background safety and prevent focus theft.
+- `strategy="event"`: forces raw coordinate/event dispatch (`coordinate=[x, y]`), bypassing accessibility resolution when controls cannot be expressed semantically (e.g. custom canvas, game surface).
 
 ```
-computer_use(action="click", element=7)
+computer_use(action="click", element=7, strategy="a11y")
 ```
 
 Much more reliable than pixel coordinates for every model. Claude was
@@ -100,13 +108,13 @@ Configure `auxiliary.vision` in `config.yaml` to pick that model, or use
 ## Actions
 
 ```
-capture           mode=som|vision|ax   app=…  (default: current app)
-click             element=N     OR     coordinate=[x, y]    button=left|right|middle
-double_click      element=N     OR     coordinate=[x, y]
-right_click       element=N     OR     coordinate=[x, y]
-middle_click      element=N     OR     coordinate=[x, y]
-drag              from_element=N, to_element=M        (or from/to_coordinate)
-scroll            direction=up|down|left|right   amount=3 (ticks)
+capture           mode=som|vision|ax   app=…  window_id=…  (default: current app)
+click             element=N     OR     coordinate=[x, y]    button=left|right|middle   strategy=auto|a11y|event
+double_click      element=N     OR     coordinate=[x, y]    strategy=auto|a11y|event
+right_click       element=N     OR     coordinate=[x, y]    strategy=auto|a11y|event
+middle_click      element=N     OR     coordinate=[x, y]    strategy=auto|a11y|event
+drag              from_element=N, to_element=M        (or from/to_coordinate)   strategy=auto|a11y|event
+scroll            direction=up|down|left|right   amount=3 (ticks)   strategy=auto|a11y|event
 type              text="…"
 key               keys="<save shortcut>" | "return" | "escape" | "<modifier>+t"
 set_value         element=N  value="…"     (selects/sliders without opening the menu)
@@ -114,7 +122,10 @@ wait              seconds=0.5
 list_apps
 list_windows
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
+launch            app="<app name / bundle ID / AUMID / path>"
 ```
+
+To open an app that is not running, call `computer_use(action='launch', app='...')` (e.g. 'Calculator', 'calc', or bundle ID), then `computer_use(action='capture', app='...')` to interact.
 
 All actions accept optional `capture_after=True` to get a follow-up
 screenshot in the same tool call. All actions that target an element

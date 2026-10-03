@@ -532,6 +532,52 @@ def test_buzz_secret_never_reaches_second_profile_via_snapshot(child_env, monkey
         ss.set_multiplex_active(False)
 
 
+@pytest.mark.platforms("linux", "macos", "windows")
+def test_dotenv_declared_secrets_never_reach_the_session_snapshot(child_env, monkeypatch):
+    """A profile `.env` names plaintext secrets; the session snapshot is a *second on-disk copy*
+    of them, rewritten after every command. Those names must stay out of the dump while the
+    per-command env still hands their values to a command that asks for them.
+    """
+    monkeypatch.setenv("NOTION_API_KEY", "fake-dotenv-secret")
+    monkeypatch.setenv("OTHER_TOKEN", "fake-other")
+    monkeypatch.setenv("PLAIN_SETTING", "fake-plain")
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / ".env").write_text(
+        "# comment\n"
+        "NOTION_API_KEY=fake-dotenv-secret\n"
+        "  export OTHER_TOKEN=fake-other  \n"
+        "PLAIN_SETTING=fake-plain\n"
+        "BAD-NAME_KEY=fake-bad\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(local, "_dotenv_secret_names_cache", None)
+    env = None
+    try:
+        # Names come from `.env` (so a newly added key is covered), secrets only, valid names only.
+        assert local._dotenv_snapshot_secret_names() == ("NOTION_API_KEY", "OTHER_TOKEN")
+        env = local.LocalEnvironment(cwd=str(child_env), timeout=30)
+        assert "NOTION_API_KEY" in env._snapshot_passthrough_names
+        snap = Path(env._snapshot_path)
+        assert snap.exists()
+        text = snap.read_text(encoding="utf-8")
+        assert "NOTION_API_KEY" not in text
+        assert "OTHER_TOKEN" not in text
+        assert "fake-dotenv-secret" not in text
+        assert "fake-other" not in text
+        # not secret-looking: left alone, so the exclusion is not a blanket dump suppression
+        assert "PLAIN_SETTING" in text
+        # snapshot-only exclusion: a command still sees both values
+        assert observe_terminal(env, ["NOTION_API_KEY", "OTHER_TOKEN"]) == {
+            "NOTION_API_KEY": "fake-dotenv-secret", "OTHER_TOKEN": "fake-other"}
+        # ...and the snapshot did not pick them up from that command either
+        assert "fake-dotenv-secret" not in snap.read_text(encoding="utf-8")
+    finally:
+        if env is not None:
+            env.cleanup()
+        monkeypatch.setattr(local, "_dotenv_secret_names_cache", None)
+
+
 @pytest.mark.parametrize("scoped,expected", [({"SERVICE_TOKEN": "fake-routed"}, "fake-routed"), ({}, None)])
 def test_profile_passthrough_in_terminal_child(child_env, monkeypatch, scoped, expected):
     from agent import secret_scope as ss

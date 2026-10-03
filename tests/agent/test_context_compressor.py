@@ -3827,3 +3827,32 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+class TestSyntheticUserRowBatchedPlumbing:
+    """#126286: the batched plumbing rows a count opens must read as
+    scaffolding, not as the user's words — otherwise the lean verbatim-user
+    quote re-posts them as real speech."""
+
+    @pytest.mark.parametrize("content", [
+        "[IMPORTANT: 3 background processes completed. Treat these results as one batch.]",
+        "[IMPORTANT: 12 background processes completed for this session.",
+        "[IMPORTANT: 2 background subagent delegations completed while the turn was in flight.]",
+        "  [IMPORTANT: 7 background processes completed for this session.",
+        "[IMPORTANT: Background process s-1 completed (exit code 0).",
+        "[IMPORTANT: Background process s-2 matched watch pattern \"error\".",
+        "You've reached the maximum number of tool-calling iterations allowed. "
+        "Please provide a final response.",
+    ])
+    def test_batched_plumbing_rows_are_synthetic(self, content):
+        from agent.context_compressor import _synthetic_user_row
+        assert _synthetic_user_row(content) is True
+
+    @pytest.mark.parametrize("content", [
+        "[IMPORTANT: the human says no]",
+        "You've reached the maximum number of tool-calling iterations my team allows, more context here",
+        "3 background processes completed and I approved them",
+    ])
+    def test_member_words_stay_real(self, content):
+        from agent.context_compressor import _synthetic_user_row
+        assert _synthetic_user_row(content) is False

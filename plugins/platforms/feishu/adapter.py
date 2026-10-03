@@ -1334,6 +1334,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_text_batches = self._text_batch_state.events
         self._pending_text_batch_tasks = self._text_batch_state.tasks
         self._pending_text_batch_counts = self._text_batch_state.counts
+        self._accepting_batch_ingress = True
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
@@ -1492,6 +1493,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
+        self._accepting_batch_ingress = False
+        live_dispatches = [task for task in self._pending_text_batch_dispatch_tasks if not task.done()]
+        if live_dispatches:
+            logger.warning(
+                "[Feishu] Refusing to reconnect while %d old text-batch dispatch(es) are still stopping",
+                len(live_dispatches),
+            )
+            return False
         self._sdk_executor_closing = False  # re-arm the SDK executor after a prior disconnect
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
@@ -1526,6 +1535,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 return False
 
             self._loop = asyncio.get_running_loop()
+            # Open before the transport starts: the SDK may synchronously deliver queued events from
+            # inside ``_connect_with_retry``.  disconnect() closes this gate before its first await.
+            self._accepting_batch_ingress = True
             await self._connect_with_retry()
             if self._connection_mode == "websocket":
                 # The WS thread can die without any external signal; keep a watcher alive.
@@ -1536,6 +1548,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(self._client)
             return True
         except Exception as exc:
+            self._accepting_batch_ingress = False
             await self._release_app_lock()
             message = f"Feishu startup failed: {exc}"
             self._set_fatal_error("feishu_connect_error", message, retryable=True)
@@ -1545,12 +1558,11 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        # No batching coroutine may mutate the maps once teardown starts taking its snapshot.
+        self._accepting_batch_ingress = False
         if self._ws_supervisor is not None:
             self._ws_supervisor.cancel()
             self._ws_supervisor = None
-        await self._cancel_pending_tasks(self._pending_text_batch_tasks)
-        await self._cancel_pending_tasks(self._pending_media_batch_tasks)
-        self._reset_batch_buffers()
         # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
         # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
         # server never learns the connection is dead and continues routing messages to the stale endpoint —
@@ -1558,18 +1570,87 @@ class FeishuAdapter(BasePlatformAdapter):
         # #10202.
         ws_client = self._ws_client
         ws_thread_loop = self._ws_thread_loop
-        self._disable_websocket_auto_reconnect()
-        await self._stop_webhook_server()
-        await self._teardown_ws_thread(ws_client, ws_thread_loop)
-        self._ws_future = None
-        self._ws_thread_loop = None
-        self._loop = None
-        self._event_handler = None
-        self._shutdown_sdk_executor()
-        self._persist_seen_message_ids()
-        await self._release_app_lock()
-        self._mark_disconnected()
-        logger.info("[Feishu] Disconnected")
+        try:
+            await self._drain_pending_text_batches()
+            await self._cancel_pending_tasks(self._pending_media_batch_tasks)
+        finally:
+            self._reset_batch_buffers()
+            self._disable_websocket_auto_reconnect()
+            try:
+                await self._stop_webhook_server()
+            except Exception:
+                logger.warning("[Feishu] Webhook cleanup failed during disconnect", exc_info=True)
+            try:
+                await self._teardown_ws_thread(ws_client, ws_thread_loop)
+            except Exception:
+                logger.warning("[Feishu] WebSocket cleanup failed during disconnect", exc_info=True)
+            self._ws_future = None
+            self._ws_thread_loop = None
+            self._loop = None
+            self._event_handler = None
+            self._shutdown_sdk_executor()
+            self._persist_seen_message_ids()
+            await self._release_app_lock()
+            self._mark_disconnected()
+            logger.info("[Feishu] Disconnected")
+
+    def _text_batch_drain_deadline_seconds(self) -> float:
+        """Leave cleanup headroom inside the gateway's five-second adapter teardown budget."""
+        budget = 5.0  # mirrors gateway._ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+        raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+        if raw:
+            try:
+                parsed = float(raw)
+                if parsed > 0:
+                    budget = parsed
+            except ValueError:
+                pass
+        headroom = max(0.5, budget * 0.2)
+        return min(max(0.01, budget - headroom), budget * 0.9)
+
+    async def _drain_pending_text_batches(self) -> None:
+        """Concurrently settle every batch accepted before ingress was quiesced."""
+        await self._cancel_pending_tasks(self._pending_text_batch_tasks)
+
+        # Timers that crossed the pop boundary registered their shielded child in the base set.
+        # The remaining map entries have not started; transfer each exactly once to that same set.
+        for key in tuple(self._pending_text_batches):
+            event = self._pop_text_batch(key)
+            if event is not None:
+                self._start_text_batch_dispatch(event)
+
+        dispatches = set(self._pending_text_batch_dispatch_tasks)
+        if not dispatches:
+            return
+        deadline = self._text_batch_drain_deadline_seconds()
+        done, pending = await asyncio.wait(dispatches, timeout=deadline)
+        for task in done:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning("[Feishu] Text-batch dispatch failed during disconnect", exc_info=True)
+        if not pending:
+            return
+
+        logger.warning(
+            "[Feishu] Text-batch drain timed out; cancelling %d unfinished dispatch(es)",
+            len(pending),
+        )
+        for task in pending:
+            task.cancel()
+        # Normal handlers unwind cancellation immediately.  A handler that suppresses cancellation
+        # stays strongly owned and makes connect() fail closed instead of overlapping a reconnect.
+        cancel_grace = min(0.5, max(0.001, deadline * 0.1))
+        done_after_cancel, _still_pending = await asyncio.wait(pending, timeout=cancel_grace)
+        for task in done_after_cancel:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning("[Feishu] Text-batch dispatch failed while cancelling", exc_info=True)
 
     async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
         """CLOSE frame → cancel the WS thread's tasks → wait for the thread future."""
@@ -2676,9 +2757,15 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
         if event.message_type == MessageType.TEXT and not event.is_command():
+            if not self._accepting_batch_ingress:
+                logger.info("[Feishu] Ignoring text-batch ingress while disconnecting")
+                return
             await self._enqueue_text_event(event)
             return
         if self._should_batch_media_event(event):
+            if not self._accepting_batch_ingress:
+                logger.info("[Feishu] Ignoring media-batch ingress while disconnecting")
+                return
             await self._enqueue_media_event(event)
             return
         await self._handle_message_with_guards(event)
@@ -2704,6 +2791,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         if not self._media_batch_is_compatible(existing, event):
             await self._flush_media_batch_now(key)
+            if not self._accepting_batch_ingress:
+                return
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
@@ -2958,6 +3047,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         if not self._text_batch_is_compatible(existing, event):
             await self._flush_text_batch_now(key)
+            if not self._accepting_batch_ingress:
+                return
             _start_batch()
             return
 
@@ -2966,6 +3057,8 @@ class FeishuAdapter(BasePlatformAdapter):
         next_text = f"{existing.text}\n{appended_text}" if existing.text and appended_text else (existing.text or appended_text)
         if next_count > self._text_batch_max_messages or len(next_text) > self._text_batch_max_chars:
             await self._flush_text_batch_now(key)
+            if not self._accepting_batch_ingress:
+                return
             _start_batch()
             return
 

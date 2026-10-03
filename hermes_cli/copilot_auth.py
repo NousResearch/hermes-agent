@@ -259,7 +259,7 @@ def _purge_stale_copilot_auth_caches() -> None:
                 _exchange_failure_cache.pop(fp, None)
         live = _jwt_cache.keys() | _exchange_failure_cache.keys()
         for fp in list(_exchange_locks):
-            if fp not in live:
+            if fp not in live and not _exchange_locks[fp].locked():
                 _exchange_locks.pop(fp, None)
 
 

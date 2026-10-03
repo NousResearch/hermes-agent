@@ -273,8 +273,10 @@ _CRON_HINT = (
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "
     "treat phrasing like \"each Monday\" or \"every day at 9\" as "
-    "context for this run, not as a request to schedule another job.]\n\n"
+    "context for this run, not as a request to schedule another job."
 )
+
+_CRON_HINT_SUFFIX = "]\n\n"
 
 _AGENT_SCHEDULING_HINT = (
     "If the task below tells you to book this job's next run, do it: "
@@ -289,8 +291,8 @@ def _cron_hint() -> str:
     config = _scheduler.load_config() or {}
     cron_config = config.get("cron") if isinstance(config, dict) else None
     if isinstance(cron_config, dict) and cron_config.get("allow_agent_scheduling"):
-        return _CRON_HINT + _AGENT_SCHEDULING_HINT
-    return _CRON_HINT
+        return _CRON_HINT + _AGENT_SCHEDULING_HINT + _CRON_HINT_SUFFIX
+    return _CRON_HINT + _CRON_HINT_SUFFIX
 
 
 def _build_job_prompt(

@@ -68,6 +68,7 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[Tuple[str, str], float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+_ENDPOINT_MODEL_CACHE_MAX_ENTRIES = 128
 # Server-type verdicts (server_type, monotonic_ts): positive ones live an hour so a
 # server swap on the same port is re-detected; None gets the short TTL so a
 # transient failure recovers in minutes without re-running the waterfall each turn.
@@ -1010,8 +1011,22 @@ def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
 
 
 def _remember_endpoint_models(memo_key: Tuple[str, str], cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    now = time.time()
+    expired = [
+        key
+        for key, cached_at in _endpoint_model_metadata_cache_time.items()
+        if now - cached_at >= _ENDPOINT_MODEL_CACHE_TTL
+    ]
+    for key in expired:
+        _endpoint_model_metadata_cache.pop(key, None)
+        _endpoint_model_metadata_cache_time.pop(key, None)
+
     _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
+    _endpoint_model_metadata_cache_time[memo_key] = now
+    while len(_endpoint_model_metadata_cache_time) > _ENDPOINT_MODEL_CACHE_MAX_ENTRIES:
+        oldest_key = min(_endpoint_model_metadata_cache_time, key=_endpoint_model_metadata_cache_time.get)
+        _endpoint_model_metadata_cache_time.pop(oldest_key, None)
+        _endpoint_model_metadata_cache.pop(oldest_key, None)
     return cache
 
 

@@ -877,6 +877,25 @@ class TestGatewayProtection:
         assert dangerous is False
 
 
+class TestRedirectionOperatorsAreNotSeparators:
+    """`&>`, `>&`, `<&`, `>|` and `|&` are single shell operators; the command-start tokenizer must not
+    split them into a separator plus a stray `&`/`|`."""
+
+    def test_redirections_mark_no_command_start(self):
+        for cmd in ("a &> f", "a &>> f", "a 2>&1", "a <&3", "a >| f"):
+            assert approval_detection._mark_command_starts(cmd) == cmd, cmd
+
+    def test_pipe_with_stderr_is_one_separator(self):
+        assert approval_detection._mark_command_starts("a |& b") == "a |& \nb"
+
+    def test_escaped_redirect_char_still_separates(self):
+        """After an escaped `\\>` the `&`/`|` is a real separator, so the next word is a command."""
+        for cmd in ("echo \\>& reboot", "echo \\>| reboot"):
+            assert detect_hardline_command(cmd)[0] is True, cmd
+
+    def test_redirect_target_is_not_a_command(self):
+        for cmd in ("echo hi >| reboot", "echo hi &> reboot", "echo hi 2>&1 >| reboot"):
+            assert detect_hardline_command(cmd)[0] is False, cmd
 
 
 class TestWebhookApprovalExclusion:

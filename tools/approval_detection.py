@@ -1172,7 +1172,7 @@ def _iter_shell_command_starts(command: str):
     starts = [0]
 
     def scan(start: int, end: int) -> None:
-        skip = -1
+        skip = redirect = -1
         for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
                                             comments=True):
             if kind == "subst":
@@ -1187,6 +1187,16 @@ def _iter_shell_command_starts(command: str):
                 if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
+                elif command[i] in "<>":
+                    redirect = i
+                elif (command[i] in "&|" and redirect == i - 1) or command.startswith("&>", i, end):
+                    # `>&`, `<&`, `>|` and `&>` are redirections, not separators. The `<`/`>` must be a bare
+                    # char the scanner yielded: after an escaped `\>`, `&` and `|` still separate commands.
+                    pass
+                elif command.startswith("|&", i, end):
+                    # `|&` pipes stdout and stderr: one separator, not a pipe followed by a background `&`.
+                    skip = i + 1
+                    starts.append(i + 2)
                 elif command[i] in "&|":
                     repeated = i + 1 < end and command[i + 1] == command[i]
                     skip = i + 1 if repeated else skip

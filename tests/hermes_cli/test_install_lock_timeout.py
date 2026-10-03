@@ -35,7 +35,8 @@ def install_tree(tmp_path, monkeypatch):
     environment = install_state_dir(repo) / "environments" / "gen1" / "venv"
     site = site_packages(environment)
     site.mkdir(parents=True)
-    (environment / "pyvenv.cfg").write_text("version = 3.14", encoding="utf-8")
+    (environment / "pyvenv.cfg").write_text(
+        f"version = {sys.version_info.major}.{sys.version_info.minor}", encoding="utf-8")
     (environment.parent / ".lease-managed").touch()
     runtime_facts_path(repo).write_text(
         json.dumps({"packages": {"venv": {"environment": str(environment)}}}), encoding="utf-8")

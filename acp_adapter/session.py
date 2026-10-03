@@ -265,13 +265,11 @@ class SessionManager:
         self._schedule_git_metadata(state, self._claim_cwd_generation(state))
         return state
 
-    def save_session(self, session_id: str) -> None:
-        """Persist a session; called by the server after prompt completion,
-        history-mutating slash commands, and model switches."""
+    def save_session(self, session_id: str, *, verify_history: bool = False) -> bool:
+        """Persist a session; return False if the history could not be saved."""
         with self._lock:
             state = self._sessions.get(session_id)
-        if state is not None:
-            self._persist(state)
+        return self._persist(state, verify_history=verify_history) if state is not None else False
 
     def end_all_sessions(self, end_reason: str = "acp_disconnect") -> int:
         """Stamp ``ended_at`` on every live session (#118216).
@@ -339,11 +337,11 @@ class SessionManager:
                 logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
-    def _persist(self, state: SessionState) -> None:
+    def _persist(self, state: SessionState, *, verify_history: bool = False) -> bool:
         """Create/update the session record, then sync the live message set."""
         db = self._get_db()
         if db is None:
-            return
+            return False
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
@@ -357,7 +355,7 @@ class SessionManager:
             if db.get_session(state.session_id) is None:
                 if not state.history:
                     # Empty editor probes stay ephemeral; copied fork history persists.
-                    return
+                    return False
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
                                   model_config=session_meta, cwd=state.cwd or None)
             else:
@@ -389,15 +387,26 @@ class SessionManager:
             # #13675).
             agent = state.agent
             if getattr(agent, "_session_db", None) is db and getattr(agent, "_session_db_created", False):
-                return
+                if verify_history:
+                    # Owning agents may suppress an incremental write error. Read back
+                    # the wake's user message before acknowledging its durable receipt.
+                    expected = next((m.get("content") for m in reversed(state.history)
+                                     if m.get("role") == "user"), None)
+                    persisted = db.get_messages_as_conversation(agent.session_id)
+                    actual = next((m.get("content") for m in reversed(persisted)
+                                   if m.get("role") == "user"), None)
+                    return expected is not None and expected == actual
+                return True
             # A non-owning agent (model switch, /restore: fresh agent, _session_db_created=False)
             # may still sit on archived rows, so replace ONLY the active=1 set: on a fresh
             # create/fork every row is active (== full replace), and archived rows survive.
             # Unconditional because an existence probe would fail OPEN on DB error and can
             # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
             db.replace_messages(state.session_id, state.history, active_only=True)
+            return True
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
+            return False
 
     def _claim_cwd_generation(self, state: SessionState) -> Optional[int]:
         """Write the cwd column and return its new git-metadata generation.

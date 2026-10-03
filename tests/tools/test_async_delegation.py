@@ -66,6 +66,32 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
+@pytest.mark.parametrize("previous,alive,reclaims", [
+    ("acp:12345:old", False, True),
+    ("acp:12345:old", True, False),
+    ("gateway:12345:old", False, False),
+    ("acp:invalid:old", False, False),
+])
+def test_acp_completion_claim_recovers_only_a_dead_acp_owner(tmp_path, monkeypatch, previous, alive, reclaims):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_owner_liveness", lambda: lambda pid, birth: alive)
+    result = ad.dispatch_async_delegation(
+        goal="receipt recovery", context=None, toolsets=None, role="leaf", model="fixture",
+        session_key="receipt-parent", parent_session_id="receipt-parent", runner=lambda: {"summary": "sentinel"},
+    )
+    delegation_id = result["delegation_id"]
+    event = _drain_for(delegation_id)
+    assert event is not None
+    assert ad.claim_completion_delivery(delegation_id, previous)
+    assert ad.claim_completion_delivery(delegation_id, "acp:54321:new") is reclaims
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        assert conn.execute("SELECT delivery_claim, delivery_state FROM async_delegations WHERE delegation_id=?",
+                            (delegation_id,)).fetchone() == ("acp:54321:new" if reclaims else previous, "pending")
+    assert not ad.complete_completion_delivery(delegation_id, "wrong-owner")
+    assert ad.complete_completion_delivery(delegation_id, "acp:54321:new" if reclaims else previous)
+    assert not ad.claim_completion_delivery(delegation_id, "acp:54321:duplicate")
+
+
 def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
     """The delegation ledger is a guest in state.db, not its mode owner."""
     conn = sqlite3.connect(tmp_path / "state.db")

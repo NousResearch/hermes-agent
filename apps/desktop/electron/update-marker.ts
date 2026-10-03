@@ -21,17 +21,166 @@
  */
 
 import fs from 'fs'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import path from 'path'
 
-// Even with a live-looking PID, never treat a marker older than this as a live
-// update. A full update (git pull + pip + desktop rebuild) is minutes, not tens
-// of minutes; past this the marker is almost certainly stale (e.g. the OS
-// recycled the pid onto an unrelated process), so the gate self-heals.
+import { hiddenWindowsChildOptions } from './windows-child-options'
+
+// Past this age a live PID is only honored once its identity is verified
+// (markerOwnerIsLive). The ceiling exists because the OS can recycle a dead
+// updater's pid onto an unrelated process — not because updates are short: a
+// Windows update with a desktop rebuild takes 40+ minutes (#109795). Keep in
+// sync with UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py and
+// UPDATE_MARKER_MAX_AGE_SECS in apps/bootstrap-installer/src-tauri/src/update.rs.
 export const UPDATE_MARKER_MAX_AGE_MS = 20 * 60 * 1000
 
+// The owner wrote the marker (or was spawned just before the desktop wrote it),
+// so it was created no later than the marker file's last write; a pid created
+// after that write is recycled. Slack for 1s `ps` resolution. Keep in sync with
+// PID_REUSE_TOLERANCE_SECONDS in hermes_cli/update_lock.py.
+export const PID_REUSE_TOLERANCE_MS = 5_000
+
+/**
+ * The liveness decision shared (by contract) with update_lock.py and the Rust
+ * updater. `ownerStartedMs` is the owner's creation time: a number when known,
+ * `null` when unverifiable, `undefined` while an async probe is still pending
+ * (treated as live — never hand the tree to a second updater on a guess).
+ */
+export function markerOwnerIsLive({
+  pidAlive,
+  ageMs,
+  maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
+  ownerStartedMs,
+  markerWrittenMs
+}: {
+  pidAlive: boolean
+  ageMs: number
+  maxAgeMs?: number
+  ownerStartedMs: number | null | undefined
+  markerWrittenMs: number | null
+}): boolean {
+  if (!pidAlive) {
+    return false
+  }
+
+  if (ageMs <= maxAgeMs) {
+    return true
+  }
+
+  if (ownerStartedMs === undefined) {
+    return true
+  }
+
+  if (ownerStartedMs === null || markerWrittenMs === null) {
+    return false
+  }
+
+  return ownerStartedMs <= markerWrittenMs + PID_REUSE_TOLERANCE_MS
+}
+
+/** Seconds from `ps -o etime=` (`[[dd-]hh:]mm:ss`, shared by macOS and procps). */
+export function parsePsEtime(text: string): number | null {
+  const trimmed = String(text || '').trim()
+  const dash = trimmed.lastIndexOf('-')
+  const days = dash >= 0 ? trimmed.slice(0, dash) : ''
+  const parts = (dash >= 0 ? trimmed.slice(dash + 1) : trimmed).split(':')
+
+  if (parts.length < 2 || parts.length > 3 || !parts.every(p => /^\d+$/.test(p)) || (days && !/^\d+$/.test(days))) {
+    return null
+  }
+
+  const seconds = parts.reduce((acc, part) => acc * 60 + Number(part), 0)
+
+  return seconds + Number(days || 0) * 86_400
+}
+
+/** Wall-clock creation time (epoch ms) of `pid`; rejects when unverifiable. */
+export function probeProcessStartMs(pid: number): Promise<number> {
+  const isWindows = process.platform === 'win32'
+
+  const [command, args] = isWindows
+    ? [
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `[DateTimeOffset]::new((Get-Process -Id ${pid} -ErrorAction Stop).StartTime).ToUnixTimeMilliseconds()`
+        ]
+      ]
+    : ['ps', ['-o', 'etime=', '-p', String(pid)]]
+
+  return new Promise((resolve, reject) => {
+    // PowerShell 5.1 cold starts take seconds (#87169); this runs off the
+    // polling path, so give it headroom.
+    const child = execFile(
+      command,
+      args,
+      hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 30_000 }),
+      (error, stdout) => {
+        if (error) {
+          return reject(error)
+        }
+
+        const text = String(stdout || '').trim()
+
+        if (isWindows) {
+          return /^\d+$/.test(text) ? resolve(Number(text)) : reject(new Error(`bad start time for ${pid}`))
+        }
+
+        const elapsed = parsePsEtime(text)
+
+        return elapsed === null ? reject(new Error(`bad etime for ${pid}`)) : resolve(Date.now() - elapsed * 1000)
+      }
+    )
+
+    child.stdin?.end()
+  })
+}
+
+// A probe result is trusted for this long before it is refreshed, so a pid
+// that dies and is recycled while the marker stays put is re-examined.
+const OWNER_START_CACHE_MS = 60_000
+const ownerStartCache = new Map<number, { value: number | null | undefined; at: number }>()
+
+/**
+ * Sync view of an async probe so the 1s gate poll never blocks the main
+ * process on PowerShell: `undefined` while the first probe is in flight, then
+ * the cached result (refreshed in the background once it ages out).
+ */
+export function cachedProcessStartMs(
+  pid: number,
+  { now = Date.now, probe = probeProcessStartMs }: { now?: () => number; probe?: (pid: number) => Promise<number> } = {}
+): number | null | undefined {
+  const hit = ownerStartCache.get(pid)
+
+  if (hit && (hit.value === undefined || now() - hit.at < OWNER_START_CACHE_MS)) {
+    return hit.value
+  }
+
+  const entry = { value: hit?.value, at: now() }
+  ownerStartCache.set(pid, entry)
+  probe(pid).then(
+    value => {
+      entry.value = value
+      entry.at = now()
+    },
+    () => {
+      entry.value = null
+      entry.at = now()
+    }
+  )
+
+  return hit?.value
+}
+
+// One lock per install: a profile home (<root>/profiles/<name>) resolves to <root>,
+// matching update_marker_path() in hermes_cli/update_lock.py (#123376).
 export function markerPath(hermesHome) {
-  return path.join(hermesHome, '.hermes-update-in-progress')
+  const parent = path.basename(path.dirname(hermesHome))
+  const isProfile = (process.platform === 'win32' ? parent.toLowerCase() : parent) === 'profiles'
+
+  return path.join(isProfile ? path.dirname(path.dirname(hermesHome)) : hermesHome, '.hermes-update-in-progress')
 }
 
 // True only if a host process with this pid is currently alive. Signal 0 does
@@ -108,13 +257,14 @@ function isZombieState(state: string | null | undefined): boolean {
  * Read + interpret the marker.
  *
  * Returns `{ pid, ageMs }` only when an update is GENUINELY still running
- * (parseable pid that is alive, within the age ceiling). Returns `null` for
- * every "no live update" case — absent, unreadable, malformed, dead pid, or
- * past the ceiling — and, when a stale marker file exists, deletes it so it
- * cannot strand future launches.
+ * (parseable pid that is alive, within the age ceiling or with a verified
+ * identity past it — see markerOwnerIsLive). Returns `null` for every "no
+ * live update" case — absent, unreadable, malformed, dead pid, or a recycled
+ * / unverifiable pid past the ceiling — and, when a stale marker file exists,
+ * deletes it so it cannot strand future launches.
  *
- * Pure-ish: file I/O against the given path, plus an injectable pid probe and
- * clock for tests.
+ * Pure-ish: file I/O against the given path, plus an injectable pid probe,
+ * owner start-time lookup and clock for tests.
  */
 export function readLiveUpdateMarker(
   hermesHome,
@@ -122,20 +272,24 @@ export function readLiveUpdateMarker(
     kill,
     now = Date.now,
     maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
-    processState = posixProcessState
+    processState = posixProcessState,
+    ownerStartedMs = cachedProcessStartMs
   }: {
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
     /** Injectable override of the zombie/state probe (see posixProcessState). */
     processState?: (pid: number) => string | null
+    ownerStartedMs?: (pid: number) => number | null | undefined
   } = {}
 ) {
   const file = markerPath(hermesHome)
   let raw
+  let markerWrittenMs: number | null
 
   try {
     raw = fs.readFileSync(file, 'utf8')
+    markerWrittenMs = fs.statSync(file).mtimeMs
   } catch {
     return null // absent or unreadable => no live update
   }
@@ -144,9 +298,21 @@ export function readLiveUpdateMarker(
   const pid = Number.parseInt((pidLine || '').trim(), 10)
   const startedAt = Number.parseInt((startedLine || '').trim(), 10)
   const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
-  const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
+  // A zombie answers signal 0 like a live process but is dead for every
+  // liveness decision here (#77259).
+  const alive = Number.isInteger(pid) && isPidAlive(pid, kill) && !isZombieState(processState(pid))
+  // Only a well-formed marker past the ceiling pays for the identity probe.
+  const probe = alive && ageMs > maxAgeMs && Number.isFinite(startedAt)
 
-  if (!alive || isZombieState(processState(pid)) || ageMs > maxAgeMs) {
+  if (
+    !markerOwnerIsLive({
+      pidAlive: alive,
+      ageMs,
+      maxAgeMs,
+      ownerStartedMs: probe ? ownerStartedMs(pid) : null,
+      markerWrittenMs
+    })
+  ) {
     try {
       fs.unlinkSync(file)
     } catch {
@@ -176,8 +342,10 @@ export function readLiveUpdateMarker(
  * Fix: the desktop writes the marker itself, using the spawned updater's
  * PID, immediately after `spawn()`. The updater's `UpdateMarkerGuard` will
  * later adopt it or another hand-off stage may replace the PID. A live
- * holder's original timestamp is preserved across those transfers so retries
- * cannot keep resetting the 20-minute stale ceiling. When the updater finishes
+ * holder's original timestamp is preserved across those transfers; the file's
+ * mtime still moves with each write, which is what the pid-reuse check compares
+ * against, so the new owner (spawned before this write) verifies as live past
+ * the 20-minute ceiling. When the updater finishes
  * it deletes the marker as before.
  * If the updater never starts (spawn failure) the marker still contains a
  * real PID, so `readLiveUpdateMarker` will self-heal once that PID exits.
@@ -189,17 +357,19 @@ export function writeUpdateMarker(
     kill,
     now = Date.now,
     maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
+    ownerStartedMs,
     startedAt
   }: {
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
+    ownerStartedMs?: (pid: number) => number | null | undefined
     startedAt?: number
   } = {}
 ) {
   const file = markerPath(hermesHome)
   const nowMs = now()
-  const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs })
+  const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs, ownerStartedMs })
 
   const acquiredAt =
     typeof startedAt === 'number' && Number.isInteger(startedAt)
@@ -241,6 +411,7 @@ export function updateHandoffConflict(
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
+    ownerStartedMs?: (pid: number) => number | null | undefined
   } = {}
 ) {
   const owner = readLiveUpdateMarker(hermesHome, opts)

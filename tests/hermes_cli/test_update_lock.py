@@ -26,9 +26,13 @@ import pytest
 
 from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
+    PID_REUSE_TOLERANCE_SECONDS,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
+    _parse_ps_etime,
+    _process_started_at,
     describe_holder,
+    marker_owner_is_live,
     read_live_update,
     update_marker_path,
 )
@@ -69,6 +73,37 @@ def test_marker_path_follows_process_hermes_home(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert update_marker_path() == tmp_path / ".hermes-update-in-progress"
+
+
+def test_profile_home_resolves_the_install_wide_marker(tmp_path, monkeypatch):
+    """A profile gateway pins HERMES_HOME=<root>/profiles/<name> (#123376)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "work"))
+    assert update_marker_path() == tmp_path / ".hermes-update-in-progress"
+
+
+def test_profile_process_sees_the_lock_held_at_the_install_root(tmp_path, monkeypatch, other_pid):
+    """`hermes update` holds <root>'s lock; a profile gateway's prepare_launch lock must be refused (#123376)."""
+    (tmp_path / "profiles" / "work").mkdir(parents=True)
+    _claim(tmp_path / ".hermes-update-in-progress", other_pid)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "work"))
+
+    assert read_live_update().pid == other_pid
+    lock = UpdateLock()
+    assert lock.acquire() is False
+    assert lock.holder.pid == other_pid
+
+
+def test_profile_process_still_honors_a_legacy_per_profile_marker(tmp_path, monkeypatch, other_pid):
+    """An older updater run from a profile shell wrote the marker into the profile home."""
+    profile = tmp_path / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _claim(profile / ".hermes-update-in-progress", other_pid)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    lock = UpdateLock()
+    assert lock.acquire() is False
+    assert lock.holder.pid == other_pid
+    assert not (tmp_path / ".hermes-update-in-progress").exists()
 
 
 def test_acquire_writes_pid_and_start_time(marker):
@@ -184,13 +219,92 @@ def test_dead_owner_is_reclaimed_not_honored(marker):
     assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
 
 
-def test_owner_past_the_age_ceiling_is_reclaimed(marker):
-    """A live-but-wedged updater must not hold the lock forever."""
-    long_ago = int(time.time()) - UPDATE_MARKER_MAX_AGE_SECONDS - 60
-    marker.write_text(f"{os.getpid()}\n{long_ago}\n", encoding="utf-8")
+def test_live_owner_past_the_age_ceiling_still_blocks(marker, other_pid):
+    """#109795: a slow update (40+ min on Windows with a desktop rebuild) keeps its lock.
+
+    The owner predates the marker write, so its identity is verified and age alone must not
+    hand the tree to a second updater.
+    """
+    _claim(marker, other_pid, time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 60)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is False
+    assert lock.holder is not None and lock.holder.pid == other_pid
+    assert marker.exists(), "the live owner's marker must survive the read"
+
+
+def test_recycled_pid_past_the_age_ceiling_is_reclaimed(marker, other_pid):
+    """The reason the ceiling exists: a dead updater's pid reused by an unrelated process.
+
+    That process was created after the marker was last written, so it cannot be the owner.
+    """
+    long_ago = time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 60
+    _claim(marker, other_pid, long_ago)
+    os.utime(marker, (long_ago, long_ago))
 
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+
+def test_recycled_pid_inside_the_age_ceiling_is_still_honored(marker, other_pid):
+    """Inside the ceiling nothing changes: no identity probe, a live pid blocks."""
+    _claim(marker, other_pid, time.time() - 60)
+    os.utime(marker, (time.time() - 60, time.time() - 60))
+
+    assert UpdateLock(path=marker).acquire() is False
+
+
+def test_unverifiable_owner_past_the_age_ceiling_expires(marker, other_pid, monkeypatch):
+    """No creation time available: fall back to the age ceiling rather than wedge forever."""
+    import hermes_cli.update_lock as update_lock
+
+    monkeypatch.setattr(update_lock, "_process_started_at", lambda _pid: None)
+    _claim(marker, other_pid, time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 60)
+
+    assert read_live_update(path=marker) is None
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("pid_alive", "age", "owner_started_at", "written_at", "live"),
+    [
+        (False, 5, None, None, False),
+        (True, 5, None, None, True),
+        (True, UPDATE_MARKER_MAX_AGE_SECONDS + 1, None, 1000.0, False),
+        (True, UPDATE_MARKER_MAX_AGE_SECONDS + 1, 900.0, None, False),
+        (True, UPDATE_MARKER_MAX_AGE_SECONDS + 1, 900.0, 1000.0, True),
+        (True, UPDATE_MARKER_MAX_AGE_SECONDS + 1, 1000.0 + PID_REUSE_TOLERANCE_SECONDS, 1000.0, True),
+        (True, UPDATE_MARKER_MAX_AGE_SECONDS + 1, 1001.0 + PID_REUSE_TOLERANCE_SECONDS, 1000.0, False),
+        (False, UPDATE_MARKER_MAX_AGE_SECONDS + 1, 900.0, 1000.0, False),
+    ],
+    ids=["dead", "young", "unverifiable-owner", "unknown-write", "verified", "tolerance-edge", "recycled",
+         "dead-verified"],
+)
+def test_marker_owner_is_live_decision(pid_alive, age, owner_started_at, written_at, live):
+    assert marker_owner_is_live(
+        pid_alive=pid_alive, age_seconds=age, owner_started_at=owner_started_at, marker_written_at=written_at,
+    ) is live
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [("05:07", 307), ("  01:02:03\n", 3723), ("2-00:00:01", 172801), ("", None), ("abc", None),
+     ("1:2:3:4", None), ("x-01:02", None)],
+)
+def test_parse_ps_etime(text, seconds):
+    assert _parse_ps_etime(text) == seconds
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ps fallback is the POSIX path")
+def test_process_start_time_without_psutil_uses_ps(monkeypatch, other_pid):
+    """The -I -S -B takeover child has no psutil; the ps fallback must still verify identity."""
+    import psutil
+
+    expected = psutil.Process(other_pid).create_time()
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    started = _process_started_at(other_pid)
+    assert started is not None and abs(started - expected) <= PID_REUSE_TOLERANCE_SECONDS
 
 
 @pytest.mark.parametrize(

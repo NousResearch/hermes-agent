@@ -835,6 +835,27 @@ def test_uninstall_on_a_real_console_still_offers_the_uac_prompt(monkeypatch, tm
     assert "Launched elevated Hermes gateway uninstall prompt." in capsys.readouterr().out
 
 
+def test_install_hidden_scheduled_task_console_falls_back_without_the_uac_prompt(monkeypatch, tmp_path, capsys):
+    """The migration's install leg (``_restart_default`` -> ``install(start_now=True, start_on_login=True)``)
+    runs on the same hidden console right after the uninstall leg (#126624): its UAC offer must not block
+    either — it declines and takes the existing Startup-folder fallback."""
+    _arrange_uninstall_access_denied(monkeypatch, tmp_path)
+    monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: False)  # hidden console
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: tmp_path / "task.cmd")
+    monkeypatch.setattr(gateway_windows, "_startup_staging_path", lambda: tmp_path / "Startup" / "staging.tmp")
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no UAC prompt on a hidden console"))
+    monkeypatch.setattr(gateway_windows, "_launch_elevated_install",
+                        lambda *a, **k: pytest.fail("no elevation without an answer"))
+    fallbacks = []
+    monkeypatch.setattr(gateway_windows, "_install_startup_fallback",
+                        lambda script, start_now, reason: fallbacks.append(start_now))
+
+    gateway_windows.install(start_now=True, start_on_login=True)
+
+    assert fallbacks == [True]
+    assert "Non-interactive run" in capsys.readouterr().out
+
+
 
 
 

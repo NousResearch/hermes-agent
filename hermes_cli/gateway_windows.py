@@ -916,6 +916,11 @@ def _offer_elevated_install(headline: str, force: bool, start_now: bool, start_o
 
     print(headline)
     print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
+    if not _console_prompt_answerable():
+        # The multiplex migration's install leg runs in-process under an unattended
+        # `hermes update --yes` on the same hidden console as the uninstall leg (#126624).
+        print("  Non-interactive run — skipped the UAC prompt. Falling back to Startup folder.")
+        return False
     if prompt_yes_no("  Open the UAC prompt now?", False):
         if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
             print("✓ Launched elevated Hermes gateway install prompt.")

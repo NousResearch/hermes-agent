@@ -124,7 +124,7 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
 
 def _fired(marker: Path) -> list[str]:
     out = []
-    for sink in ("fsmonitor", "hook", "extdiff", "textconv", "ssh"):
+    for sink in ("fsmonitor", "hook", "extdiff", "textconv", "ssh", "clean"):
         p = Path(f"{marker}.{sink}")
         if p.exists():
             out.append(sink)
@@ -216,11 +216,22 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "branch", "pr-1"], check=True,
                    env=_CLEAN_GIT_ENV)
     kw._ensure_git_worktree(repo, tmp_path / "wt3", "safe3")
+    # A clean filter defined only in the tree's config.worktree: the plain remove re-hashes a stat-dirty README.
+    subprocess.run(["git", "-C", str(repo), "config", "extensions.worktreeConfig", "true"], check=True,
+                   env=_CLEAN_GIT_ENV)
+    (repo / ".git" / "info" / "attributes").write_text("README filter=evil\n")
+
+    def _tree_filter(tree: Path) -> None:
+        subprocess.run(["git", "-C", str(tree), "config", "--worktree", "filter.evil.clean",
+                        f"touch '{marker.as_posix()}.clean'; cat"], check=True, env=_CLEAN_GIT_ENV)
+        os.utime(tree / "README", (time.time() + 60, time.time() + 60))
+    _tree_filter(tmp_path / "wt2")
     worktree_ops._reap_prune_verdicts(str(repo), [(tmp_path / "wt2", 0.0, False, "reap", None)], 0.0)
     worktree_ops._prune_orphaned_branches(str(repo))
     worktree_ops._cleanup_failed_worktree_add(str(repo), tmp_path / "wt3", "safe3")
     assert _fired(marker) == []
     kw._ensure_git_worktree(repo, tmp_path / "wt4", "safe4")
+    _tree_filter(tmp_path / "wt4")
     record = worktree_gc.TreeRecord("wt4", str(tmp_path / "wt4"), "safe4", 9.0, None, "reap", "")
     assert worktree_gc.reclaim_worktrees(str(repo), records=[record]) == ["removed wt4"]  # attended reclaim
     assert _fired(marker) == []

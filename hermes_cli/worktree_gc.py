@@ -286,6 +286,7 @@ def reclaim_worktrees(
     """Remove every reap-verdict tree from a frozen audit list — never re-globs inside the
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
     from hermes_cli import worktree_ops as _ops
+    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
 
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
@@ -329,14 +330,19 @@ def reclaim_worktrees(
         with contextlib.suppress(Exception):
             _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
         try:
-            remove_args = ["worktree", "remove", record.path]
+            # Plain remove reads the TREE's index: its filters (config.worktree) need the tree's env.
+            env = noninteractive_repo_git_env(record.path)
+            if env is None:
+                actions.append(f"kept {record.name} ({FILTER_DISCOVERY_FAILED})")
+                continue
+            remove_args = ["git", "worktree", "remove", record.path]
             if record.untracked:
                 remove_args.append("--force")  # only after the audited scratch was archived
-            remove_result = _git(remove_args, cwd=repo_root, timeout=30)
+            remove_result = _run(remove_args, 30, repo_root, env=env)
             # Plain remove always refuses trees with submodules; --force only after a fresh clean check.
             if (remove_result.returncode != 0 and not record.untracked
                     and "submodules" in remove_result.stderr and _dirty_split(record.path) == (False, [])):
-                remove_result = _git([*remove_args, "--force"], cwd=repo_root, timeout=30)
+                remove_result = _run([*remove_args, "--force"], 30, repo_root, env=env)
             if remove_result.returncode != 0:
                 actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
                 continue

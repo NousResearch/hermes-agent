@@ -595,3 +595,99 @@ class TestHeicDetection:
         path, mime, err = vt._normalize_to_supported_image(broken, "image/avif")
         assert path is None
         assert "AV1" in err or "Pillow" in err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["resolver", "vision_analyze_tool"])
+async def test_http_preflight_keeps_the_calling_loop_responsive(monkeypatch, entry):
+    """A slow OS resolver must not prevent another task from cancelling media lookup."""
+    import asyncio
+    import socket
+    import threading
+    from tools import image_source, url_safety
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    downloads = []
+
+    def slow_dns(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(5), "event loop did not resume while DNS was pending"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        finally:
+            finished.set()
+
+    async def download(url):
+        downloads.append(url)
+        return PNG
+
+    monkeypatch.setattr(url_safety.socket, "getaddrinfo", slow_dns)
+    monkeypatch.setattr(image_source, "_download_to_bytes", download)
+    url = "https://media.example/image.png"
+    if entry == "vision_analyze_tool":
+        from tools.vision_tools import vision_analyze_tool
+        coro = vision_analyze_tool(url, "Describe this image")
+    else:
+        coro = image_source.resolve_image_source(url, image_source.ResolveContext())
+    task = asyncio.create_task(coro)
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        assert not finished.is_set(), "the calling loop could not advance while DNS was pending"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 5)
+    assert downloads == []
+
+
+@pytest.mark.asyncio
+async def test_http_preflight_retains_profile_policy_across_thread_hop(tmp_path, monkeypatch):
+    """A→B→A: real loopback downloads follow each home's private-URL policy."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.image_source import ResolveContext, SourceUnsafe, resolve_image_source
+
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(PNG)))
+            self.end_headers()
+            self.wfile.write(PNG)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    url = f"http://127.0.0.1:{server.server_port}/image.png"
+    try:
+        for name, allowed in (("a", True), ("b", False), ("a", True)):
+            home = tmp_path / name
+            home.mkdir(exist_ok=True)
+            (home / "config.yaml").write_text(
+                f"security:\n  allow_private_urls: {str(allowed).lower()}\n", encoding="utf-8")
+            token = set_hermes_home_override(str(home))
+            try:
+                if allowed:
+                    result = await resolve_image_source(url, ResolveContext())
+                    assert result.data == PNG and result.mime == "image/png"
+                else:
+                    with pytest.raises(SourceUnsafe, match="unsafe or private"):
+                        await resolve_image_source(url, ResolveContext())
+            finally:
+                reset_hermes_home_override(token)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert received == ["/image.png", "/image.png"]

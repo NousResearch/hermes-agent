@@ -484,18 +484,24 @@ def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
 def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     """_boot_in_flight exercised FOR REAL (the previous regression test
     monkeypatched it — and the real one threw TypeError on every call,
-    silently disabling the boot wait). Enabled + installed PM engine
-    -> True; either missing -> False."""
+    silently disabling the boot wait). Enabled + an installed PM engine for
+    the CONFIGURED backend -> True; either missing -> False."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda: None)
+    installed: set[str] = set()
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto", **_: object() if backend in installed else None)
 
     enabled = {"local_runtime": {"enabled": True}}
     assert ep._boot_in_flight(enabled) is False
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda: object())
+    installed.add("auto")
     assert ep._boot_in_flight(enabled) is True
     # Disabled -> False even when installed.
     assert ep._boot_in_flight({"local_runtime": {"enabled": False}}) is False
+    # An explicit backend is the engine that boots: only the Vulkan build installed must count.
+    installed.clear()
+    installed.add("vulkan")
+    assert ep._boot_in_flight({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is True
 
 
 def test_idle_sweep_unloads_idle_models(tmp_path, monkeypatch, stub_server):

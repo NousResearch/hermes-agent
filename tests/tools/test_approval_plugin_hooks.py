@@ -15,6 +15,8 @@ from tools import approval_context
 from tools import approval_smart
 from tools.approval import check_all_command_guards, check_execute_code_guard, clear_session
 from tools.approval_context import set_current_session_key
+from tools.approval_prompt import request_elicitation_consent
+from tools.file_tools_write_guards import _request_protected_instruction_approval
 
 
 @pytest.fixture
@@ -333,5 +335,112 @@ class TestSmartModeFiresHooks:
             "smart_approve",
             "smart_deny",
         ]
+
+
+class TestProtectedWriteCliPathFiresHooks:
+    """CLI protected agent-instruction write prompt: must fire the same observer
+    hooks as its gateway twin so notifiers see the human wait (#131876)."""
+
+    def test_pre_and_post_fire_with_expected_kwargs(self, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        token = set_current_session_key("test:session:protected_write")
+        captured = []
+
+        def cb(command, description, *, allow_permanent=True, allow_session=True,
+               smart_denied=False):
+            return "once"
+
+        monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: cb)
+        try:
+            with patch("hermes_cli.plugins.invoke_hook",
+                       side_effect=lambda name, **kwargs: captured.append((name, kwargs)) or []):
+                result = _request_protected_instruction_approval(["AGENTS.md"])
+        finally:
+            approval_context._approval_session_key.reset(token)
+
+        assert result is None  # one-operation grant
+        assert [name for name, _ in captured] == ["pre_approval_request", "post_approval_response"]
+
+        pre_kwargs = captured[0][1]
+        assert pre_kwargs["command"] == "<write to AGENTS.md>"
+        assert pre_kwargs["pattern_key"] == "protected_instruction_file"
+        assert pre_kwargs["pattern_keys"] == ["protected_instruction_file"]
+        assert pre_kwargs["surface"] == "cli"
+        assert pre_kwargs["session_key"] == "test:session:protected_write"
+        assert pre_kwargs["description"]
+
+        post_kwargs = captured[1][1]
+        assert post_kwargs["choice"] == "once"
+        assert post_kwargs["surface"] == "cli"
+
+    def test_no_human_channel_fails_closed_without_hooks(self, monkeypatch):
+        """The no-callback branch never waits on a human, so observers must not
+        be told a prompt is pending."""
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        token = set_current_session_key("test:session:protected_write")
+        captured = []
+        monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: None)
+        try:
+            with patch("hermes_cli.plugins.invoke_hook",
+                       side_effect=lambda name, **kwargs: captured.append((name, kwargs)) or []):
+                result = _request_protected_instruction_approval(["AGENTS.md"])
+        finally:
+            approval_context._approval_session_key.reset(token)
+
+        assert result is not None and "has NOT consented" in result
+        assert captured == []
+
+
+class TestElicitationCliPathFiresHooks:
+    """CLI MCP/vault consent prompt: must fire the same observer hooks as its
+    gateway twin, carrying the caller's surface value (#131876)."""
+
+    def test_pre_and_post_fire_with_caller_surface(self, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        token = set_current_session_key("test:session:elicitation")
+        captured = []
+        try:
+            with patch("tools.approval_prompt.prompt_dangerous_approval", return_value="once"), \
+                 patch("hermes_cli.plugins.invoke_hook",
+                       side_effect=lambda name, **kwargs: captured.append((name, kwargs)) or []):
+                verdict = request_elicitation_consent(
+                    "Allow server access?", "an MCP server asks",
+                    surface="mcp-elicitation/test-server")
+        finally:
+            approval_context._approval_session_key.reset(token)
+
+        assert verdict == "accept"
+        assert [name for name, _ in captured] == ["pre_approval_request", "post_approval_response"]
+
+        pre_kwargs = captured[0][1]
+        assert pre_kwargs["command"] == "Allow server access?"
+        assert pre_kwargs["pattern_key"] == "mcp_elicitation"
+        assert pre_kwargs["pattern_keys"] == ["mcp_elicitation"]
+        assert pre_kwargs["surface"] == "mcp-elicitation/test-server"
+        assert pre_kwargs["session_key"] == "test:session:elicitation"
+
+        assert captured[1][1]["choice"] == "once"
+
+    def test_prompt_failure_fails_closed_and_settles_observers(self, monkeypatch):
+        """A raising panel still maps to "decline" AND settles the wait for
+        observers (post hook with choice="cancelled")."""
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        token = set_current_session_key("test:session:elicitation")
+        captured = []
+        try:
+            with patch("tools.approval_prompt.prompt_dangerous_approval",
+                       side_effect=RuntimeError("panel blew up")), \
+                 patch("hermes_cli.plugins.invoke_hook",
+                       side_effect=lambda name, **kwargs: captured.append((name, kwargs)) or []):
+                verdict = request_elicitation_consent(
+                    "Confirm payment?", "the vault asks", surface="vault-payment")
+        finally:
+            approval_context._approval_session_key.reset(token)
+
+        assert verdict == "decline"
+        assert [name for name, _ in captured] == ["pre_approval_request", "post_approval_response"]
+        assert captured[1][1]["choice"] == "cancelled"
+        assert captured[1][1]["surface"] == "vault-payment"
 
 

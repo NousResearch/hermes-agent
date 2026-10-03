@@ -59,8 +59,13 @@ blind-opt-out even if the scan is inconclusive - see the posture section above).
 `search.by` supports) - different vectors surface different listings for the same person; dedupe found
 URLs.
 
-1. `web_extract` on the broker `search.url` (fast HTML -> markdown). Look for `search.match_signal`.
-   Build per-vector URLs from `search.url_patterns` and heed `search.url_format_quirks` (see below).
+1. If Hermes has a real page-extraction backend for arbitrary URLs, `web_extract` on the broker
+   `search.url` or constructed per-vector URL (fast HTML -> markdown). Look for `search.match_signal`.
+   Provider settings are blank by default. DDGS supplies search only; extraction uses a separate
+   backend and falls back to Firecrawl when that service is available. If no real extractor is
+   configured/available, go straight to the `site:` probe below, then browser/operator checks as
+   needed. Build per-vector URLs from `search.url_patterns` and heed
+   `search.url_format_quirks` (see below).
 1b. **`site:` search-engine probe (cheap, do it early and in parallel).** `web_search` with
    `site:<broker-domain> "First Last"` (add a city/ZIP or a unique phone/address to cut namesake
    noise) often returns the **exact profile-slug URL** in one shot - which both confirms the listing
@@ -358,4 +363,3 @@ A parent without a hand-verified `optout.playbook` gets synthesised steps from i
 back into `references/brokers/<id>.json`** (`optout.playbook`, `optout.deletion`, `quirks`,
 `last_verified`) so the next run is exact - that file, not this one, is where per-broker knowledge
 accrues.
-

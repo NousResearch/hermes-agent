@@ -30,7 +30,7 @@ _ELLIPSIS = "\u2026"
 #: Charge for the ellipsis itself, on top of the 3-char separator.
 _ELLIPSIS_LEN = len(_ELLIPSIS)
 
-#: effort -> 1-based ordinal over VALID_REASONING_EFFORTS (minimal=r1 ... ultra=r7).
+#: Retained for spec §2.2 traceability; no longer used for the tag itself.
 REASONING_ORDINALS: dict[str, int] = {
     effort: index for index, effort in enumerate(VALID_REASONING_EFFORTS, start=1)
 }
@@ -53,9 +53,13 @@ def _render_model(model: str) -> str:
 
 
 def _render_reasoning(reasoning: str | None) -> str:
-    """``r<N>`` for a known effort, else empty. Never ``r0``, never a guess."""
-    ordinal = REASONING_ORDINALS.get((reasoning or "").strip().lower())
-    return f"r{ordinal}" if ordinal else ""
+    """Effort word (``max``, ``high``, ``low`` ...) for a known effort, else empty.
+
+    Owner decision 2026-10-03: words, not ordinals — ``r6`` forced a lookup table
+    into every glance. Unknown/unset stays empty; never a guess.
+    """
+    effort = (reasoning or "").strip().lower()
+    return effort if effort in VALID_REASONING_EFFORTS else ""
 
 
 def compose_group_title(subject: str, model: str, reasoning: str | None) -> str:

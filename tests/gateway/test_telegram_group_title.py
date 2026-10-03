@@ -1252,7 +1252,7 @@ def test_notify_without_a_loop_is_silent():
 
 @pytest.mark.asyncio
 async def test_resolvable_effort_reaches_the_transport_as_an_ordinal_tag():
-    """A resolvable reasoning effort must reach Telegram as an ``r<N>`` segment (criterion 1).
+    """A resolvable reasoning effort must reach Telegram as an effort-word segment (criterion 1).
 
     Every other lane assertion composes with ``None``, so nothing in this file proved the lane
     hands its resolved effort to the composer at all — dropping that argument at the
@@ -1260,7 +1260,7 @@ async def test_resolvable_effort_reaches_the_transport_as_an_ordinal_tag():
     expected string is spelled out rather than rebuilt through ``compose_group_title``: a
     round-trip would recompute the very function under test and prove nothing at the seam.
 
-    ``high`` is the 4th of :data:`VALID_REASONING_EFFORTS`, hence ``r4``.
+    ``high`` is the literal effort word from :data:`VALID_REASONING_EFFORTS`.
     """
     adapter = _adapter()
     runner = _wired_runner(adapter)
@@ -1279,6 +1279,6 @@ async def test_resolvable_effort_reaches_the_transport_as_an_ordinal_tag():
 
         assert resolved, "the reasoning resolver never ran, so this test proves nothing"
         assert [text for _chat, text, _home in _recorder(adapter).renames] == [
-            "Fix login · gpt-x · r4"]
+            "Fix login · gpt-x · high"]
     finally:
         db.close()

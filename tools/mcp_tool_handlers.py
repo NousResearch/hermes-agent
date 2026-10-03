@@ -501,17 +501,46 @@ def _content_dual_emits_structured(result, structured) -> bool:
     order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
     copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
     richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
-    ``structuredContent`` (#115430)."""
-    for block in (result.content or []):
-        text = getattr(block, "text", None)
-        if not text:
-            continue
-        try:
-            if json.loads(text) == structured:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    ``structuredContent`` (#115430).
+
+    The Python SDK (``MCPServer``, FastMCP) must return an object, so a ``str``/``int``/``list``
+    result travels as ``{"result": value}`` while ``content`` carries the bare value — one block,
+    or one block per list item. That is the same dual-emit with a wrapper, and the same equality
+    test (applied to the unwrapped value) recognises it."""
+    texts = [text for text in (getattr(block, "text", None) for block in (result.content or [])) if text]
+    if any(_text_is_value(text, structured) for text in texts):
+        return True
+    if not (isinstance(structured, dict) and structured.keys() == {"result"}):
+        return False
+    value = structured["result"]
+    if any(_text_is_value(text, value) for text in texts):
+        return True
+    # Blocks are rejoined with "\n", so a string item holding one would lose its boundary once the list is dropped.
+    return (isinstance(value, list) and len(texts) == len(value)
+            and not any(isinstance(item, str) and "\n" in item for item in value)
+            and all(map(_text_is_value, texts, value)))
+
+
+def _text_is_value(text: str, value) -> bool:
+    """True when one text block is *value*: verbatim for a string, else its JSON. A string is also
+    tried as JSON because the SDK serializes non-``str`` returns such as ``bytes`` into ``content``
+    (``'"abc"'``) while ``structuredContent`` holds the bare ``"abc"``."""
+    if isinstance(value, str) and text == value:
+        return True
+    try:
+        return _json_type_stable_equal(json.loads(text), value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _json_type_stable_equal(left, right) -> bool:
+    """``==`` without Python's bool/int coercion (``1 == True``): a false match here drops
+    ``structuredContent`` the text does not carry, while a false miss only keeps a duplicate."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_type_stable_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(_json_type_stable_equal, left, right))
+    return type(left) is type(right) and left == right
 
 
 def _render_call_tool_result(result, server_name: str) -> str:

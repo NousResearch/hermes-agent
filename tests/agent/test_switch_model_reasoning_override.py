@@ -6,7 +6,9 @@ Tests that switch_model:
 3. Saves reasoning_config into _primary_runtime for fallback recovery
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestSwitchModelReasoningOverride:
@@ -45,7 +47,50 @@ class TestSwitchModelReasoningOverride:
 
 
 
-    def test_restore_primary_runtime_restores_reasoning(self):
+    def test_scoped_reasoning_survives_model_switch(self):
+        """A gateway session/lane override stays fixed for the whole turn."""
+        from agent.agent_runtime_helpers import switch_model
+
+        agent = self._make_fake_agent()
+        agent.reasoning_config = {"enabled": False}
+        agent._reasoning_config_fixed = True
+        fake_cfg = {
+            "agent": {
+                "reasoning_effort": "high",
+                "reasoning_overrides": {"claude-opus-4.5": "xhigh"},
+            },
+        }
+
+        # Exercise the completed switch; an early exception must fail this test.
+        agent.requested_provider = "openai"
+        agent.request_overrides = {}
+        agent.runtime_capabilities = {}
+        agent._reasoning_echo_flag = False
+        agent._credential_pool = None
+        agent._ensure_lmstudio_runtime_loaded.return_value = None
+        agent._lmstudio_load_was_unverified.return_value = False
+        agent._effective_lmstudio_context_length.return_value = None
+        with (
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="test-key"),
+            patch("agent.credential_pool.load_pool", return_value=None),
+        ):
+            switch_model(
+                agent,
+                new_model="claude-opus-4.5",
+                new_provider="anthropic",
+                base_url="https://api.anthropic.com",
+                api_mode="anthropic_messages",
+            )
+
+        assert agent.model == "claude-opus-4.5"
+        assert agent.provider == "anthropic"
+        assert agent.reasoning_config == {"enabled": False}
+        assert agent._primary_runtime["reasoning_config"] == {"enabled": False}
+
+    @pytest.mark.parametrize("scoped", [False, True])
+    def test_restore_primary_runtime_restores_reasoning(self, scoped):
         """restore_primary_runtime should restore reasoning_config from snapshot."""
         from agent.agent_runtime_helpers import restore_primary_runtime
 
@@ -81,6 +126,7 @@ class TestSwitchModelReasoningOverride:
         agent.model = "fallback-model"
         agent.provider = "openai"
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        agent._reasoning_config_fixed = scoped
         agent.context_compressor = MagicMock()
         agent.base_url = ""
         # Mock the methods restore_primary_runtime calls
@@ -90,5 +136,5 @@ class TestSwitchModelReasoningOverride:
 
         result = restore_primary_runtime(agent)
         assert result is True
-        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium" if scoped else "xhigh"}
 

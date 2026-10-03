@@ -2491,11 +2491,11 @@ langfuse = [
     { name = "langfuse" },
 ]
 matrix = [
-    { name = "aiohttp", marker = "sys_platform == 'linux'" },
-    { name = "aiohttp-socks", marker = "sys_platform == 'linux'" },
-    { name = "aiosqlite", marker = "sys_platform == 'linux'" },
-    { name = "asyncpg", marker = "sys_platform == 'linux'" },
-    { name = "mautrix", extra = ["encryption"], marker = "sys_platform == 'linux'" },
+    { name = "aiohttp" },
+    { name = "aiohttp-socks" },
+    { name = "aiosqlite" },
+    { name = "asyncpg" },
+    { name = "mautrix" },
 ]
 mcp = [
     { name = "httpx2" },
@@ -2650,17 +2650,17 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
-    { name = "aiohttp", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==3.14.3" },
+    { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.14.3" },
-    { name = "aiohttp-socks", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.11.0" },
-    { name = "aiosqlite", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.22.1" },
+    { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
+    { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
-    { name = "asyncpg", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.31.0" },
+    { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
@@ -2723,7 +2723,7 @@ requires-dist = [
     { name = "langfuse", marker = "extra == 'langfuse'", specifier = "==4.15.2" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
     { name = "markdown", marker = "python_full_version >= '3.14'", specifier = "==3.10.2" },
-    { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.1" },
+    { name = "mautrix", marker = "extra == 'matrix'", specifier = "==0.21.1" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==2.0.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.0.0" },
     { name = "mem0ai", marker = "(platform_machine != 'ARM64' and extra == 'mem0') or (sys_platform != 'win32' and extra == 'mem0')", specifier = "==2.0.10" },

@@ -155,6 +155,7 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
+        fallback_short_reply_stall,
         intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
         tool_results_this_turn, trailing_continue_intent,
     )
@@ -176,6 +177,16 @@ def finish_text_response(
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
         )
     )
+    # Fallback short-reply stall guard: a fallback fired this turn and the fallback provider
+    # returned a short reply without acting. Distinct from trailing-intent / codex-ack /
+    # degenerate. Shares the same continuations cap.
+    _short_reply_stripped = agent._strip_think_blocks(final_response or "")
+    _short_reply_stall = fallback_short_reply_stall(
+        agent,
+        stripped_reply=_short_reply_stripped,
+        messages=messages,
+        continuations_used=codex_ack_continuations,
+    )
     # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
     # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge
     # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
@@ -192,6 +203,8 @@ def finish_text_response(
         _continuation_kind = "stall"
     elif _degenerate_final:
         _continuation_kind = "degenerate"
+    elif _short_reply_stall:
+        _continuation_kind = "short_reply"
     elif (
         _ack_mode != "off"
         and agent.valid_tool_names
@@ -216,6 +229,12 @@ def finish_text_response(
                 "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
                 "re-prompting (%d/2)", len(_stall_text), _stall_text[:40], _tool_rows,
                 codex_ack_continuations + 1,
+            )
+        elif _continuation_kind == "short_reply":
+            logger.info(
+                "Fallback short-reply stall guard: fallback provider returned a short reply "
+                "(%d chars) with no tool calls — re-prompting to act (%d/2)",
+                len(_short_reply_stripped), codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")

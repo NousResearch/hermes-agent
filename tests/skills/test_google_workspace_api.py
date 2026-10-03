@@ -1,5 +1,7 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
+import base64
+import binascii
 import importlib.util
 import json
 import subprocess
@@ -52,6 +54,105 @@ def api_module(monkeypatch, tmp_path):
     # Bypass authentication check — no real token file in CI.
     module._ensure_authenticated = lambda: None
     return module
+
+
+def _gmail_body(text: str) -> dict[str, str]:
+    return {"data": base64.urlsafe_b64encode(text.encode()).decode()}
+
+
+@pytest.mark.parametrize("msg, expected", [
+    pytest.param(
+        {
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "mimeType": "multipart/alternative",
+                        "parts": [
+                            {"mimeType": "text/plain", "body": _gmail_body("Nested body")},
+                        ],
+                    },
+                ],
+            },
+        },
+        "Nested body", id="finds_text_in_nested_mime_parts",
+    ),
+    pytest.param(
+        {
+            "payload": {
+                "parts": [
+                    {"mimeType": "text/html", "body": _gmail_body("<p>HTML body</p>")},
+                    {
+                        "mimeType": "multipart/alternative",
+                        "parts": [
+                            {"mimeType": "text/plain", "body": _gmail_body("Plain body")},
+                        ],
+                    },
+                ],
+            },
+        },
+        "Plain body", id="prefers_substantive_plain_text_over_html",
+    ),
+    pytest.param(
+        {
+            "payload": {
+                "parts": [
+                    {"mimeType": "text/plain", "body": _gmail_body(" \n\t")},
+                    {"mimeType": "text/html", "body": _gmail_body("<p>HTML fallback</p>")},
+                ],
+            },
+        },
+        "<p>HTML fallback</p>", id="falls_back_to_html_for_whitespace_only_plain",
+    ),
+    pytest.param(
+        {"payload": {"mimeType": "text/plain", "body": _gmail_body("Top-level body")}},
+        "Top-level body", id="preserves_top_level_body_behavior",
+    ),
+    pytest.param(
+        {
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {"mimeType": "text/html", "body": _gmail_body("<p>Message body</p>")},
+                    {
+                        "mimeType": "message/rfc822",
+                        "parts": [
+                            {"mimeType": "text/plain", "body": _gmail_body("Attached body")},
+                        ],
+                    },
+                ],
+            },
+        },
+        "<p>Message body</p>", id="ignores_attached_rfc822_text",
+    ),
+    pytest.param(
+        {
+            "payload": {
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {"mimeType": "text/plain", "body": {}},
+                    {"mimeType": "text/html"},
+                ],
+            },
+        },
+        "", id="returns_empty_when_data_is_missing",
+    ),
+])
+def test_extract_message_body_respects_mime_body_contract(msg, expected, api_module):
+    assert api_module._extract_message_body(msg) == expected
+
+
+def test_extract_message_body_preserves_malformed_base64_error(api_module):
+    msg = {
+        "payload": {
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": "a"}},
+            ],
+        },
+    }
+
+    with pytest.raises(binascii.Error):
+        api_module._extract_message_body(msg)
 
 
 def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):

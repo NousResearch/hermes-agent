@@ -399,15 +399,58 @@ def _active_profile_line(agent: Any) -> str:
     # default profile's data sits at the ROOT (get_default_hermes_root()), which in ambient profile mode is
     # NOT get_hermes_home().
     default_root = get_default_hermes_root()
+    # ``skills.create_dir`` may hand the canonical root's skills/ to this session,
+    # in which case naming it as another session's data makes the agent refuse
+    # the directory it is configured to own.
+    shared_skills = _shared_skills_dir_under(default_root)
+    owned = f"{shared_skills} is this session's configured skills write root — shared and writable."
     return (
         f"Active Hermes profile: {active_profile}. This session reads "
-        f"and writes {profile_home}/. The default "
-        f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
-        f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
-        f"different session run from a different shell. Do NOT modify "
-        f"another profile's skills/plugins/cron/memories unless the user "
-        f"explicitly directs you to."
+        f"and writes {profile_home}/. "
+        + (
+            f"{owned} The default "
+            f"profile's data lives at {default_root}/plugins/, "
+            f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
+            f"different session run from a different shell. Do NOT modify "
+            f"another profile's skills/plugins/cron/memories unless the user "
+            f"explicitly directs you to."
+            if shared_skills
+            else (
+                f"The default "
+                f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
+                f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
+                f"different session run from a different shell. Do NOT modify "
+                f"another profile's skills/plugins/cron/memories unless the user "
+                f"explicitly directs you to."
+            )
+        )
     )
+
+
+def _shared_skills_dir_under(default_root: Any) -> str:
+    """The canonical ``<root>/skills`` when ``skills.create_dir`` points there, else "".
+
+    ``get_skill_create_dir()`` already treats a value equal to the profile's own
+    skills dir as unset, so a hit here means the root's dir was handed over on
+    purpose. Anything outside the root leaves the line untouched.
+    """
+    try:
+        from agent.skill_utils import get_skill_create_dir
+
+        create_dir = get_skill_create_dir()
+    except Exception:
+        return ""
+    if create_dir is None:
+        return ""
+    try:
+        if Path(create_dir).resolve() == (Path(str(default_root)) / "skills").resolve():
+            # Compare resolved (the resolver hands back a resolved path), but
+            # spell the directory the way the rest of the line spells the root:
+            # a symlinked home would otherwise print two spellings of one dir.
+            return f"{default_root}/skills/"
+    except OSError:
+        return ""
+    return ""
 
 
 def _default_platform_hint(platform_key: str) -> str:

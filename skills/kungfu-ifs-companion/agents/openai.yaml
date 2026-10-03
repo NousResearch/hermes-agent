@@ -1,0 +1,5 @@
+interface:
+  display_name: "Kungfu IFS Companion"
+  short_description: "Lightweight IFS companion guidance for single agents"
+  default_prompt: "Use $kungfu-ifs-companion to respond with a warm, non-clinical IFS companion style."
+

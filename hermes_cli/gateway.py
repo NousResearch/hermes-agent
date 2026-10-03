@@ -29,7 +29,11 @@ if os.name == "posix":
     if _missing:
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from pm.environments import install_root_for_tree as _install_root_for_tree
+
+# A worker launched through a dependency generation's ``venv/bin/hermes`` imports that generation's
+# staged workspace; every launcher this module persists must name the install instead (#130116).
+PROJECT_ROOT = _install_root_for_tree(Path(__file__).parent.parent)
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config  # noqa: F401 — resolved lazily by siblings through the facade
 from gateway.status import terminate_pid
@@ -3410,7 +3414,14 @@ def _temp_home_in_service_definition(definition: str) -> str | None:
 
 
 def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
-    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
+    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME, or when this
+    process runs from a staged dependency workspace whose install could not be recovered."""
+    from pm.environments import is_staged_workspace
+    if is_staged_workspace(PROJECT_ROOT):
+        print(f"✗ Refusing to write the gateway {kind}: this hermes runs from a staged dependency "
+              f"workspace ({PROJECT_ROOT}) with no readable install record, and a launcher there cannot boot.")
+        print("  Run `hermes gateway restart` from the install's own launcher (a normal shell) and retry.")
+        return True
     temp_home = _temp_home_in_service_definition(definition)
     if temp_home is None:
         return False

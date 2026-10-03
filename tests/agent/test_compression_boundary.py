@@ -79,6 +79,32 @@ class TestAlignBoundaryBackward:
         # Boundary at 4, messages[3] = assistant with tool_calls → pull back to 3
         assert comp._align_boundary_backward(messages, 4) == 3
 
+    def test_boundary_after_complete_tool_group_stays_in_place(self):
+        """A complete tool group before the cut is already safe to summarize."""
+        comp = _make_compressor()
+        messages = [
+            {"role": "user", "content": "hello"},
+            _assistant_with_tools("tc_1"),
+            _tool_result("tc_1", "done"),
+            {"role": "assistant", "content": "next reply"},
+        ]
+
+        # The cut starts at the next assistant, after the whole group.
+        assert comp._align_boundary_backward(messages, 3) == 3
+
+    def test_boundary_inside_parallel_results_moves_to_parent(self):
+        """A cut before one of several results must keep the parent with all results."""
+        comp = _make_compressor()
+        messages = [
+            {"role": "user", "content": "hello"},
+            _assistant_with_tools("tc_1", "tc_2"),
+            _tool_result("tc_1"),
+            _tool_result("tc_2"),
+            {"role": "assistant", "content": "next reply"},
+        ]
+
+        assert comp._align_boundary_backward(messages, 3) == 1
+
 
 
 

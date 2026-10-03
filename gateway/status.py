@@ -788,10 +788,13 @@ def profile_flag_value(command: str) -> Optional[str]:
     profile match: a substring test lets ``-p ops`` claim (and ``gateway stop`` SIGTERM) ``-p ops-2``."""
     tokens = command.split()
     for i, tok in enumerate(tokens):
+        # The store launcher embeds argv as ``['--profile', 'ops']``. Space-joined
+        # command lines keep the quotes, brackets and commas on the tokens.
+        tok = tok.strip("\"'[](),;")
         if tok.startswith("--profile="):
-            return tok.partition("=")[2]
+            return tok.partition("=")[2].strip("\"'[](),;")
         if tok in ("-p", "--profile") and i + 1 < len(tokens):
-            return tokens[i + 1]
+            return tokens[i + 1].strip("\"'[](),;")
     return None
 
 

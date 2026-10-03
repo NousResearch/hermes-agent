@@ -446,6 +446,13 @@ class TestGatewayRuntimeStatus:
         cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
         assert status._command_line_belongs_to_profile(cmdline, home) is True
 
+    def test_profile_flag_reads_the_bootstrap_launchers_quoted_argv(self):
+        """The store launcher embeds ``['--profile', 'ops']`` in one argv string."""
+        cmdline = "\"/repo/.hermes/bin/hermes\" ['--profile', 'ops'] \"gateway\" \"run\""
+        home = Path("/home/user/.hermes/profiles/ops")
+        assert status.profile_flag_value(cmdline) == "ops"
+        assert status._command_line_belongs_to_profile(cmdline, home) is True
+
     def test_command_line_belongs_to_profile_rejects_sibling_homes(self):
         """A substring test let ``HERMES_HOME=/root/profiles/ops2`` satisfy the ``ops`` profile's
         predicate, so a stale state record could borrow the sibling's live gateway identity (same

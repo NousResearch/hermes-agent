@@ -1670,10 +1670,20 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         return None
 
 
-def _read_context_file(path: Path) -> str:
-    """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug)."""
+def _read_context_file(path: Path, root: Optional[Path] = None) -> str:
+    """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug).
+
+    With *root* (the resolved project root the file was discovered under), a file whose resolved target
+    leaves *root* or hits the read deny-list is skipped as well: the policy subdirectory hints apply."""
     if not path.exists():
         return ""
+    if root is not None:
+        from agent.subdirectory_hints import _resolved_hint_target  # late import: that module imports this one
+        target = _resolved_hint_target(path, root)
+        if target is None:
+            logger.warning("Skipping context file %s: it resolves outside %s or to a protected file", path, root)
+            return ""
+        path = target  # read the vetted target, not the link, so a swap between check and read is harmless
     try:
         return (_read_text_with_timeout(path) or "").strip()
     except Exception as e:
@@ -1687,13 +1697,20 @@ def _context_section(content: str, label: str, warn_name: str, path: Path, conte
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
+def _project_root(cwd_path: Path, directory: Optional[Path] = None) -> Path:
+    """Containment root for a project context file found in *directory* (default: the cwd): the git root, else
+    the cwd; a root at or above ``$HOME`` narrows to *directory* (``subdirectory_hints._containment_root``)."""
+    from agent.subdirectory_hints import _containment_root  # late import: that module imports this one
+    return _containment_root(_find_git_root(cwd_path) or cwd_path.resolve(), (directory or cwd_path).resolve())
+
+
 def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     path = _find_hermes_md(cwd_path)
     if path is None:
         return []
     label = str(path.relative_to(cwd_path)) if path.is_relative_to(cwd_path) else path.name
-    return [(label, path, _read_context_file(path))]
+    return [(label, path, _read_context_file(path, _project_root(cwd_path, path.parent)))]
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
@@ -1712,11 +1729,12 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     cwd_resolved = cwd_path.resolve()
     found: list[tuple[str, Path, str]] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
+        root = _project_root(cwd_resolved, directory)
         for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
             candidate = directory / name
             if not _exists_or_denied(candidate):
                 continue
-            content = _read_context_file(candidate)
+            content = _read_context_file(candidate, root)
             label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
             found.append((label, candidate, content))
             if content:
@@ -1726,12 +1744,13 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
 
 def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
+    root = _project_root(cwd_path)
     found: list[tuple[str, Path, str]] = []
     for name in ("CLAUDE.md", "claude.md"):
         candidate = cwd_path / name
         if not _exists_or_denied(candidate):
             continue
-        content = _read_context_file(candidate)
+        content = _read_context_file(candidate, root)
         found.append((name, candidate, content))
         if content:
             break
@@ -1744,7 +1763,8 @@ def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if _is_dir_or_denied(cursor_rules_dir):
         candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
+    root = _project_root(cwd_path)
+    return [(label, path, _read_context_file(path, root)) for label, path in candidates if _exists_or_denied(path)]
 
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are

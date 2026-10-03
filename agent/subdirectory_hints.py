@@ -37,6 +37,18 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _containment_root(anchor: Path, directory: Path) -> Path:
+    """Directory a context/hint file found in *directory* must resolve inside: *anchor* (the project's git
+    root or the session's working dir), unless *anchor* is ``$HOME`` or above. A dotfiles repo at ``$HOME``,
+    or a session rooted at ``$HOME`` or ``/``, contains every file below it, including a download the agent
+    unpacked, so such a file must stay inside its own *directory*."""
+    try:
+        wide = Path.home().resolve().is_relative_to(anchor)
+    except (OSError, RuntimeError):  # no resolvable home: fail closed
+        wide = True
+    return directory if wide else anchor
+
+
 def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
     """Resolved hint-file target, or None when the file must not be loaded.
 
@@ -284,7 +296,7 @@ class SubdirectoryHintTracker:
                     continue
             except OSError:
                 continue
-            if (target := _resolved_hint_target(hint_path, self.working_dir)) is None:
+            if (target := _resolved_hint_target(hint_path, _containment_root(self.working_dir, directory))) is None:
                 continue
             try:
                 content = (_read_text_with_timeout(target) or "").strip()

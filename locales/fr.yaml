@@ -2628,6 +2628,7 @@ cli:
     removed: "Élément {index} retiré de la file : {preview}"
     item_not_found: "Élément {index} introuvable dans la file. Taille actuelle : {size}"
     usage_edit: "Usage : /queue edit <number> <new prompt>"
+    usage_remove: "Usage : /queue rm <number>"
     updated: "Élément {index} de la file mis à jour : {preview}"
     usage_move: "Usage : /queue move <from> <to>"
     move_out_of_range: "Déplacement hors limites de la file. Taille actuelle : {size}"

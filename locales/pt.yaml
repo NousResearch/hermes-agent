@@ -2355,6 +2355,7 @@ cli:
     removed: "Item {index} removido da fila: {preview}"
     item_not_found: "Item {index} da fila não encontrado. Tamanho atual: {size}"
     usage_edit: "Uso: /queue edit <número> <novo prompt>"
+    usage_remove: "Uso: /queue rm <número>"
     updated: "Item {index} da fila atualizado: {preview}"
     usage_move: "Uso: /queue move <origem> <destino>"
     move_out_of_range: "Movimento na fila fora do intervalo. Tamanho atual: {size}"

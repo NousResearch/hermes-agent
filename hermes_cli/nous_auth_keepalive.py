@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.auth import (
@@ -146,34 +148,120 @@ def _refresh_selected_pool_entry(*, min_key_ttl_seconds: int, min_access_ttl_sec
     return True
 
 
+def _refresh_under_scope(
+    *, min_key_ttl_seconds: int, min_access_ttl_seconds: Optional[int],
+    timeout_seconds: Optional[float],
+) -> bool:
+    """One keepalive pass inside whatever profile scope is currently bound."""
+    pool_result = _refresh_selected_pool_entry(
+        min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
+    )
+    if pool_result is not None:
+        return pool_result
+    if not get_provider_auth_state("nous"):
+        return False
+    try:
+        resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
+        logger.debug("Nous auth keepalive: refreshed singleton auth state")
+        return True
+    except Exception as exc:
+        if isinstance(exc, AuthError) and exc.relogin_required:
+            logger.info("Nous auth keepalive requires re-login: %s", exc)
+        else:
+            logger.debug("Nous auth keepalive failed: %s", exc)
+        return False
+
+
+def _served_profile_homes():
+    """Served profile homes for THIS process, or [] to stay on the launch-scope path.
+
+    The authoritative set is the LIVE gateway runner's own served set. Reached through
+    ``sys.modules`` only: importing ``gateway.run`` here would run ``load_hermes_dotenv`` at module
+    scope and write a profile's ``.env`` into the real ``os.environ`` as a side effect of a
+    background keepalive tick. A live multiplexing gateway has that module loaded long before the
+    keepalive ticks; when it is absent (CLI, tests) the launch scope is the correct behavior.
+
+    Deliberately NOT ``profiles_to_serve(multiplex=True)``: that enumerates every profile on disk,
+    which is not this host's served set — it would make the keepalive refresh profiles the gateway
+    never routed.
+    """
+    try:
+        from agent.secret_scope import is_multiplex_active
+        if not is_multiplex_active():
+            return []
+        gateway_run = sys.modules.get("gateway.run")
+        if gateway_run is None:
+            return []
+        ref = getattr(gateway_run, "_gateway_runner_ref", None)
+        runner = ref() if callable(ref) else None
+        config = getattr(runner, "config", None)
+        if config is None or not getattr(config, "multiplex_profiles", False):
+            return []
+        return [(name, Path(home)) for name, home in gateway_run._multiplex_profile_homes(config)]
+    except Exception as exc:
+        logger.debug("Nous auth keepalive: served-profile enumeration unavailable: %s", exc)
+        return []
+
+
+def _profile_scope(profile_home):
+    """The served profile's own runtime scope, reusing ``gateway.run`` ONLY if already imported.
+
+    Never imports ``gateway.run`` here: that module runs ``load_hermes_dotenv`` at import scope, so
+    a lazy import on the keepalive thread would write a profile's ``.env`` into the real
+    ``os.environ``. A live multiplexing gateway has it loaded long before the keepalive ticks; when
+    it is absent (CLI, tests) the launch scope is the correct fallback.
+    """
+    import contextlib
+    gateway_run = sys.modules.get("gateway.run")
+    scope_factory = getattr(gateway_run, "_profile_runtime_scope", None)
+    if scope_factory is None:
+        return contextlib.nullcontext()
+    try:
+        return scope_factory(Path(profile_home))
+    except Exception as exc:
+        logger.debug("Nous auth keepalive: profile scope unavailable: %s", exc)
+        return contextlib.nullcontext()
+
+
 def refresh_nous_auth_keepalive_once(
     *, min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     min_access_ttl_seconds: Optional[int] = None, timeout_seconds: Optional[float] = None,
 ) -> bool:
-    """Refresh Nous auth once if credentials are configured (pool entry first, then singleton state)."""
+    """Refresh Nous auth once if credentials are configured (pool entry first, then singleton state).
+
+    Under multiplexing this must run once per SERVED PROFILE, each inside that profile's own runtime
+    scope. A single launch-scope pass refreshes only the launch profile's grant while a secondary
+    profile's own grant expires untouched; the next request on that profile then refreshes a grant
+    the launch profile has already rotated, and Nous answers ``refresh_token_reused`` and revokes the
+    whole session chain. Profiles that hold no local ``providers.nous`` inherit the shared store, so
+    they resolve to the same grant and simply adopt the rotation.
+    """
     # This runs in a bare daemon thread, so it does not inherit a request's ContextVars. Once a
     # gateway multiplexes profiles, even the launch profile must bind its own scope before a
     # credential read; otherwise the fail-closed routing reader warns on every tick.
     from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
-    with launch_profile_scope_if_multiplexed():
-        pool_result = _refresh_selected_pool_entry(
-            min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
-        )
-        if pool_result is not None:
-            return pool_result
-        if not get_provider_auth_state("nous"):
-            return False
+    homes = _served_profile_homes()
+    if not homes:
+        with launch_profile_scope_if_multiplexed():
+            return _refresh_under_scope(
+                min_key_ttl_seconds=min_key_ttl_seconds,
+                min_access_ttl_seconds=min_access_ttl_seconds,
+                timeout_seconds=timeout_seconds)
+    refreshed_any = False
+    for name, home in homes:
         try:
-            resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
-            logger.debug("Nous auth keepalive: refreshed singleton auth state")
-            return True
+            with _profile_scope(home):
+                if _refresh_under_scope(
+                    min_key_ttl_seconds=min_key_ttl_seconds,
+                    min_access_ttl_seconds=min_access_ttl_seconds,
+                    timeout_seconds=timeout_seconds,
+                ):
+                    refreshed_any = True
         except Exception as exc:
-            if isinstance(exc, AuthError) and exc.relogin_required:
-                logger.info("Nous auth keepalive requires re-login: %s", exc)
-            else:
-                logger.debug("Nous auth keepalive failed: %s", exc)
-            return False
+            # One profile's unreadable store must not abandon the profiles after it.
+            logger.debug("Nous auth keepalive skipped for profile %s: %s", name, exc)
+    return refreshed_any
 
 
 def _keepalive_loop(

@@ -384,6 +384,62 @@ def _shared_lock_timeout(timeout_seconds: float) -> float:
     return max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
 
 
+# ── Cross-PROCESS refresh ownership ────────────────────────────────────────────────────────────
+# A single-use refresh token may be redeemed exactly once. Hermes routinely runs more than one
+# process against the same account (the desktop backend's ``hermes serve`` AND the messaging
+# gateway, or two installs sharing a HERMES_HOME), and each runs its own keepalive. The
+# ``_nous_shared_store_lock`` serializes each read and each WRITE, but not the read -> POST ->
+# write SEQUENCE: two processes both read the same grant, both redeem it, and the Portal retires
+# the original and revokes the whole session chain as a token-theft signal
+# (``refresh_token_reused``). The user is then bounced to a login, repeatedly.
+#
+# This lock makes the whole transaction exclusive across processes: whoever holds it redeems the
+# grant and persists the rotation; a peer that waited re-reads the (now rotated) store and adopts
+# the result instead of POSTing. It is held for the duration of one refresh POST, so it is
+# acquired with a bounded timeout and is never taken while a caller holds nothing else.
+_nous_refresh_owner_lock_holder = threading.local()
+NOUS_REFRESH_OWNER_LOCK_FILENAME = "nous_refresh_owner.lock"
+
+
+def _nous_refresh_owner_lock_path() -> Path:
+    return _nous_shared_auth_dir() / NOUS_REFRESH_OWNER_LOCK_FILENAME
+
+
+@contextmanager
+def _nous_refresh_owner_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-process exclusive ownership of one Nous refresh transaction.
+
+    Acquired INSIDE ``_nous_shared_store_lock`` (never the other way round) to preserve the
+    documented auth -> shared lock order, and held only for the read -> POST -> write window.
+
+    Yields ``True`` when this process owns the refresh transaction and may POST, ``False`` when
+    ownership could not be obtained within *timeout_seconds*. A timeout is NOT an error: it means a
+    peer is (or was) redeeming the grant, so the caller must re-read the store under the shared lock
+    and adopt that peer's rotation instead of POSTing. Losing the race must degrade to "someone else
+    refreshed", never to "give up on auth" and never to a second redemption of a single-use token.
+
+    ``_file_lock`` raises ``TimeoutError`` rather than yielding, so the failure is caught here and
+    reported through the yielded flag — an exception escaping a refresh path aborts the caller's
+    whole credential resolve, which is exactly the outcome this guard exists to avoid.
+    """
+    from hermes_cli.auth import _file_lock
+    try:
+        lock_path = _nous_refresh_owner_lock_path()
+    except RuntimeError:
+        yield True  # No HERMES_HOME yet (pre-setup): single-process, nothing to contend with.
+        return
+    try:
+        with _file_lock(
+                lock_path, _nous_refresh_owner_lock_holder, timeout_seconds,
+                f"Timed out waiting for the Nous refresh-owner lock ({lock_path})"):
+            yield True
+    except TimeoutError:
+        logger.info(
+            "Nous refresh-owner lock not acquired within %.1fs; adopting a peer's rotation "
+            "instead of redeeming the grant (%s)", timeout_seconds, lock_path)
+        yield False
+
+
 # OAuth fields mirrored between a profile's Nous state and the shared cross-profile store.
 _NOUS_SHARED_STATE_KEYS = (
     "access_token", "refresh_token", "token_type", "scope", "client_id", "portal_base_url",
@@ -1040,8 +1096,43 @@ class _NousRuntimeResolve:
                 invoke_jwt_status = self.invoke_jwt_status()
                 self.persist("post_shared_merge_access_unusable")
                 self.skip_refresh_if_peer_rotated()
-            if self.force_refresh or invoke_jwt_status is not None:
-                self.refresh(client, invoke_jwt_status)
+            if not (self.force_refresh or invoke_jwt_status is not None):
+                return
+            # Cross-PROCESS exclusion for the read -> POST -> write window. Another Hermes process
+            # (desktop backend vs messaging gateway, or a second install on this HERMES_HOME) runs
+            # its own keepalive against the same single-use grant; without this, both redeem it and
+            # the Portal revokes the session chain as reuse. Whoever wins redeems; the loser
+            # re-reads the rotated store below and adopts instead of POSTing.
+            with _nous_refresh_owner_lock(
+                    timeout_seconds=_shared_lock_timeout(self.timeout_seconds)) as owned:
+                # Re-check under ownership: a peer that held this lock just before us has already
+                # rotated the grant and persisted it. Adopting is the whole point of the lock —
+                # only POST when the store still holds the token we were about to redeem.
+                before = self.refresh_token
+                if self.merge_shared():
+                    self.persist("post_refresh_owner_merge")
+                self.skip_refresh_if_peer_rotated()
+                rotated_by_peer = (
+                    isinstance(before, str) and before
+                    and isinstance(self.refresh_token, str) and self.refresh_token
+                    and self.refresh_token != before)
+                if rotated_by_peer:
+                    _oauth_trace(
+                        "refresh_skipped_owner_rotated", sequence_id=self.sequence_id,
+                        refresh_token_fp=_token_fingerprint(self.refresh_token))
+                    invoke_jwt_status = self.invoke_jwt_status()
+                if not owned:
+                    # Ownership timed out: a peer is redeeming this grant right now. NEVER POST —
+                    # that is the second redemption the Portal revokes the session for. Adopt
+                    # whatever the merge above produced; if the peer has not persisted yet this
+                    # resolve reports the still-valid token, and the next tick picks up the
+                    # rotation. A keepalive that skips a beat is recoverable; a revoked chain is not.
+                    _oauth_trace(
+                        "refresh_skipped_no_ownership", sequence_id=self.sequence_id,
+                        invoke_jwt_status=str(invoke_jwt_status))
+                    return
+                if self.force_refresh or invoke_jwt_status is not None:
+                    self.refresh(client, invoke_jwt_status)
 
 
 def resolve_nous_runtime_credentials(

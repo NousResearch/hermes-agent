@@ -4,6 +4,7 @@ Tests real logic: state change formatting, event filtering pipeline,
 cooldown behavior, config integration, and adapter initialization.
 """
 
+import asyncio
 import errno
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -314,3 +315,89 @@ class TestLocalNetworkConnectHint:
         detail = _connect_error_detail(err)
         assert detail.startswith(str(err))
         assert len(detail) > len(str(err))  # a remedy hint is appended
+
+
+# ---------------------------------------------------------------------------
+# Runtime status reporting (#119145)
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeStatusReporting:
+    """connect()/disconnect() must publish state through the base contract.
+
+    A multiplexed secondary's platforms appear in gateway_state.json only when
+    the adapter reports: the secondary startup loop never writes those records
+    itself. Without _mark_connected, the Messaging panel pins a running
+    Home Assistant integration at "pending_restart" forever (#119145).
+    """
+
+    @staticmethod
+    def _connectable_adapter(**extra) -> HomeAssistantAdapter:
+        adapter = _make_adapter(**extra)
+        adapter._ws_connect = AsyncMock(return_value=True)
+        adapter._listen_loop = AsyncMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_connect_publishes_connected(self):
+        adapter = self._connectable_adapter()
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp, \
+                patch("gateway.status.publish_runtime_status") as publish:
+            mock_aiohttp.ClientSession = MagicMock(return_value=MagicMock())
+            mock_aiohttp.ClientTimeout = lambda total: total
+            assert await adapter.connect() is True
+        publish.assert_called_once_with(
+            platform="homeassistant", platform_state="connected",
+            error_code=None, error_message=None)
+        assert adapter._running is True
+
+    @pytest.mark.asyncio
+    async def test_connect_publishes_profile_scoped_status_key(self):
+        """A multiplexed secondary reports under "<profile>:<platform>" (stamped by
+        _configure_profile_adapter) so the profile's Messaging card finds its record."""
+        adapter = self._connectable_adapter()
+        adapter._runtime_status_platform_key = "bot2:homeassistant"
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp, \
+                patch("gateway.status.publish_runtime_status") as publish:
+            mock_aiohttp.ClientSession = MagicMock(return_value=MagicMock())
+            mock_aiohttp.ClientTimeout = lambda total: total
+            assert await adapter.connect() is True
+        assert publish.call_args.kwargs["platform"] == "bot2:homeassistant"
+
+    @pytest.mark.asyncio
+    async def test_disconnect_publishes_disconnected(self):
+        adapter = self._connectable_adapter()
+        with patch("gateway.status.publish_runtime_status") as publish:
+            await adapter.disconnect()
+        publish.assert_called_once_with(
+            platform="homeassistant", platform_state="disconnected",
+            error_code=None, error_message=None)
+        assert adapter._running is False
+
+    @pytest.mark.asyncio
+    async def test_listen_loop_republishes_connected_after_reconnect(self, monkeypatch):
+        """A recovered socket must say "connected" again.
+
+        connect() publishes "connected" exactly once; when the listener later
+        crashes and reconnects, that record would stay stale forever without
+        the _mark_connected() in _listen_loop. This runs the real loop (not a
+        mock) through one crash + recovery cycle: the second _read_events call
+        raises CancelledError, which the loop treats as a clean shutdown.
+        """
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._fatal_error_code = "auth_failed"
+        adapter._ws_connect = AsyncMock(return_value=True)
+        adapter._read_events = AsyncMock(
+            side_effect=[OSError("socket closed"), asyncio.CancelledError()])
+        monkeypatch.setattr(adapter, "_BACKOFF_STEPS", [0])
+
+        with patch("gateway.status.publish_runtime_status") as publish:
+            await adapter._listen_loop()
+
+        adapter._ws_connect.assert_awaited_once()
+        publish.assert_called_once_with(
+            platform="homeassistant", platform_state="connected",
+            error_code=None, error_message=None)
+        # _mark_connected also clears fatal-error flags on recovery.
+        assert adapter._fatal_error_code is None

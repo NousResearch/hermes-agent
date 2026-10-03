@@ -140,7 +140,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     "your HA platform config to receive events.",
                     self.name)
             self._listen_task = asyncio.create_task(self._listen_loop())
-            self._running = True
+            # Report through the base contract: a multiplexed secondary's startup loop
+            # never writes this platform's runtime record, so without _mark_connected
+            # the Messaging panel pins the state at "pending_restart" forever (#119145).
+            self._mark_connected()
             logger.info("[%s] Connected to %s", self.name, self._hass_url)
             self._wire_plugin_handlers(None)
             return True
@@ -183,7 +186,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._session = None
 
     async def disconnect(self) -> None:
-        self._running = False
+        self._mark_disconnected()
         if self._listen_task:
             self._listen_task.cancel()
             try:
@@ -218,6 +221,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                 await self._cleanup_ws()
                 if await self._ws_connect():
                     backoff_idx = 0
+                    # connect() published "connected" once; a recovered socket has to say so again.
+                    self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
             except Exception as e:
                 logger.warning("[%s] Reconnection failed: %s", self.name, _connect_error_detail(e))

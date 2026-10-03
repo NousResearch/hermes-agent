@@ -30,6 +30,7 @@ export interface BackendConnectionState<TProcess, TConnection> {
   getProcess(): TProcess | null
   getPromise(): Promise<TConnection> | null
   getPendingPromise(): Promise<TConnection> | null
+  isStopping(): boolean
   invalidate(): TProcess | null
   stopProcess(stop: (current: TProcess) => Promise<void>): Promise<void>
 }
@@ -157,6 +158,11 @@ export function createBackendConnectionState<TProcess, TConnection>(): BackendCo
 
     getPendingPromise(): Promise<TConnection> | null {
       return pendingPromise
+    },
+
+    // Stop ownership survives routing invalidation and remains held on failure.
+    isStopping(): boolean {
+      return stopping !== null
     },
 
     invalidate,

@@ -59,6 +59,19 @@ Rules of engagement (from hermesbench discipline):
 - Errored task-runs score 0 and stay in the accuracy denominator but are
   excluded from efficiency means.
 
+## Task deadlines
+
+Each task runs in a fresh worker process with a wall-clock budget of
+`task.timeout_s * --timeout-mult` (default multiplier: 1). The budget includes
+worker startup, fixture construction, and the agent run. On expiry the parent
+terminates the worker tree before removing its temporary workspace and records
+a zero-score `TimeoutError`; later tasks still run. Process termination/reaping
+can add bounded teardown time beyond the execution budget. Authentication errors
+still abort the harness rather than becoming benchmark scores.
+
+The full fixture battery requires POSIX `os.mkfifo`; native Windows deadline
+tests use local inert fixtures, not a substitute for the full model benchmark.
+
 ## Results layout
 
 ```

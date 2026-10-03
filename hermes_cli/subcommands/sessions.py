@@ -93,7 +93,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_export, "--redact",
         help="Redact secrets (API keys, tokens, credentials) from exported content")
     sessions_export.add_argument("--lineage", choices=["single", "logical"], default="single",
-        help="md/qmd only: export one row or its compression lineage")
+        help="export one physical row (single) or stitch its compression lineage (logical); "
+        "applies to jsonl/html/--only and md/qmd")
     _flag(sessions_export, "--delete-after-verified",
         help="md/qmd only: after verified single-session export, delete that session (needs --yes)")
     _flag(sessions_export, "--force", help="md/qmd only: overwrite an existing export file")

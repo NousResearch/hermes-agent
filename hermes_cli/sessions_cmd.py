@@ -341,10 +341,14 @@ def _cmd_export(db, args):
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
 
+    lineage = getattr(args, "lineage", "single")
+
     def _collect_sessions():
-        """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
+        """--session-id / filters / bare export -> redacted session dicts, or None after printing an error.
+        ``--lineage logical`` stitches each compression chain into one record (opt-in)."""
         def _one(session_id):
-            return _redact(db.export_session(session_id, include_compacted=shown))
+            export = db.export_session_lineage if lineage == "logical" else db.export_session
+            return _redact(export(session_id, include_compacted=shown))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
             data = _one(resolved) if resolved else None
@@ -356,10 +360,13 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
+            if lineage == "logical":
+                ids = (row["id"] for row in candidates)
+                return [_redact(s) for s in db.export_logical_lineages(ids, include_compacted=shown)]
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
+        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown, lineage=lineage)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":

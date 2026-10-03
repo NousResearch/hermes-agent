@@ -312,13 +312,36 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
+    def export_logical_lineages(self, session_ids, include_compacted: bool = False,
+                                include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """One :meth:`export_session_lineage` record per distinct compression root among
+        ``session_ids`` (first member wins; order preserved)."""
+        seen_roots = set()
+        exported = []
+        for session_id in session_ids:
+            chain = self.get_compression_lineage(session_id)
+            if not chain or chain[0] in seen_roots:
+                continue
+            seen_roots.add(chain[0])
+            data = self.export_session_lineage(session_id, include_compacted, include_inactive)
+            if data:
+                exported.append(data)
+        return exported
+
     def export_all(self, source: str = None, include_compacted: bool = False,
-                   include_inactive: bool = False) -> List[Dict[str, Any]]:
+                   include_inactive: bool = False, lineage: str = "single") -> List[Dict[str, Any]]:
         """Export all sessions (with messages) as dicts, e.g. for JSONL backup (flags as in
         :meth:`export_session`; that display read dedupes per session, so it skips the batched read).
         Backups that go back through :meth:`import_sessions` pass ``include_inactive`` so
-        compaction-archived turns survive the round trip as archived rows."""
+        compaction-archived turns survive the round trip as archived rows.
+
+        ``lineage='single'`` (default) emits one record per physical session row.
+        ``lineage='logical'`` folds compression continuations into one record per conversation via
+        :meth:`export_session_lineage`; branch, delegate, and tool children remain their own entries."""
         sessions = self.search_sessions(source=source, limit=100000)
+        if lineage == "logical":
+            return self.export_logical_lineages(
+                (session["id"] for session in sessions), include_compacted, include_inactive)
         if include_compacted:
             return [self._with_messages(session, True, include_inactive) for session in sessions]
         messages_by_session = {session["id"]: [] for session in sessions}

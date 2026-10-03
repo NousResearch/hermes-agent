@@ -19715,6 +19715,7 @@ app.on('before-quit', event => {
   if (heldQuitForActiveWork(event)) {
     appQuitting = false
     quitInProgress = false
+
     return
   }
 

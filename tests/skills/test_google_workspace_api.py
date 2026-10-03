@@ -269,3 +269,85 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Shared drives: every Drive call must opt in, or the API 404s on files that
+# live in a shared drive (and list silently omits them).
+# ---------------------------------------------------------------------------
+
+def _gws_params(captured):
+    cmd = captured["cmd"]
+    return json.loads(cmd[cmd.index("--params") + 1])
+
+
+@pytest.mark.parametrize("func_name,extra,expected", [
+    ("drive_search", {"query": "budget", "max": 10, "raw_query": False},
+     {"supportsAllDrives": True, "includeItemsFromAllDrives": True}),
+    ("drive_get", {"file_id": "abc"}, {"supportsAllDrives": True}),
+    ("drive_create_folder", {"name": "f", "parent": "p"}, {"supportsAllDrives": True}),
+    ("drive_delete", {"file_id": "abc", "permanent": False}, {"supportsAllDrives": True}),
+    ("drive_delete", {"file_id": "abc", "permanent": True}, {"supportsAllDrives": True}),
+])
+def test_gws_drive_calls_support_shared_drives(api_module, func_name, extra, expected):
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout='{"id": "x", "files": []}', stderr="")
+
+    args = api_module.argparse.Namespace(**extra)
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        getattr(api_module, func_name)(args)
+
+    params = _gws_params(captured)
+    for key, value in expected.items():
+        assert params.get(key) == value, (func_name, params)
+
+
+def test_python_client_drive_calls_support_shared_drives(api_module, monkeypatch, tmp_path):
+    """The Python-client path (no gws binary, and always for upload/download)."""
+    api_module._gws_binary = lambda: None
+    files = MagicMock()
+    files.list.return_value.execute.return_value = {"files": []}
+    files.get.return_value.execute.return_value = {"id": "x", "name": "n", "mimeType": "text/plain"}
+    files.create.return_value.execute.return_value = {"id": "x"}
+    files.update.return_value.execute.return_value = {}
+    files.delete.return_value.execute.return_value = {}
+    service = MagicMock()
+    service.files.return_value = files
+    monkeypatch.setattr(api_module, "build_service", lambda *a, **k: service)
+
+    http = types.ModuleType("googleapiclient.http")
+    http.MediaFileUpload = MagicMock()
+
+    class _Downloader:
+        def __init__(self, fh, request):
+            pass
+
+        def next_chunk(self):
+            return None, True
+
+    http.MediaIoBaseDownload = _Downloader
+    monkeypatch.setitem(sys.modules, "googleapiclient", types.ModuleType("googleapiclient"))
+    monkeypatch.setitem(sys.modules, "googleapiclient.http", http)
+
+    ns = api_module.argparse.Namespace
+    upload = tmp_path / "a.txt"
+    upload.write_text("hi")
+    api_module.drive_search(ns(query="q", max=5, raw_query=False))
+    api_module.drive_get(ns(file_id="x"))
+    api_module.drive_upload(ns(path=str(upload), name=None, parent="p", mime_type=None))
+    api_module.drive_download(ns(file_id="x", output=str(tmp_path / "out.txt"), export_mime=None))
+    api_module.drive_create_folder(ns(name="f", parent=None))
+    api_module.drive_delete(ns(file_id="x", permanent=False))
+    api_module.drive_delete(ns(file_id="x", permanent=True))
+
+    assert files.list.call_args.kwargs["supportsAllDrives"] is True
+    assert files.list.call_args.kwargs["includeItemsFromAllDrives"] is True
+    for call in files.get.call_args_list + files.create.call_args_list:
+        assert call.kwargs.get("supportsAllDrives") is True, call
+    assert files.get_media.call_args.kwargs["supportsAllDrives"] is True
+    assert files.update.call_args.kwargs["supportsAllDrives"] is True
+    assert files.delete.call_args.kwargs["supportsAllDrives"] is True
+

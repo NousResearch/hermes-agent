@@ -229,12 +229,13 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     (site / "google").mkdir()
     (site / "google" / "auth").mkdir()
     (site / "exa_py.cpython-311-x86_64-linux-gnu.so").write_bytes(b"")
+    (site / "mcp").mkdir()
     (site / "hindsight_client").mkdir()
 
     selection = extras.legacy_selection(tmp_path)
 
     assert selection[0] == "all"
-    assert {"fal", "telegram", "vertex", "exa"} <= set(selection)
+    assert {"fal", "telegram", "vertex", "exa", "mcp"} <= set(selection)
     assert "messaging" not in selection
     assert "piper" not in selection
     assert "hindsight" not in selection  # Catalog plugin owns this dependency, not a core extra.

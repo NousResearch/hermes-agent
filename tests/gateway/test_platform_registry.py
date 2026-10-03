@@ -677,3 +677,26 @@ class TestMigratedPlatformWiring:
                 "probe and the active installer — status displays would "
                 "pip-install as a side effect"
             )
+
+
+def test_registry_walk_from_plugin_load_worker_does_not_wait_on_parent(monkeypatch):
+    """register() re-walking the registry on its deadline worker must not block on its own load."""
+    from hermes_cli import plugins_loader
+
+    monkeypatch.setattr(plugins_loader, "_resolve_plugin_load_timeout", lambda: 0.5)
+    reg = PlatformRegistry()
+    abandoned = []
+
+    class Ctx:
+        def _abandon_load(self):
+            abandoned.append(True)
+
+    def register():
+        reg.plugin_entries()
+        reg.register(PlatformEntry(name="reentrant", label="Re-entrant", adapter_factory=lambda cfg: None,
+                                   check_fn=lambda: True, source="plugin"))
+
+    reg.register_deferred("reentrant", lambda: plugins_loader.run_with_load_deadline("reentrant", Ctx(), register))
+
+    assert [e.name for e in reg.plugin_entries()] == ["reentrant"]
+    assert abandoned == []

@@ -429,7 +429,10 @@ def _kill_process_tree_windows(proc) -> None:
     """Terminate *proc* and every still-alive descendant (npx.cmd → node.exe), Windows-only
     (#61059): without a pgid there is no group-kill, and grandchildren reparent to nothing
     (ParentId=null) once the direct child exits, so they must be reached through the tree."""
-    import psutil
+    try:
+        import psutil
+    except ImportError:  # like every other psutil site here: without psutil there is no tree to walk
+        return
 
     try:
         descendants = proc.children(recursive=True)

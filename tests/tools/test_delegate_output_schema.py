@@ -12,6 +12,7 @@ Pattern from: github/copilot-cli ctx.agent(prompt, {schema}) — PATTERN
 ONLY, zero code/prompt text copied (proprietary).
 """
 
+import types
 import json
 import threading
 from unittest.mock import MagicMock, patch
@@ -276,7 +277,8 @@ class TestRunSingleChildSchemaValidation:
 
         child = _Child(['{"city": "Berlin"}'])
         child._delegate_output_schema = ADDRESS_SCHEMA
-        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
+        run = types.SimpleNamespace(child_task_id="child-0", relay_text=None, discard_withheld_text=lambda: None)
+        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, run)
         assert seen == [True]
         assert is_delegated_child_context() is False
 

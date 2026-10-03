@@ -44,6 +44,10 @@ export async function activeConnection(): Promise<HermesConnection> {
 export interface PluginRestOptions {
   method?: string
   body?: unknown
+  /** Route this call through one registered gateway without changing the
+   *  Desktop window's active or primary connection. The plugin remains
+   *  confined to its own `/api/plugins/<id>` namespace. */
+  connectionId?: string
   /** Single-file multipart upload (see HermesApiRequest.upload). */
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
@@ -76,13 +80,16 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
 
   const suffix = pluginPathSuffix('pluginRest', path)
 
+  // An explicit pin must come AFTER the ambient spreads so it wins; an absent
+  // pin must not forward `undefined`, which would clear the ambient tag.
   return hermesApi<T>({
     path: `/api/plugins/${pluginId}${suffix}`,
     method: opts.method,
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
-    ...profileScoped()
+    ...profileScoped(),
+    ...(opts.connectionId ? { connectionId: opts.connectionId } : {})
   })
 }
 

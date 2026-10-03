@@ -594,6 +594,22 @@ class TestFilterDashboardRespawnCandidates:
             (42, argv, "/home/u/.hermes/profiles/mini-cat"),
         ]) == []
 
+    def test_skips_inline_pm_bootstrap_serve_port_zero(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = [
+            "/managed/python3", "-I", "-c",
+            (
+                "import sys, runpy; "
+                "sys.argv = ['/checkout/venv/bin/hermes', 'serve', '--isolated', "
+                "'--host', '127.0.0.1', '--port', '0', "
+                "'--ssh-session-token-file', '/home/user/.hermes/desktop-ssh/OWNER/NONCE.token', "
+                "'--ssh-owner-nonce', 'NONCE']; "
+                "runpy.run_path('/checkout/venv/bin/hermes', run_name='__main__')"
+            ),
+        ]
+        assert _filter_dashboard_respawn_candidates([(7, argv, None)]) == []
+
     def test_skips_legacy_dashboard_port_zero(self):
         from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
 

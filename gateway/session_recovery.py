@@ -141,18 +141,22 @@ class SessionRecoveryMixin:
         self, *, row: Dict[str, Any], session_key: str, source: SessionSource, now: datetime,
     ) -> SessionEntry:
         from gateway.session import SessionEntry
+        from hermes_cli.timefmt import coerce_epoch
 
-        def _ts(value, default: datetime) -> datetime:
+        def _ts(value, default: datetime, field: str) -> datetime:
+            timestamp = coerce_epoch(value, session_id=str(row["id"]), field=field)
+            if timestamp is None:
+                return default
             try:
-                return datetime.fromtimestamp(float(value))
-            except (TypeError, ValueError, OSError):
+                return datetime.fromtimestamp(timestamp)
+            except (OverflowError, ValueError, OSError):
                 return default
 
         # An invalid durable timestamp must look old, never freshly active.
-        created_at = _ts(row.get("started_at"), datetime.fromtimestamp(0))
+        created_at = _ts(row.get("started_at"), datetime.fromtimestamp(0), "started_at")
         # The finder already returns durable recency; no extra round-trip.
         last_activity = row.get("last_activity_at")
-        updated_at = _ts(last_activity, created_at) if last_activity is not None else created_at
+        updated_at = _ts(last_activity, created_at, "last_activity_at") if last_activity is not None else created_at
         had_activity = row.get("_has_messages")
         if had_activity is None:
             had_activity = bool(row.get("message_count") or 0) or last_activity is not None

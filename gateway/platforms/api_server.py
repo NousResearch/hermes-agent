@@ -3197,6 +3197,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     conflict = conn.execute(
                         "SELECT id FROM sessions WHERE title = ? AND id != ?", (clean_title, session_id)).fetchone()
                     if conflict:
+                        # No ``on_session_delete`` here: this rolls back the row inserted in the same
+                        # transaction, so the session never existed — firing would double-count it.
                         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
                         return None, f"title:Title already in use by session {conflict['id']}"
                 conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))

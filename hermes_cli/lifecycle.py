@@ -70,3 +70,22 @@ def finalize_session(**kwargs: Any) -> List[Any]:
             logger.warning("Core Relay session finalization failed", exc_info=True)
 
     return _plugin_hooks("on_session_finalize", **kwargs)
+
+
+def notify_session_deleted(session_id: str, **kwargs: Any) -> List[Any]:
+    """Fire the ``on_session_delete`` post-commit observer (#124511).
+
+    Call only after the delete transaction commits and only when a row was
+    actually removed. Observer-only: returns ignored, failures fail open
+    (logged, never raised) so a slow/broken plugin cannot break deletion.
+    Unbounded/caller-thread like ``on_session_finalize`` — cleanup work
+    ("close a handle, unlink a directory") must not be abandoned mid-way.
+    # ponytail: single process-local fan-out; per-surface reason/platform
+    # enrichment stays with callers, add a queue here only if a callback
+    # measurably blocks a delete path.
+    """
+    try:
+        return invoke_hook("on_session_delete", session_id=session_id, **kwargs)
+    except Exception:
+        logger.warning("on_session_delete dispatch failed", exc_info=True)
+        return []

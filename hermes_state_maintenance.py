@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
-    escape_like as _escape_like
+    escape_like as _escape_like, emit_session_deleted,
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -132,6 +132,8 @@ class SessionMaintenanceMixin:
         removed_ids = self._execute_write(_do) or []
         for sid in removed_ids if sessions_dir else ():
             self._remove_session_files(sessions_dir, sid)
+        if removed_ids:
+            emit_session_deleted(removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         return len(removed_ids)
 
     def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
@@ -350,6 +352,8 @@ class SessionMaintenanceMixin:
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if count:
+            emit_session_deleted(removed_ids, reason="prune", sessions_dir=sessions_dir)
         return count
 
     def _page_pragmas(self, names: Tuple[str, ...], fail_msg: str) -> Optional[list]:

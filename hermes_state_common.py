@@ -366,6 +366,36 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
         yield ids[start:start + size]
 
 
+def emit_session_deleted(deleted_ids=None, *, reason=None, sessions_dir=None):
+    """Fire the ``on_session_delete`` post-commit observer for committed deletes (#124511).
+
+    Late-bound seam: the state layer must not import ``hermes_cli`` at module
+    top level, so the dispatch resolves inside the call and fails open — a
+    missing/broken plugin stack never breaks deletion. Call only after the
+    write transaction commits, with the ids actually removed. One invocation
+    per delete operation; ``deleted_ids`` rides along only when the count
+    differs from 1.
+    """
+    ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
+    if not ids:
+        return
+    try:
+        from hermes_cli.lifecycle import notify_session_deleted
+    except Exception:
+        return
+    payload: dict = {"session_id": ids[0]}
+    if len(ids) > 1:
+        payload["deleted_ids"] = ids
+    if reason is not None:
+        payload["reason"] = reason
+    if sessions_dir is not None:
+        payload["sessions_dir"] = str(sessions_dir)
+    try:
+        notify_session_deleted(**payload)
+    except Exception:
+        logger.warning("on_session_delete dispatch failed", exc_info=True)
+
+
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 

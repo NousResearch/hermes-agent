@@ -24,7 +24,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from hermes_state_common import _id_chunks, _placeholders as _session_ids_placeholders
+from hermes_state_common import (
+    _id_chunks,
+    _placeholders as _session_ids_placeholders,
+    emit_session_deleted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +257,10 @@ class SessionProfileRepairMixin:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True
-        return bool(self._execute_write(_do))
+        deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted([session_id], reason="profile_repair")
+        return bool(deleted)
 
     # ── routing index ─────────────────────────────────────────────────────────
 

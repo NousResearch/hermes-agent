@@ -21,7 +21,7 @@ vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 const hasLivePreviewSurface = vi.hoisted(() => vi.fn((_owner?: unknown): boolean => false))
 
 const requestPopoutPreviewAct = vi.hoisted(() =>
-  vi.fn(async (_payload: unknown, _owner?: unknown): Promise<unknown> => null)
+  vi.fn(async (_payload: unknown, _owner?: unknown, _signal?: AbortSignal): Promise<unknown> => null)
 )
 
 const requestPopoutPreviewRead = vi.hoisted(() =>
@@ -30,7 +30,7 @@ const requestPopoutPreviewRead = vi.hoisted(() =>
 
 vi.mock('@/app/chat/right-rail/preview-popout-bridge', () => ({
   hasLivePreviewSurface: (owner?: unknown) => hasLivePreviewSurface(owner),
-  requestPopoutPreviewAct: (payload: unknown, owner?: unknown) => requestPopoutPreviewAct(payload, owner),
+  requestPopoutPreviewAct: (payload: unknown, owner?: unknown, signal?: AbortSignal) => requestPopoutPreviewAct(payload, owner, signal),
   requestPopoutPreviewRead: (payload: unknown, owner?: unknown) => requestPopoutPreviewRead(payload, owner)
 }))
 
@@ -367,8 +367,38 @@ describe('preview pop-out forwarding', () => {
     const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(expect.objectContaining({ kind: 'elements' }), sessionAOwner)
+    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(expect.objectContaining({ kind: 'elements' }), sessionAOwner, expect.any(AbortSignal))
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'elements', success: true })
+  })
+
+  it.each([
+    { action: 'drag', selector: 'svg circle', dx: -40.5, dy: 0 },
+    { action: 'elements', full: true, max: 7 },
+    { action: 'press', ref: 'body', key: 'a', allow_shortcut: true }
+  ])('preserves the full validated wire payload: %j', async payload => {
+    requestPopoutPreviewAct.mockResolvedValue({ success: true })
+    const { respond } = deliver('preview.act', { ...payload, session_id: 'session-a' }, 'session-a')
+    await vi.waitFor(() => expect(respond).toHaveBeenCalled())
+    const { action, ...fields } = payload
+    const mapped = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key === 'allow_shortcut' ? 'allowShortcut' : key, value]))
+    expect(requestPopoutPreviewAct).toHaveBeenCalledWith({ kind: action, ...mapped }, sessionAOwner, expect.any(AbortSignal))
+  })
+
+  it.each([{ dx: '40' }, { selector: null }, { text: null }, { unknown: true }, { kind: 'click' }])('rejects malformed drag before surface delivery: %j', change => {
+    const { respond } = deliver('preview.act', { action: 'drag', selector: '#handle', dx: 40, dy: 20, ...change, session_id: 'session-a' }, 'session-a')
+    expect(requestPopoutPreviewAct).not.toHaveBeenCalled()
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+
+  it('never replays an uncertain remote write on a newly available local surface', async () => {
+    let resolve!: (value: unknown) => void
+    requestPopoutPreviewAct.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const { respond } = deliver('preview.act', { action: 'drag', selector: '#handle', dx: 40, dy: 20, session_id: 'session-a' }, 'session-a')
+    hasLivePreviewSurface.mockReturnValue(true)
+    resolve(null)
+    await vi.waitFor(() => expect(respond).toHaveBeenCalled())
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false, error: expect.stringContaining('not replayed locally') })
+    expect(requestPopoutPreviewAct).toHaveBeenCalledTimes(1)
   })
 
   it('runs the act locally when this window has a live surface', async () => {

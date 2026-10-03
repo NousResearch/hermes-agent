@@ -126,7 +126,7 @@ describe('preview pop-out bridge', () => {
     try {
       const result = await requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' })
 
-      expect(actOnActivePreview).toHaveBeenCalledWith({ kind: 'click', ref: 'btn-1' })
+      expect(actOnActivePreview).toHaveBeenCalledWith({ kind: 'click', ref: 'btn-1' }, expect.any(AbortSignal))
       expect(result).toEqual({ acted: 'click', success: true })
     } finally {
       stop()
@@ -192,7 +192,7 @@ describe('preview pop-out bridge', () => {
       const refused = requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, 'sess-b')
       await vi.advanceTimersByTimeAsync(20_100)
 
-      expect(await refused).toBeNull()
+      expect(await refused).toMatchObject({ success: false, error: expect.stringContaining('uncertain') })
       expect(actOnActivePreview).not.toHaveBeenCalled()
 
       // sess-a's agent is answered.
@@ -206,6 +206,59 @@ describe('preview pop-out bridge', () => {
       $previewTabs.set([])
       window.history.replaceState(null, '', '/')
     }
+  })
+
+  it.each(['abort', 'timeout', 'teardown'])('propagates %s to a pending gesture and ignores its late answer', async mode => {
+    vi.useFakeTimers()
+    isBrowserWindow.mockReturnValue(true)
+    let received: AbortSignal | undefined
+    let complete!: (result: unknown) => void
+    actOnActivePreview.mockImplementation((_action, signal: AbortSignal) => {
+      received = signal
+
+      return new Promise(resolve => { complete = resolve })
+    })
+    const { installPopoutPreviewResponder, requestPopoutPreviewAct } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const controller = new AbortController()
+    const pending = requestPopoutPreviewAct({ kind: 'drag', selector: '#handle', dx: 40, dy: 20 }, undefined, controller.signal)
+
+    try {
+      expect(received?.aborted).toBe(false)
+
+      if (mode === 'abort') {controller.abort()}
+
+      if (mode === 'timeout') {await vi.advanceTimersByTimeAsync(20_100)}
+
+      if (mode === 'teardown') {
+        stop()
+        window.dispatchEvent(new Event('pagehide'))
+      }
+
+      expect(received?.aborted).toBe(true)
+      expect(await pending).toMatchObject({ success: false })
+      complete({ success: true })
+      await Promise.resolve()
+      expect(await pending).toMatchObject({ success: false })
+      expect(actOnActivePreview).toHaveBeenCalledTimes(1)
+    } finally {
+      complete({ success: false })
+      stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('an already cancelled request never reaches the responder', async () => {
+    isBrowserWindow.mockReturnValue(true)
+    const { installPopoutPreviewResponder, requestPopoutPreviewAct } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const controller = new AbortController()
+    controller.abort()
+
+    try {
+      expect(await requestPopoutPreviewAct({ kind: 'drag', selector: '#handle', dx: 1, dy: 0 }, undefined, controller.signal)).toMatchObject({ success: false })
+      expect(actOnActivePreview).not.toHaveBeenCalled()
+    } finally { stop() }
   })
 
   it('installs no responder outside the browser pop-out window', async () => {

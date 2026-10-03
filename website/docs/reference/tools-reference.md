@@ -275,6 +275,37 @@ startTour([
 
 Pass `'preview'` as the second argument to run against the page in the preview pane instead of the app.
 
+### Dragging a preview target
+
+Use `drive_preview(action="drag", ...)` for a held native left-button gesture
+inside the embedded browser. Start with an ordinary `elements` inventory to get
+a ref, or use a CSS selector for a handle the inventory does not include:
+
+```json
+{"action":"drag","ref":"btn-resize-handle","dx":40,"dy":20}
+```
+
+```json
+{"action":"drag","selector":"svg circle.resize-handle","dx":-40,"dy":0}
+```
+
+Provide exactly one non-empty `ref` or `selector`, and both numeric `dx` and `dy`.
+Each delta is in guest CSS pixels, within -2000 through +2000 inclusive; at least
+one must be nonzero. Numeric strings, booleans, nulls, unknown keys and fields
+for other actions are rejected before locating or sending input. Do not pass
+`dx` or `dy` to other actions. Browser zoom conversion is handled by the native
+input adapter; do not multiply the deltas by zoom or display scale yourself.
+
+The gesture and its readback stay on the captured guest, with overlapping native
+interactions on that guest rejected. Cancellation or an input error after a
+button-down attempt triggers a release attempt at the last attempted position,
+only on the original surviving guest. A timed-out pop-out response is uncertain:
+do not automatically replay it on another surface.
+
+A successful response means native input was delivered, **not** that an arbitrary
+application changed as intended. Check the resulting page state when that matters.
+This is not OS-wide dragging or HTML5 file/DataTransfer drag-and-drop.
+
 ### Tips
 
 A tip is a tour step without the production: one bubble, one arrow, no scrim and

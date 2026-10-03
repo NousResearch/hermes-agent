@@ -28,7 +28,14 @@ _HERMES_CONFIG_PATH = (
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+# Conventional home startup files; relocated shells and create/link vectors
+# remain #85339's separate scope. Retain bash_logout/kshrc/cshrc/tcshrc/login,
+# which are not present in that PR's default inventory.
+_SHELL_RC_FILES = (
+    r'(?:~|\$home|\$\{home\})/\.'
+    r'(?:bashrc|zshrc|profile|bash_profile|zprofile|zshenv|zlogin|zlogout'
+    r'|bash_aliases|bash_login|bash_logout|kshrc|cshrc|tcshrc|login)\b'
+)
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a

@@ -381,55 +381,122 @@ _EXPLICIT_API_MODES = {
 }
 
 
+def _route_rule_codex_providers(agent, api_mode, provider_name, base_url):
+    """openai-codex / xai provider slugs always use the Responses wire."""
+    agent.api_mode = "codex_responses"
+
+
+def _route_rule_codex_host(agent, api_mode, provider_name, base_url):
+    """chatgpt.com /backend-api/codex auto-detection (unconfigured provider)."""
+    agent.api_mode = "codex_responses"
+    agent.provider = "openai-codex"
+
+
+def _route_rule_xai_host(agent, api_mode, provider_name, base_url):
+    """api.x.ai auto-detection (unconfigured provider)."""
+    agent.api_mode = "codex_responses"
+    agent.provider = "xai"
+
+
+def _route_rule_anthropic(agent, api_mode, provider_name, base_url):
+    """Anthropic provider or host — Messages wire with provider rewrite."""
+    agent.api_mode = "anthropic_messages"
+    agent.provider = "anthropic"
+
+
+def _route_rule_anthropic_compat_suffix(agent, api_mode, provider_name, base_url):
+    """Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic."""
+    agent.api_mode = "anthropic_messages"
+
+
+def _route_rule_bedrock(agent, api_mode, provider_name, base_url):
+    """Bedrock provider or bedrock-runtime.* host — Converse wire."""
+    agent.api_mode = "bedrock_converse"
+
+
+def _route_rule_nous(agent, api_mode, provider_name, base_url):
+    """Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
+    AIAgent construction without a resolved runtime."""
+    from hermes_cli.providers import nous_api_mode
+    agent.api_mode = nous_api_mode(agent.model)
+
+
+def _route_rule_meta_host_mandate(agent, api_mode, provider_name, base_url):
+    """Host-mandated wire check — LAST rule, so the provider-slug rewrites above always win.
+
+    Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
+    URL-driven, not provider-name-driven: `providers.meta` may point anywhere.
+
+    Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai base_url)
+    intentionally falls through to chat_completions here. The wire protocol for Meta is URL-driven
+    BY DESIGN, not provider-name-driven, because user config `providers.meta` may point at any
+    OpenAI-compatible endpoint, and forcing `codex_responses` on the provider name alone would
+    break custom endpoints named "meta" that do not host the Responses API. See #63425.
+    """
+    try:
+        from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
+        _mandated = _host_mandated_api_mode(base_url or "")
+    except Exception:
+        _mandated = None
+    agent.api_mode = _mandated if _mandated is not None else "chat_completions"
+
+
+# Pure provider/host wire rules for _resolve_api_mode, in precedence order (first match
+# wins). The three order anchors stay explicit in _resolve_api_mode itself: an actual
+# route pins chat_completions, an explicit api_mode wins next, and the host-mandate
+# check is the LAST rule here so provider-slug rewrites above it always win.
+# New providers: add a (predicate, applier) row here + a small named handler —
+# do not grow a name-keyed ladder (root AGENTS.md shape rules).
+_API_MODE_ROUTE_RULES = [
+    (lambda agent, api_mode, provider_name, base_url:
+     agent.provider in {"openai-codex", "xai", "xai-oauth"},
+     _route_rule_codex_providers),
+    (lambda agent, api_mode, provider_name, base_url:
+     provider_name is None and agent._base_url_hostname == "chatgpt.com"
+     and "/backend-api/codex" in agent._base_url_lower,
+     _route_rule_codex_host),
+    (lambda agent, api_mode, provider_name, base_url:
+     provider_name is None and agent._base_url_hostname == "api.x.ai",
+     _route_rule_xai_host),
+    (lambda agent, api_mode, provider_name, base_url:
+     agent.provider == "anthropic"
+     or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"),
+     _route_rule_anthropic),
+    (lambda agent, api_mode, provider_name, base_url:
+     (base_url or "").rstrip("/").endswith("/anthropic"),
+     _route_rule_anthropic_compat_suffix),
+    (lambda agent, api_mode, provider_name, base_url:
+     agent.provider == "bedrock"
+     or (agent._base_url_hostname.startswith("bedrock-runtime.")
+         and base_url_host_matches(agent._base_url_lower, "amazonaws.com")),
+     _route_rule_bedrock),
+    (lambda agent, api_mode, provider_name, base_url:
+     agent.provider in {"nous", "nous-portal", "nousresearch"},
+     _route_rule_nous),
+    (lambda agent, api_mode, provider_name, base_url: True,  # host-mandate fallback
+     _route_rule_meta_host_mandate),
+]
+
+
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
-    """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
+    """Set ``agent.api_mode`` (and provider rewrites) — ordered rules, first match wins."""
     from hermes_cli.providers import is_actual_route
     from agent.transports import registered_api_modes
-    host, url = agent._base_url_hostname, agent._base_url_lower
+
+    # Order anchor 1: an actual route is pinned to the Chat Completions wire.
     if is_actual_route(agent.provider, base_url):
         agent.api_mode = "chat_completions"
-    elif api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
-        # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
-        # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
+        return
+    # Order anchor 2: an explicit api_mode always wins. A provider plugin's own dialect
+    # (``register_transport(api_mode, cls)``) is as explicit as the in-tree modes;
+    # rewriting it to chat_completions silently dropped its transport.
+    if api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
         agent.api_mode = api_mode
-    elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
-        agent.api_mode = "codex_responses"
-    elif provider_name is None and host == "chatgpt.com" and "/backend-api/codex" in url:
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-    elif provider_name is None and host == "api.x.ai":
-        agent.api_mode = "codex_responses"
-        agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and host == "api.anthropic.com"):
-        agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
-    elif url.rstrip("/").endswith("/anthropic"):
-        # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
-        agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
-    ):
-        agent.api_mode = "bedrock_converse"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
-        # AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
-        agent.api_mode = nous_api_mode(agent.model)
-    else:
-        # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
-        # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
-        # URL-driven, not provider-name-driven: `providers.meta` may point anywhere.
-        try:
-            # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai base_url)
-            # intentionally falls through to chat_completions here. The wire protocol for Meta is URL-driven
-            # BY DESIGN, not provider-name-driven, because user config `providers.meta` may point at any
-            # OpenAI-compatible endpoint, and forcing `codex_responses` on the provider name alone would
-            # break custom endpoints named "meta" that do not host the Responses API. See #63425.
-            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
-            _mandated = _host_mandated_api_mode(base_url or "")
-        except Exception:
-            _mandated = None
-        agent.api_mode = _mandated if _mandated is not None else "chat_completions"
+        return
+    for _matches, _apply in _API_MODE_ROUTE_RULES:
+        if _matches(agent, api_mode, provider_name, base_url):
+            _apply(agent, api_mode, provider_name, base_url)
+            return
 
 
 def _finalize_routing(agent, api_mode, credential_pool):

@@ -56,13 +56,19 @@ def _browser_available() -> bool:
         return False
 
 
+# Detail sentinel: the direct Playwright probe could not run because the optional
+# Python ``playwright`` module is absent (it ships under an unrelated extra, not as
+# a dependency of the agent-browser runtime path).
+PLAYWRIGHT_MISSING_DETAIL = "playwright not installed"
+
+
 def _launch_browser_probe(timeout: float) -> tuple:
     """Launch a browser, open about:blank, close. Returns (ok, detail). Uses Playwright directly (what
     agent-browser drives underneath) so the probe owns the full lifecycle and always cleans up."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return (False, "playwright not installed")
+        return (False, PLAYWRIGHT_MISSING_DETAIL)
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="chromium", executable_path=chromium_executable(),
@@ -103,6 +109,14 @@ def _probe_browser(timeout: float) -> ProbeResult:
     if not _browser_available():
         return ProbeResult("Browser", "skip", "(not configured)")
     ok, detail = _launch_browser_probe(timeout)
+    if not ok and detail == PLAYWRIGHT_MISSING_DETAIL:
+        # The Python playwright module is an optional extra, not part of the
+        # agent-browser runtime path. The configured backend already resolved in
+        # _browser_available(); skip the optional direct probe instead of
+        # reporting a healthy Browser setup as broken (#128759).
+        return ProbeResult(
+            "Browser", "skip",
+            "(agent-browser backend resolved; optional direct-playwright probe unavailable)")
     return ProbeResult("Browser", "pass" if ok else "fail", f"({detail})")
 
 

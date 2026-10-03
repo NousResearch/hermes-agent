@@ -248,3 +248,25 @@ class TestReadOnly:
         issues: list[str] = []
         run_live_checks(issues)
         assert issues == []
+
+
+class TestBrowserPlaywrightOptional:
+    """The direct Playwright probe is optional; its absence must not fail a
+    healthy agent-browser setup (#128759)."""
+
+    def test_missing_playwright_module_skips_instead_of_failing(self, monkeypatch):
+        monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
+        monkeypatch.setattr(
+            doctor_live, "_launch_browser_probe",
+            lambda timeout: (False, doctor_live.PLAYWRIGHT_MISSING_DETAIL))
+        results = {r.name: r for r in run_live_checks([])}
+        assert results["Browser"].status == "skip"
+        assert "playwright" in results["Browser"].detail
+
+    def test_real_launch_failure_still_fails(self, monkeypatch):
+        monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
+        monkeypatch.setattr(
+            doctor_live, "_launch_browser_probe",
+            lambda timeout: (False, "chromium crashed"))
+        results = {r.name: r for r in run_live_checks([])}
+        assert results["Browser"].status == "fail"

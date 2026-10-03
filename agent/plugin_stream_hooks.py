@@ -25,6 +25,7 @@ _STOP = object()
 
 @dataclass
 class _ConsumerDispatcher:
+    scope: str
     hook_name: str
     callback: Callable[..., Any]
     events: "queue.Queue[tuple[contextvars.Context, dict[str, Any]] | object]"
@@ -32,7 +33,7 @@ class _ConsumerDispatcher:
 
 
 _dispatcher_lock = threading.Lock()
-_dispatchers: dict[tuple[str, int], _ConsumerDispatcher] = {}
+_dispatchers: dict[tuple[str, str, int], _ConsumerDispatcher] = {}
 
 
 def _callback_name(callback: Callable[..., Any]) -> str:
@@ -92,14 +93,34 @@ def _registered_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
         return ()
 
 
-def _stop_dispatcher(dispatcher: _ConsumerDispatcher, timeout: float = 1.0) -> None:
+def _registered_scope() -> str:
+    try:
+        from hermes_cli import plugins
+        return plugins.get_plugin_manager().scope_key
+    except Exception:
+        logger.debug("plugin stream hook scope lookup failed", exc_info=True)
+        return ""
+
+
+def _stop_dispatcher(
+    dispatcher: _ConsumerDispatcher, timeout: float = 1.0, *, discard_pending: bool = False,
+) -> None:
+    if discard_pending:
+        while True:
+            try:
+                dispatcher.events.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                dispatcher.events.task_done()
     _put_drop_oldest(dispatcher.events, _STOP)
-    if dispatcher.thread is not None:
+    if dispatcher.thread is not None and dispatcher.thread is not threading.current_thread():
         dispatcher.thread.join(timeout=timeout)
 
 
-def _start_dispatcher(hook_name: str, callback: Callable[..., Any]) -> _ConsumerDispatcher:
-    dispatcher = _ConsumerDispatcher(hook_name=hook_name, callback=callback, events=queue.Queue(maxsize=_QUEUE_SIZE))
+def _start_dispatcher(scope: str, hook_name: str, callback: Callable[..., Any]) -> _ConsumerDispatcher:
+    dispatcher = _ConsumerDispatcher(
+        scope=scope, hook_name=hook_name, callback=callback, events=queue.Queue(maxsize=_QUEUE_SIZE))
     dispatcher.thread = threading.Thread(
         target=_worker, args=(dispatcher,), daemon=True, name=f"plugin-stream-hook:{hook_name}"
     )
@@ -110,24 +131,42 @@ def _start_dispatcher(hook_name: str, callback: Callable[..., Any]) -> _Consumer
 def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
     """Live dispatcher per registered callback (restarting dead workers); stale
     ones for unregistered callbacks are stopped outside the lock."""
-    callbacks = _registered_callbacks(hook_name)
-    if not callbacks:
+    scope, callbacks = _registered_scope(), _registered_callbacks(hook_name)
+    if not scope:
         return []
-
     callback_ids = {id(callback) for callback in callbacks}
     ready: list[_ConsumerDispatcher] = []
     with _dispatcher_lock:
-        stale = [_dispatchers.pop(key) for key in list(_dispatchers) if key[0] == hook_name and key[1] not in callback_ids]
+        stale = [
+            _dispatchers.pop(key) for key in list(_dispatchers)
+            if key[0] == scope and key[1] == hook_name and key[2] not in callback_ids
+        ]
         for callback in callbacks:
-            key = (hook_name, id(callback))
+            key = (scope, hook_name, id(callback))
             dispatcher = _dispatchers.get(key)
+            if dispatcher is not None and dispatcher.callback is not callback:
+                stale.append(_dispatchers.pop(key))
+                dispatcher = None
             if dispatcher is None or dispatcher.thread is None or not dispatcher.thread.is_alive():
-                dispatcher = _dispatchers[key] = _start_dispatcher(hook_name, callback)
+                dispatcher = _dispatchers[key] = _start_dispatcher(scope, hook_name, callback)
             ready.append(dispatcher)
 
     for dispatcher in stale:
-        _stop_dispatcher(dispatcher, timeout=0.2)
+        _stop_dispatcher(dispatcher, timeout=0.2, discard_pending=True)
     return ready
+
+
+def release_plugin_stream_hook_dispatcher(
+    scope: str, hook_name: str, callback: Callable[..., Any], *, timeout: float = 0.2,
+) -> None:
+    """Retire one exact hook generation and discard its queued observer calls."""
+    key = (scope, hook_name, id(callback))
+    with _dispatcher_lock:
+        dispatcher = _dispatchers.get(key)
+        if dispatcher is None or dispatcher.callback is not callback:
+            return
+        _dispatchers.pop(key, None)
+    _stop_dispatcher(dispatcher, timeout=timeout, discard_pending=True)
 
 
 def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:

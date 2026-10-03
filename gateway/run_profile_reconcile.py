@@ -253,6 +253,16 @@ class GatewayProfileReconcileMixin:
             for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
                 with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
                     self._evict_cached_agent(key)
+            rewire_subscriptions = getattr(self, "_plugin_rewire_unsubscribe", None)
+            if isinstance(rewire_subscriptions, dict):
+                from hermes_constants import hermes_home_key
+                unsubscribe = rewire_subscriptions.pop(hermes_home_key(home), None)
+                if callable(unsubscribe):
+                    with _log_suppressed(logging.DEBUG, "plugin rewire unsubscribe failed", exc_info=True):
+                        unsubscribe()
+            with _log_suppressed(logging.WARNING, "plugin manager finalization failed", exc_info=True):
+                from hermes_cli.plugins import finalize_plugin_manager
+                finalize_plugin_manager(home)
             with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
                 from hermes_state_registry import close_all_under
                 close_all_under(home)

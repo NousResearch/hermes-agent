@@ -121,3 +121,68 @@ def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
             "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?", ("gone",))["n"] == 0
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_unserve_finalizes_only_the_removed_profiles_plugin_manager(tmp_path):
+    """Profile finalization runs in the owner's scope and leaves a sibling manager live."""
+    from hermes_constants import (
+        get_hermes_home,
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManifest
+    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+
+    def in_home(home, callback):
+        token = set_hermes_home_override(home)
+        try:
+            return callback()
+        finally:
+            reset_hermes_home_override(token)
+
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    manager_a = in_home(home_a, plugins_mod.get_plugin_manager)
+    manager_b = in_home(home_b, plugins_mod.get_plugin_manager)
+    manager_a._discovered = manager_b._discovered = True
+    ctx_a = PluginContext(PluginManifest(name="final-a", key="final-a"), manager_a)
+    ctx_b = PluginContext(PluginManifest(name="final-b", key="final-b"), manager_b)
+    finalized: list[str] = []
+    delivered: list[str] = []
+    ctx_a.register_hook("on_session_end", lambda **_kw: delivered.append("a-hook"))
+    ctx_a.register_platform_handler("telegram", lambda _native, _adapter: delivered.append("a-handler"))
+    ctx_a.subscribe("final-a:tick", lambda **_kw: delivered.append("a-event"))
+    ctx_a.on_unload(lambda: finalized.append(hermes_home_key(get_hermes_home())))
+    ctx_b.register_hook("on_session_end", lambda **_kw: delivered.append("b-hook"))
+    ctx_b.register_platform_handler("telegram", lambda _native, _adapter: delivered.append("b-handler"))
+    ctx_b.subscribe("final-b:tick", lambda **_kw: delivered.append("b-event"))
+
+    assert in_home(home_a, lambda: ctx_a.emit("tick")) == 1
+    assert manager_a._wait_for_event_dispatch(timeout=1)
+    assert in_home(home_b, lambda: ctx_b.emit("tick")) == 1
+    assert manager_b._wait_for_event_dispatch(timeout=1)
+    worker_a, worker_b = manager_a._event_worker, manager_b._event_worker
+    assert worker_a is not None and worker_a.is_alive()
+    assert worker_b is not None and worker_b.is_alive()
+
+    runner = _runner_stub(None)
+    runner._served_profile_homes = {"profile-a": home_a, "profile-b": home_b}
+    await GatewayProfileReconcileMixin._unserve_profile(  # type: ignore[arg-type]
+        runner, "profile-a", home_a)
+
+    assert finalized == [hermes_home_key(home_a)]
+    assert not worker_a.is_alive()
+    assert worker_b.is_alive()
+    assert manager_a.get_platform_handler_factories("telegram") == []
+    assert in_home(home_a, lambda: ctx_a.emit("tick")) == 0
+    assert manager_b.get_platform_handler_factories("telegram")
+    assert in_home(home_b, lambda: ctx_b.emit("tick")) == 1
+    assert manager_b._wait_for_event_dispatch(timeout=1)
+    replacement_a = in_home(home_a, plugins_mod.get_plugin_manager)
+    assert replacement_a is not manager_a
+    assert replacement_a.iter_hook_callbacks("on_session_end") == ()
+    assert in_home(home_b, plugins_mod.get_plugin_manager) is manager_b

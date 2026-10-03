@@ -179,6 +179,14 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 
 class PluginDispatchMixin:
+    _subscriptions: Dict[str, List[_EventSubscription]]
+    _event_lock: Any
+    _event_idle: threading.Condition
+    _event_generation: int
+    _event_pending_by_generation: Dict[int, int]
+    _event_queue: queue.Queue[Any]
+    _event_worker: Optional[threading.Thread]
+
     @staticmethod
     def _hook_callback_kwargs(callback: Callable, payload: Dict[str, Any]) -> Dict[str, Any]:
         """The slice of *payload* a callback accepts: everything for ``**kwargs`` (or
@@ -354,20 +362,36 @@ class PluginDispatchMixin:
             raise failure["exc"]
         return outcome.get("value")
 
-    def _subscribe_event(self, owner: str, event: str, callback: Callable) -> None:
+    def _subscribe_event(self, owner: str, event: str, callback: Callable) -> _EventSubscription:
         """Add an owner-tagged event subscription in registration order."""
         if not callable(callback):
             raise TypeError("Event subscriber callback must be callable")
+        subscription = _EventSubscription(owner, callback)
         with self._event_lock:
-            self._subscriptions.setdefault(event, []).append(_EventSubscription(owner, callback))
+            self._subscriptions.setdefault(event, []).append(subscription)
+        return subscription
+
+    def _remove_event_subscription(self, event: str, subscription: _EventSubscription) -> bool:
+        """Remove one exact subscription generation without disturbing another owner."""
+        with self._event_lock:
+            entries = self._subscriptions.get(event)
+            if entries is None:
+                return False
+            index = next((i for i in range(len(entries) - 1, -1, -1)
+                          if entries[i] is subscription), None)
+            removed = index is not None
+            if index is not None:
+                del entries[index]
+            if not entries:
+                self._subscriptions.pop(event, None)
+            return removed
 
     def _remove_plugin_subscriptions(self, owner: str) -> int:
         """Remove every subscription owned by *owner*; return the count. Queued envelopes re-check
         membership per callback, so this also cancels already-snapshotted deliveries.
 
-        TODO(#64229): when the central plugin ownership ledger / registration handles land, route this
-        owner-tagged bookkeeping through that ledger so per-plugin unload cancels event subscriptions
-        alongside every other registration surface. This method is the integration seam.
+        Kept as a compatibility sweep for callers that registered before subscriptions joined the
+        ownership ledger.
         """
         removed = 0
         with self._event_lock:
@@ -380,6 +404,34 @@ class PluginDispatchMixin:
                 else:
                     del self._subscriptions[event]
         return removed
+
+    def _reset_event_dispatch(self) -> None:
+        """Invalidate queued envelopes and clear subscriptions for one manager generation."""
+        with self._event_idle:
+            self._subscriptions.clear()
+            self._event_generation += 1
+            self._event_pending_by_generation = {self._event_generation: 0}
+            self._event_idle.notify_all()
+
+    def _stop_event_dispatcher(self, timeout: float = 1.0) -> None:
+        """Stop this finalized manager's queue worker without touching another profile manager."""
+        with self._event_lock:
+            worker = self._event_worker
+            dispatch_queue = self._event_queue
+            self._event_worker = None
+            self._event_queue = queue.Queue(maxsize=_EVENT_PENDING_CAP)
+        if worker is None or not worker.is_alive():
+            return
+        while True:
+            try:
+                dispatch_queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                dispatch_queue.task_done()
+        dispatch_queue.put_nowait(_EVENT_WORKER_STOP)
+        if worker is not threading.current_thread():
+            worker.join(timeout=timeout)
 
     def _ensure_event_worker_locked(self) -> None:
         worker = self._event_worker

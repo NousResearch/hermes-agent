@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from threading import Event
@@ -1362,3 +1363,219 @@ def test_on_unload_exception_does_not_block_other_teardown():
     # Reverse acquisition order, exception isolated.
     assert order == ["last", "boom", "first"]
     assert "boom_probe" not in manager._ownership_ledger
+
+
+def test_ctx_registrations_and_stream_workers_are_owner_scoped_across_reload(tmp_path):
+    """A→B→A keeps workers isolated, and BaseException teardown cannot strand A's generation."""
+    from agent import plugin_stream_hooks
+    from hermes_constants import (
+        get_hermes_home,
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManifest
+
+    def in_home(home, callback):
+        token = set_hermes_home_override(home)
+        try:
+            return callback()
+        finally:
+            reset_hermes_home_override(token)
+
+    def worker_for(callback):
+        with plugin_stream_hooks._dispatcher_lock:
+            return next(
+                dispatcher.thread
+                for dispatcher in plugin_stream_hooks._dispatchers.values()
+                if dispatcher.callback is callback
+            )
+
+    for index, error_type in enumerate((asyncio.CancelledError, SystemExit)):
+        home_a, home_b = tmp_path / f"a-{index}", tmp_path / f"b-{index}"
+        home_a.mkdir()
+        home_b.mkdir()
+        manager_a = in_home(home_a, plugins_mod.get_plugin_manager)
+        manager_b = in_home(home_b, plugins_mod.get_plugin_manager)
+        manager_a._discovered = manager_b._discovered = True
+        key_a, key_b = f"owner-a-{index}", f"owner-b-{index}"
+        manifest_a = PluginManifest(name=key_a, key=key_a)
+        manifest_b = PluginManifest(name=key_b, key=key_b)
+        ctx_a = PluginContext(manifest_a, manager_a)
+        ctx_b = PluginContext(manifest_b, manager_b)
+        seen: list[tuple[str, str, str]] = []
+        entered, release = Event(), Event()
+
+        def hook_a(**payload):
+            phase = payload["phase"]
+            seen.append(("a-old", phase, hermes_home_key(get_hermes_home())))
+            if phase == "hold":
+                entered.set()
+                assert release.wait(timeout=2)
+
+        def hook_b(**payload):
+            seen.append(("b", payload["phase"], hermes_home_key(get_hermes_home())))
+
+        ctx_a.register_hook("on_stream_end", hook_a)
+        ctx_a.register_platform_handler("telegram", lambda _native, _adapter: seen.append(("a-factory", "", "")))
+        ctx_a.subscribe(f"{key_a}:tick", lambda **payload: seen.append(("a-event", payload["phase"], "")))
+
+        def fail_teardown():
+            raise error_type("teardown probe")
+
+        ctx_a.on_unload(fail_teardown)
+        ctx_b.register_hook("on_stream_end", hook_b)
+        ctx_b.register_platform_handler("telegram", lambda _native, _adapter: seen.append(("b-factory", "", "")))
+        ctx_b.subscribe(f"{key_b}:tick", lambda **payload: seen.append(("b-event", payload["phase"], "")))
+
+        assert in_home(home_a, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="a-first"))
+        assert in_home(home_b, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="b-first"))
+        b_worker = worker_for(hook_b)
+        assert in_home(home_a, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="hold"))
+        assert entered.wait(timeout=1)
+        assert in_home(home_a, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="stale"))
+        assert in_home(home_a, lambda: ctx_a.emit("tick", {"phase": "before"})) == 1
+        assert manager_a._wait_for_event_dispatch(timeout=1)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            unloading = pool.submit(manager_a.unload, key_a)
+            try:
+                assert unloading.result(timeout=1) is True
+            finally:
+                release.set()
+
+        assert b_worker is not None and b_worker.is_alive()
+        assert manager_a.get_platform_handler_factories("telegram") == []
+        assert in_home(home_a, lambda: ctx_a.emit("tick", {"phase": "after"})) == 0
+        assert "stale" not in [phase for owner, phase, _home in seen if owner == "a-old"]
+        assert key_a not in manager_a._ownership_ledger
+
+        ctx_a2 = PluginContext(manifest_a, manager_a)
+
+        def hook_a2(**payload):
+            seen.append(("a-new", payload["phase"], hermes_home_key(get_hermes_home())))
+
+        ctx_a2.register_hook("on_stream_end", hook_a2)
+        ctx_a2.register_platform_handler("telegram", lambda _native, _adapter: None)
+        ctx_a2.subscribe(f"{key_a}:tick", lambda **payload: seen.append(("a2-event", payload["phase"], "")))
+        assert in_home(home_a, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="a-second"))
+        assert in_home(home_b, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="b-second"))
+        assert in_home(home_a, lambda: plugin_stream_hooks.enqueue_plugin_stream_hook(
+            "on_stream_end", phase="a-third"))
+        assert in_home(home_b, lambda: ctx_b.emit("tick", {"phase": "survived"})) == 1
+        assert manager_b._wait_for_event_dispatch(timeout=1)
+        assert in_home(home_a, lambda: ctx_a2.emit("tick", {"phase": "fresh"})) == 1
+        assert manager_a._wait_for_event_dispatch(timeout=1)
+
+        deadline = monotonic() + 1
+        while ({("a-new", "a-second"), ("a-new", "a-third"), ("b", "b-second")}
+               - {(owner, phase) for owner, phase, _home in seen}) and monotonic() < deadline:
+            sleep(0.01)
+        assert b_worker.is_alive()
+        assert [phase for owner, phase, _home in seen if owner == "a-new"] == ["a-second", "a-third"]
+        assert [phase for owner, phase, _home in seen if owner == "b"] == ["b-first", "b-second"]
+        assert all(
+            home == hermes_home_key(home_a if owner == "a-new" else home_b)
+            for owner, _phase, home in seen if owner in {"a-new", "b"}
+        )
+
+        manager_a.unload()
+        manager_b.unload()
+        plugin_stream_hooks.shutdown_plugin_stream_hook_dispatcher()
+
+
+def _write_late_registration_plugin(hermes_home: Path) -> None:
+    plugin_dir = hermes_home / "plugins" / "late_probe"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": "late_probe", "version": "0.1.0", "description": "late registration probe"}))
+    # Each generation parks its ctx where "background work" (the test) can resume it later, then
+    # makes one ordinary registration so the generation is observable.
+    (plugin_dir / "__init__.py").write_text(
+        "import sys\n"
+        "\n"
+        "def register(ctx):\n"
+        "    sys.modules['_late_probe_parking'].ctxs.append(ctx)\n"
+        "    ctx.register_hook('on_stream_end', lambda **payload: None)\n"
+    )
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["late_probe"]}}))
+
+
+def test_late_registration_from_an_unloaded_generation_is_rejected(tmp_path, monkeypatch):
+    """gen1 blocks before register_*, reload disposes gen1 and loads gen2 under the same key, then gen1
+    resumes: its late hook / stream worker / subscription / platform handler must never become
+    indistinguishable from gen2's."""
+    import sys
+    import types
+
+    import hermes_cli.plugins as plugins_mod
+    from agent import plugin_stream_hooks
+    from hermes_cli.plugins import PluginManager
+
+    hermes_home = tmp_path / "hermes"
+    _write_late_registration_plugin(hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: tmp_path / "empty-bundled")
+    monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [])
+
+    parking = types.ModuleType("_late_probe_parking")
+    parking.ctxs = []
+    monkeypatch.setitem(sys.modules, "_late_probe_parking", parking)
+    manager = PluginManager()
+    try:
+        manager.discover_and_load()
+        gen1 = manager._plugins["late_probe"]
+        ctx1 = parking.ctxs[0]
+        manager.discover_and_load(force=True)  # reload: gen1 unloaded, gen2 live under the same key
+        gen2_ctx = parking.ctxs[-1]
+        assert gen2_ctx is not ctx1 and manager._plugins["late_probe"] is not gen1
+        hooks_before = list(manager._hooks["on_stream_end"])
+        ledger_before = list(manager._ownership_ledger["late_probe"])
+
+        late_calls = []
+
+        def late_hook(**payload):
+            late_calls.append(payload)
+
+        # gen1 resumes and registers late through every lifecycle surface.
+        assert ctx1.register_hook("on_stream_end", late_hook) is None
+        assert ctx1.subscribe("late_probe:tick", lambda **payload: late_calls.append(payload)) is None
+        assert ctx1.register_platform_handler("telegram", lambda _native, _adapter: None) is None
+        assert ctx1.on_unload(lambda: late_calls.append("unload")) is None
+
+        assert manager._hooks["on_stream_end"] == hooks_before
+        assert late_hook not in manager._hooks["on_stream_end"]
+        assert manager._ownership_ledger["late_probe"] == ledger_before
+        assert manager.get_platform_handler_factories("telegram") == []
+        assert "late_probe:tick" not in manager._subscriptions
+        plugin_stream_hooks.enqueue_plugin_stream_hook("on_stream_end", phase="after-late")
+        with plugin_stream_hooks._dispatcher_lock:
+            assert not any(d.callback is late_hook for d in plugin_stream_hooks._dispatchers.values())
+
+        # Race: gen1 passed the guard, then reload ran before its registrar reached the ledger. The
+        # ledger itself releases the late entry instead of attributing it to the live generation.
+        manager._hooks.setdefault("on_stream_end", []).append(late_hook)
+        handle = ctx1._track(
+            "hook", "on_stream_end", lambda: manager._remove_callback(manager._hooks, "on_stream_end", late_hook))
+        assert handle.active is False and handle.generation is ctx1._load_generation
+        assert late_hook not in manager._hooks["on_stream_end"]
+        assert manager._ownership_ledger["late_probe"] == ledger_before
+
+        # The live generation still registers normally, and a targeted unload tombstones it too.
+        live_handle = gen2_ctx.register_hook("pre_tool_call", lambda **payload: None)
+        assert live_handle is not None and live_handle.active
+        assert live_handle.generation is gen2_ctx._load_generation and not gen2_ctx._generation_retired
+        assert manager.unload("late_probe") is True
+        assert gen2_ctx._generation_retired
+        assert gen2_ctx.register_hook("pre_tool_call", lambda **payload: None) is None
+        assert late_calls == []
+    finally:
+        manager.unload()
+        plugin_stream_hooks.shutdown_plugin_stream_hook_dispatcher()

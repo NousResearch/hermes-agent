@@ -346,7 +346,7 @@ class PluginLoaderMixin:
                     "available in CLI/TUI sessions.", lookup_key, declared,
                 )
                 return
-            register_tools(PluginContext(manifest, self))
+            register_tools(PluginContext(manifest, self)._bind_load_generation())
             registered = _credit()
             logger.debug(
                 "Deferred platform '%s': pre-registered %d client tool(s) %s", lookup_key, len(registered),
@@ -438,7 +438,7 @@ class PluginLoaderMixin:
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)
-        ctx = PluginContext(manifest, self)
+        ctx = PluginContext(manifest, self)._bind_load_generation()
 
         def _import_and_register() -> bool:
             """Import + register() — the part a plugin controls, so the part the deadline covers."""
@@ -572,7 +572,7 @@ class PluginLoaderMixin:
             from hermes_cli.agent_plugins import load_agent_plugin
             package = load_agent_plugin(
                 Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.skill_namespace)
-            ctx = PluginContext(manifest, self)
+            ctx = PluginContext(manifest, self)._bind_load_generation()
             for diagnostic in package.diagnostics:
                 logger.warning("Agent Plugin '%s' [%s]: %s", lookup_key, diagnostic.scope, diagnostic.message)
             for skill in package.skills:

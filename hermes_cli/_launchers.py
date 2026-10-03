@@ -100,9 +100,20 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def resolve_store_python(repo_root: Path) -> Path | None:
-    """Read PM's committed Python tool, without adopting unrecorded bytes."""
-    runtime = store_root(repo_root)
+def resolve_store_python(repo_root: Path, *, honor_runtime_override: bool = True) -> Path | None:
+    """Read PM's committed Python tool, without adopting unrecorded bytes.
+
+    Callers that PERSIST the result inside an artifact (``stage_launcher``
+    and the publication gates below) must pass
+    ``honor_runtime_override=False``: a launcher written into the install's
+    bin dir has to boot the install's own store python, never a runtime
+    directory an inherited ``HERMES_RUNTIME_DIR`` names. An e2e or bundle
+    environment that spawns the real CLI with its own ``HERMES_RUNTIME_DIR``
+    must not be able to repoint the production launchers at a store that a
+    later scratch cleanup deletes (#131745: exit-127 crash loop after
+    reboot).
+    """
+    runtime = store_root(repo_root, honor_runtime_override=honor_runtime_override)
     rel = "python.exe" if _is_windows() else "bin/python3"
 
     facts = runtime / "facts.json"
@@ -374,7 +385,9 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
-    store_python = resolve_store_python(repo_root)
+    # A launcher outlives the process that writes it, so the inherited
+    # runtime override must not select its interpreter.
+    store_python = resolve_store_python(repo_root, honor_runtime_override=False)
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
@@ -444,7 +457,7 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         return {"ok": True, "skipped": "bundle-owns-launchers"}
     if read_install_stamp(root).get("updateMechanism") == "external":
         return {"ok": True, "skipped": "externally-owned"}
-    if resolve_store_python(root) is None:
+    if resolve_store_python(root, honor_runtime_override=False) is None:
         return {"ok": True, "skipped": "no-store-python"}
     try:
         local = root / ".hermes" / "bin"
@@ -609,7 +622,7 @@ if __name__ == "__main__":
     parser.add_argument("out_dir", type=Path)
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
-    if resolve_store_python(repo_root) is None:
+    if resolve_store_python(repo_root, honor_runtime_override=False) is None:
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     written = ensure_install_launchers(repo_root, args.out_dir)

@@ -112,11 +112,19 @@ def base_venv(project_root: Path) -> Path:
     return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
-def store_root(project_root: Path) -> Path:
-    """Resolve a payload-relative or stamped store before PM imports."""
-    override = os.environ.get("HERMES_RUNTIME_DIR")
-    if override:
-        return Path(override).resolve()
+def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
+    """Resolve a payload-relative or stamped store before PM imports.
+
+    ``HERMES_RUNTIME_DIR`` exists so a running process can point PM at a
+    non-default runtime location. Publication paths must pass
+    ``honor_runtime_override=False``: a persisted artifact (an installed
+    launcher) has to bind the store of the tree it serves, never a runtime
+    directory inherited through the environment.
+    """
+    if honor_runtime_override:
+        override = os.environ.get("HERMES_RUNTIME_DIR")
+        if override:
+            return Path(override).resolve()
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():

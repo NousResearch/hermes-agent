@@ -550,3 +550,85 @@ def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
     (repo / "hermes_integrity_probe.py").write_text("import selected_probe\n", encoding="utf-8")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_integrity_probe",))
     assert update_cmd_validation._critical_module_import_failures(repo, report_runtime_errors=True) == {}
+
+
+@pytest.mark.platforms("posix")
+def test_stage_launcher_ignores_an_inherited_runtime_directory(tmp_path, monkeypatch):
+    # #131745: a persisted launcher must boot the install's own store python.
+    # An inherited HERMES_RUNTIME_DIR (e2e fixture, desktop toolchain, PM
+    # subprocess env) names a runtime directory for the RUNNING process, never
+    # for the artifacts the process publishes — that store can be a scratch
+    # tree a later cleanup deletes, leaving the launcher dead (exit 127).
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    store = home / "tools"
+    tree_python = store / "python-A" / "bin" / "python3"
+    tree_python.parent.mkdir(parents=True)
+    tree_python.symlink_to(interpreter)
+    (store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-A"}}}), encoding="utf-8")
+    foreign_store = tmp_path / "foreign" / "tools"
+    foreign_store.mkdir(parents=True)
+    foreign_python = foreign_store / "python-foreign" / "bin" / "python3"
+    foreign_python.parent.mkdir(parents=True)
+    foreign_python.symlink_to(interpreter)
+    (foreign_store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-foreign"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+
+    # Publication callers create the bin dir before staging (see
+    # ensure_install_launchers); the launcher writer does not invent it.
+    out = repo / ".hermes" / "bin"
+    out.mkdir(parents=True, exist_ok=True)
+    published = _launchers.stage_launcher("hermes", repo, out)
+
+    assert published is not None
+    wrapper = published.read_text(encoding="utf-8-sig")
+    assert "python-A" in wrapper
+    assert "python-foreign" not in wrapper
+
+
+@pytest.mark.platforms("posix")
+def test_service_launcher_binds_the_tree_store_despite_inherited_runtime_override(tmp_path, monkeypatch):
+    from hermes_cli import gateway
+
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
+    store = home / "tools"
+    tree_python = store / "python-A" / "bin" / "python3"
+    tree_python.parent.mkdir(parents=True)
+    tree_python.symlink_to(interpreter)
+    (store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-A"}}}), encoding="utf-8")
+    foreign_store = tmp_path / "foreign" / "tools"
+    foreign_store.mkdir(parents=True)
+    foreign_python = foreign_store / "python-foreign" / "bin" / "python3"
+    foreign_python.parent.mkdir(parents=True)
+    foreign_python.symlink_to(interpreter)
+    (foreign_store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-foreign"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+
+    gateway._prepare_service_launcher()
+
+    wrapper = (repo / ".hermes" / "bin" / "hermes").read_text(encoding="utf-8-sig")
+    assert "python-A" in wrapper
+    assert "python-foreign" not in wrapper
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_override_still_selects_the_runtime_python(tmp_path, monkeypatch):
+    # The publication split must not mute the override for execution paths:
+    # resolving a python to RUN still honors HERMES_RUNTIME_DIR by default.
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    foreign_store = tmp_path / "foreign" / "tools"
+    foreign_store.mkdir(parents=True)
+    foreign_python = foreign_store / "python-foreign" / "bin" / "python3"
+    foreign_python.parent.mkdir(parents=True)
+    foreign_python.symlink_to(interpreter)
+    (foreign_store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-foreign"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+
+    selected = _launchers.resolve_store_python(repo)
+
+    assert selected == foreign_store / "python-foreign" / "bin" / "python3"

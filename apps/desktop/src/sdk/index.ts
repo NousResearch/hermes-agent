@@ -93,10 +93,10 @@ import {
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
-  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   dropTilesForProfile,
@@ -108,6 +108,7 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
@@ -209,6 +210,8 @@ const $focusedSessionProfile = computed(
 export interface PluginProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   /** Desktop profile used to select the connection route. */
   profile: string
   /** Backend Hermes profile served by that route. */
@@ -392,6 +395,19 @@ export interface PluginOpenSessionOptions {
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
+  /** Refresh an already-on-screen surface IN PLACE — no navigation, no
+   *  tile-minting, no focus steal. The canonical-chats re-resume
+   *  (session.reclaimed, roster activity) is a BACKGROUND refresh: the user
+   *  may be reading the Kanban board, a settings page, or another chat, and
+   *  a background event must never take the route or the foreground away
+   *  (issue 121874). The session is re-resolved (registry consultation,
+   *  backend dial, transcript pull) and the transcript of whichever surface
+   *  already holds it — its tile, or main when the route points at it — is
+   *  refreshed exactly like the SDK's own hydration probe
+   *  (`resumeTile(refreshTranscript)` / armed `requestSessionResume`). A
+   *  session that is NOT on screen resolves silently with nothing re-opened;
+   *  the next explicit open handles it. */
+  refreshInPlace?: boolean
   profile?: null | string
   route?: PluginProfileRoute
   workspaceMode?: WorkspaceMode
@@ -974,7 +990,11 @@ export const host = {
 
     const expectHistory = options.expectHistory ?? false
 
-    if (options.workspaceMode === 'bots') {
+    // A refreshInPlace wake is not an entry into the workspace — it refreshes
+    // a chat the user already opened. Never re-publish the bots scope (that
+    // re-homes the pane-strip memory) and never flip the all-profiles view;
+    // both belong to the explicit open that already happened.
+    if (options.workspaceMode === 'bots' && !options.refreshInPlace) {
       publishWorkspaceScope(
         'bots',
         options.workspaceOwnerKey ?? null,
@@ -985,6 +1005,7 @@ export const host = {
     const openingStillCurrent = () =>
       generation === openSessionGeneration &&
       (options.workspaceMode !== 'bots' ||
+        options.refreshInPlace ||
         ($workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)))
 
     const plan = planPluginOpenSession({
@@ -1064,8 +1085,11 @@ export const host = {
 
       // Only a cross-connection (explicit route) open forces the all-profiles
       // view; a local bot open keeps the planner's decision, unchanged from
-      // before the synthesized-route addition.
-      if (explicitRoute) {
+      // before the synthesized-route addition. A refreshInPlace wake never
+      // touches the view at all.
+      if (options.refreshInPlace) {
+        // no view change — the refresh inherits whatever is showing
+      } else if (explicitRoute) {
         setShowAllProfiles(true)
       } else if (plan.showAllProfiles !== null) {
         setShowAllProfiles(plan.showAllProfiles)
@@ -1100,6 +1124,37 @@ export const host = {
           }
 
           const intent = options.intent ?? 'in-place'
+
+          // Background refresh (refreshInPlace): this wake was triggered by
+          // something that HAPPENED in the background (a reclaim, roster
+          // activity), not by the user navigating. Never touch the route or
+          // the tab strip — the user may be reading the Kanban board, a
+          // settings page, or another chat (issue 121874: /kanban was
+          // replaced by the Bot Chat route). Refresh only whichever surface
+          // already holds the session: its tile via resumeTile
+          // (refreshTranscript), or main via the armed explicit-resume
+          // request — the same lever markRuntimeGone pulls for background
+          // reclaims, consumed only while the route already points at the
+          // session, so it can never navigate. A session that is not on
+          // screen resolves without re-opening anything; the next explicit
+          // open owns that.
+          if (options.refreshInPlace) {
+            const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
+            const tileDelegate = existingTile ? sessionTileDelegate() : null
+            // Main is refreshed only when it is actually showing this
+            // session — the same surface discriminator the hydration probe
+            // uses. An off-screen chat re-opens nothing: the request would
+            // sit unconsumed and the wake would silently no-op.
+            const mainShowing = $selectedStoredSessionId.get() === storedSessionId
+
+            if (tileDelegate) {
+              await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
+            } else if (mainShowing) {
+              requestSessionResume(storedSessionId, ownerRoute || undefined)
+            }
+
+            break
+          }
 
           if (options.workspaceMode === 'bots') {
             openSession(storedSessionId, navigate, intent, {
@@ -1580,7 +1635,12 @@ export const host = {
    *  active instance changes on a profile swap. */
   getGateway: (): HermesGateway | null => $gateway.get(),
 
-  composer: composerHost
+  composer: composerHost,
+
+  /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
+   *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
+   *  `host.i18n.languageOptions()` lists what the switcher shows. */
+  i18n: i18nHost
 }
 
 // -- react bridge -------------------------------------------------------------
@@ -1635,6 +1695,12 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** Page-owned header control (the kanban board switcher): projected into the
+ *  workspace page header when the page renders in the workspace pane, and
+ *  rendered inline, in place, anywhere else (a split route tile). Prefer it
+ *  over a raw `<Contribute area={WORKSPACE_PAGE_HEADER_AREA}>`, which nothing
+ *  paints outside the workspace pane. */
+export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
 /** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
  *  sits past the scheduler grace and the job is expected to fire. Every surface
  *  that prints a next run switches its label on this (`t.cron.next` →
@@ -1705,6 +1771,17 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+/** Per-model marks inside that same menu: register a `MODEL_MENU_ROW_AREA`
+ *  data contribution whose `decorate({ provider, model, label })` returns
+ *  `{ icon?, badge? }` (or `null`). Core paints the leading icon slot and a
+ *  trailing badge chip; per slot the first usable answer wins, and a throwing
+ *  decorator is skipped. Never patch the menu's rows yourself. */
+export {
+  MODEL_MENU_ROW_AREA,
+  type ModelMenuRowContext,
+  type ModelMenuRowContribution,
+  type ModelMenuRowDecoration
+} from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** Canonical raw message renderer: applies Desktop message transforms (including
@@ -1832,6 +1909,9 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  pane whose label must track the locale pairs that `title` with
  *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
+  type AppLocaleRegistration,
+  type BundledLocale,
+  type LanguageOption,
   type Locale,
   LocalizedTabTitle,
   type PluginI18n,
@@ -1878,6 +1958,9 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
 export { LruCache } from '@/lib/lru-cache'
 /** Capture a gateway file download alongside a REST read (see the SDK guide). */
 export { captureGatewayFileDownload } from '@/lib/media'
+/** True when a saved provider id names this `model.options` row: its slug,
+ *  display name, or a custom-provider alias (`custom:<key>` vs the bare key). */
+export { catalogProviderMatches } from '@/lib/model-options'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The
@@ -1982,9 +2065,15 @@ export type { StatusResponse } from '@/types/hermes'
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
 export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
+/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
+export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
+/** Client deadline for `approval.respond`: matches the backend's
+ *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
+ *  its own RPC while the backend still applies the decision (#60654). */
+export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

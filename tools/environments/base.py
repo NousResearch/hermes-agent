@@ -227,8 +227,11 @@ class BaseEnvironment(ABC):
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
     snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement."""
 
-    # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
-    _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
+    # How execute() hands stdin to _run_bash: "pipe" (process stdin, default),
+    # "payload" (passed through as stdin_data; the backend transports it via its
+    # SDK -- Modal/managed Modal stream it, Daytona/Vercel stage a file) or
+    # "heredoc" (embedded in the command; no built-in backend, plugins only).
+    _stdin_mode: str = "pipe"  # "pipe" | "payload" | "heredoc"
 
     # True only when commands execute on the SAME host as the Hermes process
     # (LocalEnvironment); controller-host facts then describe the execution target.
@@ -465,9 +468,27 @@ class BaseEnvironment(ABC):
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
-        """Append stdin_data as a shell heredoc to the command string (SDK backends)."""
+        """Redirect stdin_data to the complete command with a shell heredoc (SDK backends).
+        A heredoc body always ends in a newline stdin_data may lack, and write_file verifies a
+        byte-exact hash, so a process substitution re-emits the body minus that last character.
+        Redirections apply left to right, so the substitution inherits the heredoc as its stdin;
+        the heredoc stays outside ``<( )`` because bash 3.2 mis-parses bodies inside it. ``|| :``
+        keeps an inherited ``set -e`` from killing the reader on read's EOF status."""
         delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
-        return f"{command} << '{delimiter}'\n{stdin_data}\n{delimiter}"
+        return (f"{{\n{command}\n}} << '{delimiter}' < <(IFS= read -r -d '' s || :; printf '%s' \"${{s%?}}\")\n"
+                f"{stdin_data}\n{delimiter}")
+
+    def _staged_stdin_path(self) -> str:
+        """Unique sandbox path for staging a payload-mode stdin file."""
+        temp_dir = self.get_temp_dir().rstrip("/") or "/"
+        return f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+
+    @staticmethod
+    def _redirect_stdin_from_file(command: str, path: str) -> str:
+        """Prefix ``command`` so the shell reads stdin from the staged ``path`` and
+        unlinks it before ``command`` runs (the shell then owns the payload)."""
+        quoted = shlex.quote(path)
+        return f"exec 0< {quoted} || exit $?\nrm -f -- {quoted} || exit $?\n{command}"
 
     # --- Process lifecycle ---
     def _wait_for_process(
@@ -516,7 +537,8 @@ class BaseEnvironment(ABC):
                 if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                     trace.interrupted()
                     _kill_and_join()
-                    return self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130)
+                    return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
+                            "hermes_interrupted": True}
                 if yield_handler is not None and consume_yield(watch_interrupt_tid):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
@@ -536,7 +558,8 @@ class BaseEnvironment(ABC):
                     rendered = output.render(suffix=f"\n[Command timed out after {timeout}s]")
                     if output.total_chars == 0:
                         rendered = rendered.lstrip()
-                    return self._finalize_wait_result(output, rendered, 124)
+                    # The flag tells Hermes' own deadline apart from a command's own ``exit 124``.
+                    return {**self._finalize_wait_result(output, rendered, 124), "hermes_timed_out": True}
                 touch_activity_if_due(_activity_state, "terminal command running")
                 trace.heartbeat()
                 time.sleep(_poll_sleep)
@@ -729,6 +752,7 @@ class BaseEnvironment(ABC):
                 result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
             else:
                 result = {"output": suffix.lstrip(), "returncode": 124}
+            result["hermes_timed_out"] = True
         else:
             result = bounded.value
         self._update_cwd(result)
@@ -776,33 +800,3 @@ class BaseEnvironment(ABC):
             return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
         except Exception:
             return False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import IO  # noqa: F401,E402
-from typing import Protocol  # noqa: F401,E402
-import codecs  # noqa: F401,E402
-from collections import deque  # noqa: F401,E402
-import re  # noqa: F401,E402
-import select  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'sanitize_task_id_for_path': ('tools.environments.path_utils', 'sanitize_task_id_for_path'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

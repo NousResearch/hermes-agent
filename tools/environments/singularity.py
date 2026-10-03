@@ -60,13 +60,16 @@ def _registry_auth_source(
         build_profile_secret_scope,
         current_secret_scope,
         is_multiplex_active,
+        serves_routed_profile,
     )
+    from hermes_constants import get_routing_process_hermes_home
 
     scope = current_secret_scope()
-    multiplex_active = is_multiplex_active()
     owner = Path(owner_home).resolve() if owner_home is not None else None
+    private_authority = (is_multiplex_active() or serves_routed_profile()
+                         or (owner is not None and owner != get_routing_process_hermes_home().resolve()))
     if scope is not None:
-        if multiplex_active:
+        if private_authority:
             if owner is not None and scope.profile_home != owner:
                 raise RuntimeError(
                     "Singularity registry authority does not match artifact owner"
@@ -75,7 +78,7 @@ def _registry_auth_source(
         source = dict(os.environ)
         source.update({str(key): str(value) for key, value in scope.items()})
         return source
-    if multiplex_active:
+    if private_authority:
         if owner is None:
             raise RuntimeError(
                 "Singularity image build requested without an active target-profile "

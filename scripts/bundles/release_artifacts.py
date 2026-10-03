@@ -88,10 +88,12 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             # The stamp carries no executable name; the package's own manifest does.
             executable_name = PureWindowsPath(application.attrib["Executable"]).name
             executable = single(root.glob(f"*-unpacked/{executable_name}"))
+            # -Command joins trailing argv into the script text, so $args stays empty.
             row["executableVersion"] = subprocess.check_output([
                 "powershell", "-NoProfile", "-Command",
-                "(Get-Item -LiteralPath $args[0]).VersionInfo.ProductVersion", str(executable),
-            ], text=True, encoding="utf-8", stdin=subprocess.DEVNULL).strip()
+                "(Get-Item -LiteralPath $env:RECORD_EXECUTABLE).VersionInfo.ProductVersion",
+            ], env={**os.environ, "RECORD_EXECUTABLE": str(executable)},
+                text=True, encoding="utf-8", stdin=subprocess.DEVNULL).strip()
         if stamp.get("receiverProtocol") == 1:
             row["receiverProtocol"] = 1
     elif platform == "macos":

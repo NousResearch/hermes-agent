@@ -396,6 +396,9 @@ class DelayedProgressAgent:
         }
 
 
+_ACTIVE_ADAPTER: dict = {}  # the adapter of the run in flight, for agents that pace on its sends
+
+
 class ManyProgressLinesAgent:
     """Emits enough tool-progress lines to exceed a single platform bubble."""
 
@@ -410,7 +413,14 @@ class ManyProgressLinesAgent:
         # Let the progress task create the first editable bubble, then enqueue
         # the rest quickly.  The cancellation drain must roll them into fresh
         # editable bubbles instead of trying to edit the first one past limit.
-        time.sleep(0.35)
+        # Wait for the bubble itself, not a fixed interval: on a loaded CI runner
+        # 0.35s is not always enough and every line then lands before the first
+        # send, so nothing is ever edited.
+        adapter = _ACTIVE_ADAPTER.get("adapter")
+        deadline = time.monotonic() + 5.0
+        while adapter is not None and not adapter.sent and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.05)
         for idx in range(1, 8):
             cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
@@ -1066,6 +1076,7 @@ async def _run_with_agent(
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = adapter_cls(platform=platform)
+    _ACTIVE_ADAPTER["adapter"] = adapter
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:

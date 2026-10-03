@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 from pm import termux_libs
-from pm.install import _facts, _lockfile, _store, ensure, stage_only
+from pm.install import (_RESTORED_DISPLACEMENT_SUFFIX, _facts, _lockfile, _remove_entry,
+                        _store, ensure, stage_only)
 from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
@@ -297,7 +298,7 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
 def _install_defaults(names: list[str], *, verify: bool) -> None:
     """Install the optional defaults; a failure warns and never fails the install.
 
-    They are conveniences (the browser tools), not what Hermes needs to run:
+    They are the browser and computer-use tools, not what Hermes needs to run:
     a Chromium download that fails behind a proxy must not abort an install
     whose required closure and venv are fine.
     """
@@ -396,7 +397,7 @@ def cmd_install(args) -> int:
         return 0
     failed = _install_python_environments(extras, sync=bool(extras or not args.names),
                                           test_environment=test_environment)
-    # Defaults are optional and large (agent-browser + Chromium): fetch them
+    # Defaults are optional and large (agent-browser + Chromium, cua-driver): fetch them
     # only once the venv, and on Windows ARM64 its build tools, succeeded.
     if not failed:
         _install_defaults(defaults, verify=not trust_recorded)
@@ -490,6 +491,28 @@ def _gc_store(store, facts) -> tuple[int, int]:
         facts.reload()
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
+        # A restored entry is live before its displaced replacement is removed.
+        # Only the sidecar written after that restore makes the orphan safe to GC.
+        for marker in sorted(store.root.glob(f".displaced-*{_RESTORED_DISPLACEMENT_SUFFIX}")):
+            if marker.is_symlink() or not marker.is_file():
+                continue
+            displaced_name = marker.name.removesuffix(_RESTORED_DISPLACEMENT_SUFFIX)
+            displaced = store.entry(displaced_name)
+            if displaced.is_symlink():
+                continue
+            existed = displaced.exists()
+            try:
+                _remove_entry(store, displaced_name)
+            except OSError as exc:
+                print(f"keeping {displaced_name}: {exc}")
+                continue
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"keeping reclaim marker {marker.name}: {exc}")
+            if existed:
+                print(f"removing {displaced_name}")
+                removed += 1
         for item in sorted(store.root.iterdir()):
             if not item.is_dir():
                 continue
@@ -796,7 +819,7 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (agent-browser) out of this and every later "
+                   help="leave an optional default package (agent-browser, cua-driver) out of this and every later "
                         "default install and update; `hermes pm install NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
@@ -858,6 +881,13 @@ def main(argv=None) -> int:
     except InstallError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
+    except PermissionError as exc:
+        from pm.environments import install_state_permission_message
+
+        if message := install_state_permission_message(repo_root(), exc):
+            print(f"✗ {message}", file=sys.stderr)
+            return 1
+        raise
 
 
 if __name__ == "__main__":

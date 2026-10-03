@@ -2,9 +2,12 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+import time
+from pathlib import Path
+
+import pytest
 
 from hermes_cli.source_completion import complete_source_checkout
 from hermes_cli.source_stamp import write_source_stamp
@@ -53,6 +56,73 @@ def test_failed_source_completion_does_not_publish_identity(tmp_path, monkeypatc
 
     assert not complete_source_checkout(root, desktop=False, assume_yes=True)
     assert not (root / "install-stamp.json").exists()
+
+
+def _sandboxed_marker(tmp_path, monkeypatch):
+    """Point every update-lock reader at a marker inside this test's sandbox."""
+    marker = tmp_path / ".hermes-update-in-progress"
+    monkeypatch.setattr("hermes_cli.update_lock.update_marker_path", lambda: marker)
+    return marker
+
+
+@pytest.fixture
+def foreign_pid():
+    """A live process that is not an ancestor of this test: a stand-in updater."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                            stdin=subprocess.DEVNULL)
+    yield proc.pid
+    proc.kill()
+    proc.wait()
+
+
+def test_completion_holds_the_update_lock_during_the_tail(tmp_path, monkeypatch):
+    """Two completions must not build the same products concurrently (#123376).
+
+    A gateway restarted while an update's tail runs reaches this same function
+    through venv_sync; without the shared lock both build the same output dirs
+    and race on install-stamp.json.
+    """
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    seen = {}
+
+    def build(_root, *, desktop):
+        from hermes_cli.update_lock import read_live_update
+
+        seen["holder"] = read_live_update()
+
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", build)
+    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda root: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda **_kwargs: True)
+
+    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+
+    assert seen["holder"] is not None, "the tail must hold the shared lock while it builds"
+    assert seen["holder"].pid == os.getpid()
+    assert not marker.exists(), "a completed tail must release the lock for the next launch"
+
+
+def test_completion_refuses_to_stack_on_a_live_update(tmp_path, monkeypatch, foreign_pid):
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    marker.write_text(f"{foreign_pid}\n{int(time.time())}\n", encoding="utf-8")
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+
+    with pytest.raises(RuntimeError, match="an update is still running"):
+        complete_source_checkout(root, desktop=False, assume_yes=True)
+
+
+def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path, monkeypatch):
+    """A tail spawned by an orchestrator that holds the lock (venv_sync's
+    interrupted-update finish, the updater's own completion child) runs under
+    its parent's claim and leaves the parent's marker untouched."""
+    root = _repo(tmp_path)
+    marker = _sandboxed_marker(tmp_path, monkeypatch)
+    marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+
+    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+    assert marker.exists(), "the parent still owns its claim after our tail"
 
 
 def _verify_bootstrap_receipt(root: Path) -> subprocess.CompletedProcess:
@@ -108,3 +178,41 @@ def test_shallow_checkout_publishes_its_release_after_fetching_the_commit_graph(
     assert stamp is not None
     assert (stamp["baseVersion"], stamp["distance"]) == ("0.21.4", 3)
     assert not fetch_full_commit_graph(checkout)
+
+
+def test_full_checkout_refreshes_release_tags_before_publishing_identity(tmp_path):
+    from hermes_cli.gitlock import fetch_full_commit_graph
+
+    server = _repo(tmp_path)
+    env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+
+    def git(root: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git(server, "config", "uploadpack.allowFilter", "true")
+    git(server, "tag", "-d", "v0.21.4")
+    versions = (("v2026.9.7", "0.21.1"), ("v2026.9.24", "0.21.5"))
+    for tag, version in versions:
+        (server / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n', encoding="utf-8")
+        git(server, "add", "pyproject.toml")
+        git(server, "commit", "-qm", "release")
+        git(server, "tag", tag)
+    git(server, "commit", "-q", "--allow-empty", "-m", "after release")
+    checkout = tmp_path / "checkout"
+    git(server, "clone", "-q", "--no-tags", server.as_uri(), str(checkout))
+    old_tag, old_version = versions[0]
+    git(checkout, "fetch", "-q", "origin", f"refs/tags/{old_tag}:refs/tags/{old_tag}")
+    commit = git(checkout, "rev-parse", "HEAD")
+    assert git(checkout, "rev-parse", "--is-shallow-repository") == "false"
+    before = write_source_stamp(checkout)
+    assert before is not None
+    assert before["baseVersion"] == old_version
+
+    fetch_full_commit_graph(checkout)
+    stamp = write_source_stamp(checkout)
+
+    assert stamp is not None
+    assert (stamp["baseVersion"], stamp["distance"]) == (versions[1][1], 1)
+    assert stamp["commit"] == commit == git(checkout, "rev-parse", "HEAD")

@@ -59,6 +59,7 @@ export const SETTINGS_MANIFEST = {
       copy: t => ({ label: t.language.label, description: t.language.description })
     },
     introSplash: appearanceSetting('general', ['splash', 'wordmark', 'empty chat', 'new chat'], 'introSplash'),
+    modelPricing: appearanceSetting('general', ['price', 'cost', 'tokens', 'model picker', 'cache'], 'modelPricing'),
     resumeLastSession: appearanceSetting(
       'general',
       ['resume', 'reopen', 'launch', 'startup', 'last chat', 'session'],
@@ -68,6 +69,7 @@ export const SETTINGS_MANIFEST = {
     tours: appearanceSetting('general', ['tour', 'walkthrough', 'guide', 'onboarding', 'help'], 'tours'),
     theme: appearanceSetting('theme', ['color mode', 'skin', 'light', 'dark'], 'theme'),
     uiScale: appearanceSetting('typography', ['zoom', 'size'], 'uiScale'),
+    chatTextScale: appearanceSetting('typography', ['chat', 'text', 'font', 'size', 'scale', 'zoom'], 'chatTextScale'),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',
@@ -101,9 +103,14 @@ export const SETTINGS_MANIFEST = {
       available: () => TRANSLUCENCY_SUPPORTED
     },
     backdrop: appearanceSetting('window-layout', ['background', 'blur'], 'backdrop'),
+    fileBrowser: appearanceSetting(
+      'window-layout',
+      ['file browser', 'files', 'file tree', 'explorer', 'right sidebar', 'panel', 'startup'],
+      'fileBrowser'
+    ),
     composerPopout: appearanceSetting(
       'window-layout',
-      ['composer', 'floating', 'drag', 'popout', 'dock', 'input'],
+      ['composer', 'floating', 'drag', 'popout', 'pop out', 'dock', 'lock', 'peel', 'input'],
       'composerPopout'
     ),
     userBubble: appearanceSetting('chat-display', ['opacity', 'transparent', 'message', 'bubble'], 'userBubble'),

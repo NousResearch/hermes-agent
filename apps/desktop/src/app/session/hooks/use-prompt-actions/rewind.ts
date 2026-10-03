@@ -18,7 +18,7 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
-  completeOpenTimelineParts,
+  finalizeInterruptedMessages,
   textPart
 } from '@/lib/chat-messages'
 
@@ -392,33 +392,6 @@ export async function runRewindSubmit(
   }
 }
 
-/** Cancel/stop finalize: drop empty pending/stream placeholders, un-pend the rest. */
-export function finalizeInterruptedMessages(
-  messages: ChatMessage[],
-  streamId?: null | string,
-  occurredAt = Date.now() / 1000
-): ChatMessage[] {
-  return messages
-    .filter(
-      message =>
-        !(
-          (message.pending || message.id === streamId) &&
-          message.parts.length === 0 &&
-          !chatMessageText(message).trim()
-        )
-    )
-    .map(message =>
-      message.pending || message.id === streamId
-        ? {
-            ...message,
-            completedAt: occurredAt,
-            parts: completeOpenTimelineParts(message.parts, occurredAt),
-            pending: false
-          }
-        : message
-    )
-}
-
 const markInterruptedToolCall = (part: ChatMessagePart): ChatMessagePart =>
   part.type === 'tool-call' && part.completedAt === undefined && part.result === undefined
     ? { ...part, interrupted: true }
@@ -444,6 +417,21 @@ export function finalizeUserInterruptedMessages(
   return finalizeInterruptedMessages(marked, streamId, occurredAt)
 }
 
+/** Stop finalize: the live reply is also flagged `interrupted` so it reads as cut short. */
+export function finalizeStoppedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  const flagged = messages.map(message =>
+    message.role === 'assistant' && (message.pending || message.id === streamId)
+      ? { ...message, interrupted: true }
+      : message
+  )
+
+  return finalizeUserInterruptedMessages(flagged, streamId, occurredAt)
+}
+
 /**
  * Arrival-ordered mid-turn user insert (#73793, #83151).
  *
@@ -456,9 +444,20 @@ export function finalizeUserInterruptedMessages(
  * above it. Also retires the old insert-before-the-active-reply contract whose
  * `lastAssistantIndex` fallback could splice the bubble mid-thread when the
  * stream id was missing or stale (#83151).
+ *
+ * The correction also ends a regenerate's branch group. Output after it
+ * answers the correction, not the regenerated prompt, so it must not join the
+ * group: the runtime repository parents every group member to the group's
+ * user row, which made the post-correction reply a sibling of the sealed
+ * partial and dropped the partial and the correction from view (#119015).
  */
 export function appendMidTurnUserMessage<
-  State extends { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+  State extends {
+    interimBoundaryPending: boolean
+    messages: ChatMessage[]
+    pendingBranchGroup?: null | string
+    streamId: null | string
+  }
 >(state: State, message: ChatMessage): State {
   const liveId = state.streamId
   const sealed = finalizeUserInterruptedMessages(state.messages, liveId)
@@ -472,6 +471,7 @@ export function appendMidTurnUserMessage<
   return {
     ...state,
     messages,
+    ...(state.pendingBranchGroup ? { pendingBranchGroup: null } : {}),
     streamId: null,
     interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
   }

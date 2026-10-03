@@ -36,7 +36,7 @@ def _get_allowed() -> set[str]:
 _config_passthrough: dict[str, frozenset[str]] = {}
 
 
-def _is_hermes_provider_credential(name: str) -> bool:
+def _is_hermes_provider_credential(name: str, *, profile_home=None) -> bool:
     """True if ``name`` is a Hermes-managed provider credential per
     ``_HERMES_PROVIDER_ENV_BLOCKLIST`` or a dynamic Hermes-internal secret
     (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_*). Skill-declared
@@ -49,6 +49,8 @@ def _is_hermes_provider_credential(name: str) -> bool:
             _is_blocked_provider_env,
             _is_hermes_internal_secret,
             _is_provider_env_blocklisted,
+            _home_adapter_secret_env,
+            _registry_adapter_secret_env,
         )
     except Exception as e:
         logger.warning(
@@ -59,9 +61,10 @@ def _is_hermes_provider_credential(name: str) -> bool:
     # registered name via os.getenv(), which is case-insensitive on Windows, so
     # ``openai_api_key`` would tunnel the real OPENAI_API_KEY into children.
     return (
-        _is_hermes_internal_secret(name)
+        _is_hermes_internal_secret(name, profile_home=profile_home)
         or _is_blocked_provider_env(name)
-        or _is_provider_env_blocklisted(name)
+        or _is_provider_env_blocklisted(
+            name, _registry_adapter_secret_env() | _home_adapter_secret_env(profile_home))
     )
 
 
@@ -80,13 +83,13 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
         logger.debug("env passthrough: registered %s", name)
 
 
-def _accepted(names, refusal_msg: str):
+def _accepted(names, refusal_msg: str, *, profile_home=None):
     """Yield non-empty *names* that are not Hermes provider credentials; refused
     names are logged with *refusal_msg* (``%r`` = name)."""
     for name in names:
         if not name:
             continue
-        if _is_hermes_provider_credential(name):
+        if _is_hermes_provider_credential(name, profile_home=profile_home):
             logger.warning(refusal_msg, name)
             continue
         yield name
@@ -116,7 +119,7 @@ def _load_config_passthrough(
             "configuration must not override the execute_code "
             "sandbox's credential scrubbing; see "
             "GHSA-rhgp-j443-p4rf."
-        )))
+        ), profile_home=profile_home))
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
     _config_passthrough[home_key] = frozenset(result)
@@ -129,7 +132,8 @@ def is_env_passthrough(
     profile_home: str | os.PathLike[str] | None = None,
 ) -> bool:
     """True if *var_name* was registered by a skill or listed in config."""
-    return var_name in _get_allowed() or var_name in _load_config_passthrough(profile_home)
+    return ((var_name in _get_allowed() or var_name in _load_config_passthrough(profile_home))
+            and not _is_hermes_provider_credential(var_name, profile_home=profile_home))
 
 
 def get_all_passthrough(
@@ -137,7 +141,8 @@ def get_all_passthrough(
     profile_home: str | os.PathLike[str] | None = None,
 ) -> frozenset[str]:
     """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough(profile_home)
+    return frozenset(name for name in frozenset(_get_allowed()) | _load_config_passthrough(profile_home)
+                     if not _is_hermes_provider_credential(name, profile_home=profile_home))
 
 
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:

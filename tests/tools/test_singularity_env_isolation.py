@@ -9,6 +9,7 @@ boundaries without claiming native container-runtime verification.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,47 @@ from tools.environments.singularity import (
     _singularity_subprocess_env,
 )
 from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+@pytest.mark.parametrize("multiplex", [False, True])
+@pytest.mark.parametrize("target_value", [None, "", "fake-target"])
+def test_registry_exception_uses_exact_foreign_owner(tmp_path, monkeypatch, multiplex, target_value):
+    """The registry exception cannot restore launch credentials after child scrubbing."""
+    import json
+    import subprocess
+    import sys
+    from agent import secret_scope as ss
+    from hermes_constants import pin_process_hermes_home
+    from tools.environments.singularity import _REGISTRY_AUTH_ENV_VARS
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    for home in (source, target):
+        home.mkdir()
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    names = list(_REGISTRY_AUTH_ENV_VARS)
+    for name in names:
+        monkeypatch.setenv(name, "fake-source")
+    (target / ".env").write_text(
+        "" if target_value is None else "".join(f"{n}={target_value}\n" for n in names),
+        encoding="utf-8")
+    monkeypatch.setenv("BENIGN_CONTROL", "keep")
+    pin_process_hermes_home(source)
+    ss.set_multiplex_active(multiplex)
+    try:
+        env = _singularity_subprocess_env(
+            include_registry_auth=True, owner_home=target, source_home=source)
+        names.append("BENIGN_CONTROL")
+        code = "import json,os; print(json.dumps({n:os.environ.get(n) for n in " + repr(names) + "}))"
+        child = subprocess.run([sys.executable, "-I", "-c", code], env=env,
+                               capture_output=True, text=True, timeout=20, check=True)
+        expected = {name: target_value for name in _REGISTRY_AUTH_ENV_VARS}
+        expected["BENIGN_CONTROL"] = "keep"
+        assert json.loads(child.stdout) == expected
+    finally:
+        ss.set_multiplex_active(False)
+        pin_process_hermes_home(None)
 
 
 class TestFilteredContainerEnv:

@@ -5,6 +5,7 @@ stores."""
 
 from __future__ import annotations
 
+import shutil
 import threading
 from pathlib import Path
 
@@ -466,6 +467,46 @@ def test_gc_keeps_used_removes_orphans(pm_env):
     assert not (runtime / ".staging-abandoned").exists()
     assert (runtime / ".previous-faketool-1.0").is_dir()
     assert any(p.name.startswith("faketool-1.0") for p in runtime.iterdir())
+
+
+def test_locked_displacement_does_not_fail_restore_and_gc_only_reclaims_marked_one(pm_env, monkeypatch):
+    import pm.install as install
+    from pm.cli import cmd_gc
+
+    _, runtime, *_ = pm_env
+    install.ensure("faketool", base_env={})
+    entry_name = Facts(runtime / "facts.json").get("faketool")["entry"]
+    store = Store(runtime)
+    entry = store.entry(entry_name)
+    previous = store.entry(f".previous-{entry_name}")
+    shutil.copytree(entry, previous)
+    (entry / "corrupt.txt").write_text("bad publish", encoding="utf-8")
+    unmarked = store.entry(".displaced-" + "f" * 32)
+    unmarked.mkdir()
+
+    original_remove = install._remove_entry
+
+    def locked_remove(store, name):
+        if name.startswith(".displaced-"):
+            raise PermissionError(13, "DLL still mapped")
+        return original_remove(store, name)
+
+    monkeypatch.setattr(install, "_remove_entry", locked_remove)
+    install.ensure("faketool", explicit=True, base_env={})
+
+    assert not (entry / "corrupt.txt").exists()
+    assert not previous.exists()
+    markers = list(runtime.glob(".displaced-*.restored"))
+    assert len(markers) == 1
+    displaced = store.entry(markers[0].name.removesuffix(".restored"))
+    assert displaced.is_dir()
+
+    monkeypatch.setattr(install, "_remove_entry", original_remove)
+    cmd_gc(None)
+    assert not displaced.exists()
+    assert not markers[0].exists()
+    assert unmarked.is_dir(), "GC must preserve a displacement from an interrupted restore"
+    assert (entry / "bin/faketool").is_file()
 
 
 def test_gc_removes_fetch_cache_archives(pm_env):

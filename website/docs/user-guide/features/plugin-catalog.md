@@ -47,6 +47,7 @@ directory of the hermes-agent repository, declaring:
 | `name` | The catalog key you pass to `hermes plugins install` |
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
+| `subdir` | Path to the plugin inside the repo for monorepos — a plain relative path matching `[A-Za-z0-9._/-]+` (no `..`, `.`, empty segments, absolute or backslash forms) (optional, default repo root) |
 | `tier` | `official` (maintained by NousResearch) or `community` |
 | `category` | Browse shelf: `desktop` (default), `memory`, `platform`, `web`, `tools`, `voice`, `automation`, `models` or `general` |
 | `maintainer` | Who owns the plugin |
@@ -95,6 +96,14 @@ The catalog is designed so you know exactly what you're installing:
   including one built from `new RegExp(...).source`, still fails. Treat the
   lint as a review aid, not a
   guarantee; give Desktop halves the same scrutiny you'd give a Python half.
+- **No runtime overrides of Hermes.** Listed plugins extend Hermes through
+  its public surfaces (hooks, middleware, provider profiles, Desktop SDK slots)
+  and never replace core functions, methods or Desktop UI in place: two plugins
+  patching the same seam would break each other, and a core release could break
+  both. Admission's `no core override` check refuses Python that rebinds Hermes
+  modules, classes or their tables at runtime, and the `desktop surface` lint
+  refuses `desktop/plugin.js` code that queries the app's own markup to restyle,
+  hide, click or rewrite core UI.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.
@@ -160,6 +169,19 @@ catalog moved (via a reviewed PR), prepares and dependency-validates the new SHA
 before publishing it. Your
 enabled/disabled state is preserved, and so are files the plugin's repo does
 not track (the `config.yaml` created from its `.example`, data files, `.env`).
+Symlinks among those untracked files are never followed into the new code: the
+update stops before publishing and names them, so replace each with a regular file.
+Dependency and cache directories (`.venv/`, `venv/`, `node_modules/`, tool caches)
+are not carried at all, links included; the updated plugin rebuilds its dependencies.
+For monorepo/subdirectory installs, which do not carry a local Git checkout,
+update preserves user-state files the new revision does not ship. Plugin code and
+control surfaces remain revision-owned and are not resurrected from the old install:
+source files (Python, JavaScript/TypeScript including `.mjs`/`.cjs`/`.jsx`/`.tsx`,
+shell, Ruby, Perl, PHP), the top-level `dashboard/`, `desktop/`, `skills/`,
+`sidecar/` and `node_modules/` directories, the plugin manifest, `mcp.json` and
+dependency metadata (`pyproject.toml`, `package.json`, lockfiles). If a user-state
+path conflicts with the new tree's file/directory layout, the update stops before
+publication so the installed copy — and the user's data — remain intact.
 Edits you made to *tracked* files are not carried onto the new code; copies are
 saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
 If the new pin renames the plugin's manifest, the old directory is removed and
@@ -215,31 +237,18 @@ catalog for discovery.
 ## Submitting a plugin to the catalog
 
 Submissions are pull requests that add one `plugin-catalog/<name>.yaml` file.
-The full checklist lives in the
-[plugin-catalog README](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog);
-in short, an entry must be:
+The complete guidelines live in
+**[Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md)**:
+what to check before you submit, how the PR and review work, every admission
+rule, and how pin updates, delisting and removal work. That page mirrors the
+canonical rules in the
+[plugin-catalog README](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog).
 
-1. **Owner-submitted** — the PR author owns or maintains the plugin repo.
-   Maintainers also add batches of community plugins from a reviewed sweep
-   (each pin validated and scanned at the pinned commit); if yours was swept
-   in and you want it changed or removed, open a PR on your entry.
-2. **A public repository** — the `repo` URL is publicly cloneable.
-3. **Released** — the repo has real releases/tags, not just a default branch.
-4. **Passing validation** — the catalog validation GitHub Action is green on
-   the PR (schema, SHA format, reachability).
-5. **Not self-updating** — the catalog build must not download and replace
-   its own files; the pinned SHA is the only update path (a SHA-bump PR plus
-   `hermes plugins update <name>`).
-
-Pin updates (bumping `sha` to a newer commit) follow the same PR + review
-process; bump `version` in the same PR so the label users see matches the
-code, and re-pin any `image` / `screenshots` URLs that embed the sha. Your
-plugin page (`/docs/plugins/<name>`) is built from the same file: add
-`screenshots:` there to fill it out (the README renders by default) — there is no separate
-listing to maintain. Installed plugins compare their recorded sha against the live pin:
-`hermes plugins list --json` reports `update_available`, the Desktop Plugins
-tab shows an **Update to 1.4.0** button, and `hermes plugins update <name>`
-checks out exactly the new pin.
+In short, a listed plugin is submitted by its owner (or added in a reviewed
+maintainer sweep), lives in a public repository, pins an exact commit, passes
+`hermes plugins validate` in catalog CI, never updates itself, and extends
+Hermes only through public hooks and the Desktop SDK, never by patching core
+code or Desktop UI at runtime.
 
 ## See also
 
@@ -248,3 +257,4 @@ checks out exactly the new pin.
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
 - [Plugin Catalog page](/plugins) — the browsable catalog
+- [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

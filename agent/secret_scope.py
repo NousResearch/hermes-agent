@@ -20,7 +20,7 @@ import json
 import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
@@ -85,6 +85,14 @@ def _direct_env_name_key(name: str) -> str:
 # Launch home pinned by set_multiplex_active(True) itself (None: no auto-pin outstanding).
 _AUTO_PINNED_HOME = None
 
+# Context-local counterpart: a task serving a profile OTHER than the process's own, inside a
+# process that is not a multiplexer as a whole — the desktop backend's cron ticker firing a
+# sibling profile's job. Every isolation keyed on ``is_multiplex_active()`` (the routed-dotenv
+# guard, ``get_secret``'s fail-closed miss, subprocess scrubbing, passthrough) applies inside
+# it while the process's own turns keep single-profile semantics. A contextvar, so it reaches
+# the pool worker together with the home override via ``copy_context()``.
+_MULTIPLEX_CONTEXT: ContextVar[bool] = ContextVar("_MULTIPLEX_CONTEXT", default=False)
+
 
 def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed).
@@ -113,8 +121,19 @@ def set_multiplex_active(active: bool) -> None:
         _AUTO_PINNED_HOME = None
 
 
+def set_multiplex_context(active: bool) -> Token:
+    """Run the current task under multiplex semantics regardless of the process flag.
+    Returns a reset token; pair with :func:`reset_multiplex_context` in a ``finally``."""
+    return _MULTIPLEX_CONTEXT.set(bool(active))
+
+
+def reset_multiplex_context(token: Token) -> None:
+    _MULTIPLEX_CONTEXT.reset(token)
+
+
 def is_multiplex_active() -> bool:
-    return _MULTIPLEX_ACTIVE
+    """True in a multiplexing process, or for a task running under multiplex semantics."""
+    return _MULTIPLEX_ACTIVE or _MULTIPLEX_CONTEXT.get()
 
 
 class _BoundScope(NamedTuple):
@@ -187,6 +206,7 @@ class ProfileSecretScope(Mapping[str, str]):
     source_status: str
     digest: str
     external_generation: int = 0
+    defaults: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
     def __getitem__(self, key: str) -> str:
         return self.data[key]
@@ -245,6 +265,23 @@ def _scope_generation(
         "external_generation": int(external_generation),
         "source_status": source_status,
     }
+    from hermes_cli.managed_scope import get_managed_dir
+
+    managed_dir = get_managed_dir()
+    managed_inputs = []
+    if managed_dir is not None:
+        for name in (".env", "config.yaml"):
+            path = managed_dir / name
+            try:
+                payload = path.read_bytes()
+            except FileNotFoundError:
+                fingerprint = "absent"
+            except OSError as exc:
+                fingerprint = f"error:{type(exc).__name__}"
+            else:
+                fingerprint = hmac.new(_SCOPE_VALUE_DIGEST_KEY, payload, hashlib.sha256).hexdigest()
+            managed_inputs.append((str(path.resolve()), fingerprint))
+    material["managed_inputs"] = managed_inputs
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     digest = hashlib.sha256(encoded).hexdigest()
     return f"profile-scope-v1:{digest}", digest
@@ -256,6 +293,7 @@ def _immutable_scope(
     profile_home: Path | None,
     source_status: str,
     external_generation: int = 0,
+    defaults: Mapping[str, str] | None = None,
 ) -> ProfileSecretScope:
     profile_home = profile_home.resolve() if profile_home is not None else None
     copied = {str(key): str(value) for key, value in values.items()}
@@ -268,11 +306,12 @@ def _immutable_scope(
     return ProfileSecretScope(
         profile_home=profile_home.resolve() if profile_home is not None else None,
         data=MappingProxyType(copied),
-        owned_names=frozenset(copied),
+        owned_names=frozenset(copied).difference(defaults or {}),
         generation=generation,
         source_status=source_status,
         digest=digest,
         external_generation=external_generation,
+        defaults=MappingProxyType(dict(defaults or {})),
     )
 
 
@@ -333,6 +372,7 @@ def add_secret_scope_defaults(defaults: Mapping[str, str], *, profile_home: str 
     replacement = _immutable_scope(
         values, profile_home=scope.profile_home, source_status=scope.source_status,
         external_generation=scope.external_generation,
+        defaults={**scope.defaults, **{k: v for k, v in defaults.items() if k not in scope}},
     )
     _SECRET_SCOPE.set(_BoundScope(replacement, stamped_home))
 
@@ -351,7 +391,8 @@ def update_secret_scope(
         # A dotenv write may also invalidate the external-source snapshot. Rebuild
         # through the owner so the next child sees the complete new generation;
         # merely copying the old external_generation makes our own write stale.
-        rebuilt = build_profile_secret_scope(Path(stamped_home), fail_closed_external=True)
+        rebuilt = build_profile_secret_scope(
+            Path(stamped_home), fail_closed_external=True, defaults=scope.defaults)
         _SECRET_SCOPE.set(_BoundScope(rebuilt, stamped_home))
         return True
     values = dict(scope)
@@ -443,8 +484,8 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = bound.mapping.get(name)
         if val is not None:
             return val
-        return default if (_MULTIPLEX_ACTIVE or serves_routed_profile()) else _environ_or(name, default)
-    if _MULTIPLEX_ACTIVE:
+        return default if serves_routed_profile() else _environ_or(name, default)
+    if is_multiplex_active():
         raise UnscopedSecretError(
             name,
             f"get_secret({name!r}) called with no profile secret scope active "
@@ -663,6 +704,7 @@ def build_profile_secret_scope(
     *,
     fail_closed_external: bool = False,
     hydrate_external: bool = True,
+    defaults: Mapping[str, str] | None = None,
 ) -> ProfileSecretScope:
     """Build an immutable identity-bound profile secret scope."""
     home = Path(hermes_home)
@@ -696,6 +738,18 @@ def build_profile_secret_scope(
     bridged = bridged_allow_all_users()
     if bridged is not None and _is_process_home(home):
         secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
+    # Managed policy has the same final precedence as the process-global loader.
+    # Values participate in the salted scope digest, including managed-only keys.
+    from hermes_cli.managed_scope import load_managed_env
+
+    secrets.update((k, v) for k, v in load_managed_env().items() if not _is_global_env(k))
+    owned_names = record_profile_owned_secret_names(home, secrets)
+    # Launch defaults are frozen by their owner, never reread from ambient env at
+    # validation. A value once supplied by a profile source cannot return through
+    # that frozen fallback after the source revokes it.
+    retained_defaults = {k: str(v) for k, v in (defaults or {}).items()
+                         if not _is_global_env(k) and k not in owned_names}
+    secrets = {**retained_defaults, **secrets}
     return _immutable_scope(
         secrets,
         profile_home=home,
@@ -704,6 +758,7 @@ def build_profile_secret_scope(
             f"external:{external_snapshot.status}"
         ),
         external_generation=int(external_snapshot.generation),
+        defaults=retained_defaults,
     )
 
 
@@ -881,7 +936,7 @@ def build_profile_env_boundary(
 
             target_home = get_hermes_home_override() or source_home
         except Exception as exc:
-            if _MULTIPLEX_ACTIVE:
+            if is_multiplex_active():
                 raise RuntimeError(
                     "target profile home could not be resolved while multiplexing"
                 ) from exc
@@ -898,6 +953,7 @@ def build_profile_env_boundary(
         current_scope = build_profile_secret_scope(
             target,
             fail_closed_external=True,
+            defaults=active_scope.defaults,
         )
         if not isinstance(active_scope, ProfileSecretScope):
             raise RuntimeError("active profile secret scope is not identity-bound")
@@ -943,3 +999,23 @@ def _is_process_home(hermes_home: Path) -> bool:
         return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:
         return False
+
+
+def refresh_installed_secret_scope(hermes_home: Path) -> bool:
+    """Replace this home's installed authority after source/plugin publication.
+
+    Readers holding an earlier scope retain an immutable snapshot. New reads see
+    the complete replacement, including revocations and its current generation.
+    """
+    bound = _SECRET_SCOPE.get()
+    if bound is None:
+        return False
+    owner = bound.profile_home or bound.mapping.profile_home
+    home = Path(hermes_home).resolve()
+    if owner is None or Path(owner).resolve() != home:
+        raise RuntimeError("refresh home does not match installed profile secret scope")
+    record_profile_owned_secret_names(home, bound.mapping.owned_names)
+    rebuilt = build_profile_secret_scope(
+        home, fail_closed_external=True, defaults=bound.mapping.defaults)
+    _SECRET_SCOPE.set(_BoundScope(rebuilt, str(home)))
+    return True

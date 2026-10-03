@@ -105,7 +105,9 @@ def _gateway_status() -> str:
         snapshot = get_gateway_runtime_snapshot()
         if snapshot.running:
             mode = "manual" if snapshot.has_process_service_mismatch else snapshot.manager
-            return f"running ({mode}, pid {snapshot.gateway_pids[0]})"
+            # A supervised gateway may have no scannable PID (s6 `python -c` launcher, #125390).
+            pid = f", pid {snapshot.gateway_pids[0]}" if snapshot.gateway_pids else ""
+            return f"running ({mode}{pid})"
         return f"stopped ({snapshot.manager})"
     except Exception:
         return "unknown" if sys.platform.startswith(("linux", "darwin")) else "N/A"
@@ -178,8 +180,25 @@ def _config_overrides(config: dict) -> dict[str, str]:
         overrides["toolsets"] = str(user_toolsets)
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
-        overrides["fallback_providers"] = str(fallbacks)
+        # Entries carry api_key; the dump is made to be pasted, so it never prints a secret.
+        from agent.redact import redact_sensitive_text
+        overrides["fallback_providers"] = redact_sensitive_text(
+            str(_mask_fallback_keys(fallbacks)), force=True, redact_url_credentials=True
+        )
     return overrides
+
+
+def _mask_fallback_keys(value):
+    """Mask secret fields (``api_key``, ``token``, ``password``, ... per ``agent.redact``) by field, not
+    by text: the runtime ``str()``s whatever value is there (a YAML int, a mapping, a key containing
+    ``***``), and text redaction only masks quoted strings that don't already look masked."""
+    from agent.redact import is_secret_field_name
+
+    if isinstance(value, dict):
+        return {k: "***" if v and is_secret_field_name(k) else _mask_fallback_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_fallback_keys(v) for v in value]
+    return value
 
 
 # (env var, dump label) in display order.

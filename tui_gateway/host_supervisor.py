@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
-from tools.environments.local import build_subprocess_env, hermes_subprocess_env
+from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
 _Thread = threading.Thread
@@ -30,6 +30,7 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "session.save": "run-concurrent", "session.compress": "idle-gated",
     "prompt.submit.truncate": "idle-gated", "slash.model": "idle-gated",
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
+    "slash.refine": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",
     "slash.retry": "idle-gated"}
 
@@ -150,20 +151,22 @@ class HostSupervisor:
             else get_hermes_home() / "state" / _REGISTRY_NAME)
         self.argv = argv or [sys.executable, "-m", "tui_gateway.compute_host"]
         self.cwd = Path(cwd) if cwd is not None else _repo_root()
-        self.env = env
+        self.env = dict(env) if env is not None else None
         self.rpc_sink = rpc_sink or (lambda _obj: None)
         self.respawn_max = max(0, int(respawn_max))
         self.heartbeat_secs = max(1, int(heartbeat_secs))
         self.expected_build_sha = _build_sha() if expected_build_sha is None else expected_build_sha
         self.expected_hermes_home = (
             str(get_hermes_home()) if expected_hermes_home is None else expected_hermes_home)
-        from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+        from agent.secret_scope import build_profile_env_boundary
         from hermes_constants import get_routing_process_hermes_home
 
         source_home = Path(get_routing_process_hermes_home()).resolve()
         target_home = Path(self.expected_hermes_home).resolve()
+        self._source_profile_home = source_home
+        self._target_profile_home = target_home
         self._profile_env_boundary = None
-        if is_multiplex_active() or source_home != target_home:
+        if source_home != target_home:
             self._profile_env_boundary = build_profile_env_boundary(source_home, target_home)
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
@@ -336,25 +339,7 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        boundary = self._profile_env_boundary
-        if boundary is not None:
-            from agent.secret_scope import build_profile_env_boundary
-
-            boundary = build_profile_env_boundary(boundary.source_home, boundary.target_home)
-            self._profile_env_boundary = boundary
-        env = hermes_subprocess_env(
-            inherit_credentials=True, profile_boundary=boundary
-        )
-        if self.env:
-            if boundary is None:
-                explicit = build_subprocess_env(base={}, extra=self.env)
-            else:
-                explicit = build_subprocess_env(
-                    base={}, extra=self.env, profile_home=boundary.target_home,
-                    source_profile_home=boundary.source_home,
-                    enforce_profile_boundary=True,
-                )
-            env.update(explicit)
+        env = self._host_child_env()
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         root = str(_repo_root())
         env.setdefault("PYTHONPATH", root)
@@ -376,6 +361,30 @@ class HostSupervisor:
         self._validate_hello()
         self._persist_registry()
         logger.info("compute host started pid=%s reason=%s", proc.pid, reason)
+
+    def _host_child_env(self) -> dict[str, str]:
+        """A trusted Hermes host keeps its owner's credentials, not terminal grants."""
+        source, target = self._source_profile_home, self._target_profile_home
+        if source == target:
+            # Preserve operator-injected credentials and HOME policy for Hermes itself.
+            env = {**os.environ, **(self.env or {})}
+            env.setdefault("PYTHONUTF8", "1")
+        else:
+            from agent.secret_scope import build_profile_env_boundary, reset_secret_scope, set_secret_scope
+
+            # A respawn belongs to the captured owner, independently of the caller's
+            # turn scope. Resolve fresh private authority; never republish ambient values.
+            token = set_secret_scope(None)
+            try:
+                boundary = build_profile_env_boundary(source, target)
+                env = hermes_subprocess_env(
+                    base_env={**os.environ, **(self.env or {})}, profile_boundary=boundary)
+                env.update(boundary.compiled_target_values())
+                self._profile_env_boundary = boundary
+            finally:
+                reset_secret_scope(token)
+        env['HERMES_HOME'] = str(target)
+        return env
 
     def _validate_hello(self) -> None:
         hello = self._hello

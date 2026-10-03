@@ -107,20 +107,3 @@ def tools_from_cache_entry(entry: dict) -> List[dict]:
 def utility_tools_from_cache_entry(entry: dict) -> List[dict]:
     """Return cached ``{schema, handler_key}`` utility rows."""
     return _list_field(entry, "utility_tools")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def clear_cache_entry(server_name: str) -> None:
-    with _cache_lock:
-        data = _load_all()
-        if server_name in data:
-            del data[server_name]
-            _save_all(data)
-
-def has_cached_entry(server_name: str, fingerprint: str) -> bool:
-    return get_cached_entry(server_name, fingerprint) is not None
-# ---- END PLUGIN-COMPAT ----

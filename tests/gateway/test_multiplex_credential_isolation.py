@@ -136,6 +136,74 @@ def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkey
         assert os.environ["DISCORD_ALLOWED_CHANNELS"] == "all-channels"
 
 
+def test_launch_home_dotenv_still_loads_under_multiplex(tmp_path, monkeypatch):
+    """#125530: the multiplex guard skips only FOREIGN (routed) home loads.
+
+    The launch profile's own scoped bodies bind an override naming the launch home, so a
+    launch-home load legitimately arrives with an override set; skipping it hid the launch
+    home's ``.env`` (a fallback_providers key) from the process env. A routed profile's
+    ``.env`` is still never copied into ``os.environ``.
+    """
+    import os
+
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch = tmp_path / "launch"
+    routed = tmp_path / "profiles" / "routed"
+    launch.mkdir()
+    routed.mkdir(parents=True)
+    (launch / ".env").write_text("LAUNCH_ONLY_FALLBACK_KEY=launch-key\n", encoding="utf-8")
+    (routed / ".env").write_text("LAUNCH_ONLY_FALLBACK_KEY=routed-secret\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("LAUNCH_ONLY_FALLBACK_KEY", raising=False)
+    ss.set_multiplex_active(True)
+
+    def _load(home):
+        token = set_hermes_home_override(str(home))
+        try:
+            return load_hermes_dotenv(hermes_home=home)
+        finally:
+            reset_hermes_home_override(token)
+
+    assert _load(launch) == [launch / ".env"]
+    assert os.environ["LAUNCH_ONLY_FALLBACK_KEY"] == "launch-key"
+    assert _load(routed) == []
+    assert os.environ["LAUNCH_ONLY_FALLBACK_KEY"] == "launch-key"
+    assert _load(launch) == [launch / ".env"]
+    assert os.environ["LAUNCH_ONLY_FALLBACK_KEY"] == "launch-key"
+
+
+def test_launch_home_load_inside_foreign_turn_keeps_routed_cwd_out_of_process_env(tmp_path, monkeypatch):
+    """A launch-targeted load while a FOREIGN profile is routed is still skipped: its terminal
+    bridge reads config through the override, so it would copy the routed profile's ``terminal.cwd``
+    into the shared ``TERMINAL_CWD`` that the launch profile's own turns and cron jobs read."""
+    import os
+
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch = tmp_path / "launch"
+    routed = tmp_path / "profiles" / "routed"
+    launch_work = tmp_path / "work-launch"
+    routed_work = tmp_path / "work-routed"
+    for d in (launch, routed, launch_work, routed_work):
+        d.mkdir(parents=True)
+    (launch / ".env").write_text("LAUNCH_ONLY_FALLBACK_KEY=launch-key\n", encoding="utf-8")
+    (launch / "config.yaml").write_text(f"terminal:\n  backend: local\n  cwd: {launch_work}\n", encoding="utf-8")
+    (routed / "config.yaml").write_text(f"terminal:\n  backend: local\n  cwd: {routed_work}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("TERMINAL_CWD", str(launch_work))
+    ss.set_multiplex_active(True)
+
+    token = set_hermes_home_override(str(routed))
+    try:
+        assert load_hermes_dotenv(hermes_home=launch) == []
+    finally:
+        reset_hermes_home_override(token)
+    assert os.environ["TERMINAL_CWD"] == str(launch_work)
+
+
 def test_cold_profile_hydrates_external_source_without_global_env(
     tmp_path, monkeypatch
 ):

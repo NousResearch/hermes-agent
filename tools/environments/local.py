@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,12 +22,12 @@ from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
-    _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _build_model_provider_env_names, _credential_target_env_name,
-    _get_configured_bws_token_env,
-    _is_blocked_provider_env, _is_hermes_internal_secret, _is_terminal_first_party_env,
-    _is_provider_env_blocklisted, _matches_terminal_first_party_prefix,
-    _plugin_terminal_env_strip_keys, strip_profile_gate_env)
+    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _build_model_provider_env_names, _credential_target_env_name, _get_configured_bws_token_env,
+    _is_blocked_provider_env, _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
+    _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
+    _registry_adapter_secret_env,
+    strip_profile_gate_env)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -268,46 +268,6 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
-def _filter_secret_env(
-    items: Mapping[str, str], out: dict, *, unwrap_force: bool,
-    plugin_strip: frozenset = frozenset()) -> None:
-    """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
-    unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
-    dropped. Blocklisted names survive only via env_passthrough registration or as
-    context-entitled first-party ``BUZZ_*`` vars; the latter are used directly, never
-    scope-resolved (UnscopedSecretError under multiplex)."""
-    is_pass: Callable[[str], bool]
-    resolve_value: Callable[[str, str | None], str | None]
-    try:
-        from tools import env_passthrough
-        is_pass = env_passthrough.is_env_passthrough
-        resolve_value = env_passthrough.resolve_passthrough_value
-    except Exception:
-        is_pass = lambda _name: False
-        resolve_value = lambda _name, fallback: fallback
-    plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
-    for key, value in items.items():
-        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
-            if not unwrap_force:
-                continue
-            key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key):
-                out[key] = value
-            continue
-        if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
-            continue
-        first_party = _is_terminal_first_party_env(key)
-        passthrough = is_pass(key)
-        if (_is_blocked_provider_env(key) or _is_provider_env_blocklisted(key)) and not (
-            passthrough or first_party
-        ):
-            continue
-        if passthrough and not first_party:
-            value = resolve_value(key, value)
-        if value is not None:
-            out[key] = value
-
-
 def _finalize_child_env(
     env: dict, profile_home: str | os.PathLike | None = None,
     source_profile_home: str | os.PathLike | None = None,
@@ -321,28 +281,6 @@ def _finalize_child_env(
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
-
-
-def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
-    """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
-    *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
-    for children of a systemd/cron-launched gateway), then apply the shared guards."""
-    out: dict[str, str] = {}
-    for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
-    # Declared names the bound profile scope holds but the process env never did (a routed
-    # profile's own .env / sources) — the filter above can only see names already present.
-    # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
-    # declared secret again (#114209); _scrub_child_env calls it the same way.
-    from tools.env_passthrough import scoped_passthrough_additions
-    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
-    path_key = _path_env_key(out)
-    # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
-    # service manager or cron without the console script's directory on PATH. The terminal environment
-    # already applies this invariant; Cron scripts use this sanitizer directly (#92998).
-    if path_key is not None:
-        out[path_key] = _prepend_hermes_bin_dir(fix_path(out.get(path_key, "")))
-    return _finalize_child_env(out)
 
 
 def _is_credential_shaped_password(key: str) -> bool:
@@ -373,8 +311,9 @@ def _finalize_child_env_policy(
         _credential_target_env_name(name).upper()
         for name in _plugin_terminal_env_strip_keys()
     }
-    always_strip = {name.upper() for name in _ALWAYS_STRIP_KEYS}
-    force_targets = {str(name).upper() for name in explicit_force_targets}
+    always_strip = _ALWAYS_STRIP_FOLDED | _home_adapter_secret_env(profile_home)
+    registered = _registry_adapter_secret_env()
+    force_targets = {_credential_target_env_name(str(name)).upper() for name in explicit_force_targets}
     for key in list(env):
         target_key = _credential_target_env_name(key)
         target_upper = target_key.upper()
@@ -383,9 +322,10 @@ def _finalize_child_env_policy(
             env.pop(key, None)
         elif _is_hermes_internal_secret(target_key, profile_home=profile_home):
             env.pop(key, None)
-        elif target_upper in always_strip or target_upper in plugin_strip:
+        elif ((target_upper in always_strip and not _is_terminal_first_party_env(target_key))
+              or target_upper in plugin_strip):
             env.pop(key, None)
-        elif _is_blocked_provider_env(target_key) and not (
+        elif _is_provider_env_blocklisted(target_key, registered) and not (
             allowed or _is_terminal_first_party_env(target_key)
         ):
             env.pop(key, None)
@@ -425,19 +365,17 @@ def _sanitize_subprocess_env(
             ) from exc
     cross_profile = bool(boundary and boundary.source_home != boundary.target_home)
     policy_home = boundary.target_home if boundary is not None else profile_home
-    resolve_value: Callable[[str, str | None], str | None]
-    try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
-        resolve_value = resolve_passthrough_value
-        is_pass = (
-            (lambda name: is_env_passthrough(name, profile_home=profile_home))
-            if profile_home is not None
-            else is_env_passthrough
-        )
-    except Exception:
-        is_pass = lambda _name: False
-        resolve_value = lambda _name, fallback: fallback
-    plugin_strip = _plugin_terminal_env_strip_keys()
+    from agent.secret_scope import _env_name_key
+    owned_names = ({_env_name_key(name) for name in boundary.source_owned_names | set(boundary.target_values)}
+                   if cross_profile and boundary is not None else set())
+    from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+    resolve_value = resolve_passthrough_value
+    is_pass = (
+        (lambda name: is_env_passthrough(name, profile_home=policy_home))
+        if policy_home is not None else is_env_passthrough
+    )
+    plugin_strip = _plugin_terminal_env_strip_keys() | _home_adapter_secret_env(policy_home)
+    registered = _registry_adapter_secret_env()
     out = {}
     explicit_force = set()
     for items, unwrap in ((protected, False), (extra_env or {}, True)):
@@ -451,18 +389,19 @@ def _sanitize_subprocess_env(
                 forced = True
                 if _is_hermes_internal_secret(key, profile_home=policy_home):
                     continue
-            if _is_hermes_internal_secret(key, profile_home=policy_home) or key in plugin_strip:
+            if (_is_hermes_internal_secret(key, profile_home=policy_home)
+                    or _credential_target_env_name(key).upper() in plugin_strip):
                 continue
             first_party = _is_terminal_first_party_env(key)
             passthrough = is_pass(key)
-            if _is_blocked_provider_env(key) and not (forced or passthrough or first_party):
+            if _is_provider_env_blocklisted(key, registered) and not (forced or passthrough or first_party):
                 continue
             if cross_profile and _is_credential_shaped_password(key) and not passthrough:
                 continue
             resolved = value
             if passthrough and not first_party:
                 resolved = (boundary.target_values.get(key)
-                            if boundary is not None and cross_profile and not _is_global_env(key)
+                            if boundary is not None and cross_profile and _env_name_key(key) in owned_names and not _is_global_env(key)
                             else resolve_value(key, value))
             if resolved is not None:
                 out[key] = resolved
@@ -509,13 +448,14 @@ def hermes_subprocess_env(
             for key, value in boundary.compiled_target_values().items():
                 if _credential_target_env_name(key).upper() in model_names:
                     env[key] = value
-    strip = {name.upper() for name in _ALWAYS_STRIP_KEYS}
+    strip = _ALWAYS_STRIP_FOLDED | _home_adapter_secret_env(boundary.target_home if boundary else None)
     strip |= {_credential_target_env_name(name).upper() for name in _plugin_terminal_env_strip_keys()}
+    registered = _registry_adapter_secret_env()
     for key in list(env):
         target = _credential_target_env_name(key)
         if (target.upper() in strip or key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(target, profile_home=boundary.target_home if boundary else None)
-                or (not inherit_credentials and _is_blocked_provider_env(target))
+                or (not inherit_credentials and _is_provider_env_blocklisted(target, registered))
                 or (boundary is not None and boundary.source_home != boundary.target_home
                     and _is_credential_shaped_password(target))):
             del env[key]
@@ -529,11 +469,13 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place."""
     # Credential names fold to uppercase for membership: on Windows the env block
     # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
-    strip_folded = frozenset(k.upper() for k in (_ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()))
+    home_secrets = _home_adapter_secret_env()  # one manifest stamp per scrub
+    strip_folded = _ALWAYS_STRIP_FOLDED | {k.upper() for k in _plugin_terminal_env_strip_keys()} | home_secrets
+    registered = _registry_adapter_secret_env()  # home_secrets already strip above
     for key in list(env):
         if (key.upper() in strip_folded
                 or (not inherit_credentials and (
-                    _is_blocked_provider_env(key) or _is_provider_env_blocklisted(key)))
+                    _is_blocked_provider_env(key) or _is_provider_env_blocklisted(key, registered)))
                 or key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):
             del env[key]
@@ -555,16 +497,44 @@ def build_subprocess_env(
     bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
-    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
+    acts for a routed profile sees only that profile's declared names, never the launch profile's.
+    Under multiplex semantics it then overlays the bound secret scope (the routed profile's own
+    ``.env`` + source values, which never enter ``os.environ``) and re-applies the managed keys,
+    all BEFORE the scrub, so those values pass the same scrub / passthrough rules as any other."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            env.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(env)
     if scrub_secrets:
-        return _sanitize_subprocess_env(
+        result = _sanitize_subprocess_env(
             env, dict(extra) if extra else None, profile_home=profile_home,
             source_profile_home=source_profile_home,
             enforce_profile_boundary=enforce_profile_boundary,
         )
+        if strip_launch_profile:
+            from agent.secret_scope import current_secret_scope, is_multiplex_active
+            scope = current_secret_scope() if is_multiplex_active() else None
+            if scope:
+                # This existing owner-script mode grants the bound home's own
+                # values, unlike terminal passthrough. Scrub that exact authority
+                # independently, after the ambient source-to-target boundary; never
+                # widen provider/internal/plugin denial or re-add launch values.
+                owner = scope.profile_home
+                if owner is None:
+                    raise RuntimeError("profile script overlay requires a bound owner")
+                overlay = _sanitize_subprocess_env(
+                    dict(scope), profile_home=owner, source_profile_home=owner,
+                    enforce_profile_boundary=True,
+                )
+                result.update((key, overlay[key]) for key in scope if key in overlay)
+        return result
     if inherit_profile_home:
         _apply_profile_home(env)
     if extra:
@@ -619,6 +589,21 @@ def served_profile_child_env(
     return env
 
 
+def host_gateway_child_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Child env for the host gateway: the default profile's secrets, never the launcher's.
+
+    ``served_profile_child_env`` — not ``os.environ.copy()``. A profile-scoped parent
+    (desktop, fleet restart, detached watcher) must not donate its dotenv to the
+    multiplexer that owns the primary adapter map.
+    """
+    from hermes_constants import get_default_hermes_root
+    return served_profile_child_env(
+        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
+    )
+
+
 def _is_routed_home(target_home: "str | Path") -> bool:
     """True when ``target_home`` is not the process's own (launch) home.
 
@@ -653,16 +638,39 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
     # recognized as a global name and left alone.
+    # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
+    # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
+    # a re-parse of the file alone no longer names it (#107695 review). External secret sources
+    # (vault, 1Password, ...) write their names into the same shared os.environ, and a name the
+    # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
+    # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
+    # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
+    # it last, with override, so it beats the user's own .env) — leave them in place.
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
     residue_names = {
         key.upper() for key in
-        set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values())
-        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
+        set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
+        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
+        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
     return strip_profile_gate_env(env)
+
+
+def restore_managed_env(env: dict) -> dict:
+    """Re-apply the administrator-managed ``.env`` values over *env* — call AFTER a routed profile's scope
+    has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
+    the launch process; a routed child must see the same precedence, or the routed user's value for a
+    managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
+    from hermes_cli.env_loader import managed_dotenv_keys
+    for key in managed_dotenv_keys():
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return env
 
 
 # --- Shell discovery ---
@@ -874,12 +882,8 @@ def _make_run_env(env: dict) -> dict:
     run_env = _sanitize_subprocess_env(base, env)
     from agent.secret_scope import serves_routed_profile
     if serves_routed_profile():
-        is_pass: Callable[[str], bool]
-        try:
-            from tools.env_passthrough import is_env_passthrough
-            is_pass = is_env_passthrough
-        except Exception:
-            is_pass = lambda _name: False
+        from tools.env_passthrough import is_env_passthrough
+        is_pass = is_env_passthrough
         for key in list(run_env):
             if _is_credential_shaped_password(key) and not is_pass(key):
                 run_env.pop(key, None)
@@ -888,6 +892,21 @@ def _make_run_env(env: dict) -> dict:
         path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
         path = _prepend_git_bash_dirs(path)
         run_env[path_key] = _prepend_hermes_bin_dir(path)
+    # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
+    # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
+    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
+    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
+    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
+    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
+    # the seat env passes through untouched.
+    try:
+        from tools.bot_desktop.runtime import published_env
+        published = published_env()
+    except Exception:
+        published = {}
+    if published:
+        run_env.update(published)
+        run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
     return run_env
 
 

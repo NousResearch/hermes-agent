@@ -6,9 +6,12 @@ any dependency from that environment has been imported.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -35,17 +38,28 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
+    """Describe an access failure inside this install's dependency state."""
+    if not exc.filename:
+        return None
+    denied = Path(exc.filename).resolve()
+    if not denied.is_relative_to(install_state_dir(project_root).resolve()):
+        return None
+    return (f"install state is not writable by this user ({denied}); "
+            "run as the install owner or grant write access")
+
+
 def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
 
-# The files that decide the dependency set. `scripts/_hermes-python` re-activates
+# The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
 ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
-    """Beside facts.json, so the prologue finds it from ``$__HERMES_ACTIVATED``."""
+    """Beside facts.json, so the runner finds it from ``$__HERMES_ACTIVATED``."""
     return install_state_dir(project_root) / "inputs"
 
 
@@ -61,7 +75,7 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
 
     Recorded on every successful install, including no-op syncs: a checkout that
     rewrites an input without changing it moves the mtime, and only this record
-    brings the stamp back to equal. The prologue compares for equality, not order,
+    brings the stamp back to equal. The runner compares for equality, not order,
     because switching branches can move an input's mtime in either direction.
     """
     import shutil
@@ -80,7 +94,8 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
-def base_venv(project_root: Path) -> Path:
+def payload_venv(project_root: Path) -> Path | None:
+    """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
@@ -90,7 +105,11 @@ def base_venv(project_root: Path) -> Path:
             if not venv.is_relative_to(root.parent):
                 raise RuntimeError("payload environment escapes its root")
             return venv
-    return project_venv_dir(root) or root / "venv"
+    return None
+
+
+def base_venv(project_root: Path) -> Path:
+    return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
 def store_root(project_root: Path) -> Path:
@@ -152,11 +171,25 @@ def selected_venv(project_root: Path) -> Path:
     ``flush_before_selecting``, so the ``pyvenv.cfg`` probe below is a sanity
     check against a vanished tree, not the durability guarantee.
     """
+    return _recorded_venv(project_root) or base_venv(project_root)
+
+
+def committed_venv(project_root: Path) -> Path | None:
+    """The environment PM committed for this install (or a sealed payload's own), else ``None``.
+
+    Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
+    predates PM and is built for whichever interpreter created it, so loading it from PM's store
+    Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+    """
+    return _recorded_venv(project_root) or payload_venv(project_root)
+
+
+def _recorded_venv(project_root: Path) -> Path | None:
     path = runtime_facts_path(project_root)
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return base_venv(project_root)
+        return None
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"cannot read dependency environment: {path}") from exc
     try:
@@ -165,7 +198,7 @@ def selected_venv(project_root: Path) -> Path:
     except AttributeError as exc:
         raise RuntimeError(f"invalid dependency environment record: {path}") from exc
     if value is None:
-        return base_venv(project_root)
+        return None
     if not isinstance(value, str):
         raise RuntimeError("invalid dependency environment path")
     environment = Path(value).resolve()
@@ -258,6 +291,20 @@ def running_from_selected_environment(project_root: Path) -> bool:
     return any(Path(entry).resolve() == selected for entry in sys.path if entry)
 
 
+def _require_own_dependencies(project_root: Path) -> None:
+    """With nothing committed, an interpreter keeps the packages it booted with.
+
+    PM's store Python boots with none, so for it there is nothing to keep: refuse instead of
+    running on whatever PYTHONPATH it inherited (historically the pre-PM in-tree venv).
+    """
+    import sys
+
+    if sys.prefix != sys.base_prefix:
+        return  # a venv interpreter (developer .venv, test env) carries its own packages
+    if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
+        raise RuntimeError("no dependency environment is committed for this install")
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -275,20 +322,24 @@ def activate_dependencies(project_root: Path) -> None:
         with runtime_lock(project_root) as held:
             if held:
                 recover_publication(project_root)
-            environment = selected_venv(project_root)
+            environment = committed_venv(project_root)
+            if environment is None:
+                return _require_own_dependencies(project_root)
             release = lease_generation(environment)
             # Without the lock, an installer may commit a new generation between the
             # read and the lease, leaving the leased one unselected and collectable.
-            while not held and (current := selected_venv(project_root)) != environment:
+            while not held and (current := committed_venv(project_root)) not in (None, environment):
                 release()
                 environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
     else:
-        # Older installs and sealed payloads still select once, before imports.
+        # Sealed payloads still select once, before imports.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
-        environment = base_venv(project_root)
+        environment = payload_venv(project_root)
+        if environment is None:
+            return _require_own_dependencies(project_root)
         selected = site_packages(environment)
         if not selected.is_dir():
             return  # External/Nix interpreter owns its original sys.path.
@@ -306,8 +357,13 @@ def activate_dependencies(project_root: Path) -> None:
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
     os.environ.pop("VIRTUAL_ENV", None)
     executable_dir = venv_bin_dir(environment)
-    if executable_dir.is_dir():
-        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
+    # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
+    # the build-time source snapshot, not this checkout (#124627): a child that resolves
+    # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
+    prefix = [str(path) for path in (project_root.resolve() / ".hermes" / "bin", executable_dir)
+              if path.is_dir()]
+    if prefix:
+        os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:
@@ -316,15 +372,18 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     from pm.registry import all_packages
 
     env = env_for(*all_packages())
-    selected = site_packages(selected_venv(project_root))
+    environment = committed_venv(project_root)
     env.pop("PYTHONHOME", None)
     env.pop("VIRTUAL_ENV", None)
-    env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
+    # Nothing committed: the child's own hermes_bootstrap decides (a bare store Python refuses),
+    # rather than inheriting the pre-PM in-tree venv from here.
+    env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()),
+                                         *([str(site_packages(environment))] if environment else [])])
     # The child-process sentinel. Its VALUE is the installed-state file this
     # environment was composed against, so a consumer learns that it inherited
     # an activated shell and which checkout/profile that shell came from. Its
     # directory also holds activation_inputs_dir, the input-mtime stamps
-    # `scripts/_hermes-python` compares against to decide staleness.
+    # `scripts/_activation.sh` compares against to decide staleness.
     env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
     # The suite's interpreter (pm.testenv): an isolated side environment, so it
     # never appears on PYTHONPATH/PATH above. scripts/run_tests.sh reads it.
@@ -336,5 +395,46 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     return env
 
 
+def _fish_quote(value: str) -> str:
+    """Inside fish single quotes only backslash and the quote itself are special."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+# fish refuses to assign these, and each is either inherited unchanged from the
+# invoking shell (PWD, SHLVL, _) or fish's own state, so skipping loses nothing.
+_FISH_READ_ONLY = frozenset({
+    "PWD", "SHLVL", "_", "status", "version", "hostname", "fish_pid", "history",
+    "pipestatus", "status_generation", "umask", "FISH_VERSION",
+})
+
+# dialect -> (export statement, names the shell cannot assign). fish splits
+# values of variables named *PATH on colons when they are set from a single
+# word, so PATH stays a list.
+_SHELL_DIALECTS = {
+    "sh": (lambda name, value: f"export {name}={shlex.quote(value)}", frozenset()),
+    "fish": (lambda name, value: f"set -gx {name} {_fish_quote(value)}", _FISH_READ_ONLY),
+}
+_SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def shell_exports(env: dict[str, str], dialect: str) -> str:
+    """The composed environment as a script a shell of ``dialect`` can evaluate.
+
+    Windows carries names like ``ProgramFiles(ARM)`` that no shell can assign;
+    they pass through untouched instead of failing the whole script.
+    """
+    statement, read_only = _SHELL_DIALECTS[dialect]
+    return "\n".join(statement(name, str(value)) for name, value in env.items()
+                     if _SHELL_IDENTIFIER.fullmatch(name) and name not in read_only)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Print the composed activation environment.")
+    parser.add_argument("--format", choices=["json", *_SHELL_DIALECTS], default="json")
+    options = parser.parse_args(argv)
+    env = activation_environment(Path(__file__).resolve().parents[1])
+    print(json.dumps(env) if options.format == "json" else shell_exports(env, options.format))
+
+
 if __name__ == "__main__":
-    print(json.dumps(activation_environment(Path(__file__).resolve().parents[1])))
+    main()

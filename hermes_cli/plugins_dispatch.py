@@ -152,6 +152,7 @@ class _QueuedPluginEvent:
 # ``plugins.hook_callback_timeout``. Shell hooks enforce their own subprocess timeout.
 _HOOK_CALLBACK_TIMEOUT_SECS = 30.0
 _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
+_SHELL_HOOK_CALLBACK_TIMEOUT_MARGIN_SECONDS = 1.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
@@ -176,6 +177,14 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
         return False
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+
+
+def _callback_timeout(callback: Callable, default: float) -> float:
+    """Let shell hooks finish (or reap themselves) at their configured subprocess deadline."""
+    shell_timeout = getattr(callback, "_shell_hook_timeout_seconds", None)
+    if isinstance(shell_timeout, (int, float)) and shell_timeout > 0:
+        return max(default, float(shell_timeout) + _SHELL_HOOK_CALLBACK_TIMEOUT_MARGIN_SECONDS)
+    return default
 
 
 class PluginDispatchMixin:
@@ -227,7 +236,7 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, _callback_timeout(cb, timeout))
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})

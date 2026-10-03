@@ -683,6 +683,10 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         # model before the turn runs (#29923 review defect). Any config.yaml change is adopted on the NEXT
         # turn, after the finally-restore below.
         _apply_pending_model_switch(sid, session)
+        # A --once pick queued mid-turn was just applied: its restore belongs to THIS turn. run_body
+        # popped the slot before the switch wrote it, so left there it would ride one more turn.
+        st.one_turn_restore = session.pop("one_turn_model_restore", None)
+    if not st.one_turn_restore:
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
     _sync_agent_fallback_with_config(sid, session)  # chain added after the chat opened reaches this turn

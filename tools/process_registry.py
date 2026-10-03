@@ -621,10 +621,23 @@ class ProcessSession:
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
         with self._lock:
-            self.output_buffer += text
-            self.total_output_chars += len(text)
-            if len(self.output_buffer) > self.max_output_chars:
-                self.output_buffer = self.output_buffer[-self.max_output_chars:]
+            self._append_locked(text)
+
+    def append_output_if_running(self, text: str) -> bool:
+        """Append unless the session has exited. Decided under the lock a kill holds while it
+        snapshots the output and sets ``exited``, so a chunk is either in the kill's receipt or
+        dropped, never added after it."""
+        with self._lock:
+            if self.exited:
+                return False
+            self._append_locked(text)
+        return True
+
+    def _append_locked(self, text: str) -> None:
+        self.output_buffer += text
+        self.total_output_chars += len(text)
+        if len(self.output_buffer) > self.max_output_chars:
+            self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
         """Record an exit. A kill that raced the observer already recorded its own
@@ -1715,8 +1728,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # A kill can leave this reader running while a detached descendant holds the
             # slave open (_release_finished_handles defers the close to it). Keep draining,
             # but leave the killed session's output as the kill reported it.
-            if not session.exited:
-                self._ingest_output(session, text)
+            self._ingest_output(session, text, unless_exited=True)
 
         try:
             while pty.isalive():
@@ -1750,9 +1762,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
             session, decoder, ingest, "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
 
-    def _ingest_output(self, session: ProcessSession, text: str) -> None:
-        """Buffer a freshly-read chunk, then scan watch patterns and stream it live."""
-        session.append_output(text)
+    def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
+        """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
+        ``unless_exited`` drops the chunk once the session has exited (atomically with a kill)."""
+        if not unless_exited:
+            session.append_output(text)
+        elif not session.append_output_if_running(text):
+            return
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
 

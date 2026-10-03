@@ -60,8 +60,12 @@ def _spawn_with_escapee(registry, tmp_path, escapee_lifetime, late_output=""):
     session = registry.spawn_local(
         f"setsid sh -c 'sh -c \"echo \\$PPID\" > {pidfile}; {late}exec sleep {escapee_lifetime}' & sleep 120",
         cwd=str(tmp_path), use_pty=True)
-    assert _wait_for(lambda: pidfile.exists() and pidfile.read_text().strip(), 5)
-    return session, int(pidfile.read_text())
+    try:
+        assert _wait_for(lambda: pidfile.exists() and pidfile.read_text().strip(), 5)
+        return session, int(pidfile.read_text())
+    except BaseException:
+        _terminate_owned(session)
+        raise
 
 
 def _kill_within_deadline(registry, session):
@@ -107,6 +111,43 @@ def test_kill_returns_while_escaped_descendant_holds_the_pty(tmp_path, monkeypat
     assert session._pty.closed
     # What the escapee printed after the kill was drained, not added to the killed session.
     assert "LATE-ESCAPEE-OUTPUT" not in session.output_buffer
+
+
+@_POSIX_PTY
+def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, monkeypatch):
+    # The reader has read a chunk but not yet buffered it when the kill snapshots the output
+    # and sets ``exited``. The chunk must not land in the killed session afterwards.
+    pytest.importorskip("ptyprocess")
+    monkeypatch.setattr(module, "_is_supervised_gateway_process", lambda: False)
+    monkeypatch.setattr(module, "_is_supervised_backend_host", lambda: False, raising=False)
+    registry = ProcessRegistry()
+    entered, release = threading.Event(), threading.Event()
+    ingest, emit, emitted = registry._ingest_output, registry._emit_output, []
+
+    def paused_ingest(session, text, **kwargs):
+        if "RACE-MARKER" in text:
+            entered.set()
+            release.wait(10)
+        ingest(session, text, **kwargs)
+
+    def recording_emit(session, text):
+        emitted.append(text)
+        emit(session, text)
+
+    registry._ingest_output = paused_ingest
+    registry._emit_output = recording_emit
+    session = registry.spawn_local(
+        "sleep 0.2; echo RACE-MARKER; exec sleep 15", cwd=str(tmp_path), use_pty=True)
+    try:
+        assert entered.wait(5), "reader never read the marker"
+        result = registry.kill_process(session.id)
+    finally:
+        release.set()
+    assert result["status"] == "killed"
+    assert _wait_for(lambda: not session._reader_thread.is_alive(), 5)
+    assert "RACE-MARKER" not in result.get("output", "")
+    assert "RACE-MARKER" not in session.output_buffer
+    assert not any("RACE-MARKER" in text for text in emitted)
 
 
 @pytest.mark.parametrize("marked, supervised, scoped", [

@@ -2821,7 +2821,11 @@ def complete_task(
     Completions from non-review statuses need evidence: a stripped ``result``
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
-    auditable event. Approving a card out of ``review`` stays exempt.
+    auditable event. Approving a card out of ``review`` stays exempt. A
+    re-dispatched worker completing with a STALE ``HERMES_KANBAN_RUN_ID`` env
+    (its run row already ended/superseded, caller alive and owning the CURRENT
+    claim) is recovered with a ``completion_run_mismatch_recovered`` warning
+    event instead of failing; see :func:`_recoverable_run_mismatch`.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2872,7 +2876,16 @@ def complete_task(
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
-            return False
+            if expected_run_id is None:
+                return False
+            current_run_id = _recoverable_run_mismatch(conn, task_id, int(expected_run_id))
+            if current_run_id is None:
+                return False
+            # Same txn snapshot the ownership check above ran against; re-fence
+            # on the CURRENT run id so a concurrent completion still loses.
+            if conn.execute(sql, (*params[:-1], current_run_id)).rowcount != 1:
+                return False
+            _log_run_mismatch_recovered(conn, task_id, int(expected_run_id), current_run_id)
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
@@ -2905,6 +2918,75 @@ def complete_task(
     if fire_lifecycle_hook:
         _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
     return True
+
+
+def _recoverable_run_mismatch(
+    conn: sqlite3.Connection, task_id: str, expected_run_id: int,
+) -> Optional[int]:
+    """Decide whether an ``expected_run_id`` fence failure in :func:`complete_task`
+    is a benign re-dispatch artifact; returns the CURRENT run id to proceed with,
+    or None when the mismatch must keep failing exactly as before.
+
+    A gateway restart re-dispatches a task while the old agent session is still
+    alive with STALE ``HERMES_KANBAN_RUN_ID`` env (evidence: t_643c3a0e). Its
+    completion used to die as ``unknown id or terminal state``. Recoverable only
+    when ALL of these hold, checked in this order:
+
+    1. Ownership FIRST so two live competing agents can never both complete:
+       the caller env is scoped to this task (``HERMES_KANBAN_TASK``) and either
+       the current claim is unowned (no ``worker_pid``) or the caller's process
+       is alive and IS the current claim's ``worker_pid``.
+    2. The stale run row still exists for this task and is already
+       ended/superseded (a re-dispatch closed it) — not an active run.
+    3. The task is still in a completable status with a different
+       ``current_run_id`` (the re-dispatched successor run).
+
+    Runs inside the caller's write txn: the row snapshot cannot change between
+    this check and the re-fenced UPDATE.
+    """
+    trow = conn.execute(
+        "SELECT status, current_run_id, worker_pid FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if trow is None or trow["status"] not in ("running", "ready", "blocked", "review"):
+        return None
+    current_run_id = trow["current_run_id"]
+    if current_run_id is None or int(current_run_id) == expected_run_id:
+        return None
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    if trow["worker_pid"] is not None:
+        if int(trow["worker_pid"]) != os.getpid() or not _pid_alive(trow["worker_pid"]):
+            return None
+    stale = conn.execute(
+        "SELECT status, ended_at FROM task_runs WHERE id = ? AND task_id = ?",
+        (expected_run_id, task_id),
+    ).fetchone()
+    if stale is None or stale["ended_at"] is None or stale["status"] == "running":
+        return None
+    return int(current_run_id)
+
+
+def _log_run_mismatch_recovered(
+    conn: sqlite3.Connection, task_id: str, stale_run_id: int, current_run_id: int,
+) -> None:
+    """Auditable warning event + loud log for a recovered re-dispatch run-id mismatch."""
+    _append_event(
+        conn, task_id, "completion_run_mismatch_recovered",
+        {
+            "stale_run_id": stale_run_id,
+            "current_run_id": current_run_id,
+            "warning": (
+                "expected_run_id mismatch (stale worker env after re-dispatch); "
+                "completing with the current run id"
+            ),
+        },
+        run_id=current_run_id,
+    )
+    _log.warning(
+        "complete_task: %s completed via stale run id %s (ended/superseded after "
+        "re-dispatch); proceeding with current run id %s",
+        task_id, stale_run_id, current_run_id,
+    )
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."

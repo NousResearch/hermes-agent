@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import re
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -112,6 +113,8 @@ class MattermostAdapter(BasePlatformAdapter):
         self._base_url = self._base_url.rstrip("/")
         self._bot_user_id = self._bot_username = ""
         self._session: Any = None  # aiohttp.ClientSession
+        self._proxy_req_kw: Dict[str, Any] = {}
+        self._uses_explicit_proxy = False
         self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -141,7 +144,7 @@ class MattermostAdapter(BasePlatformAdapter):
         is_post = method == "POST"
         if is_post:
             self._last_post_status, self._last_post_error = None, ""
-        kwargs: Dict[str, Any] = {"headers": self._headers()}
+        kwargs: Dict[str, Any] = {"headers": self._headers(), **self._proxy_req_kw}
         if payload is not None:
             kwargs["json"] = payload
         if method != "PUT":  # PUT relies on the session default timeout
@@ -219,13 +222,41 @@ class MattermostAdapter(BasePlatformAdapter):
         form.add_field("channel_id", channel_id)
         form.add_field("files", file_data, filename=filename, content_type=content_type)
         async with self._session.post(f"{self._base_url}/api/v4/files", headers=self._auth_header(), data=form,
-                                      timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                                      timeout=aiohttp.ClientTimeout(total=60), **self._proxy_req_kw) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error("MM file upload → %s: %s", resp.status, body[:200])
                 return None
             infos = (await resp.json()).get("file_infos", [])
             return infos[0]["id"] if infos else None
+
+    async def _upload_batch(self, channel_id: str, files: List[Tuple[bytes, str, str]]) -> List[str]:
+        """Upload a chunk together; retain per-file recovery on HTTP rejection."""
+        if not files:
+            return []
+        if len(files) == 1:
+            fid = await self._upload_file(channel_id, *files[0])
+            return [fid] if fid else []
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field("channel_id", channel_id)
+        for data, filename, content_type in files:
+            form.add_field("files", data, filename=filename, content_type=content_type)
+        async with self._session.post(
+            f"{self._base_url}/api/v4/files", headers=self._auth_header(), data=form,
+            timeout=aiohttp.ClientTimeout(total=60), **self._proxy_req_kw,
+        ) as resp:
+            if resp.status < 400:
+                return [info["id"] for info in (await resp.json()).get("file_infos", []) if info.get("id")]
+            body = await resp.text()
+            logger.warning("MM batch upload rejected (%s): %s; trying files separately", resp.status, body[:200])
+        # A size/validation rejection must not discard the other valid files.
+        # Uploads do not create posts; posting/fallback remains the caller's job.
+        ids = []
+        for file in files:
+            if fid := await self._upload_file(channel_id, *file):
+                ids.append(fid)
+        return ids
 
     # --- Required overrides ---
 
@@ -235,7 +266,19 @@ class MattermostAdapter(BasePlatformAdapter):
         if not self._base_url or not self._token:
             logger.error("Mattermost: URL or token not configured")
             return False
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=gateway_trust_env())
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
+
+        # Match standalone delivery for the explicit per-profile proxy. Without
+        # it, retain the live adapter's existing trust_env transport policy.
+        proxy = None
+        if _get_scoped_secret("MATTERMOST_PROXY", "").strip():
+            proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY", target_hosts=self._base_url)
+        session_kw, self._proxy_req_kw = proxy_kwargs_for_aiohttp(proxy)
+        self._uses_explicit_proxy = bool(session_kw or self._proxy_req_kw)
+        # An explicit connector must not receive a second, ambient proxy route.
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=False if "connector" in session_kw else gateway_trust_env(), **session_kw)
         self._closing = False
         me = await self._api_get("users/me")
         if not me or "id" not in me:
@@ -324,6 +367,21 @@ class MattermostAdapter(BasePlatformAdapter):
 
     # --- File helpers ---
 
+    @asynccontextmanager
+    async def _external_get(self, url: str):
+        # Public media URLs are not Mattermost API destinations. Preserve their
+        # environment routing rather than leaking a platform connector and its
+        # server-specific NO_PROXY decision into unrelated requests.
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=30)
+        if self._uses_explicit_proxy:
+            async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
+                async with session.get(url, timeout=timeout) as response:
+                    yield response
+        else:
+            async with self._session.get(url, timeout=timeout) as response:
+                yield response
+
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
@@ -338,7 +396,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         for attempt in range(3):  # retry 5xx/429 and network errors twice with linear backoff
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with self._external_get(url) as resp:
                     if (resp.status >= 500 or resp.status == 429) and attempt < 2:
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                      attempt + 1, url[:80], resp.status)
@@ -385,7 +443,7 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:
-            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with self._external_get(image_url) as resp:
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None
@@ -408,12 +466,14 @@ class MattermostAdapter(BasePlatformAdapter):
                 await asyncio.sleep(human_delay)
             file_ids, caption_parts = [], []
             try:
+                files = []
                 for image_url, alt_text in chunk:
                     if alt_text:
                         caption_parts.append(alt_text)
-                    loaded = await self._load_batch_image(image_url, len(file_ids))
-                    if loaded is not None and (fid := await self._upload_file(chat_id, *loaded)):
-                        file_ids.append(fid)
+                    loaded = await self._load_batch_image(image_url, len(files))
+                    if loaded is not None:
+                        files.append(loaded)
+                file_ids = await self._upload_batch(chat_id, files)
                 if not file_ids:
                     continue
                 logger.info("Mattermost: sending %d image(s) as single post (chunk %d/%d)",
@@ -474,7 +534,7 @@ class MattermostAdapter(BasePlatformAdapter):
         """Single WebSocket session: connect, authenticate, process events."""
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"  # https→wss, http→ws
         logger.info("Mattermost: connecting to %s", ws_url)
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0, **self._proxy_req_kw)
         await self._ws.send_json({"seq": 1, "action": "authentication_challenge", "data": {"token": self._token}})
         logger.info("Mattermost: WebSocket connected and authenticated")
 
@@ -531,7 +591,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 mime = file_info.get("mime_type", "application/octet-stream")
                 async with self._session.get(
                     f"{self._base_url}/api/v4/files/{fid}", headers=self._auth_header(),
-                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    timeout=aiohttp.ClientTimeout(total=30), **self._proxy_req_kw) as resp:
                     if resp.status >= 400:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
                         continue
@@ -616,21 +676,27 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
             file_ids: List[str] = []
-            for media in media_files or []:
-                file_path = media.get("path") if isinstance(media, dict) else media
-                if not file_path or not os.path.exists(file_path):
-                    continue
+            # The endpoint accepts repeated `files` fields. Keep streams open
+            # through the request without buffering every attachment in memory.
+            with ExitStack() as uploads:
                 form = aiohttp.FormData()
-                form.add_field("channel_id", chat_id)  # required so the server can attribute the upload
-                with open(file_path, "rb") as fh:
-                    form.add_field("files", fh.read(), filename=os.path.basename(file_path))
-                async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
-                                        **_req_kw) as upload_resp:
-                    if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
-                        return send_error(f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}")
-                    upload_data = await upload_resp.json()
-                    file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
+                form.add_field("channel_id", chat_id)
+                has_files = False
+                for media in media_files or []:
+                    file_path = media.get("path") if isinstance(media, dict) else media
+                    if not file_path or not os.path.exists(file_path):
+                        continue
+                    fh = uploads.enter_context(open(file_path, "rb"))
+                    form.add_field("files", fh, filename=os.path.basename(file_path))
+                    has_files = True
+                if has_files:
+                    async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
+                                            **_req_kw) as upload_resp:
+                        if upload_resp.status not in {200, 201}:
+                            body = await upload_resp.text()
+                            return send_error(f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}")
+                        upload_data = await upload_resp.json()
+                        file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
             payload: Dict[str, Any] = {"channel_id": chat_id, "message": message}
             if thread_id:
                 payload["root_id"] = thread_id

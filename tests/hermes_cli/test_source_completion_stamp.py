@@ -112,16 +112,36 @@ def test_completion_refuses_to_stack_on_a_live_update(tmp_path, monkeypatch, for
         complete_source_checkout(root, desktop=False, assume_yes=True)
 
 
-def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path, monkeypatch):
+def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path):
     """A tail spawned by an orchestrator that holds the lock (venv_sync's
     interrupted-update finish, the updater's own completion child) runs under
-    its parent's claim and leaves the parent's marker untouched."""
-    root = _repo(tmp_path)
-    marker = _sandboxed_marker(tmp_path, monkeypatch)
-    marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")
-    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+    its parent's claim and leaves the parent's marker untouched.
 
-    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+    Real topology: a parent process claims, then runs the tail as its child. The test
+    process's own parent can be invisible (a pid-namespaced runner), so it is never used."""
+    root = _repo(tmp_path)
+    marker = tmp_path / ".hermes-update-in-progress"
+    tail = (
+        "import json, sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+        "from pathlib import Path\n"
+        "import hermes_cli.source_build, hermes_cli.update_cmd_maint, hermes_cli.update_lock, hermes_cli.venv_sync\n"
+        "from hermes_cli.source_completion import complete_source_checkout\n"
+        "hermes_cli.venv_sync.publish_launchers = lambda root: None\n"
+        "hermes_cli.source_build.build_update_products = lambda root, *, desktop: None\n"
+        "hermes_cli.update_cmd_maint._run_post_update_maintenance = lambda **_kwargs: True\n"
+        f"hermes_cli.update_lock.update_marker_path = lambda: Path({str(marker)!r})\n"
+        f"print(json.dumps(complete_source_checkout(Path({str(root)!r}), desktop=False, assume_yes=True)))\n"
+    )
+    parent = (
+        "import os, subprocess, sys, time\n"
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write(f'{{os.getpid()}}\\n{{int(time.time())}}\\n')\n"  # windows-footgun: ok — a write
+        "sys.exit(subprocess.call([sys.executable, '-c', sys.argv[1]]))\n"
+    )
+    run = subprocess.run([sys.executable, "-c", parent, tail], capture_output=True, timeout=120,
+                         text=True, encoding="utf-8", errors="replace")
+
+    assert run.returncode == 0 and run.stdout.strip().splitlines()[-1:] == ["true"], run.stdout + run.stderr
     assert marker.exists(), "the parent still owns its claim after our tail"
 
 

@@ -88,11 +88,14 @@ def run_oneshot(
     temperature: Optional[float] = 0.3,
     timeout: float = 60.0,
     main_runtime: Optional[Dict[str, Any]] = None,
+    reasoning_config: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Run a single stateless LLM request and return its text (fence-stripped).
 
     Raises RuntimeError when no provider is configured (from :func:`call_llm`),
     KeyError for an unknown template, ValueError when the prompt is empty.
+    ``reasoning_config`` (a ``parse_reasoning_effort`` dict) forwards an explicit
+    thinking level; None keeps the task's configured/default behavior.
     """
     if template:
         instructions, user_input = render_template(template, variables)
@@ -108,6 +111,7 @@ def run_oneshot(
         temperature=temperature,
         timeout=timeout,
         main_runtime=main_runtime,
+        reasoning_config=reasoning_config,
     )
     return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
 

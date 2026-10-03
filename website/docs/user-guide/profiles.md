@@ -66,6 +66,18 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+A fresh profile still resolves providers and credential-pool entries from the default profile's
+`auth.json` when it has no local entry for that provider. A borrowed OAuth refresh updates the
+default store. To opt out for a disposable profile, use
+`hermes profile create sandbox --no-root-auth --no-alias --no-skills`. This persists a
+`.no-root-auth` marker in the profile and disables default-store reads and refresh write-through;
+it also prevents Nous OAuth from reading or writing the root's shared token store, even when
+`HERMES_SHARED_AUTH_DIR` is set in the parent process. Credentials added to the sandbox's own
+`auth.json` still work. The flag is for fresh profiles,
+not clones. Shell environment keys and explicitly configured external credentials can still be
+used: clear those separately if you require a credential-free process. For a local preflight
+without connectivity probes, run `hermes -p sandbox doctor --offline` (not with `--live` or `--fix`).
+
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 
 ```bash

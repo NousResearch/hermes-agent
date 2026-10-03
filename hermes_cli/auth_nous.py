@@ -327,6 +327,11 @@ NOUS_SHARED_STORE_FILENAME = "nous_auth.json"
 _nous_shared_lock_holder = threading.local()
 
 
+def _nous_shared_store_enabled() -> bool:
+    from hermes_constants import get_hermes_home
+    # The marker is profile-scoped, unlike the process environment in a multiplex gateway.
+    return not (get_hermes_home() / ".no-root-auth").exists()
+
 def _nous_shared_auth_dir() -> Path:
     """Directory of the shared Nous token store: ``HERMES_SHARED_AUTH_DIR`` or ``<root>/shared/``.
 
@@ -369,6 +374,9 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     ``_auth_store_lock`` FIRST. All runtime refresh paths follow this order.
     """
     from hermes_cli.auth import _file_lock
+    if not _nous_shared_store_enabled():
+        yield
+        return
     try:
         lock_path = _nous_shared_store_path().with_suffix(".lock")
     except RuntimeError:
@@ -432,6 +440,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
 
     Best-effort: failures are logged and swallowed; per-profile auth.json stays the source of truth.
     """
+    if not _nous_shared_store_enabled():
+        return
     from hermes_cli.auth import _nonempty_str, _save_private_json
     refresh_token = state.get("refresh_token")
     # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
@@ -458,6 +468,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
 
     None (missing / unreadable / malformed / lacking tokens) means "fall through to device-code".
     """
+    if not _nous_shared_store_enabled():
+        return None
     from hermes_cli.auth import _nonempty_str
     try:
         path = _nous_shared_store_path()
@@ -479,6 +491,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
 
 def _clear_shared_nous_state(reason: str) -> None:
     """Remove the shared Nous OAuth store after a terminal token failure."""
+    if not _nous_shared_store_enabled():
+        return
     try:
         with _nous_shared_store_lock():
             _nous_shared_store_path().unlink(missing_ok=True)

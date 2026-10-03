@@ -157,8 +157,6 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -182,9 +180,17 @@ def install_from_quarantine(
                 rel = entry
             raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
 
+    # Hash the quarantined bundle BEFORE touching the live tree (#123325): the
+    # old code deleted install_dir first, so a partial copy or read failure
+    # left the previous version irrecoverably removed. Hashing is
+    # location-independent, so verifying here is equivalent.
+    installed_hash = content_hash(quarantine_path)
+
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
-    installed_hash = content_hash(install_dir)
     HubLockFile().record_install(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict, skill_hash=installed_hash,

@@ -7,6 +7,7 @@ Docker and Singularity use bind mounts (live host FS view) and don't need this.
 
 import hashlib
 import logging
+import contextlib
 import os
 import posixpath
 import shlex
@@ -460,7 +461,20 @@ class FileSyncManager:
                 remote_path)
 
         os.makedirs(os.path.dirname(host_path), exist_ok=True)
-        shutil.copy2(staged_file, host_path)
+        # Atomic swap (#123354): copy2 truncates the destination on open, so a
+        # mid-copy failure (or an exhausted retry loop) left a partial host
+        # file — or destroyed the original entirely. Stage beside the target
+        # and rename over it, so readers never see a half-written file.
+        fd, tmp_dest = tempfile.mkstemp(dir=os.path.dirname(host_path),
+                                        prefix=".hermes-sync-")
+        os.close(fd)
+        try:
+            shutil.copy2(staged_file, tmp_dest)
+            os.replace(tmp_dest, host_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_dest)
+            raise
         return 1
 
     def _resolve_host_path(self, remote_path: str, file_mapping: list[tuple[str, str]] | None = None) -> str | None:

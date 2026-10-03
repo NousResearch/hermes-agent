@@ -1591,6 +1591,57 @@ class TestInstallPathSafety:
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
 
+    def test_install_from_quarantine_keeps_old_on_verify_failure(self, tmp_path, monkeypatch):
+        """A bundle that fails verification must not delete the installed skill.
+
+        Regression test for #123325: the old code removed install_dir before
+        the new bundle was transferred and hashed, so a partial copy or read
+        failure left the previous version irrecoverably removed.
+        """
+        import tools.skills_hub as hub
+        import tools.skills_hub_install as hub_install
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        old = skills_dir / "good-skill"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("---\nname: good-skill\n---\nold\n")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: good-skill\n---\nnew\n")
+
+        bundle = SkillBundle(
+            name="good-skill",
+            files={"SKILL.md": "---\nname: good-skill\n---\nnew\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="good-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        def boom(path):
+            raise OSError("unreadable bundle")
+
+        monkeypatch.setattr(hub_install, "content_hash", boom)
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch("tools.skill_usage.record_installed"):
+            with pytest.raises(OSError, match="unreadable bundle"):
+                install_from_quarantine(
+                    q_dir, "good-skill", "", bundle, scan_result,
+                )
+
+        assert (old / "SKILL.md").read_text() == "---\nname: good-skill\n---\nold\n"
+
     def test_install_from_quarantine_rejects_category_bucket_overwrite(self, tmp_path):
         """Installing a skill whose name matches an existing category directory
         that contains other skills must NOT silently wipe that entire directory.

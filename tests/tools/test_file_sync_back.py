@@ -442,5 +442,32 @@ class TestSyncBackWindowsHost:
             "root/.hermes/skills/a/skill.py": b"v2", "root/.hermes/skills/a/new.md": b"new"}))
         mgr._pushed_hashes["/root/.hermes/skills/a/skill.py"] = _sha256_bytes(b"v1")
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
-        assert host_file.read_bytes() == b"v2"  # relpath key was 'root\\.hermes\\...' → skipped
+        assert host_file.read_bytes() == b"v2"  # relpath key was 'root\\.hermes\\...' �+' skipped
         assert (tmp_path / "host" / "new.md").read_bytes() == b"new"  # _infer_host_path parent match
+
+
+class TestSyncBackAtomicApply:
+    """A failed copy must never leave a truncated host file (#123354)."""
+
+    def test_failed_copy_leaves_host_original_intact(self, tmp_path, monkeypatch):
+        import shutil
+        from tools.environments import file_sync as fs_mod
+
+        host = tmp_path / "skill.md"
+        host.write_bytes(b"original complete content")
+        staged = tmp_path / "staged.md"
+        staged.write_bytes(b"new remote content here!!")
+        mgr = _make_manager(tmp_path, [(str(host), "/remote/skill.md")])
+
+        def flaky_copy2(src, dst, **kwargs):
+            with open(dst, "wb") as handle:
+                handle.write(b"PARTIAL")
+            raise OSError("injected copy failure")
+
+        monkeypatch.setattr(shutil, "copy2", flaky_copy2)
+        with pytest.raises(OSError, match="injected copy failure"):
+            mgr._apply_staged_file(str(staged), "/remote/skill.md",
+                                   [(str(host), "/remote/skill.md")], set())
+        assert host.read_bytes() == b"original complete content"
+        assert list(tmp_path.glob(".hermes-sync-*")) == []
+

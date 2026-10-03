@@ -528,10 +528,12 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
 
 def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
                   user_summary: Optional[str] = None, approval_outcome: Optional[str] = None) -> str:
+    from tools.approval import _USER_SUMMARY_OUTCOMES
+
     body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
     if user_summary:
         body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
-    if approval_outcome in {"denied", "cancelled", "timeout"}:
+    if approval_outcome in _USER_SUMMARY_OUTCOMES:
         body["approval_outcome"] = approval_outcome
     return json.dumps(body, ensure_ascii=False)
 

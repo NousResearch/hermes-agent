@@ -122,6 +122,7 @@ def _current_session_profile() -> str:
 
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    _USER_SUMMARY_OUTCOMES,
 )
 
 
@@ -990,11 +991,9 @@ def _fatal_error_json(e: BaseException) -> str:
     }, ensure_ascii=False)
 
 
-_APPROVAL_OUTCOMES = frozenset({"denied", "cancelled", "timeout"})
-
 def _approval_outcome_fields(approval: dict) -> dict:
     outcome = approval.get("outcome")
-    return {"approval_outcome": outcome} if outcome in _APPROVAL_OUTCOMES else {}
+    return {"approval_outcome": outcome} if outcome in _USER_SUMMARY_OUTCOMES else {}
 
 
 class _Rejected(Exception):

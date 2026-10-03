@@ -234,6 +234,11 @@ Human-friendly names (`discord:#ops`, `slack:#engineering`) are resolved
 against this cache at send time, so you don't need to memorize numeric
 IDs.
 
+The listing and name resolution also include contacts from Hermes's
+session history, for any platform that already appears in the cached
+directory, so a target you've just exchanged messages with (for example
+a DM from a new contact) is available before the cache's next refresh.
+
 ---
 
 ## Comparison with Other Approaches

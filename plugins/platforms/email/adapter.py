@@ -22,6 +22,7 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
@@ -623,7 +624,10 @@ class EmailAdapter(BasePlatformAdapter):
         def gate(candidate: Dict[str, Any]) -> bool:
             # Authorization reads profile-scoped policy and pairing state on the adapter's event loop;
             # the blocking IMAP worker waits for that verdict before asking the server for RFC822.
-            return asyncio.run_coroutine_threadsafe(authorize_on_loop(candidate), loop).result()
+            # A closed loop (stop race) yields None: fail closed without leaking the coroutine.
+            fut = safe_schedule_threadsafe(authorize_on_loop(candidate), loop, logger=logger,
+                                           log_message="[Email] Could not schedule sender authorization")
+            return fut is not None and fut.result()
 
         messages = await asyncio.to_thread(self._fetch_new_messages, gate)
         # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched (already marked seen).

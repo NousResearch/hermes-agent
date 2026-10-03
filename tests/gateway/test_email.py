@@ -770,6 +770,8 @@ class TestPollLoop(unittest.TestCase):
             return ("NO", [])
 
         mock_imap.uid.side_effect = uid_handler
+        gates, fetch = [], adapter._fetch_new_messages
+        adapter._fetch_new_messages = lambda gate: (gates.append(gate), fetch(gate))[1]
         with patch.dict(os.environ, {
             "EMAIL_ALLOWED_USERS": "owner@example.com",
             "EMAIL_ALLOW_ALL_USERS": "",
@@ -789,6 +791,8 @@ class TestPollLoop(unittest.TestCase):
         self.assertTrue(all(f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>" in spec for spec in header_specs))
         extract_attachments.assert_called_once()
         self.assertTrue({b"9", b"10", b"11"}.issubset(adapter._seen_uids))
+        # Once the poll's loop is closed (stop race) the gate fails closed instead of raising.
+        self.assertFalse(gates[0](dispatched[0]))
 
     def test_check_inbox_notifies_fatal_error_on_fetch_failure(self):
         """A failed IMAP check must surface through the fatal-error hook so

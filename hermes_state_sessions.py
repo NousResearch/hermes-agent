@@ -1047,18 +1047,25 @@ class SessionSessionsMixin:
             params.append(like(id_needle))
         if search_needle:
             compact_needle = re.sub(r"[\W_]+", "", search_needle)
+            # Match the title, the id, or the gateway display name of any session in the chain.
+            # display_name is a messaging origin's "Server / #channel / thread" string: without it a
+            # conversation living in a named channel is unfindable by that channel's name unless the
+            # words also appear in its title, which is how users actually remember gateway sessions.
+            # It is a plain column on the row the clause already joins, so it costs no extra join.
             search_clause = (
                 "EXISTS (SELECT 1 FROM chain cq JOIN sessions cs ON cs.id = cq.cur_id"
                 " WHERE cq.root_id = s.id AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                " OR LOWER(COALESCE(cs.display_name, '')) LIKE ? ESCAPE '\\'"
                 " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
             )
-            params.extend([like(search_needle)] * 2)
+            params.extend([like(search_needle)] * 3)
             if compact_needle:
-                search_clause += (
-                    " OR REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(cs.title, '')),"
-                    " '-', ''), '_', ''), '.', ''), ' ', '') LIKE ? ESCAPE '\\'"
-                )
-                params.append(like(compact_needle))
+                for column in ("cs.title", "cs.display_name"):
+                    search_clause += (
+                        f" OR REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({column}, '')),"
+                        " '-', ''), '_', ''), '.', ''), ' ', '') LIKE ? ESCAPE '\\'"
+                    )
+                params.extend([like(compact_needle)] * 2)
             clauses.append(search_clause + "))")
         if not clauses:
             return where_sql, params

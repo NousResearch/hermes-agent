@@ -3082,6 +3082,37 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 thread_id = metadata["thread_id"]
             nonconversational = _metadata_marks_nonconversational(metadata)
             final_delivery = bool(metadata and metadata.get("notify"))
+            delivery_surface = (metadata or {}).get("_gateway_delivery_surface")
+            if not delivery_surface and (metadata or {}).get("_interim_send"):
+                delivery_surface = "interim"
+
+            def log_nonfinal_delivery(result: SendResult) -> None:
+                """Record only explicitly marked non-final sends.
+
+                ``notify`` is not a complete final-delivery discriminator: a
+                normal final reply may omit it. Treating every unmarked send
+                as non-final would make the receipt misleading.
+                """
+                if (
+                    final_delivery
+                    or not delivery_surface
+                    or not result.success
+                    or (result.raw_response or {}).get("warnings")
+                ):
+                    return
+                message_ids = list(
+                    (result.raw_response or {}).get("message_ids")
+                    or ([result.message_id] if result.message_id else [])
+                )
+                logger.info(
+                    "[%s] Sent non-final Discord message surface=%s chat=%s reply_to=%s message_ids=%s chars=%d",
+                    self.name,
+                    delivery_surface,
+                    chat_id,
+                    reply_to or (metadata or {}).get("reply_to_message_id"),
+                    message_ids,
+                    len(content),
+                )
             if thread_id:
                 channel = await self._resolve_channel(thread_id)
                 if not channel:
@@ -3093,6 +3124,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
+                log_nonfinal_delivery(result)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
             chunks = self._cap_split_chunks(
@@ -3133,6 +3165,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
+            log_nonfinal_delivery(result)
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)

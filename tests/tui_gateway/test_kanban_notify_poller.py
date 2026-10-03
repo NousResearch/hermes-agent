@@ -14,6 +14,10 @@ unsubscribe) and ``_format_kanban_event_text``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from gateway.kanban_notifications import ACTIONABLE_TEXT_LIMIT
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -53,6 +57,31 @@ def _sub_rows(tid: str) -> list:
         return kbn.list_notify_subs(conn, task_id=tid)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("length", [0, 160, 161, 999, 1000, 1001, 10000])
+def test_actionable_reason_preserved_and_bounded(length):
+    reason = ("OPEN " + "x" * (length - 10) + "REPLY") if length else ""
+    tid = _create_subscribed_task()
+    conn = kbc.connect()
+    try:
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    finally:
+        conn.close()
+    texts = _collect_kanban_notifications(_session())
+    assert len(texts) == 1
+    if not reason:
+        assert texts[0].endswith(" blocked")
+    else:
+        rendered = texts[0].split(" blocked: ", 1)[1]
+        if len(reason) <= ACTIONABLE_TEXT_LIMIT:
+            assert rendered == reason
+        else:
+            assert len(rendered) == ACTIONABLE_TEXT_LIMIT
+            assert rendered.startswith("OPEN ")
+            assert "[middle truncated]" in rendered
+            assert rendered.endswith("REPLY")
+    assert _collect_kanban_notifications(_session()) == []
 
 
 class TestCollectKanbanNotifications:

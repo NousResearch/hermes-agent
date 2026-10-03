@@ -16,6 +16,7 @@ import weakref
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from gateway.kanban_notifications import bound_actionable_text
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
 from gateway.wake import session_owned_by_profile
@@ -385,6 +386,11 @@ def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
 _NL = "\n{}"
 
 
+def _blocked_reason(ev: Any) -> str:
+    value = _payload(ev, "reason")
+    return t("gateway.kanban.ping.reason_suffix", value=bound_actionable_text(value)) if value else ""
+
+
 def _first_line(text: str, limit: int) -> str:
     lines = text.strip().splitlines()
     return lines[0][:limit] if lines else text[:limit]
@@ -445,7 +451,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
         "gateway.kanban.ping.triage", head=n.head,
         why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
         recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
-        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
+        reason=_blocked_reason(ev),
     )
     return msg, None, None
 
@@ -473,7 +479,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (
-        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
+        t("gateway.kanban.ping.blocked", head=n.head, reason=_blocked_reason(ev)),
         None, None,
     ),
     "gave_up": _fmt_gave_up,

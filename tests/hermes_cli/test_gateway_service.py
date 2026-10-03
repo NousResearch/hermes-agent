@@ -175,6 +175,90 @@ class TestTempHomeServiceDefinitionGuard:
         assert gateway_cli._temp_home_in_service_definition(unit) is not None
 
 
+class TestPmGenerationWorkspaceGuard:
+    """_running_from_pm_generation_workspace() — the CLI's own PROJECT_ROOT decides
+    whether a service-definition write is allowed, mirroring the temp-home guard."""
+
+    @staticmethod
+    def _pm_tree(tmp_path):
+        """A fake PM dependency home plus its volatile generation workspace
+        (installs/<key>/environments/<gen>/workspace)."""
+        home = tmp_path / "hermes-home"
+        workspace = home / "installs" / "ab12cd34ef56ab12" / "environments" / "g-7" / "workspace"
+        workspace.mkdir(parents=True)
+        return home, workspace
+
+    def test_detects_generation_workspace_root(self, tmp_path, monkeypatch):
+        home, workspace = self._pm_tree(tmp_path)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace)
+        token = hermes_constants.set_hermes_home_override(home)
+        try:
+            assert gateway_cli._running_from_pm_generation_workspace() is True
+        finally:
+            hermes_constants.reset_hermes_home_override(token)
+
+    def test_plain_checkout_is_not_a_generation_workspace(self, tmp_path, monkeypatch):
+        home, _workspace = self._pm_tree(tmp_path)
+        checkout = tmp_path / "hermes-agent"
+        checkout.mkdir()
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", checkout)
+        token = hermes_constants.set_hermes_home_override(home)
+        try:
+            assert gateway_cli._running_from_pm_generation_workspace() is False
+        finally:
+            hermes_constants.reset_hermes_home_override(token)
+
+    def test_install_state_dir_is_not_a_generation_workspace(self, tmp_path, monkeypatch):
+        # installs/<key> holds facts.json state, not a runnable tree — only the
+        # environments/ subtree is volatile.
+        home, workspace = self._pm_tree(tmp_path)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace.parents[2])
+        token = hermes_constants.set_hermes_home_override(home)
+        try:
+            assert gateway_cli._running_from_pm_generation_workspace() is False
+        finally:
+            hermes_constants.reset_hermes_home_override(token)
+
+    def test_refresh_refuses_to_repoint_unit_at_generation_workspace(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A CLI running from a PM generation workspace must leave the installed
+        unit untouched (#131164): that launcher is GC-able and crash-loops the
+        service once collected."""
+        home, workspace = self._pm_tree(tmp_path)
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        # Synthetic current-unit body without pytest markers or a temp HERMES_HOME,
+        # so only the PM-workspace guard can refuse the write.
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: "[Service]\nExecStart=/stable/hermes gateway run\n",
+        )
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace)
+        ran = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            ran.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        token = hermes_constants.set_hermes_home_override(home)
+        try:
+            result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+        finally:
+            hermes_constants.reset_hermes_home_override(token)
+
+        assert result is False, "refresh should refuse to write from a PM generation workspace"
+        assert unit_path.read_text(encoding="utf-8") == "old unit\n"
+        assert not any("daemon-reload" in str(c) for c in ran)
+        out = capsys.readouterr().out
+        assert "PM dependency generation workspace" in out
+        assert "stable install launcher" in out
+
+
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
         unit_path = tmp_path / "hermes-gateway.service"

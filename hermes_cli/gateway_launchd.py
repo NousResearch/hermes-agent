@@ -544,6 +544,8 @@ def refresh_launchd_plist_if_needed() -> bool:
     new_plist = _gw().generate_launchd_plist()
     if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
+    if _gw()._refuse_volatile_pm_workspace_write("launchd plist"):
+        return False
 
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
@@ -630,6 +632,8 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
     new_plist = _gw().generate_launchd_plist()
     if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
+    if _gw()._refuse_volatile_pm_workspace_write("launchd plist"):
+        return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
@@ -684,6 +688,8 @@ def launchd_start():
     if not plist_path.exists():
         new_plist = _gw().generate_launchd_plist()
         if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+            sys.exit(1)
+        if _gw()._refuse_volatile_pm_workspace_write("launchd plist"):
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)

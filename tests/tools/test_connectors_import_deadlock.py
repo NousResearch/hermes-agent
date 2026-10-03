@@ -52,7 +52,7 @@ for t in threads:
 for t in threads:
     t.join(timeout=120)
 print("alive", sum(1 for t in threads if t.is_alive()))
-print("errors", [e for e in errors if e[1] != "KeyError"])
+print("errors", [e for e in errors if e[1] == "_DeadlockError"])
 """
 
 

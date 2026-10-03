@@ -310,6 +310,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // backend rows, so the folded message has to report how many it covers
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
+  // Stable uids of the rows folded into the pending tool batch (parallel to
+  // pendingToolRows). The folded message reports the first as its messageUid
+  // so overlap matching survives compaction rewrites of the numeric row ids.
+  let pendingToolUids: string[] = []
   let activeAssistantIndex: null | number = null
   // Todo history is stateful. Only a result from the nearest prior assistant
   // call in this turn may update it; a display-only orphan can still render.
@@ -343,10 +347,25 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     })
   }
 
+  const storedMessageUid = (message: SessionMessage): string | undefined =>
+    typeof message.message_uid === 'string' && message.message_uid ? message.message_uid : undefined
+
+  /** Fold one backend row into the pending tool batch (see pendingToolRows). */
+  const notePendingToolRow = (message: SessionMessage): void => {
+    pendingToolRows += 1
+
+    const uid = storedMessageUid(message)
+
+    if (uid !== undefined) {
+      pendingToolUids.push(uid)
+    }
+  }
+
   const clearPendingTools = () => {
     pendingToolParts = []
     pendingToolTimestamp = undefined
     pendingToolRows = 0
+    pendingToolUids = []
   }
 
   /** Attribute `rows` backend rows to a folded message (absent field means one). */
@@ -380,6 +399,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
     absorbRows(active, pendingToolRows)
 
+    if (active.messageUid === undefined && pendingToolUids.length > 0) {
+      active.messageUid = pendingToolUids[0]
+    }
+
     return true
   }
 
@@ -395,6 +418,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         parts: pendingToolParts,
         durableComplete: false,
         ...(pendingToolRows > 1 ? { serverRowSpan: pendingToolRows } : {}),
+        ...(pendingToolUids.length > 0 ? { messageUid: pendingToolUids[0] } : {}),
         timestamp: pendingToolTimestamp
       })
       activeAssistantIndex = result.length - 1
@@ -414,7 +438,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       if (isTodoToolName(message.tool_name) && !pairedTodoResult(message)) {
         pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
         pendingToolTimestamp ??= message.timestamp
-        pendingToolRows += 1
+        notePendingToolRow(message)
 
         return
       }
@@ -423,7 +447,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (updatedPendingToolParts) {
         pendingToolParts = updatedPendingToolParts
-        pendingToolRows += 1
+        notePendingToolRow(message)
 
         return
       }
@@ -434,7 +458,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
       pendingToolTimestamp ??= message.timestamp
-      pendingToolRows += 1
+      notePendingToolRow(message)
 
       return
     }
@@ -468,6 +492,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    const messageUid = storedMessageUid(message)
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
@@ -536,7 +561,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     if (isToolOnlyAssistant) {
       pendingToolParts = [...pendingToolParts, ...parts]
       pendingToolTimestamp ??= message.timestamp
-      pendingToolRows += 1
+      notePendingToolRow(message)
 
       return
     }
@@ -608,6 +633,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(isMachineNotice(message.display_kind) ? { systemNotice: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...(messageUid !== undefined ? { messageUid } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),

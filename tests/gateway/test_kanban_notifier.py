@@ -796,3 +796,50 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def _notify_unsubscribed_payloads(tid):
+    conn = kbc.connect()
+    try:
+        return [e.payload for e in kb.list_events(conn, tid) if e.kind == "notify_unsubscribed"]
+    finally:
+        conn.close()
+
+
+def test_archive_unsub_records_notify_unsubscribed_event(tmp_path, monkeypatch):
+    """sirron#166: the archive unsub must leave a durable task event, not just a missing row."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-unsub.db"))
+    kb.init_db()
+    tid = _create_completed_subscription()
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
+
+    assert _notify_unsubscribed_payloads(tid) == [
+        {"platform": "telegram", "chat_id": "chat-1", "thread_id": "", "reason": "archived"}]
+
+
+def test_send_failure_drop_records_notify_unsubscribed_event(tmp_path, monkeypatch):
+    """sirron#166: dropping a sub after MAX_SEND_FAILURES must be auditable from the board."""
+    from gateway.kanban_watchers_notifier import MAX_SEND_FAILURES
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "drop-unsub.db"))
+    kb.init_db()
+    tid = _create_completed_subscription()
+    runner = _make_runner(FailingAdapter())
+    runner._kanban_sub_fail_counts = {(tid, "telegram", "chat-1", ""): MAX_SEND_FAILURES - 1}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+    assert _notify_unsubscribed_payloads(tid) == [
+        {"platform": "telegram", "chat_id": "chat-1", "thread_id": "",
+         "reason": f"send_failures:{MAX_SEND_FAILURES}"}]

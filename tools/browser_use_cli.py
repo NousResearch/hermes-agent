@@ -76,6 +76,56 @@ _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
 """
 
+# browser_harness.helpers binds its per-CDP timeout at function definition time,
+# separately from browser_exec(timeout_s). Apply an explicit browser config value
+# inside the CLI process without editing the uv-managed installation.
+def _ipc_response_timeout_preamble(seconds: int) -> str:
+    return f"""\
+def _hermes_configure_ipc_timeout():
+    import inspect
+    import sys
+    try:
+        from browser_harness import helpers
+    except ImportError:
+        print('Warning: browser IPC timeout not applied: browser_harness unavailable', file=sys.stderr)
+        return
+    for name, parameter in (('cdp', '_response_timeout'), ('_send', 'response_timeout')):
+        try:
+            func = getattr(helpers, name)
+            if not inspect.isfunction(func):
+                raise TypeError('expected a Python function')
+            params = inspect.signature(func, follow_wrapped=False).parameters
+            target = params[parameter]
+            if target.default is inspect.Parameter.empty:
+                raise ValueError('timeout parameter has no default')
+            if target.kind == inspect.Parameter.KEYWORD_ONLY:
+                func.__kwdefaults__ = dict(func.__kwdefaults__ or {{}}, **{{parameter: {seconds}.0}})
+            else:
+                positional = [p.name for p in params.values() if p.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+                defaults = list(func.__defaults__ or ())
+                index = positional.index(parameter) - (len(positional) - len(defaults))
+                if not 0 <= index < len(defaults):
+                    raise ValueError('timeout default cannot be located')
+                defaults[index] = {seconds}.0
+                func.__defaults__ = tuple(defaults)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            print(f'Warning: browser IPC timeout not applied to {{name}}.{{parameter}}: {{exc}}', file=sys.stderr)
+_hermes_configure_ipc_timeout()
+del _hermes_configure_ipc_timeout
+"""
+
+
+def _configured_ipc_response_timeout() -> Optional[int]:
+    raw = _read_browser_cfg().get("ipc_response_timeout_seconds")
+    if raw is None:
+        return None  # Browser Use's own default when not explicitly configured
+    if type(raw) is int and 5 <= raw <= 120:
+        return raw
+    logger.warning("browser.ipc_response_timeout_seconds must be an integer between 5 and 120")
+    return None
+
+
 _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
@@ -657,6 +707,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    ipc_timeout = _configured_ipc_response_timeout()
+    if ipc_timeout is not None:
+        code = _ipc_response_timeout_preamble(ipc_timeout) + code
 
     workspace = _workspace_dir(task_id)
     if workspace:

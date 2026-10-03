@@ -112,6 +112,7 @@ On macOS, `F7` means the physical F7 function key. MacBook keyboards may use tha
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
 - **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
+- **`Ctrl+K`** (`Cmd+K` on macOS) kills to the end of the line. On an empty composer with messages queued, it sends the next queued message now instead.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands

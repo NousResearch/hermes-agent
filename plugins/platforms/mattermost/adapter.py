@@ -17,7 +17,7 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import unquote as _unquote
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -39,6 +39,9 @@ MAX_POST_LENGTH = 4000
 
 # Channel type codes returned by the Mattermost API ("P" private → treat as group).
 _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
+
+# WebSocket events carrying emoji reactions (data["reaction"] is a JSON-encoded string).
+_REACTION_EVENTS = frozenset({"reaction_added", "reaction_removed"})
 
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
@@ -492,10 +495,12 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", kind)
                 break
 
-    def _apply_channel_gating(self, channel_id: str, message_text: str) -> Optional[str]:
+    def _apply_channel_gating(self, channel_id: str, message_text: str,
+                              force_process: bool = False) -> Optional[str]:
         """Mention-gate a non-DM post; return the cleaned text, or None to ignore it. allowed_channels is a
         whitelist checked first (@mentions elsewhere are ignored); require_mention (default true) is
-        bypassed in free_response_channels."""
+        bypassed in free_response_channels. force_process is for adapter-internal synthetic events
+        (reactions) that have no mention to match — it skips only the mention requirement."""
         allowed_channels = _channel_id_set(_extra_or_secret(self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("Mattermost: ignoring message in non-allowed channel: %s", channel_id)
@@ -506,10 +511,10 @@ class MattermostAdapter(BasePlatformAdapter):
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
         mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
         has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
-        if require_mention and channel_id not in free_channels and not has_mention:
+        if require_mention and not force_process and channel_id not in free_channels and not has_mention:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
-        if has_mention:  # strip the @mention so the agent sees clean input
+        if has_mention and not force_process:  # strip the @mention so the agent sees clean input
             for pattern in mention_patterns:
                 message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
         return message_text
@@ -548,7 +553,11 @@ class MattermostAdapter(BasePlatformAdapter):
         return media_urls, media_types
 
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
-        if event.get("event") != "posted":
+        name = event.get("event")
+        if name in _REACTION_EVENTS:
+            await self._handle_reaction_ws_event(event, removed=name == "reaction_removed")
+            return
+        if name != "posted":
             return
         data = event.get("data", {})
         try:
@@ -588,6 +597,126 @@ class MattermostAdapter(BasePlatformAdapter):
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls or None, media_types=media_types or None,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+
+    # Reaction names → unicode emoji, so skills matching on ``text`` see the same character
+    # whether the user typed it or reacted with it.
+    _REACTION_EMOJI_MAP: ClassVar[Dict[str, str]] = {
+        "thumbsup": "👍", "+1": "👍", "thumbsdown": "👎", "-1": "👎", "white_check_mark": "✅",
+        "heavy_check_mark": "✅", "x": "❌", "no_entry": "⛔", "warning": "⚠️", "rotating_light": "🚨",
+        "eyes": "👀", "rocket": "🚀", "tada": "🎉", "fire": "🔥", "wave": "👋"}
+
+    def _reaction_triggers(self) -> Optional[set]:
+        """Reaction-routing opt-in: None = disabled (default, events acked+dropped); empty set = all
+        emoji, the bot's own posts only; non-empty = these emoji on any post. From
+        ``mattermost.reaction_triggers`` or ``MATTERMOST_REACTION_TRIGGERS``."""
+        raw = self.config.extra.get("reaction_triggers")
+        if raw is None:
+            raw = _get_scoped_secret("MATTERMOST_REACTION_TRIGGERS") or None
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return set() if raw else None
+        if isinstance(raw, (list, tuple, set)):
+            return {str(p).strip().strip(":").lower() for p in raw if str(p).strip().strip(":")}
+        text = str(raw or "").strip()
+        if not text or text.lower() in {"false", "0", "no", "off"}:
+            return None
+        if text.lower() in {"true", "1", "yes", "on", "all", "*"}:
+            return set()
+        return {p.strip().strip(":").lower() for p in re.split(r"[,\s]+", text) if p.strip().strip(":")}
+
+    async def _handle_reaction_ws_event(self, event: Dict[str, Any], *, removed: bool) -> None:
+        """Forward human reactions as a synthetic ``reaction:<added|removed>:<emoji>`` message
+        (Slack/Feishu convention) so the normal auth gate applies. Hooks fire for every non-self
+        reaction; agent routing is opt-in via ``reaction_triggers`` and, without an explicit
+        allowlist, only on the bot's own posts."""
+        data = event.get("data") or {}
+        raw = data.get("reaction")
+        if isinstance(raw, str):
+            try:
+                reaction = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return
+        else:
+            reaction = raw
+        # Valid JSON that isn't an object ("5", "null", "[]") is malformed input, not a Reaction.
+        if not isinstance(reaction, dict):
+            return
+        post_id = str(reaction.get("post_id") or "")
+        user_id = str(reaction.get("user_id") or "")
+        emoji_name = str(reaction.get("emoji_name") or "").strip()
+        if not post_id or not user_id or not emoji_name:
+            return
+        # Self-reactions (lifecycle/progress markers) would feed back into agent turns.
+        if self._bot_user_id and user_id == self._bot_user_id:
+            return
+        channel_id = str(reaction.get("channel_id") or (event.get("broadcast") or {}).get("channel_id") or "")
+        if not channel_id:
+            return
+        action = "removed" if removed else "added"
+        event_ts = str(reaction.get("create_at") or "")
+        if self._dedup.is_duplicate(f"{post_id}:{user_id}:{emoji_name}:{action}:{event_ts}"):
+            return
+        # Hooks fire before the opt-in gate so consumers see every human reaction.
+        reaction_handler = self._reaction_handler
+        if reaction_handler is not None:
+            try:
+                await reaction_handler({
+                    "platform": "mattermost", "event_name": f"reaction:{action}",
+                    "reaction": emoji_name, "user_id": user_id, "item_user_id": "",
+                    "item_type": "message", "channel_id": channel_id, "message_ts": post_id,
+                    "team_id": "", "event_ts": event_ts, "raw_event": event})
+            except Exception:  # pragma: no cover - hook contract is non-blocking
+                logger.debug("[Mattermost] reaction hook forwarding failed", exc_info=True)
+        triggers = self._reaction_triggers()
+        if triggers is None:
+            return
+        explicit_allowlist = bool(triggers)
+        if explicit_allowlist and emoji_name.strip(":") not in triggers:
+            return
+        post = await self._api_get(f"posts/{post_id}")
+        if not post:
+            return
+        author_id = str(post.get("user_id") or "")
+        post_channel = str(post.get("channel_id") or channel_id)
+        root_id = str(post.get("root_id") or "")
+        # Security-relevant default: the boolean form only fires on the bot's own posts, so no
+        # member can summon the agent by reacting to an unrelated message.
+        if not explicit_allowlist and author_id != self._bot_user_id:
+            return
+        # source.chat_type feeds the session key: a DM reaction must land in the DM's session.
+        channel = await self._api_get(f"channels/{post_channel}") or {}
+        if not channel.get("type"):
+            # Lookup gave no usable type: the session gets keyed as a regular channel.
+            logger.debug("Mattermost: channels/%s returned no usable type; keying reaction as a channel session",
+                         post_channel)
+        chat_type = _CHANNEL_TYPE_MAP.get(str(channel.get("type") or "O"), "channel")
+        emoji_text = self._REACTION_EMOJI_MAP.get(emoji_name, emoji_name)
+        text = f"reaction:{action}:{emoji_text}"
+        # Thread identity parity with the posted path: in thread mode a top-level channel post is
+        # itself a valid thread root, so the reply lands in the thread session, not the channel one.
+        thread_id = root_id or None
+        if not thread_id and self._reply_mode == "thread" and chat_type != "dm" and post_id:
+            thread_id = post_id
+        # message_id is the reply anchor (_reply_anchor_for_event) and must be the real reacted-to
+        # post id, or a thread-mode reply resolves a bogus root. The reaction-scoped identity lives
+        # on ledger_message_id — the delivery-ledger identity, scoped by post, user, emoji, action
+        # and event timestamp — so remove/re-add of the same emoji on one post (or two different
+        # emoji) can never share one ledger obligation id when their replies carry the same text.
+        ledger_id = f"reaction-{post_id}-{user_id}-{emoji_name}-{action}-{event_ts}"
+        if chat_type != "dm":  # Parity with the posted path: DMs need no channel gating.
+            gated = self._apply_channel_gating(post_channel, text, force_process=True)
+            if gated is None:
+                return
+        source = self.build_source(
+            chat_id=post_channel, chat_type=chat_type, user_id=user_id, user_name=user_id,
+            thread_id=thread_id, message_id=post_id)
+        from gateway.platforms.base import resolve_channel_prompt
+        logger.info("[Mattermost] Routing reaction %s:%s on post %s", action, emoji_name, post_id)
+        await self.handle_message(MessageEvent(
+            text=text, message_type=MessageType.TEXT, source=source, raw_message=post,
+            message_id=post_id, ledger_message_id=ledger_id,
+            channel_prompt=resolve_channel_prompt(self.config.extra, post_channel, None)))
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---
@@ -701,6 +830,7 @@ def interactive_setup() -> None:
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_channels is a whitelist
     ("require_mention", "MATTERMOST_REQUIRE_MENTION", "lower"),
     ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "csv"),
+    ("reaction_triggers", "MATTERMOST_REACTION_TRIGGERS", "csv"),
     ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
 
 

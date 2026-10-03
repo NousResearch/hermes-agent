@@ -21,8 +21,9 @@ release and breaks something that runs AFTER the checkout moved, for real:
     update runs in the shared namespace; once the slow build started, every process born after the
     update was spawned is SIGSTOPped then SIGKILLed (that is the whole update tree, including a
     completion child in its own session or reparented to the namespace init).
-(d) a sticky profile (``hermes profile use e2epost``) must not move update.log / receipts off the
-    root hermes home, and ``hermes logs update`` under that profile reads the root's update.log.
+(d) a sticky profile (``hermes profile use e2epost``) must not move update.log / update receipts off
+    the root hermes home, and ``hermes logs update`` under that profile reads the root's update.log;
+    pm's own sync receipts stay where pm writes them and ``hermes pm status`` there still shows them.
 (e) the dependency sync fails after the tree moved (contract amendment A6): the release's
     ``pm.client.ensure_tools_for_sync`` raises while ``$HOME/.e2e-break-deps-sync`` exists; it runs in
     the completion bootstrap from the NEW tree, after the checkout moved. Exit 0, a ``dependencies``
@@ -548,10 +549,14 @@ def test_sticky_profile_update_logs_and_receipts_land_in_the_root_home(w):
                       previous_update_id=prev.get("update_id")) + w.diag(cp)
         assert w.head() == target, f"premise: the release never committed:\n{diag}"
         assert cp.returncode == 0, f"the sticky-profile update failed:\n{diag}"
-        # Neither the update's receipts nor pm's sync receipts (same dir, ``kind`` field) follow
-        # the sticky profile: one root dir is what the Desktop and `hermes pm status` read.
-        assert not sorted(prof_after - prof_before), \
-            f"the update wrote receipts into the profile home {prof_receipts}:\n{diag}"
+        # The update's receipts never follow the sticky profile: the root dir is what the Desktop
+        # and the hand-off scripts read. pm's own sync receipts stay where pm writes them (the
+        # active home; pm is not the updater's), and pm's reader under the profile still finds them.
+        assert not [n for n in prof_after - prof_before if n.startswith("update_")], \
+            f"the update wrote update receipts into the profile home {prof_receipts}:\n{diag}"
+        pm_cp = w.sb.cli("pm", "status", timeout=300)
+        assert pm_cp.returncode == 0 and json.loads(pm_cp.stdout).get("kind") == "sync", \
+            f"`hermes pm status` under the profile does not show pm's own receipt:\n{H.describe(pm_cp)}\n{diag}"
         assert log1 > log0, f"the root update.log did not grow:\n{diag}"
         assert rec.get("update_id") != prev.get("update_id") and rec.get("outcome") == "success", \
             f"root latest.json is not this run's success:\n{diag}"

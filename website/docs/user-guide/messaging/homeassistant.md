@@ -1,16 +1,36 @@
 ---
 title: Home Assistant
-description: Control your smart home with Hermes Agent via Home Assistant integration.
+description: Control your smart home with Hermes Agent via the Home Assistant plugin from the plugin catalog.
 sidebar_label: Home Assistant
 sidebar_position: 5
 ---
 
 # Home Assistant Integration
 
-Hermes Agent integrates with [Home Assistant](https://www.home-assistant.io/) in two ways:
+Hermes Agent integrates with [Home Assistant](https://www.home-assistant.io/) through the official **`homeassistant` plugin** from the [plugin catalog](../features/plugins.md). The plugin is maintained by Nous Research in [NousResearch/hermes-homeassistant](https://github.com/NousResearch/hermes-homeassistant) and is not part of Hermes core. It provides two things:
 
 1. **Gateway platform** — subscribes to real-time state changes via WebSocket and responds to events
-2. **Smart home tools** — four LLM-callable tools for querying and controlling devices via the REST API
+2. **Smart home tools** — four LLM-callable tools (the `homeassistant` toolset) for querying and controlling devices via the REST API
+
+## Install
+
+```bash
+hermes plugins install homeassistant
+```
+
+Plugins are installed per profile. To use Home Assistant in another profile, install it there too:
+
+```bash
+hermes -p <profile> plugins install homeassistant
+```
+
+The plugin declares its own Python dependency (`aiohttp`), so there is no pip extra to install. The old `hermes-agent[homeassistant]` extra has been removed.
+
+:::info Upgrading from a release that bundled Home Assistant
+Nothing to do. Every profile that was already using Home Assistant — `HASS_TOKEN` in its `.env`, `platforms.homeassistant` enabled or configured in `config.yaml`, or the `homeassistant` toolset listed in `platform_toolsets` — gets the plugin installed automatically from the catalog by `hermes update` (for all profiles sharing the install). If that step could not run, Hermes installs it the first time the profile starts (agent or gateway start; this honours `security.allow_lazy_installs`). The outcome is reported in the terminal, the Desktop app and chat.
+
+Your configuration carries over unchanged: the same `HASS_TOKEN` / `HASS_URL` variables, the same `homeassistant` platform name and `platforms.homeassistant` keys, the same `homeassistant` toolset and tool names, and the same cron `deliver: homeassistant:<notify target>` syntax.
+:::
 
 ## Setup
 
@@ -32,10 +52,13 @@ HASS_TOKEN=your-long-lived-access-token
 
 # Optional: HA URL (default: http://homeassistant.local:8123)
 HASS_URL=http://192.168.1.100:8123
+
+# Optional: default notify target for a bare `deliver: homeassistant`
+HASS_HOME_CHANNEL=mobile_app_my_phone
 ```
 
 :::info
-The `homeassistant` toolset is automatically enabled when `HASS_TOKEN` is set. Both the gateway platform and the device control tools activate from this single token.
+With the plugin installed, the `homeassistant` toolset is enabled automatically when `HASS_TOKEN` is set. Both the gateway platform and the device control tools activate from this single token.
 :::
 
 ### 3. Start the Gateway
@@ -48,7 +71,7 @@ Home Assistant will appear as a connected platform alongside any other messaging
 
 ## Available Tools
 
-Hermes Agent registers four tools for smart home control:
+The plugin registers four tools for smart home control in the `homeassistant` toolset:
 
 ### `ha_list_entities`
 
@@ -137,6 +160,7 @@ platforms:
   homeassistant:
     enabled: true
     extra:
+      url: http://192.168.1.100:8123   # optional; same as HASS_URL
       watch_domains:
         - climate
         - binary_sensor
@@ -153,6 +177,7 @@ platforms:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `url` | `HASS_URL`, else `http://homeassistant.local:8123` | Home Assistant base URL |
 | `watch_domains` | *(none)* | Only watch these entity domains (e.g., `climate`, `light`, `binary_sensor`) |
 | `watch_entities` | *(none)* | Only watch these specific entity IDs |
 | `watch_all` | `false` | Set to `true` to receive **all** state changes (not recommended for most setups) |
@@ -180,12 +205,25 @@ State changes are formatted as human-readable messages based on domain:
 
 Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Hermes Agent".
 
+The platform uses the `minimal` display defaults (no tool-progress or streaming chatter in notifications). Override them under `display.platforms.homeassistant` in `config.yaml` if you want more.
+
+### Cron and Webhook Delivery
+
+Scheduled jobs and webhook routes can deliver to Home Assistant:
+
+```yaml
+deliver: homeassistant:mobile_app_my_phone   # explicit notify target
+deliver: homeassistant                       # uses HASS_HOME_CHANNEL
+```
+
+The bare `homeassistant` form needs `HASS_HOME_CHANNEL` set to a default notify target. See [Scheduled Tasks](../features/cron.md) and [Webhooks](webhooks.md).
+
 ### Connection Management
 
 - **WebSocket** with 30-second heartbeat for real-time events
 - **Automatic reconnection** with backoff: 5s → 10s → 30s → 60s
 - **REST API** for outbound notifications (separate session to avoid WebSocket conflicts)
-- **Authorization** — HA events are always authorized (no user allowlist needed, since the `HASS_TOKEN` authenticates the connection)
+- **Authorization** — HA events are always authorized (no user allowlist or pairing needed: `HASS_TOKEN` authenticates the connection and there is no human sender)
 
 ## Security
 
@@ -253,12 +291,18 @@ Agent automatically:
 
 ## Troubleshooting
 
+**Platform or tools missing.**
+Check that the plugin is installed and enabled in the active profile with
+`hermes plugins list`. If it is missing, run `hermes plugins install homeassistant`
+(or `hermes -p <profile> plugins install homeassistant`) and restart the gateway.
+With `security.allow_lazy_installs` turned off, the automatic first-start install
+is skipped and you must install the plugin yourself.
+
 **Environment variables not picked up.**
 The adapter reads credentials from `~/.hermes/.env` (auto-merged at startup) or
 from `config.yaml`. Double-check the file lives under the active Hermes profile
 home and that there's no stray quoting around the URL/token. Restart the gateway
 after editing — env changes are only applied on process start.
-
 
 **REST auth failing (`401 Unauthorized`).**
 The token must be a *Long-Lived Access Token* created from your HA user profile

@@ -1,16 +1,36 @@
 ---
 title: Home Assistant
-description: 通过 Home Assistant 集成，使用 Hermes Agent 控制您的智能家居。
+description: 通过插件目录中的 Home Assistant 插件，使用 Hermes Agent 控制您的智能家居。
 sidebar_label: Home Assistant
 sidebar_position: 5
 ---
 
 # Home Assistant 集成
 
-Hermes Agent 通过以下两种方式与 [Home Assistant](https://www.home-assistant.io/) 集成：
+Hermes Agent 通过[插件目录](../features/plugins.md)中的官方 **`homeassistant` 插件**与 [Home Assistant](https://www.home-assistant.io/) 集成。该插件由 Nous Research 在 [NousResearch/hermes-homeassistant](https://github.com/NousResearch/hermes-homeassistant) 中维护，不再属于 Hermes 核心。它提供两部分功能：
 
 1. **Gateway 平台** — 通过 WebSocket 订阅实时状态变更并响应事件
-2. **智能家居工具** — 四个可供 LLM 调用的工具，通过 REST API 查询和控制设备
+2. **智能家居工具** — 四个可供 LLM 调用的工具（`homeassistant` 工具集），通过 REST API 查询和控制设备
+
+## 安装
+
+```bash
+hermes plugins install homeassistant
+```
+
+插件按 profile 安装。如需在其他 profile 中使用 Home Assistant，请在该 profile 中同样安装：
+
+```bash
+hermes -p <profile> plugins install homeassistant
+```
+
+插件自行声明其 Python 依赖（`aiohttp`），因此无需安装 pip extra。旧的 `hermes-agent[homeassistant]` extra 已被移除。
+
+:::info 从内置 Home Assistant 的版本升级
+无需任何操作。每个已在使用 Home Assistant 的 profile（`.env` 中有 `HASS_TOKEN`、`config.yaml` 中启用或配置了 `platforms.homeassistant`，或 `platform_toolsets` 中列出了 `homeassistant` 工具集）都会在 `hermes update` 时自动从插件目录安装该插件（覆盖共享同一安装的所有 profile）。若该步骤未能执行，Hermes 会在该 profile 首次启动时（agent 启动或 gateway 启动）安装插件，此行为遵循 `security.allow_lazy_installs`。安装结果会显示在终端、Desktop 应用和聊天中。
+
+您的配置保持不变：相同的 `HASS_TOKEN` / `HASS_URL` 变量、相同的 `homeassistant` 平台名称和 `platforms.homeassistant` 配置键、相同的 `homeassistant` 工具集和工具名称，以及相同的 cron `deliver: homeassistant:<notify target>` 语法。
+:::
 
 ## 配置
 
@@ -32,10 +52,13 @@ HASS_TOKEN=your-long-lived-access-token
 
 # Optional: HA URL (default: http://homeassistant.local:8123)
 HASS_URL=http://192.168.1.100:8123
+
+# Optional: default notify target for a bare `deliver: homeassistant`
+HASS_HOME_CHANNEL=mobile_app_my_phone
 ```
 
 :::info
-设置 `HASS_TOKEN` 后，`homeassistant` 工具集将自动启用。Gateway 平台和设备控制工具均通过这一个令牌激活。
+安装插件后，设置 `HASS_TOKEN` 即会自动启用 `homeassistant` 工具集。Gateway 平台和设备控制工具均通过这一个令牌激活。
 :::
 
 ### 3. 启动 Gateway
@@ -48,7 +71,7 @@ Home Assistant 将作为已连接平台出现，与其他消息平台（Telegram
 
 ## 可用工具
 
-Hermes Agent 注册了四个智能家居控制工具：
+插件在 `homeassistant` 工具集中注册了四个智能家居控制工具：
 
 ### `ha_list_entities`
 
@@ -137,6 +160,7 @@ platforms:
   homeassistant:
     enabled: true
     extra:
+      url: http://192.168.1.100:8123   # optional; same as HASS_URL
       watch_domains:
         - climate
         - binary_sensor
@@ -153,6 +177,7 @@ platforms:
 
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
+| `url` | `HASS_URL`，否则为 `http://homeassistant.local:8123` | Home Assistant 基础 URL |
 | `watch_domains` | *（无）* | 仅监听这些实体域（例如 `climate`、`light`、`binary_sensor`） |
 | `watch_entities` | *（无）* | 仅监听这些特定实体 ID |
 | `watch_all` | `false` | 设为 `true` 以接收**所有**状态变更（不推荐用于大多数场景） |
@@ -180,12 +205,25 @@ platforms:
 
 Agent 发出的消息将以 **Home Assistant 持久通知**的形式推送（通过 `persistent_notification.create`），标题为"Hermes Agent"，显示在 HA 通知面板中。
 
+该平台使用 `minimal` 显示默认值（通知中不包含工具进度或流式输出）。如需更多输出，可在 `config.yaml` 的 `display.platforms.homeassistant` 下覆盖。
+
+### Cron 与 Webhook 投递
+
+定时任务和 webhook 路由可以投递到 Home Assistant：
+
+```yaml
+deliver: homeassistant:mobile_app_my_phone   # explicit notify target
+deliver: homeassistant                       # uses HASS_HOME_CHANNEL
+```
+
+裸名 `homeassistant` 需要将 `HASS_HOME_CHANNEL` 设置为默认通知目标。参见[定时任务](../features/cron.md)和 [Webhooks](webhooks.md)。
+
 ### 连接管理
 
 - **WebSocket** 每 30 秒发送一次心跳，用于实时事件
 - **自动重连**，退避策略：5s → 10s → 30s → 60s
 - **REST API** 用于出站通知（独立会话，避免与 WebSocket 冲突）
-- **鉴权** — HA 事件始终已授权（无需用户白名单，`HASS_TOKEN` 负责验证连接）
+- **鉴权** — HA 事件始终已授权（无需用户白名单或配对：`HASS_TOKEN` 负责验证连接，且没有人类发送者）
 
 ## 安全性
 
@@ -250,3 +288,22 @@ Agent automatically:
      entity_id="light.hallway")
 3. Sends notification: "Front door opened. Hallway lights turned on."
 ```
+
+## 故障排查
+
+**平台或工具缺失。**
+使用 `hermes plugins list` 检查插件是否已在当前 profile 中安装并启用。若未安装，
+运行 `hermes plugins install homeassistant`（或 `hermes -p <profile> plugins install homeassistant`），
+然后重启 gateway。若关闭了 `security.allow_lazy_installs`，首次启动时的自动安装会被跳过，
+需要您手动安装插件。
+
+**环境变量未生效。**
+适配器从 `~/.hermes/.env`（启动时自动合并）或 `config.yaml` 读取凭据。请确认该文件位于
+当前 Hermes profile 主目录下，且 URL/令牌两侧没有多余的引号。编辑后请重启 gateway —
+环境变量的变更只在进程启动时生效。
+
+**REST 鉴权失败（`401 Unauthorized`）。**
+令牌必须是在 HA 用户个人资料页面（**个人资料 → 安全 → 长期访问令牌**）创建的*长期访问令牌*，
+短期的 UI 会话令牌无效。另请确认基础 URL 包含协议和端口（例如 `http://homeassistant.local:8123`），
+并且运行 Hermes 的主机可以访问 — `curl -H "Authorization: Bearer <token>" <url>/api/`
+应返回 `{"message": "API running."}`。

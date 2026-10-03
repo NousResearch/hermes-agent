@@ -13,7 +13,7 @@ description: "Hermes Agent 工具概览——可用工具、工具集工作方�
 
 ## 可用工具
 
-Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递、Home Assistant 等功能。
+Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递等功能。插件还可以提供更多工具，例如 Home Assistant 设备控制由插件目录中的 `homeassistant` 插件提供。
 
 :::note
 **Honcho 跨会话记忆**作为插件目录中的记忆提供者插件提供（`hermes plugins install honcho`），而非内置工具集。参见 [Memory Providers](./memory-providers.md#honcho)。
@@ -31,7 +31,7 @@ Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动�
 | **Agent 编排** | `todo`, `clarify`, `execute_code`, `delegate_task` | 规划、澄清、代码执行及子 Agent 委托。 |
 | **记忆与召回** | `memory`, `session_search` | 持久化记忆与会话搜索。 |
 | **自动化与投递** | `cronjob`, `send_message` | 支持创建/列出/更新/暂停/恢复/运行/删除操作的定时任务，以及出站消息投递。 |
-| **集成** | `ha_*`、MCP server 工具 | Home Assistant、MCP 及其他集成。 |
+| **集成** | MCP server 工具、插件工具 | MCP 及插件集成，例如 Home Assistant（`ha_*`，来自[插件目录中的 `homeassistant` 插件](../messaging/homeassistant.md)）。 |
 
 如需查看由代码派生的权威注册表，请参阅 [内置工具参考](../../reference/tools-reference.md) 和 [工具集参考](../../reference/toolsets-reference.md)。
 
@@ -52,7 +52,7 @@ hermes tools
 hermes tools
 ```
 
-常用工具集包括 `web`、`search`、`terminal`、`file`、`browser`、`vision`、`image_gen`、`moa`、`skills`、`tts`、`todo`、`memory`、`session_search`、`cronjob`、`code_execution`、`delegation`、`clarify`、`homeassistant`、`messaging`、`spotify`、`discord`、`discord_admin`、`debugging` 和 `safe`。
+常用工具集包括 `web`、`search`、`terminal`、`file`、`browser`、`vision`、`image_gen`、`moa`、`skills`、`tts`、`todo`、`memory`、`session_search`、`cronjob`、`code_execution`、`delegation`、`clarify`、`messaging`、`spotify`、`discord`、`discord_admin`、`debugging` 和 `safe`。
 
 完整列表（包括 `hermes-cli`、`hermes-telegram` 等平台预设以及 `mcp-<server>` 等动态 MCP 工具集）请参阅 [工具集参考](../../reference/toolsets-reference.md)。
 

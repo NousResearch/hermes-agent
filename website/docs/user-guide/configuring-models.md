@@ -335,6 +335,12 @@ model_aliases:
     provider: x-ai
 ```
 
+For messaging gateways, an alias can also set `reasoning_effort`, such as `medium` or `false` to disable reasoning.
+A normal `/model <alias>` switch replaces the previous session reasoning override with this value.
+Without an alias reasoning value, the switch clears the previous override and uses per-model or global defaults.
+An explicit `/model <alias> --reasoning <level>` takes precedence.
+This behavior does not change CLI, TUI, Desktop, or temporary `/model --once` switches.
+
 An alias that points at its own endpoint can also carry that endpoint's
 credential, with either `api_key` (a literal, or a `"${VAR}"` reference) or
 `key_env` (the name of an environment variable). If both are set, `api_key`

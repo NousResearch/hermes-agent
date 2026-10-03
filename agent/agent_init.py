@@ -1325,6 +1325,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     agent._memory_store = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
+    # An application-owned, account-scoped proposal writer (normally an MCP
+    # tool). When set, background review uses this instead of file-backed
+    # MEMORY.md/USER.md; the application binds account identity in tool context.
+    agent._external_memory_writer_tool_name = ""
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
@@ -1350,6 +1354,9 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 _agent_cfg
             )
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            external_writer = mem_config.get("external_writer_tool", "")
+            if isinstance(external_writer, str):
+                agent._external_memory_writer_tool_name = external_writer.strip()
             if agent._memory_enabled or agent._user_profile_enabled:
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),

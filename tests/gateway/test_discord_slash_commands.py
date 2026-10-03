@@ -75,6 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import discord  # noqa: E402 — mock or real, used by thread-type assertions
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -292,7 +293,8 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_reports_success(adapter):
     created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
-    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock())
+    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+    parent_channel = SimpleNamespace(create_thread=AsyncMock(return_value=created_thread), send=AsyncMock(return_value=seed_message))
     interaction_channel = SimpleNamespace(parent=parent_channel)
     interaction = SimpleNamespace(
         channel=interaction_channel,
@@ -305,12 +307,15 @@ async def test_handle_thread_create_slash_reports_success(adapter):
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
 
-    parent_channel.create_thread.assert_awaited_once_with(
+    # Seed-first: the starter message anchors the thread in the parent feed (#131690)
+    parent_channel.send.assert_awaited_once_with("Kickoff")
+    seed_message.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
         reason="Requested by Jezza via /thread",
     )
-    created_thread.send.assert_awaited_once_with("Kickoff")
+    parent_channel.create_thread.assert_not_awaited()
+    created_thread.send.assert_not_awaited()
     # Thread link shown to user
     interaction.followup.send.assert_awaited()
     args, kwargs = interaction.followup.send.await_args
@@ -319,12 +324,11 @@ async def test_handle_thread_create_slash_reports_success(adapter):
 
 
 @pytest.mark.asyncio
-async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
-    created_thread = SimpleNamespace(id=555, name="Planning")
-    seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
+async def test_handle_thread_create_slash_falls_back_to_messageless_public_thread(adapter):
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
     channel = SimpleNamespace(
-        create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
-        send=AsyncMock(return_value=seed_message),
+        create_thread=AsyncMock(return_value=created_thread),
+        send=AsyncMock(side_effect=RuntimeError("send rejected")),
     )
     interaction = SimpleNamespace(
         channel=channel,
@@ -337,12 +341,14 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
 
-    channel.send.assert_awaited_once_with("Kickoff")
-    seed_message.create_thread.assert_awaited_once_with(
+    # Seed failed — fall back to a message-less public thread (#131690, #95670)
+    channel.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
         reason="Requested by Jezza via /thread",
+        type=discord.ChannelType.public_thread,
     )
+    created_thread.send.assert_awaited_once_with("Kickoff")
     interaction.followup.send.assert_awaited()
 
 

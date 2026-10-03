@@ -289,6 +289,7 @@ def _sync_session_key_after_compress(
         )
     # Even if the approval module fails to import, anchor session_key on the continuation id.
     session["session_key"] = new_session_id
+    _publish_session_identity(sid, session)
     with contextlib.suppress(Exception):
         from tools import approval
         with contextlib.suppress(Exception):

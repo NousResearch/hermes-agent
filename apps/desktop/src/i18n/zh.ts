@@ -665,6 +665,14 @@ export const zh = defineLocale({
       failed: '失败',
       empty: '尚未安装桌面插件。',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
+      agent: {
+        setupInstalled: '文件已安装；启用状态未更改。打开插件设置并启用此插件以查看或重试设置。',
+        reviewSetup: '在插件中查看设置',
+        setupTitle: '原生插件设置',
+        setupConfirm: '设置并启用',
+        setupBusy: '正在设置…',
+        setupTrust: '这将在选定后端运行受信任的插件代码。现有会话保持不变；重启网关后生效。'
+      },
       agentHalfMissing: '此处缺少 agent 部分',
       agentHalfMissingTip:
         '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
@@ -2339,6 +2347,7 @@ export const zh = defineLocale({
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
       loadFailed: '无法加载 agent 插件',
       toggleFailed: (name: string) => `无法切换 ${name}`,
+      enabledRestartRequired: (name: string) => `${name} 已启用。其 Python 依赖已为下次启动安装，请重启 Hermes 以加载它。`,
       legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
       portableBadge: '便携',
       catalogTitle: '插件目录',

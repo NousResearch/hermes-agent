@@ -111,9 +111,11 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { openPluginPreview } from './preview'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
+export type { PluginPreviewInput } from './preview'
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -667,6 +669,7 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  openPreview: openPluginPreview,
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -1888,6 +1891,13 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+export {
+  PLUGIN_SETTINGS_AREA,
+  type PluginSettingsContribution,
+  type PluginSettingsContributionProps,
+  type PluginSettingsScope
+} from '@/contrib/plugin-settings'
+export type { PluginViewerInput } from '@/contrib/plugin-viewer'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -1897,6 +1907,12 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
+export {
+  type PluginSessionContext,
+  SESSION_AREAS,
+  type SessionContribution,
+  type SessionContributionProps
+} from '@/contrib/session'
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `ConnectorsTab`
  *  takes; obtain the instance from `host.getGateway()`. */

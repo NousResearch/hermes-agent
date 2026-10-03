@@ -9,6 +9,8 @@ import {
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import { sameViewerLocation } from '../../electron/plugin-viewer-policy'
+
 import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
@@ -47,6 +49,9 @@ export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
   binary?: boolean
+  /** Isolated viewer, not a personal browser: fresh in-memory cookies/storage
+   * and no profile-import offer. Independent of tab persistence (`transient`). */
+  browserContext?: 'isolated'
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —
    * e.g. a pasted/dropped screenshot whose only on-disk copy is a transient
@@ -209,6 +214,67 @@ function loadTabsByProfile(): TabsByProfile {
 
 const tabsByProfile = loadTabsByProfile()
 
+// An explicitly opened plugin viewer is a live, one-shot document. Keep it
+// mounted across chat/profile focus changes; never persist or recreate it.
+const viewerTabs = new Map<string, { owner: string; tab: PreviewTab }>()
+
+const isLiveViewerTab = (tab: PreviewTab) =>
+  tab.target.kind === 'url' && tab.target.transient === true && tab.target.browserContext === 'isolated'
+
+// A viewer's capability lives in the document that loaded it (the page strips
+// it from its address). Memory-only: the address each viewer tab's last live
+// document was built from, and the opener's way to mint a fresh one.
+const spentViewerUrls = new Map<string, string>()
+const viewerReopeners = new Map<string, () => Promise<unknown>>()
+
+/** A viewer document for `url` came up: that capability is now spent. */
+export function noteViewerDocument(tabId: string, url: string): void {
+  spentViewerUrls.set(tabId, url)
+}
+
+/** True when `url` already backed a live document of `tabId`. */
+export function viewerUrlSpent(tabId: string, url: string): boolean {
+  return spentViewerUrls.get(tabId) === url
+}
+
+/** The opener's re-open for a viewer tab (see `openPluginPreview`). */
+export function setViewerReopen(tabId: string, reopen: (() => Promise<unknown>) | undefined): void {
+  if (reopen) {
+    viewerReopeners.set(tabId, reopen)
+  } else {
+    viewerReopeners.delete(tabId)
+  }
+}
+
+/** Ask the viewer's opener for a fresh capability; resolves true when the
+ *  tab now points at a new address. False without a registered re-open. */
+export async function reopenViewer(tabId: string): Promise<boolean> {
+  const reopen = viewerReopeners.get(tabId)
+  const before = $previewTabs.get().find(tab => tab.id === tabId)?.target.url
+
+  if (!reopen || before === undefined) {
+    return false
+  }
+
+  try {
+    await reopen()
+  } catch {
+    return false
+  }
+
+  const after = $previewTabs.get().find(tab => tab.id === tabId)?.target.url
+
+  return after !== undefined && after !== before
+}
+
+export function hasViewerReopen(tabId: string): boolean {
+  return viewerReopeners.has(tabId)
+}
+
+function tabsForScope(key: string): PreviewTab[] {
+  return [...(tabsByProfile[key] ?? []), ...Array.from(viewerTabs.values(), entry => entry.tab)]
+}
+
 /** Inline bytes are not restorable. Strip them from images, and skip remote
  *  HTML and artifact tabs that cannot render without their in-memory payload. */
 function persistableTabs(tabs: PreviewTab[]): PreviewTab[] {
@@ -272,8 +338,20 @@ $previewTabs.subscribe(tabs => {
     return
   }
 
-  // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
-  tabsByProfile[viewKey] = [...tabs]
+  for (const id of viewerTabs.keys()) {
+    if (!tabs.some(tab => tab.id === id && isLiveViewerTab(tab))) {
+      viewerTabs.delete(id)
+      spentViewerUrls.delete(id)
+      viewerReopeners.delete(id)
+    }
+  }
+
+  for (const tab of tabs.filter(isLiveViewerTab)) {
+    viewerTabs.set(tab.id, { owner: viewerTabs.get(tab.id)?.owner ?? viewKey, tab })
+  }
+
+  // Live viewers are window-owned; ordinary tabs remain profile-scoped.
+  tabsByProfile[viewKey] = tabs.filter(tab => !isLiveViewerTab(tab))
   persistTabs()
   forgetGonePendingTabs()
 })
@@ -312,7 +390,7 @@ function applyPreviewScope(next: string) {
   }
 
   viewKey = next
-  $previewTabs.set(tabsByProfile[next] ?? [])
+  $previewTabs.set(tabsForScope(next))
 }
 
 /** Drop one profile's rail. Delete counterpart of the tiles store's
@@ -321,13 +399,15 @@ export function dropPreviewTabsForProfile(profile: string) {
   const key = normalizeProfileKey(profile)
 
   delete tabsByProfile[key]
-  persistTabs()
 
-  if (key === viewKey) {
-    $previewTabs.set([])
-  } else {
-    forgetGonePendingTabs()
+  for (const [id, entry] of viewerTabs) {
+    if (entry.owner === key) {
+      viewerTabs.delete(id)
+    }
   }
+
+  persistTabs()
+  $previewTabs.set(tabsForScope(viewKey))
 }
 
 /** Move one profile's rail to another. Rename counterpart of the tiles store's
@@ -348,6 +428,12 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
     tabsByProfile[to] = [...(tabsByProfile[to] ?? []), ...moved]
   }
 
+  for (const entry of viewerTabs.values()) {
+    if (entry.owner === from) {
+      entry.owner = to
+    }
+  }
+
   // The view belongs to the renamed profile; only its NAME changed. Re-point it
   // BEFORE the atom is set, so the persist subscriber writes the new bucket
   // rather than resurrecting the one just deleted.
@@ -360,7 +446,7 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   persistTabs()
 
   if (wasInView) {
-    $previewTabs.set(tabsByProfile[to] ?? [])
+    $previewTabs.set(tabsForScope(to))
   }
 }
 
@@ -537,7 +623,10 @@ function forgetGonePendingTabs(): void {
     return
   }
 
-  const alive = new Set<string>(Object.values(tabsByProfile).flatMap(tabs => tabs.map(tab => tab.id)))
+  const alive = new Set<string>([
+    ...Object.values(tabsByProfile).flatMap(tabs => tabs.map(tab => tab.id)),
+    ...viewerTabs.keys()
+  ])
 
   if ([...pending.keys()].some(id => !alive.has(id))) {
     $pendingRuntimeByTab.set(new Map([...pending].filter(([id]) => alive.has(id))))
@@ -610,9 +699,15 @@ export const $previewTarget = computed(
  *  rows that toggle a preview open and closed by the target they were handed. */
 export const $previewTabSources = computed($visiblePreviewTabs, tabs => tabs.map(tab => tab.target.source))
 
+export interface BrowserDocument {
+  /** Live guest identity; deliberately memory-only and never persisted. */
+  isLive: () => boolean
+}
+
 export interface BrowserPage {
   title: string
   url: string
+  document?: BrowserDocument
 }
 
 /**
@@ -627,7 +722,7 @@ export const $browserPages = atom<Record<string, BrowserPage>>({})
 export function noteBrowserPage(tabId: string, page: BrowserPage) {
   const current = $browserPages.get()[tabId]
 
-  if (current?.title === page.title && current.url === page.url) {
+  if (current?.title === page.title && current.url === page.url && current.document === page.document) {
     return
   }
 
@@ -661,6 +756,12 @@ export function commitBrowserTabLocation(tabId: string, url: string, title?: str
 
   const tab = tabs[index]
   const nextTitle = title?.trim()
+
+  // An isolated viewer's live address has its capability stripped; writing it
+  // back would rebuild the viewer from an address that cannot connect.
+  if (tab.target.browserContext === 'isolated') {
+    return
+  }
 
   if (tab.target.kind !== 'url' || (tab.target.url === nextUrl && (!nextTitle || tab.target.label === nextTitle))) {
     return
@@ -737,10 +838,18 @@ export function adoptPersistedBrowserTab(tabId: string) {
   }
 }
 
+/** The ordinary popout restores its target from storage in another renderer.
+ * Runtime-only viewers need the explicit viewer-window capability instead. */
+export function canPopOutBrowserTab(tabId: string): boolean {
+  const target = $previewTabs.get().find(tab => tab.id === tabId)?.target
+
+  return canOpenBrowserWindow() && target?.kind === 'url' && !target.transient && target.browserContext !== 'isolated'
+}
+
 /** Pop the in-app Browser into its own OS window. Shared by the address-bar
  *  glyph and the tab context menu so they cannot drift. */
 export function popOutBrowserTab(tabId: string) {
-  if (!tabId || !canOpenBrowserWindow()) {
+  if (!tabId || !canPopOutBrowserTab(tabId)) {
     return
   }
 
@@ -846,7 +955,7 @@ function unusedTabId(base: RightRailTabId, tabs: readonly PreviewTab[]): RightRa
   return id
 }
 
-const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
+const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url' && tab.target.browserContext !== 'isolated'
 
 /** A Browser tab's id, minted the way a terminal's is — there is no identity to
  *  derive one from. Random rather than the lowest free slot: an id is never
@@ -943,9 +1052,15 @@ export function openPreview(
     viewKey
   )
 
+  // An isolated viewer is never a vessel to navigate: the same viewer
+  // location (a fresh capability for it) re-fronts that viewer's own tab.
   const existing =
     target.kind === 'url'
-      ? browserTabFor(visible)
+      ? target.browserContext === 'isolated'
+        ? visible.find(
+            tab => tab.target.browserContext === 'isolated' && sameViewerLocation(tab.target.url, target.url)
+          )
+        : browserTabFor(visible)
       : target.kind === 'file'
         ? fileTabFor(visible, target)
         : current.find(tab => tab.id === previewTabId(target))
@@ -962,6 +1077,11 @@ export function openPreview(
     target: withRenderMode(target, existing?.target)
   }
 
+  // A viewer's profile is the opener's, not necessarily the one on screen.
+  if (isLiveViewerTab(tab)) {
+    viewerTabs.set(tab.id, { owner: normalizeProfileKey(profile ?? viewKey) || 'default', tab })
+  }
+
   $previewTabs.set(existing ? current.map(item => (item === existing ? tab : item)) : [...current, tab])
 
   setPendingRuntime(id, tab.sessionId == null && !tab.pinned ? runtimeId : null)
@@ -969,11 +1089,13 @@ export function openPreview(
   if (!$visiblePreviewTabs.get().some(item => item.id === id)) {
     rememberActiveTab(owner, id)
 
-    return
+    return tab
   }
 
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
+
+  return tab
 }
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })

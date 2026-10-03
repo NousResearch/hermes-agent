@@ -116,7 +116,8 @@ import {
   BROWSER_WINDOW_MIN_HEIGHT,
   BROWSER_WINDOW_MIN_WIDTH,
   BROWSER_WINDOW_WIDTH,
-  buildBrowserWindowUrl
+  buildBrowserWindowUrl,
+  registerPluginViewerIpc
 } from './browser-windows'
 import { createBundleSkewChecker } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
@@ -425,6 +426,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
+import { installViewerGuestPolicy } from './plugin-viewer-policy'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS, POOL_LIMITS_MIN } from './pool-limits'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
@@ -15828,6 +15830,11 @@ ipcMain.handle('hermes:window:openInstance', async (event, options) => {
 
   return { ok: true }
 })
+registerPluginViewerIpc(
+  ipcMain,
+  options => new BrowserWindow(options),
+  () => (DEV_SERVER ? new URL('/', DEV_SERVER).href : pathToFileURL(resolveRendererIndex()).href)
+)
 registerWindowControlIpc(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   if (typeof tabId !== 'string' || !tabId.trim()) {
@@ -19436,6 +19443,8 @@ app.whenReady().then(() => {
   // Settings → Gateway. Must run before createWindow() and the first
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
+
+  installViewerGuestPolicy(app, session)
 
   // Expose the renderer's accessibility tree to the OS (#118271, Windows
   // twin #92607): dictation tools that insert text through the accessibility

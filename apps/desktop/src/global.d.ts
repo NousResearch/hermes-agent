@@ -103,6 +103,9 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      openPluginViewer?: (pluginId: string, input: { id: string; url: string; title: string }) => Promise<boolean>
+      closePluginViewer?: (pluginId: string, id?: string) => Promise<boolean>
+      isPluginViewerOpen?: (pluginId: string, id: string, initialUrl: string) => Promise<boolean>
       // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
       // main relays opaque payloads to the other Hermes renderer windows;
       // renderer code keeps the destination exact and rejects anything not

@@ -901,6 +901,16 @@ export const en: Translations = {
       failed: 'failed',
       empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
+      agent: {
+        setupInstalled:
+          'Files installed; enablement was not changed. Open Plugins and enable this plugin to review or retry setup.',
+        reviewSetup: 'Review setup in Plugins',
+        setupTitle: 'Native plugin setup',
+        setupConfirm: 'Set up and enable',
+        setupBusy: 'Setting up…',
+        setupTrust:
+          'This runs trusted plugin code on the selected backend. Existing sessions stay unchanged; restart the gateway to activate.'
+      },
       agentHalfMissing: 'agent half missing here',
       agentHalfMissingTip:
         'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
@@ -2501,6 +2511,8 @@ export const en: Translations = {
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
       loadFailed: 'Could not load agent plugins',
       toggleFailed: (name: string) => `Could not toggle ${name}`,
+      enabledRestartRequired: (name: string) =>
+        `${name} is enabled. Its Python dependencies were installed for the next start, so restart Hermes to load it.`,
       toolsetOn: (name: string, profile: string) => `${name} agent tools enabled for ${profile}`,
       toolsetOff: (name: string, profile: string) => `${name} agent tools disabled for ${profile}`,
       toolsetToggleFailed: (name: string) =>

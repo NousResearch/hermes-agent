@@ -756,6 +756,14 @@ export interface Translations {
       failed: string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
+      agent: {
+        setupInstalled: string
+        reviewSetup: string
+        setupTitle: string
+        setupConfirm: string
+        setupBusy: string
+        setupTrust: string
+      }
       agentHalfMissing: string
       agentHalfMissingTip: string
       installModal: {
@@ -2112,6 +2120,7 @@ export interface Translations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      enabledRestartRequired: (name: string) => string
       toolsetOn: (name: string, profile: string) => string
       toolsetOff: (name: string, profile: string) => string
       toolsetToggleFailed: (name: string) => string

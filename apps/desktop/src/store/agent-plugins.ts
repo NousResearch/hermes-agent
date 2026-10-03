@@ -41,6 +41,8 @@ export interface AgentPluginRow {
   /** 'bundled' | 'user' | 'git' | 'project' | 'entrypoint' */
   source: string
   status: 'enabled' | 'disabled' | 'not enabled'
+  /** Bundled activation policy, separate from the user's current decision. */
+  default_enabled?: boolean
   /** Agent Plugins v1 package (portable skills/MCP format) vs native Hermes. */
   portable?: boolean
   /** Curated-catalog provenance (from the install sidecar), when present. */
@@ -95,6 +97,33 @@ export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 /** The recovering `requestGateway` from `useGatewayRequest`. */
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
+export interface PluginSetupConsent {
+  key: string
+  hermes_home: string
+  revision: string
+}
+
+export interface PluginSetupReview {
+  status: 'consent_required'
+  setup: { revision: string; ready: boolean; summary: string; details: string[] }
+  consent: PluginSetupConsent
+}
+
+export function pluginSetupReview(error: unknown): PluginSetupReview | null {
+  const data = (error as { data?: PluginSetupReview } | null)?.data
+
+  return data?.status === 'consent_required' && data.setup && data.consent ? data : null
+}
+
+interface ToggleOptions {
+  setupConsent?: PluginSetupConsent
+  onSetupRequired?: (review: PluginSetupReview) => void
+  /** The plugin is enabled but this backend could not load it (e.g. its Python
+   *  dependencies landed in an environment only a restarted backend imports). */
+  onRestartRequired?: () => void
+  throwOnError?: boolean
+}
+
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
@@ -102,7 +131,8 @@ export const $agentPluginsError = atom<string | null>(null)
 export const $agentPluginBusy = atom<string | null>(null)
 
 // Rows the Plugins page actually lists (and search should surface): plugins
-// the USER installed, plus the few repo-bundled lifecycle plugins that use the
+// the USER installed, opt-in bundled plugins (``default_enabled: false``) even
+// after activation, plus the few repo-bundled lifecycle plugins that use the
 // ordinary enable/disable contract and have no settings surface of their own
 // (#98861). Every other built-in (providers, platforms, browser/web backends,
 // dashboard auth, observability, unknown future keys) ships enabled-by-default
@@ -114,7 +144,7 @@ const MANAGEABLE_BUNDLED_KEYS = new Set(['disk-cleanup', 'security-guidance'])
 
 export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
   if (row.source === 'bundled') {
-    return MANAGEABLE_BUNDLED_KEYS.has(row.key ?? row.name)
+    return row.default_enabled === false || MANAGEABLE_BUNDLED_KEYS.has(row.key ?? row.name)
   }
 
   const key = row.key
@@ -196,25 +226,48 @@ export async function toggleAgentPlugin(
   key: string,
   enable: boolean,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  options: ToggleOptions = {}
 ): Promise<boolean> {
+  if ($agentPluginBusy.get()) {
+    return false
+  }
+
+  const generation = loadGeneration
   $agentPluginBusy.set(key)
 
   try {
-    const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
+    const result = await request<{
+      ok?: boolean
+      plugin?: AgentPluginRow | null
+      restart_required?: boolean | null
+      activation?: unknown
+    }>(
       'plugins.manage',
       withProfile(
         {
           action: 'toggle',
           key,
-          enable
+          enable,
+          ...(options.setupConsent ? { setup_consent: options.setupConsent } : {})
         },
         profile
-      )
+      ),
+      ...(options.setupConsent ? [360_000] : [])
     )
 
     if (!result?.ok) {
-      throw new Error(failMessage)
+      throw Object.assign(new Error(failMessage), { data: result })
+    }
+
+    // `restart_required` alone also means "no messaging gateway answered", while this backend
+    // did load the plugin; only an enable that loaded nothing here needs a restart to finish.
+    if (enable && result.restart_required && !result.activation) {
+      options.onRestartRequired?.()
+    }
+
+    if (generation !== loadGeneration) {
+      return true
     }
 
     const refreshed = result.plugin
@@ -229,7 +282,19 @@ export async function toggleAgentPlugin(
 
     return true
   } catch (e) {
-    notifyError(e, failMessage)
+    const review = pluginSetupReview(e)
+
+    if (review && options.onSetupRequired) {
+      options.onSetupRequired(review)
+    }
+
+    if (options.throwOnError) {
+      throw e
+    }
+
+    if (!review) {
+      notifyError(e, failMessage)
+    }
 
     return false
   } finally {
@@ -239,6 +304,7 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  installed?: boolean
   /** The client stopped waiting; the backend may still finish the install. */
   timedOut?: boolean
   pluginName?: string
@@ -292,6 +358,7 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      installed?: boolean
       activation?: {
         live_now?: {
           mcp_servers?: AgentPluginLiveServer[]
@@ -317,7 +384,14 @@ export async function installAgentPlugin(
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
+      return {
+        ok: false,
+        installed: result?.installed,
+        pluginName: result?.plugin_name,
+        error: result?.error || 'Install failed',
+        live: NO_LIVE,
+        nextChat: false
+      }
     }
 
     return {
@@ -333,12 +407,15 @@ export async function installAgentPlugin(
       nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
+    const data = (e as { data?: { installed?: boolean; plugin_name?: string; error?: string } } | null)?.data
     const message = e instanceof Error ? e.message : String(e)
 
     return {
       ok: false,
+      installed: data?.installed,
+      pluginName: data?.plugin_name,
       timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
-      error: message,
+      error: data?.error || message,
       live: NO_LIVE,
       nextChat: false
     }

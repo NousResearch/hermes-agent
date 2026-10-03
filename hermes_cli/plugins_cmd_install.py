@@ -463,6 +463,7 @@ def cmd_install(
     force: bool = False,
     enable: Optional[bool] = None,
     ref: Optional[str] = None,
+    setup_consent=None,
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
@@ -575,13 +576,15 @@ def cmd_install(
         from hermes_cli.plugins_admission import AdmissionRefused
 
         try:
-            _pc()._set_plugin_enabled(installed_name, enable=True, console=console)
+            result = _pc()._enable_plugin_cli(installed_name, console, setup_consent=setup_consent)
         except AdmissionRefused:
             console.print(
                 "[dim]The plugin stays installed but disabled; re-enable "
                 "after resolving the conflict.[/dim]"
             )
         else:
+            if not result.get("ok"):
+                _pc()._fail(console, result["error"] + " Plugin files were installed; retry `hermes plugins enable`.")
             console.print(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
@@ -603,7 +606,7 @@ def cmd_install(
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None, assume_deps_consent: bool = False,
+    ref: Optional[str] = None, setup_consent=None, assume_deps_consent: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
@@ -652,17 +655,23 @@ def dashboard_install_plugin(
     except _pc().PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
+    deps = _pc()._python_dependency_summary(target, warnings)
     if enable:
         from hermes_cli.plugins_admission import AdmissionRefused
 
-        try:
-            _pc()._set_plugin_enabled(installed_name, enable=True)
-        except AdmissionRefused as exc:
-            return {
-                "ok": False, "error": f"enable refused: {exc}",
-                "plugin_name": installed_name, "enabled": False,
-            }
-    deps = _pc()._python_dependency_summary(target, warnings)
+        # Native setup runs only with the exact reviewed consent, under the same profile lock as
+        # the enable it gates; a refusal keeps the files installed and the plugin disabled.
+        with _pc()._setup_lock_for(installed_name):
+            refusal = _pc()._setup_refusal(installed_name, setup_consent)
+            if refusal:
+                return {**refusal, "installed": True, "plugin_name": installed_name, "python_dependencies": deps}
+            try:
+                _pc()._set_plugin_enabled(installed_name, enable=True)
+            except AdmissionRefused as exc:
+                return {
+                    "ok": False, "error": f"enable refused: {exc}",
+                    "plugin_name": installed_name, "enabled": False,
+                }
     ap = target / "after-install.md"
     # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)
     # and in the running gateway; ``activation`` says what is live now vs next session (#87770).

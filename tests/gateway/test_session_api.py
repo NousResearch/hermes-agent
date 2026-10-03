@@ -495,6 +495,48 @@ async def test_session_chat_stream_classifies_failed_tool_completions(adapter, s
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_forwards_subagent_lifecycle_events(adapter, session_db, monkeypatch):
+    import json as _json
+
+    session_id = session_db.create_session("subagent-stream", "api_server")
+    monkeypatch.setattr(
+        "gateway.platforms.api_server.redact_sensitive_text",
+        lambda value, force=False: "[REDACTED]" if force else value,
+    )
+
+    async def fake_run(**kwargs):
+        progress = kwargs["tool_progress_callback"]
+        progress(
+            "subagent.start", preview="secret goal",
+            delegation_id="deleg-1", child_session_id="child-1", goal="secret goal",
+            status="running")
+        progress(
+            "subagent.complete", preview="secret summary",
+            delegation_id="deleg-1", child_session_id="child-1", summary="secret summary",
+            status="completed")
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "delegate"})
+            body = await resp.text()
+
+    payloads = []
+    for block in body.split("\n\n"):
+        event = next((line[7:] for line in block.splitlines() if line.startswith("event: ")), None)
+        data = next((line[6:] for line in block.splitlines() if line.startswith("data: ")), None)
+        if event in {"subagent.start", "subagent.complete"} and data:
+            payloads.append((event, _json.loads(data)))
+    assert [event for event, _ in payloads] == ["subagent.start", "subagent.complete"]
+    assert payloads[0][1]["delegation_id"] == "deleg-1"
+    assert payloads[0][1]["child_session_id"] == "child-1"
+    assert payloads[0][1]["goal"] != "secret goal"
+    assert payloads[1][1]["summary"] != "secret summary"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

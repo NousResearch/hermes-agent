@@ -203,3 +203,67 @@ class TestChineseReasoningTags:
         from cli import _strip_reasoning_tags
 
         assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"
+
+
+class TestCaseFoldKeepsIndices:
+    """``str.lower()`` turns 'İ' (U+0130) into two code points, so a tag index found in the
+    lowered copy drifts when it slices the original. Every streaming tag filter must give the
+    same visible text however the stream is chunked — one delta or one char at a time."""
+
+    TEXT = (
+        "İyi.\n<memory-context>\nRECALLED\n</memory-context>\n"
+        "İyi bir soru.\n<think>İİ HIDDEN plan</think>\nUçak en hızlısı.\n"
+        "<think>İ HIDDEN tail"
+    )
+
+    @staticmethod
+    def _think(deltas: list[str]) -> str:
+        return _drive(StreamingThinkScrubber(), deltas)
+
+    @staticmethod
+    def _memory_context(deltas: list[str]) -> str:
+        from agent.memory_manager import StreamingContextScrubber
+
+        s = StreamingContextScrubber()
+        return "".join(s.feed(d) for d in deltas) + s.flush()
+
+    @staticmethod
+    def _gateway(deltas: list[str]) -> str:
+        from unittest.mock import MagicMock
+
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        c = GatewayStreamConsumer(MagicMock(), "chat")
+        for d in deltas:
+            c._filter_and_accumulate(d)
+        c._flush_think_buffer()
+        return c._accumulated
+
+    @staticmethod
+    def _cli(deltas: list[str]) -> str:
+        from cli import HermesCLI
+
+        c = HermesCLI.__new__(HermesCLI)
+        c.show_reasoning = False
+        c._stream_buf, c._stream_prefilt = "", ""
+        c._stream_started = c._stream_box_opened = c._in_reasoning_block = False
+        emitted: list[str] = []
+        c._emit_stream_text = emitted.append
+        c._stream_reasoning_delta = lambda _text: None
+        for d in deltas:
+            c._stream_delta(d)
+        return "".join(emitted) + ("" if c._in_reasoning_block else c._stream_prefilt)
+
+    @pytest.mark.parametrize("surface", ["_think", "_memory_context", "_gateway", "_cli"])
+    def test_visible_text_is_independent_of_delta_boundaries(self, surface: str) -> None:
+        run = getattr(self, surface)
+        assert run([self.TEXT]) == run(list(self.TEXT))
+
+    @pytest.mark.parametrize("surface", ["_think", "_gateway", "_cli"])
+    def test_streamed_text_agrees_with_the_final_strip_on_one_code_point_case_maps(self, surface: str) -> None:
+        """The Kelvin sign (U+212A) lowercases to ASCII 'k': the final-response strip hides a tag
+        spelled with it, so the progressive stream must hide it too."""
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        text = "<THINK>HIDDEN</THINK>answer"
+        assert getattr(self, surface)([text]) == strip_think_blocks(None, text)

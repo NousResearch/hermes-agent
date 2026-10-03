@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS, fold_tag_case
 from agent.think_scrubber import StreamingThinkScrubber as _Scrubber
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -59,8 +59,8 @@ class StreamThinkFilterMixin:
         self._think_buffer = ""
 
         while buf:
-            # Case-insensitive: models emit <Think>, <THINKING>, …
-            lower_buf = buf.lower()
+            # Case-insensitive: models emit <Think>, <THINKING>, … (index-preserving fold)
+            lower_buf = fold_tag_case(buf)
             if self._in_think_block:
                 best_idx, best_len = _Scrubber._find_first_tag(buf, self._CLOSE_THINK_TAGS)
                 if best_len:

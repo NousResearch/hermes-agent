@@ -169,7 +169,7 @@ def test_read_skill_body_strips_frontmatter(tmp_path):
         encoding="utf-8",
     )
     with patch(
-        "agent.skill_utils.get_scan_ordered_skills_dirs",
+        "agent.skill_utils.get_all_skills_dirs",
         return_value=[tmp_path],
     ):
         body = _read_skill_body("codex")
@@ -179,7 +179,7 @@ def test_read_skill_body_strips_frontmatter(tmp_path):
 
 def test_read_skill_body_returns_empty_for_missing(tmp_path):
     with patch(
-        "agent.skill_utils.get_scan_ordered_skills_dirs",
+        "agent.skill_utils.get_all_skills_dirs",
         return_value=[tmp_path],
     ):
         assert _read_skill_body("nope") == ""

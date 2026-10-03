@@ -166,13 +166,21 @@ def _find_skill_md(name: str) -> Optional[Path]:
         return None
     try:
         from agent.skill_utils import (
-            get_scan_ordered_skills_dirs,
+            get_all_skills_dirs,
+            get_project_skills_dirs,
             iter_skill_index_files,
             parse_frontmatter,
         )
     except Exception:
         return None
-    for skills_dir in get_scan_ordered_skills_dirs():
+    # Main's #91998 refactor dropped the scan-ordered helper; rebuild its
+    # precedence (project first, then local/external) from the two live APIs.
+    skills_dirs = [*get_project_skills_dirs(), *get_all_skills_dirs()]
+    seen_dirs: set = set()
+    for skills_dir in skills_dirs:
+        if skills_dir in seen_dirs:
+            continue
+        seen_dirs.add(skills_dir)
         if not skills_dir.exists():
             continue
         try:

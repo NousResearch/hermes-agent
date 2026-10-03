@@ -32,12 +32,189 @@ incident.
 """
 
 import ast
+import hashlib
+import json
+import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+# ── Live gateway-state isolation guard ───────────────────────────────────────
+# ``gateway/status.py`` resolves its identity files (``gateway_state.json``,
+# ``gateway.pid``, ``gateway.lock``, takeover markers) from the RAW ``HERMES_HOME``
+# env, falling back to ``Path.home()/".hermes"`` (the LIVE home) when unset. The
+# hermetic root conftest re-points ``HERMES_HOME`` at import, but that has escape
+# hatches — an explicit ``HERMES_HOME=<live>``, a standalone run without the root
+# conftest, or a subprocess child that rebuilds its env — any of which lets a
+# gateway test write the LIVE ``~/.hermes/gateway_state.json`` (the bug that left a
+# dead pytest pid as the live feishu writer). The production-side guard in
+# ``gateway.status`` fails closed for the child case; this harness-side guard adds:
+#   (a) refuse to start when ``HERMES_HOME`` resolves to the live home (unless
+#       ``HERMES_TEST_ALLOW_LIVE=1``);
+#   (b) otherwise force a scratch ``HERMES_HOME`` so every state write lands in a
+#       throwaway dir;
+#   (e) at session end, fail hard if the live gateway pid changed from the
+#       session-start baseline; a sha-only drift is reported (which fields moved)
+#       but not failed, because the live gateway's own event-driven writes make sha
+#       equality spuriously brittle on a busy host;
+#   (iii) force ephemeral listener ports (``API_SERVER_PORT`` / ``WEBHOOK_PORT`` = 0)
+#       so a gateway test that binds a real api_server/webhook listener cannot squat
+#       the live gateway's port.
+# (a)/(b) run at conftest import time — before any gateway test module is collected
+# — so import-time writes are covered too; (e) runs in ``pytest_sessionfinish``.
+# ``--replace`` of the live gateway is subsumed by (b): takeover markers resolve
+# through the same ``HERMES_HOME``, so they land in scratch, and (e) still catches a
+# deliberate target at the live home.
+
+_GATEWAY_LIVE_ALLOW_ENV = "HERMES_TEST_ALLOW_LIVE"
+# Adapter listener ports forced to ephemeral under the guard: a gateway test that
+# binds a real api_server/webhook listener must bind port 0, never the live gateway's.
+_GATEWAY_EPHEMERAL_PORT_ENV = ("API_SERVER_PORT", "WEBHOOK_PORT")
+# HERMES_HOME as seen when THIS conftest is imported (before our own redirect):
+_GATEWAY_PRE_GUARD_HOME = os.environ.get("HERMES_HOME", "")
+# (live_home, baseline_pid, baseline_sha, baseline_state) captured at session start;
+# pid/sha/state are None when the live file was absent or unreadable at baseline:
+_gateway_state_baseline = None
+
+
+def _gateway_live_home():
+    """The REAL production hermes home, robust against ``Path.home`` monkeypatching."""
+    try:
+        from hermes_state_guard import _real_platform_state_root
+        home = _real_platform_state_root()
+        if home is not None:
+            return home
+    except Exception:
+        pass
+    return Path.home() / ".hermes"
+
+
+def _gateway_home_points_at_live(value):
+    """True when *value* is the live home or a profile home directly under it."""
+    if not value.strip():
+        return False  # unset → force scratch below, not a refusal
+    try:
+        resolved = Path(value).expanduser().resolve()
+    except Exception:
+        return False
+    live = _gateway_live_home().resolve()
+    if resolved == live:
+        return True
+    return resolved.parent.name == "profiles" and resolved.parent.parent == live
+
+
+def _gateway_read_live_state():
+    """``(exists, pid, sha, state)`` of the live ``gateway_state.json``; ``pid``/``sha``/
+    ``state`` are ``None`` when the file is absent or unreadable."""
+    path = _gateway_live_home() / "gateway_state.json"
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return False, None, None, None
+    state = None
+    try:
+        state = json.loads(raw.decode("utf-8"))
+    except Exception:
+        state = None
+    pid = state.get("pid") if isinstance(state, dict) else None
+    return True, pid, hashlib.sha256(raw).hexdigest(), state
+
+
+def _gateway_moved_fields(before, after):
+    """Short ``field: before -> after`` list for the top-level keys and per-platform
+    writer pids that differ, to diagnose what a test (or the live gateway) changed."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return ["(unparseable state)"]
+    moved = []
+    for key in ("pid", "kind", "start_time", "gateway_state", "active_agents",
+                "served_profiles", "session_store"):
+        if before.get(key) != after.get(key):
+            moved.append("%s: %r -> %r" % (key, before.get(key), after.get(key)))
+    before_plat = before.get("platforms") if isinstance(before.get("platforms"), dict) else {}
+    after_plat = after.get("platforms") if isinstance(after.get("platforms"), dict) else {}
+    for key in sorted(set(before_plat) | set(after_plat)):
+        bp = before_plat.get(key) if isinstance(before_plat.get(key), dict) else {}
+        ap = after_plat.get(key) if isinstance(after_plat.get(key), dict) else {}
+        if bp.get("writer_pid") != ap.get("writer_pid") or bp.get("state") != ap.get("state"):
+            moved.append("platform %s: writer_pid %r -> %r, state %r -> %r" % (
+                key, bp.get("writer_pid"), ap.get("writer_pid"),
+                bp.get("state"), ap.get("state")))
+    return moved or ["(sha changed but no tracked field moved)"]
+
+
+# (a)/(b): redirect a live/unset HERMES_HOME to scratch at import time, before any
+# gateway test module is imported, so collection can't write the live state.
+# (iii): force ephemeral listener ports at import time too, so collection-time
+# adapter construction can't default to the live gateway's bound port.
+if os.environ.get(_GATEWAY_LIVE_ALLOW_ENV) != "1":
+    if _gateway_home_points_at_live(_GATEWAY_PRE_GUARD_HOME) or not _GATEWAY_PRE_GUARD_HOME.strip():
+        os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hermes-gw-test-home-")
+    for _port_env in _GATEWAY_EPHEMERAL_PORT_ENV:
+        os.environ[_port_env] = "0"
+
+
+def pytest_sessionstart(session):
+    global _gateway_state_baseline
+    if os.environ.get(_GATEWAY_LIVE_ALLOW_ENV) != "1" and _gateway_home_points_at_live(_GATEWAY_PRE_GUARD_HOME):
+        raise pytest.UsageError(
+            "Refusing to run gateway tests: HERMES_HOME resolves to the live home "
+            f"({_gateway_live_home()}). Gateway tests write gateway_state.json / "
+            "gateway.pid and must never touch the live gateway. Point HERMES_HOME "
+            "at a scratch dir, or set " + _GATEWAY_LIVE_ALLOW_ENV + "=1 to explicitly "
+            "opt in."
+        )
+    exists, pid, sha, state = _gateway_read_live_state()
+    _gateway_state_baseline = (_gateway_live_home(), pid if exists else None, sha, state)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    global _gateway_state_baseline
+    baseline = _gateway_state_baseline
+    if baseline is None:
+        return
+    live, base_pid, base_sha, base_state = baseline
+    exists, pid, sha, state = _gateway_read_live_state()
+    problems = []
+    if base_pid is not None:
+        if not exists:
+            problems.append("live gateway_state.json vanished during the run: %s" % (live / "gateway_state.json"))
+        elif pid != base_pid:
+            problems.append(
+                "live gateway pid changed: was %s, now %s — a test replaced or "
+                "corrupted the live gateway identity. Fields that moved: %s"
+                % (base_pid, pid, "; ".join(_gateway_moved_fields(base_state, state)))
+            )
+        elif base_sha is not None and sha is not None and sha != base_sha:
+            # The live gateway's own event-driven writes (platform transitions) drift
+            # the sha on a busy host without touching the pid. Report, don't fail:
+            # the pid is the unambiguous "a test took over" signal.
+            logging.warning(
+                "live gateway_state.json sha drifted during the run but pid is stable "
+                "(%s) — the live gateway itself wrote between baseline and session end. "
+                "Moved fields: %s",
+                pid, "; ".join(_gateway_moved_fields(base_state, state)),
+            )
+    if problems:
+        raise pytest.UsageError(
+            "Gateway test isolation failure — the live gateway state changed during this "
+            "test run:\n" + "\n".join("  - " + p for p in problems)
+        )
+
+
+@pytest.fixture(autouse=True)
+def _gateway_ephemeral_ports(_hermetic_environment, monkeypatch):
+    """Force adapter listener ports to 0 for the test, after ``_hermetic_environment``
+    has blanked them. A gateway test that binds a real api_server/webhook listener must
+    bind an ephemeral port, never the live gateway's configured port. Tests that need a
+    specific port set it via adapter config (``extra={"port": N}``), which takes
+    precedence over these env defaults."""
+    for _port_env in _GATEWAY_EPHEMERAL_PORT_ENV:
+        monkeypatch.setenv(_port_env, "0")
 
 
 @pytest.fixture(scope="session", autouse=True)

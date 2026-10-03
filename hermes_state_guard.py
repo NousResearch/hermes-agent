@@ -62,7 +62,12 @@ def _running_under_pytest() -> bool:
 
 #: pytest launcher names, matched against each argv token's *basename* so
 #: ``/tmp/pytest-of-dev/...`` paths cannot false-positive.
-_PYTEST_LAUNCHER_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
+_PYTEST_LAUNCHER_NAMES = frozenset({
+    "pytest", "py.test", "pytest.exe", "py.test.exe",
+    #: Test runners that launch ``python -m pytest <file>`` per file; a child
+    #: that loses its PYTEST_* env must still be recognised via this ancestor.
+    "run_tests_parallel", "run_tests_parallel.py",
+})
 
 #: Memoised ancestry answer: the tree above us doesn't change; keep the hot path free.
 _PYTEST_ANCESTOR: Optional[bool] = None
@@ -110,8 +115,24 @@ def _has_pytest_ancestor() -> bool:
 
 
 def _in_test_context() -> bool:
-    """Test run by environment or ancestry (memoised; env checked first)."""
-    return _running_under_pytest() or _has_pytest_ancestor()
+    """Test run by environment, ancestry, or self-identification (memoised; env checked first)."""
+    return _running_under_pytest() or _has_pytest_ancestor() or _current_process_is_pytest()
+
+
+def _current_process_is_pytest() -> bool:
+    """True when *this* process is running pytest, even with a scrubbed
+    environment. ``pytest`` in ``sys.modules`` is the precise signal: every real
+    pytest run (``python -m pytest``, ``pytest.main(...)``, the console script)
+    imports the ``pytest`` package, so it is present for the whole process
+    lifetime regardless of ``PYTEST_*`` env or a rebuilt environment.
+
+    Deliberately NOT a substring scan of ``sys.argv``: a production ``hermes``
+    CLI run carries the user's prompt text in ``argv``, so a prompt that happens
+    to mention pytest would false-positive and arm the live state.db / gateway
+    guards against a non-test process (the argv-substring identity bug class,
+    see AGENTS.md). The launcher-name arm already covers ``sys.argv[0]``
+    basenames; this arm only needs to catch the self-process."""
+    return "pytest" in sys.modules
 
 
 def _is_production_state_db(resolved: Path, root: Path) -> bool:

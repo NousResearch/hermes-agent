@@ -326,6 +326,10 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
+        # Path of the first Python edit (patch/write_file) that could leave this kernel's imports
+        # stale, set by mark_dirty_for_edit(). The next _acquire_kernel() respawns the kernel, same
+        # as reset=True, and the result names the file so the lost state is explained.
+        self.stale_edit: Optional[str] = None
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -437,6 +441,13 @@ def _resolve_owner(task_id: str) -> str:
     except Exception:
         pass
     return owner
+
+
+def _owner_family(owner: str) -> str:
+    """The conversation an owner belongs to: a delegated child's owner is its parent's plus
+    ``::child::<id>``. Kernels stay isolated per owner, but they share the files on disk, so a
+    child's edit can leave the parent's imports stale and the other way round."""
+    return owner.split("::child::", 1)[0]
 
 
 def shutdown_all_kernels() -> None:
@@ -664,18 +675,22 @@ def _pop_idle_expired(now: float, idle_timeout: float) -> List[SessionKernel]:
             if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
 
 
-def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
-    """Look up or register the kernel for *key*; returns (kernel, state_reset). Every entry also
-    sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
-    under the lock, torn down outside it), so a long-lived host stays bounded. ``pinned`` kernels
-    (live delegate_task children) are exempt from the cap: their lifetime is the child's, ended by
-    ``shutdown_kernels_for_delegated_child``, so the cap has nothing to bound for them."""
+def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool, Optional[str]]:
+    """Look up or register the kernel for *key*; returns (kernel, state_reset, stale_edit), where
+    *stale_edit* is the edited file that forced an automatic reset (None when the caller asked for
+    it or there was none). Every entry also sweeps idle-expired kernels and enforces the
+    process-wide LRU cap (doomed kernels are popped under the lock, torn down outside it), so a
+    long-lived host stays bounded. ``pinned`` kernels (live delegate_task children) are exempt from
+    the cap: their lifetime is the child's, ended by ``shutdown_kernels_for_delegated_child``, so
+    the cap has nothing to bound for them."""
     cap, idle_timeout = _lifecycle_limits()
+    stale_edit = None
     with _REGISTRY.lock:
         expired = _pop_idle_expired(time.monotonic(), idle_timeout)
         kernel = _KERNELS.get(key)
-        state_reset = kernel is not None and (reset or kernel.dead())
+        state_reset = kernel is not None and (reset or kernel.dead() or kernel.stale_edit is not None)
         if state_reset:
+            stale_edit = None if reset else kernel.stale_edit
             dropped = _KERNELS.pop(key)
             if dropped.attached == 0:
                 expired.append(dropped)
@@ -691,7 +706,46 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
         expired.extend(_KERNELS.pop(k) for k in by_age[: max(0, len(unpinned) - cap)])
     for doomed in expired:
         doomed.teardown()
-    return kernel, state_reset
+    return kernel, state_reset, stale_edit
+
+
+# Only these can leave a kernel's imports stale: Python source and compiled extension modules.
+# Any other edit (docs, data, config) would only wipe the model's variables for no benefit.
+_STALE_IMPORT_SUFFIXES = (".py", ".pyx", ".pyd", ".so")
+
+
+def _is_within(path: str, folder: str) -> bool:
+    try:
+        return os.path.commonpath([path, folder]) == folder
+    except ValueError:  # different drives on Windows
+        return False
+
+
+def mark_dirty_for_edit(task_id: str, edited_paths: List[str]) -> None:
+    """Schedule a respawn for live kernels whose imports a successful patch/write_file may have
+    left stale -- an imported module keeps serving the pre-edit code after the file changes on
+    disk, and the model has no signal that the kernel (not its fix) is stale.
+
+    Deliberately coarse: a Python edit under a kernel's cwd marks the whole kernel, not just
+    modules it actually imported (no per-kernel import tracking exists). A kernel without a cwd
+    (strict mode's private temp dir) can still import project files via ``sys.path``, so any
+    Python edit counts for it. Kernels of the same conversation count too: a delegated child
+    edits the same files its parent imported.
+    """
+    owner = _resolve_owner(task_id)
+    if not owner:
+        return
+    edited = [os.path.realpath(p) for p in edited_paths
+              if p and p.lower().endswith(_STALE_IMPORT_SUFFIXES)]
+    if not edited:
+        return
+    family = _owner_family(owner)
+    with _REGISTRY.lock:
+        for key, kernel in _KERNELS.items():
+            if kernel.stale_edit is not None or _owner_family(key[0]) != family:
+                continue
+            cwd = os.path.realpath(key[3]) if key[3] else ""
+            kernel.stale_edit = next((p for p in edited if not cwd or _is_within(p, cwd)), None)
 
 
 # The acquire-path sweep above only fires on the NEXT kernel request. A host that stays
@@ -780,7 +834,7 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
 
 def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
-                 state_reset: bool, exec_start: float) -> Dict[str, Any]:
+                 state_reset: bool, stale_edit: Optional[str], exec_start: float) -> Dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
     from agent.redact import redact_sensitive_text
@@ -803,6 +857,14 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
+    warnings = [result["warning"]] if result.get("warning") else []
+    if stale_edit:
+        # Without this the reset is a bare state_reset flag, and the next thing the model sees is
+        # a NameError for a variable it defined earlier.
+        warnings.append(
+            f"Kernel restarted because {stale_edit} was edited since it started (so imports load the "
+            "new code); variables from earlier execute_code calls are gone."
+        )
     from tools.code_execution_rpc import tool_errors_since
     tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
     if tool_errors:
@@ -811,11 +873,13 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
     cell_spill = str(payload.get("stdout_spill_path", "") or "")
     if cell_spill and payload.get("stdout_clipped"):
         result["stdout_spill_path"] = cell_spill
-        result["warning"] = (
+        warnings.append(
             f"Cell stdout exceeded the inline cap; head shown. FULL output saved to {cell_spill} "
             f'— page it with read_file(path="{cell_spill}", offset=...) instead of re-running. '
             "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
         )
+    if warnings:
+        result["warning"] = " ".join(warnings)
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")
@@ -856,11 +920,12 @@ def execute_in_session_kernel(
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
-    kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
+    kernel, state_reset, stale_edit = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                         stale_edit=stale_edit)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -874,7 +939,7 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool) -> str:
+              is_interrupted, exec_start: float, state_reset: bool, stale_edit: Optional[str]) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
@@ -896,7 +961,7 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             result = _cell_result(
                 kernel, key, status, payload,
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,
-                state_reset=state_reset, exec_start=exec_start,
+                state_reset=state_reset, stale_edit=stale_edit, exec_start=exec_start,
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:  # pragma: no cover - defensive parity with per-call

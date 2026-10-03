@@ -121,7 +121,7 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     Returns ``(handle, "held")`` (release via :func:`_release_singleton_lock`),
     ``(None, "contended")`` when another process holds it (caller must NOT
     dispatch), or ``(None, "unavailable")`` when locking cannot be performed
-    (caller falls back to config control).
+    (caller must not dispatch without proven exclusion).
     """
     try:
         from gateway.status import _try_acquire_file_lock  # deferred; same package

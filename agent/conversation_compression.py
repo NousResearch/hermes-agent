@@ -1465,6 +1465,16 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
     return bool(session and session.get("ended_at") is not None and session.get("end_reason") == "compression")
 
 
+# Caller-side abort verdicts that only restate an outcome the compressor already classified more precisely:
+# ``no_progress`` ("the transcript came back unchanged") covers the structural no-ops
+# (``no_compressible_window``, ``insufficient_messages``, ``empty_post_handoff_window``) and
+# ``summary_generation_aborted`` covers the terminal summary failures (``summary_auth_failure``,
+# ``summary_overload_failure``, ...). The emitter keeps the compressor's class for these so the attempt log
+# says WHY, not just THAT (#131412). Every other caller label names an event the compressor cannot see
+# (fence cancelled, superseded, rollback, pool saturated, ...) and still wins.
+_GENERIC_ABORT_VERDICTS = frozenset({"no_progress", "summary_generation_aborted"})
+
+
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
     commit_started_at: float | None = None,
@@ -1485,7 +1495,7 @@ def _emit_compression_attempt_telemetry(
         )
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
-        if failure_class:
+        if failure_class and not (failure_class in _GENERIC_ABORT_VERDICTS and payload.get("failure_class")):
             payload["failure_class"] = failure_class
         payload.setdefault("chunking", False)
         payload.setdefault("chunk_count", 0)
@@ -1499,7 +1509,9 @@ def _emit_compression_attempt_telemetry(
         )
         from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
 
-        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None), agent=agent)
+        finish_compression_attempt(
+            commit_status, payload.get("failure_class"), getattr(agent.context_compressor, "context_length", None), agent=agent,
+        )
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:

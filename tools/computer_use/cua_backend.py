@@ -401,6 +401,15 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         payload.setdefault("session", self._session_id)
         return self._session.call_tool(name, payload, timeout=timeout)
 
+    def verify_state(self, expect: List[Dict[str, Any]], *, pid: Optional[int] = None, window_id: Optional[int] = None) -> ActionResult:
+        """Evaluate driver-side predicates without performing another input action."""
+        args: Dict[str, Any] = {"expect": expect}
+        if pid is not None:
+            args["pid"] = pid
+        if window_id is not None:
+            args["window_id"] = window_id
+        return self._action("verify_state", args)
+
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
         # 'stale' error. Two ways to establish support, the live input schema first: cua-driver 0.21+ stopped

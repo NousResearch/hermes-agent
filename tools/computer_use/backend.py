@@ -169,6 +169,9 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 
+    @abstractmethod
+    def verify_state(self, expect: List[Dict[str, Any]], *, pid: Optional[int] = None, window_id: Optional[int] = None) -> ActionResult: ...
+
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")

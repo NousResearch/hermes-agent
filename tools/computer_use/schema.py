@@ -31,6 +31,7 @@ _PROPERTIES: Dict[str, Any] = {
             "wait",
             "list_apps",
             "list_windows",
+            "verify_state",
             "focus_app",
         ],
         "description": (
@@ -176,6 +177,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Default false."
         ),
     },
+    "expect": {"type": "array", "items": {"type": "object"}, "description": "Predicates for action=verify_state; unknown never implies success."},
     "capture_after": {
         "type": "boolean",
         "description": (
@@ -188,7 +190,7 @@ _PROPERTIES: Dict[str, Any] = {
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
+        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag, and deterministic state verification — on macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "

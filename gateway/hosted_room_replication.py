@@ -232,6 +232,8 @@ class HostedRoomReplicationPublisher:
         self._custody_error: str | None = None
         # When each (room, custodian) last acknowledged anything, on this process's monotonic clock.
         self._exchanged: dict[tuple[str, str], float] = {}
+        # Routes of a moved room already asked whether their copy has a retirement this host inherits.
+        self._inheritance_asked: set[tuple[tuple[str, str], str]] = set()
         #: Called with a room id after a custodian acknowledged, when protection may have moved.
         self.on_acknowledged: Any = None
 
@@ -672,6 +674,8 @@ class HostedRoomReplicationPublisher:
                                     proof_install_id=route.link.catalog.installation_id)
         enrollment = retirement.current_home_enrollment(
             self.db_path, room_id=key[0], target_install_id=route.link.catalog.installation_id)
+        if enrollment is None and int(route.room["authority_epoch"]) > 1:
+            enrollment = self._inherit_retirement(route, client)
         if enrollment is not None:
             # A prepared retirement is confirmed from the participant's probe before more copying;
             # once Disband closed it, the copy waits only for its retirement notice.
@@ -818,6 +822,29 @@ class HostedRoomReplicationPublisher:
                          "AND generation=?", (status, time.time(), *route.key, route.generation))
             return dict(conn.execute(f"SELECT * FROM {ROUTES_TABLE} WHERE room_id=? AND member_id=?",
                                      route.key).fetchone())
+
+    def _inherit_retirement(self, route: _Route, client: PeerRunsHTTPClient) -> dict | None:
+        """After the group moved, ask the participant once per route whether its copy's retirement is
+        now this host's to deliver; it answers only the copy's current verified authority."""
+        marker = (route.key, route.generation)
+        if marker in self._inheritance_asked:
+            return None
+        self._inheritance_asked.add(marker)
+        try:
+            proof = client.probe(grant=route.link.grant).get("retirement_enrollment")
+        except PeerRunsHTTPError:
+            self._inheritance_asked.discard(marker)  # ask again on the next turn
+            return None
+        if not isinstance(proof, dict):
+            return None
+        try:
+            retirement.inherit_home_enrollment(
+                self.db_path, enrollment=proof, endpoint=route.link.target_url, local_gateway_id=self.local_id,
+                proof_grant=route.link.grant)
+        except (retirement.RetirementError, rooms.HostedRoomError, ValueError):
+            return None
+        return retirement.current_home_enrollment(
+            self.db_path, room_id=route.key[0], target_install_id=route.link.catalog.installation_id)
 
     def _heartbeat_due(self, room_id: str, install_id: str, voter: bool) -> bool:
         """Whether a caught-up custodian should hear from the host now: voters about every

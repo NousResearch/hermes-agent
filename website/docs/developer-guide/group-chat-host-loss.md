@@ -12,7 +12,7 @@ contracts.
 - [#104601](https://github.com/NousResearch/hermes-agent/pull/104601), the contracts on this page:
   a copy on every member, custodians and successors, voters and modes, majority protection,
   configuration changes one at a time, heartbeats and the lease layer's hook points, following a
-  group across moves, and catch-up from any custodian.
+  group across moves, catch-up from any custodian, and retiring copies after a move.
 - [#105079](https://github.com/NousResearch/hermes-agent/pull/105079): fences at the participants,
   one promise per epoch, host leases and the sleep-aware clock.
 - [#105197](https://github.com/NousResearch/hermes-agent/pull/105197): the moves themselves
@@ -335,6 +335,19 @@ host signed vouches for:
 - on any mismatch nothing is stored.
 
 Catch-up resumes from the copy's own watermark, from any custodian, and never needs the host.
+
+## Retiring copies after a move
+
+A participant's operator can enroll the retirement of its copy with the room's first home
+(`groups.replication.prepare` there, `groups.replication.enroll` here); Disband then retires the copy
+with a notice signed by that enrollment's key. Once the group moves, that home's notice is refused:
+the copy no longer follows it. The host the copy follows now inherits the obligation instead. The
+participant's probe reports the enrollment to the copy's current verified authority (the successor
+named by the latest marked transition in the copy's own log), that host's Disband closes it, and its
+notice is signed with its room identity key (`hermes.group.replica.retirement.authority-notice.v1`)
+and checked against the key the copy pinned for it. Every other check stays: the current active
+enrollment, the destination installation, the copy's namespace and roster, a read-only signature
+check before the writer and again inside it, and idempotent receipts.
 
 ## Reading a copy
 

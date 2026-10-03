@@ -15,7 +15,7 @@ from gateway import hosted_room_replicas as replicas
 from gateway import hosted_room_replication as publisher
 from gateway import hosted_rooms as rooms
 from tests.gateway.fixtures.passive_copy import (  # noqa: F401
-    HOME, KEY, TARGET, admit, append, pair, start)
+    HOME, KEY, TARGET, add_route, admit, append, pair, start)
 
 TARGET_KEY = identity.local_public_key(secret=b"participant-room-identity-secret-32b")
 OTHER_KEY = identity.local_public_key(secret=b"another-installation-identity-secret")
@@ -441,3 +441,24 @@ def test_the_new_host_reconfigures_custody_without_losing_a_custodian(pair, monk
     status = custody.custody_status(pair.target, "room")
     assert status["role"] == "authority"
     assert {c["install_id"]: c["state"] for c in status["custodians"]} == {HOME: "active", "install:other": "active"}
+
+
+def test_an_unaddressed_installation_with_two_bots_keeps_one_exact_full_copy(pair):
+    """Nobody addresses its Bots, the history spans several pages, and it still holds every event."""
+    add_route(pair)  # a second Bot on the same participant installation
+    for index in range(70):
+        append(pair.source, f"m{index}")
+    _enroll(pair.source)
+    _configure(pair.source)
+    pub = publisher.HostedRoomReplicationPublisher(pair.source)
+    while pub._publish_one(KEY) or pub._publish_one(("room", "z-other")):
+        pass
+    status = custody.custody_status(pair.source, "room")
+    assert [custodian["install_id"] for custodian in status["custodians"]] == [TARGET]  # one copy
+    marks = []
+    for db in (pair.target, pair.source):
+        with closing(sqlite3.connect(db)) as conn:
+            conn.row_factory = sqlite3.Row
+            marks.append(custody.custody_watermark_locked(conn, "room", store=False))
+    assert marks[0] == marks[1] == status["custodians"][0]["watermark"]
+    assert marks[0]["seq"] == rooms.room_state(pair.source, room_id="room")["latest_seq"] > publisher.PAGE_LIMIT

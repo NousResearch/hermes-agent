@@ -8,6 +8,13 @@ Pinned, encrypted Room proof protects delivery and replies independently of memb
 or revocation. The participant verifies the notice again inside its destination-scoped writer.
 A retired copy accepts no further history, retains its room namespace, and releases payload under
 its retention policy. Retirement is local copy state, never a fabricated canonical log event.
+
+After the group moves, the enrolled home no longer speaks for the copy: its notice is refused once
+the copy follows a later host. That host inherits the obligation instead. The participant's probe
+reports its enrollment to the copy's current verified authority (the successor named by the latest
+marked transition in the copy's own log), the successor's Disband closes the inherited obligation,
+and its notice is signed with its room identity key (``AUTHORITY_NOTICE_DOMAIN``), checked against
+the key the copy pinned for it, with every other check unchanged.
 """
 
 from __future__ import annotations
@@ -40,6 +47,11 @@ _PUBLIC_FIELDS = (
 _SCOPE_FIELDS = _PUBLIC_FIELDS[:-1]
 _DOMAIN = b"hermes.group.replica.retirement.seed.v2\0"
 _NOTICE_DOMAIN = b"hermes.group.replica.retirement.notice.v2\0"
+# A notice from the copy's current verified authority, signed with its room identity key.
+AUTHORITY_NOTICE_DOMAIN = b"hermes.group.replica.retirement.authority-notice.v1"
+_NOTICE_FIELDS = ("enrollment_id", "room_id", "authority_gateway_id", "authority_epoch", "target_install_id")
+# The nonce of an obligation a successor inherited: it signs with its identity key, not a seed.
+_INHERITED = "inherited"
 _DONE = ("acknowledged", "superseded", "revoked")
 
 
@@ -307,6 +319,50 @@ def prepare_home_enrollment(
         return _public(row)
 
 
+def inherit_home_enrollment(
+    db_path: Path | str, *, enrollment: Mapping[str, Any], endpoint: str, local_gateway_id: str, proof_grant: str,
+) -> dict[str, Any] | None:
+    """A successor records the copy-retirement obligation it inherits from the copy's first home.
+
+    ``enrollment`` is what the participant's probe reported to this gateway as the copy's current
+    verified authority, and ``proof_grant`` the grant that authenticated that probe; it carries the
+    notice later. The obligation is this gateway's at the room's current epoch, closed by its own
+    Disband like any other. Idempotent per enrollment; None when the room is not this gateway's at a
+    later epoch, or the copy already has a current obligation here.
+    """
+    if not isinstance(enrollment, Mapping) or enrollment.get("state") != "active":
+        raise RetirementError("invalid inherited retirement enrollment")
+    value = _validate_enrollment({key: item for key, item in enrollment.items() if key != "state"},
+                                 str(enrollment.get("target_install_id")))
+    local_gateway_id = _identifier(local_gateway_id, "local_gateway_id")
+    endpoint, _ = validate_room_link_url(endpoint)
+    endpoint = re.sub(r"/p/[^/]+$", "", endpoint)  # notices go to the installation endpoint
+    if not isinstance(proof_grant, str) or not proof_grant:
+        raise RetirementProofUnavailable("an inherited retirement needs the grant that reported it")
+    with _transaction(db_path) as conn:
+        room = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_rooms WHERE room_id=?",
+                            (value["room_id"],)).fetchone()
+        if (room is None or room["authority_gateway_id"] != local_gateway_id
+                or int(room["authority_epoch"]) <= value["authority_epoch"]):
+            return None
+        existing = conn.execute(f"SELECT * FROM {HOME_TABLE} WHERE enrollment_id=?",
+                                (value["enrollment_id"],)).fetchone()
+        if existing is not None:
+            return _public(existing)
+        if conn.execute(f"SELECT 1 FROM {HOME_TABLE} WHERE room_id=? AND target_install_id=? AND is_current=1",
+                        (value["room_id"], value["target_install_id"])).fetchone():
+            return None
+        if conn.execute(f"SELECT COUNT(*) FROM {HOME_TABLE} WHERE state NOT IN {_DONE}").fetchone()[0] \
+                >= MAX_PENDING_ENROLLMENTS:
+            raise RetirementCapacityError("pending retirement delivery capacity is full")
+        row = {**value, "authority_gateway_id": local_gateway_id, "authority_epoch": int(room["authority_epoch"]),
+               "endpoint": endpoint, "nonce": _INHERITED, "proof_grant": proof_grant, "state": "enrolled"}
+        fields = (*_PUBLIC_FIELDS, "endpoint", "nonce", "proof_grant", "state")
+        conn.execute(f"INSERT INTO {HOME_TABLE} ({','.join(fields)},created_at) "
+                     f"VALUES ({','.join('?' for _ in fields)},?)", (*[row[k] for k in fields], time.time()))
+        return _public(row)
+
+
 def _require_same_key(secret: bytes, row: Mapping[str, Any]) -> None:
     if not hmac.compare_digest(_commitment(_signing_seed(secret, row)), row["commitment"]):
         raise RetirementKeyUnavailable("retirement key no longer matches enrollment")
@@ -401,13 +457,25 @@ def materialize_notice(
         if row["state"] not in {"closed", "ready"} or row["closed_at"] is None:
             raise RetirementConflictError("canonical Group Chat disband has not completed")
         value = row["closing_value"]
-        if not value:
+        if row["nonce"] == _INHERITED:
+            # An inherited obligation: this successor signs with its room identity key.
+            from gateway import hosted_room_identity as identity
+            payload = {key: row[key] for key in _NOTICE_FIELDS}
             try:
-                value = _sign_notice(_signing_seed(secret_loader(), row), row)
-            except (OSError, ValueError) as exc:
-                raise RetirementKeyUnavailable("retirement key is unavailable") from exc
-        if not _valid_signature(value, row):
-            raise RetirementKeyUnavailable("retirement key no longer matches enrollment")
+                value = value or identity.sign(AUTHORITY_NOTICE_DOMAIN, payload)
+                valid = identity.verify_key(identity.local_public_key(), AUTHORITY_NOTICE_DOMAIN, payload, value)
+            except (identity.RoomIdentityError, OSError, ValueError) as exc:
+                raise RetirementKeyUnavailable("room identity key is unavailable") from exc
+            if not valid:
+                raise RetirementKeyUnavailable("room identity key no longer matches the notice")
+        else:
+            if not value:
+                try:
+                    value = _sign_notice(_signing_seed(secret_loader(), row), row)
+                except (OSError, ValueError) as exc:
+                    raise RetirementKeyUnavailable("retirement key is unavailable") from exc
+            if not _valid_signature(value, row):
+                raise RetirementKeyUnavailable("retirement key no longer matches enrollment")
         conn.execute(f"UPDATE {HOME_TABLE} SET state='ready',closing_value=? WHERE enrollment_id=?",
                      (value, enrollment_id))
         return RetirementNotice(
@@ -475,8 +543,34 @@ def _validate_enrollment(value: Any, target_install_id: str) -> dict[str, Any]:
     return value
 
 
-def _check_replica_namespace(conn: sqlite3.Connection, value: Mapping[str, Any]) -> sqlite3.Row | None:
-    """The copy this enrollment names, if any; never a local room, quarantined or different copy."""
+def verified_authority_locked(conn: sqlite3.Connection, room_id: str) -> tuple[str, int] | None:
+    """The copy's current authority, when a marked transition in its own log made it so.
+
+    None while the copy still follows its first authority, or when its authority has no transition
+    that this copy marked and used (such a copy is quarantined by the audit anyway).
+    """
+    replica = conn.execute("SELECT authority_gateway_id, authority_epoch FROM hosted_room_replicas WHERE room_id=?",
+                           (room_id,)).fetchone() if table_exists(conn, "hosted_room_replicas") else None
+    if replica is None or not table_exists(conn, "hosted_room_verified_transition_uses"):
+        return None
+    used = conn.execute("""SELECT event.payload_json FROM hosted_room_verified_transition_uses AS used
+        JOIN hosted_room_replica_events AS event ON event.room_id=used.room_id AND event.seq=used.seq
+             AND event.event_id=used.event_id
+        WHERE used.room_id=? AND used.to_epoch=? AND event.kind='authority.transition'""",
+                        (room_id, int(replica["authority_epoch"]))).fetchone()
+    if used is None or json.loads(used[0]).get("successor_gateway_id") != replica["authority_gateway_id"]:
+        return None
+    return str(replica["authority_gateway_id"]), int(replica["authority_epoch"])
+
+
+def _check_replica_namespace(
+    conn: sqlite3.Connection, value: Mapping[str, Any], *, authority: tuple[str, int] | None = None,
+) -> sqlite3.Row | None:
+    """The copy this enrollment names, if any; never a local room, quarantined or different copy.
+
+    The copy must follow the enrollment's authority, or ``authority`` when given (the copy's current
+    verified authority, for a notice from a successor).
+    """
     from gateway.hosted_room_replicas import ReplicaError, _audit_existing_replicas_locked, _load_replica_header_locked
 
     _audit_existing_replicas_locked(conn)
@@ -493,10 +587,10 @@ def _check_replica_namespace(conn: sqlite3.Connection, value: Mapping[str, Any])
         replica = _load_replica_header_locked(conn, room_id)
     except ReplicaError as exc:
         raise RetirementConflictError("retained copy metadata cannot be safely read") from exc
+    expected = (value["authority_gateway_id"], value["authority_epoch"]) if authority is None else authority
     if replica is not None and (
         replica["quarantine_reason"] is not None
-        or replica["authority_gateway_id"] != value["authority_gateway_id"]
-        or replica["authority_epoch"] != value["authority_epoch"]
+        or (replica["authority_gateway_id"], replica["authority_epoch"]) != tuple(expected)
         or roster_digest(json.loads(replica["members_json"])) != value["roster_sha256"]
     ):
         raise RetirementConflictError("retirement enrollment differs from the retained copy")
@@ -568,14 +662,24 @@ def revoke_target_enrollment(db_path: Path | str, *, room_id: str, enrollment_id
 def current_target_enrollment(
     db_path: Path | str, *, room_id: str, authority_gateway_id: str, authority_epoch: int,
 ) -> dict[str, Any] | None:
-    """The active enrollment a probe reports, so the home can confirm it."""
+    """The active enrollment a probe reports, so the home can confirm it.
+
+    After the group moved, the copy's current verified authority asks with its own grant: it is told
+    the enrollment too, and inherits the obligation.
+    """
     with rooms._transaction(db_path) as conn:
         if not table_exists(conn, ENROLLMENT_TABLE):
             return None
         row = conn.execute(f"""SELECT * FROM {ENROLLMENT_TABLE} WHERE room_id=? AND authority_gateway_id=?
             AND authority_epoch=? AND is_current=1 AND state='active'""",
                            (room_id, authority_gateway_id, authority_epoch)).fetchone()
-        return {**_public(row), "state": "active"} if row is not None else None
+        if row is None:
+            row = conn.execute(f"SELECT * FROM {ENROLLMENT_TABLE} WHERE room_id=? AND is_current=1 AND state='active'",
+                               (room_id,)).fetchone()
+            if (row is None or authority_epoch <= row["authority_epoch"]
+                    or verified_authority_locked(conn, room_id) != (authority_gateway_id, authority_epoch)):
+                return None
+        return {**_public(row), "state": "active"}
 
 
 def copy_retired_locked(conn: sqlite3.Connection, room_id: str) -> bool:
@@ -611,22 +715,47 @@ def _retired_response(row) -> dict[str, Any]:
     return {"retired": True, **dict(row)}
 
 
+def _notice_authorized(conn: sqlite3.Connection, row, payload: Mapping[str, Any], value: str, successor: bool) -> bool:
+    """Whether ``value`` signs ``payload`` for enrollment ``row``.
+
+    The enrolled first home signs with the enrollment's one-purpose key, for its own authority. After
+    the group moved, the copy's current verified authority signs with the room identity key the
+    copy pinned for it, for exactly that authority, which is later than the enrolled one.
+    """
+    if not successor:
+        return _valid_signature(value, row) and all(
+            payload[key] == row[key] for key in ("authority_gateway_id", "authority_epoch"))
+    from gateway import hosted_room_identity as identity
+    authority = (payload["authority_gateway_id"], payload["authority_epoch"])
+    return (payload["authority_epoch"] > row["authority_epoch"]
+            and verified_authority_locked(conn, payload["room_id"]) == authority
+            and identity.verify_locked(conn, payload["room_id"], authority[0], AUTHORITY_NOTICE_DOMAIN, payload, value))
+
+
 def retire_copy(db_path: Path | str, *, payload: Mapping[str, Any], value: str, local_gateway_id: str) -> dict[str, Any]:
     """Retire this participant's copy with its signed notice; idempotent per enrollment.
 
+    Two signers can: the enrolled first home with the enrollment's key (``ed25519-v2``) while the
+    copy still follows it, and after the group moved the copy's current verified authority with its
+    room identity key (``ed25519-v1``); the enrolled home's notice is then refused. Both keep every
+    other check: the current active enrollment, the destination, the copy's namespace and roster.
     An invalid signature never takes the writer or initializes anything: authorization is checked
-    against the stored public verifier read-only first, then again inside the writer.
+    read-only first, then again inside the writer.
     """
-    fields = {"enrollment_id", "room_id", "authority_gateway_id", "authority_epoch", "target_install_id"}
+    fields = set(_NOTICE_FIELDS)
     if not isinstance(payload, Mapping) or set(payload) != fields:
         raise RetirementError("invalid retirement notice fields")
     payload = dict(payload)
     for key in fields - {"authority_epoch"}:
         payload[key] = _identifier(payload[key], key)
-    if type(payload["authority_epoch"]) is not int or payload["authority_epoch"] != 1:
+    successor = isinstance(value, str) and value.startswith("ed25519-v1.")
+    if (type(payload["authority_epoch"]) is not int or payload["authority_epoch"] < 1
+            or (not successor and payload["authority_epoch"] != 1)):
         raise RetirementError("invalid retirement authority epoch")
-    if not isinstance(value, str) or re.fullmatch(r"ed25519-v2\.[A-Za-z0-9_-]{86}", value) is None:
+    signature = r"ed25519-v1\.[A-Za-z0-9_-]{86}" if successor else r"ed25519-v2\.[A-Za-z0-9_-]{86}"
+    if not isinstance(value, str) or re.fullmatch(signature, value) is None:
         raise RetirementAuthorizationError("invalid retirement capability")
+    scope = ("enrollment_id", "room_id", "target_install_id") if successor else _NOTICE_FIELDS
     if not Path(db_path).is_file():
         raise RetirementAuthorizationError("retirement enrollment is unavailable")
     with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)) as read:
@@ -635,9 +764,9 @@ def retire_copy(db_path: Path | str, *, payload: Mapping[str, Any], value: str, 
             raise RetirementAuthorizationError("retirement enrollment is unavailable")
         enrolled = read.execute(f"SELECT * FROM {ENROLLMENT_TABLE} WHERE enrollment_id=?",
                                 (payload["enrollment_id"],)).fetchone()
-        if enrolled is None or not _valid_signature(value, enrolled):
+        if enrolled is None or not _notice_authorized(read, enrolled, payload, value, successor):
             raise RetirementAuthorizationError("invalid retirement capability")
-        if any(payload[k] != enrolled[k] for k in fields) or enrolled["target_install_id"] != local_gateway_id:
+        if any(payload[k] != enrolled[k] for k in scope) or enrolled["target_install_id"] != local_gateway_id:
             raise RetirementAuthorizationError("retirement capability scope differs")
         if table_exists(read, RETIREMENT_TABLE):
             done = read.execute(f"SELECT * FROM {RETIREMENT_TABLE} WHERE room_id=?", (payload["room_id"],)).fetchone()
@@ -648,9 +777,9 @@ def retire_copy(db_path: Path | str, *, payload: Mapping[str, Any], value: str, 
     with _transaction(db_path) as conn:
         row = conn.execute(f"SELECT * FROM {ENROLLMENT_TABLE} WHERE enrollment_id=?",
                            (payload["enrollment_id"],)).fetchone()
-        if row is None or not _valid_signature(value, row):
+        if row is None or not _notice_authorized(conn, row, payload, value, successor):
             raise RetirementAuthorizationError("invalid retirement capability")
-        if any(payload[k] != row[k] for k in fields) or row["target_install_id"] != local_gateway_id:
+        if any(payload[k] != row[k] for k in scope) or row["target_install_id"] != local_gateway_id:
             raise RetirementAuthorizationError("retirement capability scope differs")
         retired = conn.execute(f"SELECT * FROM {RETIREMENT_TABLE} WHERE room_id=?", (row["room_id"],)).fetchone()
         if retired is not None:
@@ -659,14 +788,16 @@ def retire_copy(db_path: Path | str, *, payload: Mapping[str, Any], value: str, 
             return _retired_response(retired)
         if not row["is_current"] or row["state"] != "active":
             raise RetirementAuthorizationError("retirement capability has been revoked or replaced")
-        replica = _check_replica_namespace(conn, row)
+        authority = (payload["authority_gateway_id"], payload["authority_epoch"])
+        replica = _check_replica_namespace(conn, row, authority=authority if successor else None)
+        if successor and replica is None:
+            raise RetirementConflictError("no copy follows that authority here")
         now = time.time()
         conn.execute("INSERT OR IGNORE INTO hosted_room_id_reservations(room_id,owner_kind,reserved_at) "
                      "VALUES (?,'replica',?)", (row["room_id"], now))
         conn.execute(f"""INSERT INTO {RETIREMENT_TABLE} (room_id,enrollment_id,authority_gateway_id,authority_epoch,
             target_install_id,commitment,retired_at,stored_seq,source_latest_seq) VALUES (?,?,?,?,?,?,?,?,?)""",
-                     (row["room_id"], row["enrollment_id"], row["authority_gateway_id"], row["authority_epoch"],
-                      row["target_install_id"], row["commitment"], now,
+                     (row["room_id"], row["enrollment_id"], *authority, row["target_install_id"], row["commitment"], now,
                       int(replica["last_seq"]) if replica is not None else 0,
                       int(replica["latest_seq"]) if replica is not None else 0))
         conn.execute(f"UPDATE {ENROLLMENT_TABLE} SET state='retired' WHERE enrollment_id=?", (row["enrollment_id"],))

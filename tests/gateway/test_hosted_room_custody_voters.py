@@ -448,6 +448,8 @@ def test_the_new_host_copies_to_the_previous_host_and_hears_its_lease_grants(hos
     custody.save_custody_route(new, room_id=ROOM, install_id=HOME, target_url="http://127.0.0.1:9876",
                                target_profile="default", grant=token, catalog=catalog(HOME).as_mapping())
     monkeypatch.setattr("tui_gateway.hosted_room_peer_http._open_roomlink_url", HTTP(previous))
+    # Asked once after the move, the previous host reports no copy retirement for this host to inherit.
+    monkeypatch.setattr("tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient.probe", lambda self, **kwargs: {})
     calls = {"grant": [], "ack": []}
     request = {"epoch": 2, "duration_s": 20, "sent_at": 7.5}
     hooks(lease_request_provider=lambda room_id: request,

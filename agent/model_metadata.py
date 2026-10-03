@@ -341,8 +341,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
     "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
-    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
-    "kimi-k3": 1_048_576, "kimi": 262144,
+    # Kimi — K3 and the coding-plan default model are 1 Mi (matches the endpoint-scoped
+    # override); the highspeed SKU is genuinely 256K, older Kimi 256K.
+    "kimi-k3": 1_048_576, "kimi-for-coding": 1_048_576,
+    "kimi-for-coding-highspeed": 262_144, "kimi": 262144,
     # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
     # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
@@ -590,15 +592,16 @@ def _ollama_show_context(data: Dict[str, Any], *, gguf_first: bool, minimum: Opt
 
 # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
 _ENDPOINT_SCOPED_CONTEXT = (
-    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot", "kimi-for-coding"}, 1_048_576),
     ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
 )
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
     """Context confirmed for one provider endpoint only (see _ENDPOINT_SCOPED_CONTEXT): Kimi Coding
-    serves K3 at 1 Mi only on the canonical ``api.kimi.com/coding`` host (legacy Moonshot keys do
-    not); NVIDIA NIM serves deepseek-v4-pro at 262,144 while DeepSeek's native endpoint is 1M."""
+    serves K3 and the coding-plan default model at 1 Mi only on the canonical ``api.kimi.com/coding``
+    host (legacy Moonshot keys do not); NVIDIA NIM serves deepseek-v4-pro at 262,144 while DeepSeek's
+    native endpoint is 1M."""
     try:
         parsed = urlparse(_normalize_base_url(base_url))
         port = parsed.port
@@ -1532,6 +1535,7 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    "kimi-for-coding",  # 1M; "kimi" catch-all persisted 262,144
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
     "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
     "deepseek-chat", "deepseek-reasoner",

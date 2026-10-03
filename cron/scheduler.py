@@ -3749,6 +3749,15 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
+    # The worker imports the agent lazily inside ``run_one_job``, which pulls in
+    # ``hermes_bootstrap`` — whose module-level ``prepare_launch`` can decide the process must
+    # re-exec (a pending self-update, or a different store interpreter) and ``os.execv`` itself.
+    # In an *already adopted* worker that is fatal: the one-shot payload named by
+    # ``--external-worker-file`` was consumed and deleted before adoption, so the re-exec'd
+    # process cannot resume and the run is recorded ``unknown`` with no output (#124827). The
+    # gateway — not a job worker — owns updates, so disable the lazy update/re-exec path for the
+    # worker's whole life; dependency activation still runs, only the re-exec is suppressed.
+    worker_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
     # (PYTHONSAFEPATH / stale editable mapping, #112729), hand the child the committed
     # dependency generation (#122222), and mark it so its own entry runs the PM dependency

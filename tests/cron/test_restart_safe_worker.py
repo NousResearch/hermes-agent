@@ -210,7 +210,7 @@ def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypa
     assert scheduler._run_external_worker_payload(payload, ack) is True
 
     assert visible_while_writing == [False]
-    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert json.loads(ack.read_text(encoding="utf-8-sig"))["execution_id"] == "exec-1"
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
 
 
@@ -261,7 +261,7 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     def popen(command, **kwargs):
         spawned.append((command, kwargs))
         payload_index = command.index("--external-worker-file") + 1
-        payloads.append(json.loads(Path(command[payload_index]).read_text()))
+        payloads.append(json.loads(Path(command[payload_index]).read_text(encoding="utf-8-sig")))
         ack_index = command.index("--ack-file") + 1
         Path(command[ack_index]).write_text(
             json.dumps({"pid": 4321, "execution_id": "exec-1"}),
@@ -405,6 +405,30 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert payloads[0]["multiplex_active"] is True
     # Once the attempt is terminal the parent reaps its own handoff artifacts.
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
+
+
+def test_launch_external_worker_disables_lazy_reexec(tmp_path, monkeypatch):
+    """#124827: the adopted worker imports the agent (→ ``hermes_bootstrap``), whose
+    ``prepare_launch`` can ``os.execv`` the process for a pending self-update. That re-exec is
+    fatal after adoption — the one-shot payload was already consumed and deleted, so the restarted
+    process cannot resume and the run is recorded ``unknown``. The gateway owns updates, so the
+    worker must spawn with lazy update/re-exec disabled."""
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_kw: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker(
+        {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    ) is True
+
+    # prepare_launch() honors this flag and returns None (no re-exec) — see hermes_cli.venv_sync.
+    assert spawned[0][1]["env"]["HERMES_DISABLE_LAZY_INSTALLS"] == "1"
 
 
 def test_launch_external_worker_honors_ack_within_adoption_grace(
@@ -1148,7 +1172,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
                 break
             time.sleep(0.05)
         assert executions.latest_execution(job["id"])["status"] == "completed"
-        assert side_effect.read_text(encoding="utf-8").splitlines() == ["once"]
+        assert side_effect.read_text(encoding="utf-8-sig").splitlines() == ["once"]
         assert delivery_queue.get_status(execution["id"])["status"] == "delivered"
         assert len(sent) == 1
         assert "completed" in sent[0][0]
@@ -1160,7 +1184,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.terminate()
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
-            os.kill(worker_pid, signal.SIGKILL)
+            os.kill(worker_pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(

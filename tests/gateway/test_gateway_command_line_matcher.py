@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.status import (
+    _record_looks_like_gateway as record_matches,
     gateway_spawn_intent_subcommand as spawn_intent,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,
@@ -163,5 +164,53 @@ ATOMIC_DESKTOP = (
 def test_accepts_atomic_desktop_gateway():
     assert matches(ATOMIC_DESKTOP) is True
     assert matches_runtime(ATOMIC_DESKTOP) is True
+
+
+# pm-runtime installs launch through ``hermes_cli._launchers.runtime_command``
+# (``python -I -c <bootstrap> gateway run``). The bootstrap is deterministic —
+# only its markers confer identity; arbitrary ``python -c`` stays rejected
+# (#107002, #124029).
+_CANONICAL_BOOTSTRAP = (
+    "import os, sys, runpy; sys.path.insert(0, '/repo'); "
+    "import hermes_bootstrap; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+)
+
+CANONICAL_BOOTSTRAP_ACCEPT = [
+    f'python3 -I -c "{_CANONICAL_BOOTSTRAP}" gateway run',
+    f'python3 -I -c "{_CANONICAL_BOOTSTRAP}" gateway',  # bare gateway defaults to run
+    f'python3 -I -c "{_CANONICAL_BOOTSTRAP}" --profile work gateway run',
+    "python3 -I -c \"import os; import hermes_bootstrap; x = runpy.run_module('hermes_cli.main')\" gateway run",
+]
+
+CANONICAL_BOOTSTRAP_REJECT = [
+    # Only one marker: not the canonical bootstrap (still spawn-intent, #107002).
+    'python3 -I -c "import hermes_bootstrap; print(1)" gateway run',
+    'python3 -I -c "import runpy; runpy.run_module(\'hermes_cli.main\')" gateway run',
+    # Canonical source but a non-gateway trailing subcommand.
+    f'python3 -I -c "{_CANONICAL_BOOTSTRAP}" gateway status',
+    f'python3 -I -c "{_CANONICAL_BOOTSTRAP}" dashboard',
+]
+
+
+@pytest.mark.parametrize("cmd", CANONICAL_BOOTSTRAP_ACCEPT)
+def test_accepts_canonical_pm_launcher_bootstrap(cmd):
+    assert matches(cmd) is True
+    assert matches_runtime(cmd) is True
+
+
+@pytest.mark.parametrize("cmd", CANONICAL_BOOTSTRAP_REJECT)
+def test_rejects_non_canonical_inline_source(cmd):
+    assert matches(cmd) is False
+
+
+def test_pm_launcher_record_argv_is_recognized():
+    """runpy leaves sys.argv as ``['-c', 'gateway', 'run']`` on shim launches;
+    the persisted record (our own kind-checked metadata) must match (#124029)."""
+    assert record_matches({"kind": "hermes-gateway", "argv": ["-c", "gateway", "run"]}) is True
+    assert record_matches({"kind": "hermes-gateway", "argv": ["-c", "gateway", "restart"]}) is True
+    assert record_matches({"kind": "hermes-gateway", "argv": ["-c", "gateway", "status"]}) is False
+    assert record_matches({"kind": "hermes-gateway", "argv": ["-c", "something", "else"]}) is False
+    assert record_matches({"kind": "other", "argv": ["-c", "gateway", "run"]}) is False
+    assert record_matches({"kind": "hermes-gateway", "argv": []}) is False
 
 

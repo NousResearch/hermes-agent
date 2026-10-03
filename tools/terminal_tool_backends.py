@@ -60,6 +60,7 @@ _SSH_KEYS = (("host", "ssh_host", ""), ("user", "ssh_user", ""), ("port", "ssh_p
 _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 5120),
                   ("disk", "container_disk", 51200), ("persistent_filesystem", "container_persistent", True))
 _CONTAINER_KEYS = (
+    ("docker_zero_cap", False),
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
     ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""), ("vercel_image", ""),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
@@ -69,6 +70,7 @@ _CONTAINER_KEYS = (
     ("docker_image_pinned", False),
 )
 _DOCKER_KWARGS = (
+    ("zero_cap", "docker_zero_cap", False),
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
     ("forward_env", "docker_forward_env", []), ("env", "docker_env", {}),
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),

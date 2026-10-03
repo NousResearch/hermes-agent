@@ -36,6 +36,12 @@ _SCOPED_SOURCES: Dict[str, Dict[str, SecretSource]] = {}
 _BUILTINS_LOADED = False
 _REGISTRY_LOCK = threading.RLock()
 
+# Shortest fragment of a multi-line applied secret worth registering on its own. The
+# exact-value scrub is an unanchored substring match applied to every later tool result,
+# so a fragment common enough to occur by chance would blank out innocent text. Real
+# key and certificate bodies run far longer than this.
+_MIN_REGISTERED_SECRET_LINE_CHARS = 24
+
 # (module, class, label) for the bundled sources, in registration order.
 _BUILTIN_SOURCES = (
     ("agent.secret_sources.bitwarden", "BitwardenSource", "Bitwarden"),
@@ -322,6 +328,36 @@ def _profile_alias_target(var: str, profile: str) -> Optional[str]:
     return alias if alias and is_valid_env_name(alias) and alias.endswith(_ALIAS_SUFFIXES) else None
 
 
+def _register_applied_secret(value: str) -> None:
+    """Hand an applied value to the exact-value redaction scrub.
+
+    The apply funnel is the only place a secret source's value is guaranteed to pass
+    through, so registering here covers every current and future source at once.
+
+    A multi-line value is also registered line by line. The scrub matches whole
+    values, but the shape-based passes that would otherwise catch a stray fragment are
+    line-oriented: once a value spanning several lines is split — by any pipe between
+    the command and the output, or by an env dump with no name attached — the `KEY=value`
+    shape is gone and only the bare body lines remain. Registering each line keeps the
+    body redacted wherever it resurfaces. Lines too short to be distinctive are skipped:
+    the scrub is an exact substring match, so a short fragment would blank out unrelated
+    text across every later result. The whole value is registered regardless, so a value
+    short enough to be skipped still stands whenever it appears intact.
+    """
+    try:
+        from agent.redact import register_vault_redaction_value
+    except Exception:  # noqa: BLE001
+        # Redaction must never be the reason a secret fails to load.
+        logger.debug("Exact-value redaction unavailable; applied secret not registered",
+                     exc_info=True)
+        return
+    register_vault_redaction_value(value)
+    for line in value.splitlines():
+        stripped = line.strip()
+        if len(stripped) >= _MIN_REGISTERED_SECRET_LINE_CHARS:
+            register_vault_redaction_value(stripped)
+
+
 class _Applier:
     """Apply phase state for one orchestrated pass: sequential, first-wins, attributed."""
 
@@ -375,6 +411,7 @@ class _Applier:
         sr.applied.append(var)
         self.report.provenance[var] = AppliedVar(var, source.name, source.shape, overrode_env=existed,
                                                  authoritative=override and var not in self.preserve)
+        _register_applied_secret(value)
         return True
 
 

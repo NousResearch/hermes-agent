@@ -1098,8 +1098,10 @@
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       const count = selectedIds.size;
-      const run = function () {
-        const finalPatch = patch;
+      const run = function (summary) {
+        const finalPatch = summary
+          ? Object.assign({}, patch, { result: summary, summary: summary })
+          : patch;
         const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
         // Optimistic UI for status moves (same pattern as moveSelected).
         if (finalPatch.status) {
@@ -1144,8 +1146,19 @@
             loadBoard();
           });
       };
+      // Completing needs a summary, same as moveSelected: the backend
+      // refuses to mark a card done with no result.
+      const collectSummaryAndRun = function () {
+        if (patch.status !== "done") {
+          run(null);
+          return null;
+        }
+        return requestCompletionSummary(count).then(function (r2) {
+          if (r2.confirmed) run(r2.summary);
+        });
+      };
       if (!confirmMsg) {
-        run();
+        collectSummaryAndRun();
         return;
       }
       kanbanDialogs.request({
@@ -1155,9 +1168,10 @@
         confirmLabel: tx(t, "apply", "Apply"),
         destructive: false,
       }).then(function (r) {
-        if (r.confirmed) run();
+        if (r.confirmed) return collectSummaryAndRun();
+        return null;
       }).catch(function () { /* cancelled */ });
-    }, [selectedIds, loadBoard, board, t, kanbanDialogs]);
+    }, [selectedIds, loadBoard, board, t, kanbanDialogs, requestCompletionSummary]);
 
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {

@@ -1,6 +1,6 @@
 name: pushover-hermes-plugin
 repo: https://github.com/lightx/pushover-hermes-plugin
-sha: fa4102fd1fb80ba2f210d50f5462dd8547f000f9
+sha: bbfea1733aba26a8decaa1ffd2d4749364308c97
 description: "Pushover as an outbound-only gateway platform, plus opt-in agent lifecycle notifications (finished, questions, errors, approvals, kanban blockers) via Pushover and/or native notify-send, managed with /notifications. Disclosure — sends HTTPS requests to api.pushover.net containing your Pushover credentials and notification text (excerpts of agent replies/questions/commands unless PUSHOVER_NOTIFY_QUESTION=minimal); runs notify-send when native notifications are enabled; writes its log and settings.json under $HERMES_HOME, and $HERMES_HOME/.env only from the interactive setup wizard. No telemetry, no background processes."
 maintainer: lightx
 tier: community

@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Nincs aktív cél."
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
   config_save_failed: "⚠️ Nem sikerült menteni a konfigurációt: {error}"
+
+  secure_input:
+    received: "Ellenőrzőkód megérkezett."
+    cancelled: "Az ellenőrzőkód-kérés törölve."
+    expired: "Ez a kérés lejárt, vagy más felhasználóhoz tartozik. Kérd a Hermest, hogy próbálja újra."
+    delivery_failed: "Az ellenőrzőkód űrlapját nem sikerült megnyitni."
   model:
     error_prefix: "Hiba: {error}"
     switched: "Modell átváltva: `{model}`"
@@ -1285,6 +1291,16 @@ platform:
     user_fallback: "Felhasználó"
     install_hint: "A Telegram-támogatás telepítéséhez futtasd a `hermes setup` parancsot."
   slack:
+
+    secure_input:
+      prompt: "🔐 *A(z) {site} ellenőrzőkódot kér.* Nyisd meg az alábbi privát űrlapot. Soha ne illeszd be a kódot a csevegésbe."
+      fallback: "Biztonságos ellenőrzőkód kérve a(z) {site} számára"
+      open_button: "Kód megadása privátan"
+      modal_title: "Ellenőrzőkód"
+      input_label: "Kód: {site}"
+      submit: "Küldés"
+      cancel: "Mégse"
+      expired: "Ez a kérés lejárt, vagy más felhasználóhoz tartozik. Kérd a Hermest, hogy próbálja újra."
     approval:
       fallback_text: "⚠️ A parancs jóváhagyást igényel: {command}"
       resolved_once: "✅ Egyszer jóváhagyta: {user}"

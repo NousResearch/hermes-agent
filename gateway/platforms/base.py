@@ -2892,6 +2892,22 @@ class BasePlatformAdapter(ABC):
         the runner otherwise sends the plain-text ``/approve`` prompt."""
         return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
 
+    @classmethod
+    def supports_secure_input(cls) -> bool:
+        """Whether this adapter provides a model-blind private input surface."""
+        return cls.send_secure_input is not BasePlatformAdapter.send_secure_input
+
+    async def send_secure_input(
+        self, chat_id: str, request_id: str, site: str, expected_user_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a private secret-input affordance backed by ``gateway.secure_input``."""
+        return SendResult(success=False, error="Not supported")
+
+    async def retire_secure_input(self, request_id: str, notice: str) -> None:
+        """Make a still-visible secure-input control terminal after resolve/expiry."""
+        return None
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,

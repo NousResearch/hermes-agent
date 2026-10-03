@@ -339,7 +339,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     socket and never enters the conversation."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_backends import backend_for_handle
-    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
+    from agent.vault_backends.unlock import can_prompt_code_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
@@ -372,7 +372,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
             source = backend.name
     if not code:
         prompt = get_code_prompt_callback()
-        if prompt is None or not can_prompt_here():
+        if prompt is None or not can_prompt_code_here():
             return json.dumps({"success": False, "error_type": "prompt_unavailable",
                                "error": (f"{site} asks for a one-time code and this session cannot ask the user (headless/cron/API). "
                                          "Save an authenticator key for this login so codes can be generated automatically.")})

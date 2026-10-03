@@ -159,13 +159,24 @@ def is_unlocked(backend: str) -> bool:
     return _live(backend, touch=False) is not None
 
 
-def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
+def _interactive_prompt_context() -> bool:
     from tools.approval_context import (
         _is_cron_approval_context,
         _is_single_query_approval_context,
         _is_unattended_platform_approval_context,
     )
-    if _is_cron_approval_context() or _is_unattended_platform_approval_context() or _is_single_query_approval_context():
-        return False
-    return get_unlock_prompt_callback() is not None
+    return not (
+        _is_cron_approval_context()
+        or _is_unattended_platform_approval_context()
+        or _is_single_query_approval_context()
+    )
+
+
+def can_prompt_here() -> bool:
+    """Whether the current surface can answer the general vault prompts."""
+    return _interactive_prompt_context() and get_unlock_prompt_callback() is not None
+
+
+def can_prompt_code_here() -> bool:
+    """Whether this context has a model-blind verification-code prompt."""
+    return _interactive_prompt_context() and get_code_prompt_callback() is not None

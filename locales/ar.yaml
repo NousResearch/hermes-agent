@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "لا يوجد هدف نشط."
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"
   config_save_failed: "⚠️ تعذّر حفظ الإعدادات: {error}"
+
+  secure_input:
+    received: "تم استلام رمز التحقق."
+    cancelled: "تم إلغاء طلب رمز التحقق."
+    expired: "انتهت صلاحية هذا الطلب أو أنه يخص مستخدمًا آخر. اطلب من Hermes المحاولة مرة أخرى."
+    delivery_failed: "تعذّر فتح نموذج رمز التحقق."
   model:
     error_prefix: "خطأ: {error}"
     switched: "تم التبديل إلى النموذج `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "مستخدم"
     install_hint: "شغّل `hermes setup` لتثبيت دعم Telegram."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} يحتاج إلى رمز تحقق.* افتح النموذج الخاص أدناه. لا تلصق الرمز في المحادثة أبدًا."
+      fallback: "تم طلب رمز تحقق آمن لـ {site}"
+      open_button: "إدخال الرمز بشكل خاص"
+      modal_title: "رمز التحقق"
+      input_label: "رمز {site}"
+      submit: "إرسال"
+      cancel: "إلغاء"
+      expired: "انتهت صلاحية هذا الطلب أو أنه يخص مستخدمًا آخر. اطلب من Hermes المحاولة مرة أخرى."
     approval:
       fallback_text: "⚠️ الأمر يتطلب موافقة: {command}"
       resolved_once: "✅ تمت الموافقة مرة بواسطة {user}"

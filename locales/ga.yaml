@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Níl aon sprioc ghníomhach ann."
   config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
   config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"
+
+  secure_input:
+    received: "Fuarthas an cód fíoraithe."
+    cancelled: "Cealaíodh an t-iaratas ar chód fíoraithe."
+    expired: "D'éag an t-iaratas seo nó le húsáideoir eile. Iarr ar Hermes triail eile a dhéanamh."
+    delivery_failed: "Níor osclaíodh foirm an chóid fíoraithe."
   model:
     error_prefix: "Earráid: {error}"
     switched: "Athraíodh an tsamhail go `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "Úsáideoir"
     install_hint: "Rith `hermes setup` chun tacaíocht Telegram a shuiteáil."
   slack:
+
+    secure_input:
+      prompt: "🔐 *Tá cód fíoraithe ag teastáil ó {site}.* Oscail an tfoirm phríobháideach thíos. Ná greamaigh an cód sa chomhrá riamh."
+      fallback: "Iarradh cód fíoraithe sábháilte do {site}"
+      open_button: "Cód a chur isteach go príobháideach"
+      modal_title: "Cód fíoraithe"
+      input_label: "Cód do {site}"
+      submit: "Seol"
+      cancel: "Cealaigh"
+      expired: "D'éag an t-iaratas seo nó le húsáideoir eile. Iarr ar Hermes triail eile a dhéanamh."
     approval:
       fallback_text: "⚠️ Cead ordaithe de dhíth: {command}"
       resolved_once: "✅ Ceadaithe uair amháin ag {user}"

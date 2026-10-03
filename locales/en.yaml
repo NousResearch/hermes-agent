@@ -51,6 +51,11 @@ gateway:
   no_active_goal: "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
+  secure_input:
+    received: "Verification code received."
+    cancelled: "Verification code request cancelled."
+    expired: "Verification code request expired."
+    delivery_failed: "Verification code form could not be opened."
   model:
     error_prefix: "Error: {error}"
     switched: "Model switched to `{model}`"
@@ -1326,6 +1331,15 @@ platform:
 # Slash-command DESCRIPTIONS (names are identifiers and never translated). Owned by lane W1a; the
 # keys below are the ones the Discord native command table shares verbatim with the CLI registry.
   slack:
+    secure_input:
+      prompt: "🔐 *{site} needs a verification code.* Open the private form below. Never paste the code into chat."
+      fallback: "Secure verification code requested for {site}"
+      open_button: "Enter code privately"
+      modal_title: "Verification code"
+      input_label: "Code for {site}"
+      submit: "Submit"
+      cancel: "Cancel"
+      expired: "This request expired or belongs to another user. Ask Hermes to try again."
     approval:
       fallback_text: "⚠️ Command approval required: {command}"
       resolved_once: "✅ Approved once by {user}"

@@ -1039,6 +1039,39 @@ class TestCuratorFasterPrune:
         assert raw["curator"]["archive_after_days"] == 180
 
 
+class TestSkippedMigrationRestamps:
+    def test_failed_step_stamps_highest_contiguous_success(self, tmp_path, monkeypatch):
+        """A skipped step must re-run: stamp N-1 and keep the warning (#119658)."""
+        import hermes_cli.config_migrations as migrations
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"_config_version": 44}), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def _boom(results, quiet):
+            raise ImportError("cannot import name '_configurable_keys' (simulated)")
+
+        real = list(migrations.MIGRATIONS)
+        monkeypatch.setattr(
+            migrations, "MIGRATIONS",
+            tuple((v, _boom) if v == 45 else (v, fn) for v, fn in real),
+        )
+
+        results = migrate_config(interactive=False, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["_config_version"] == 44
+        assert any("v45" in w and "skipped" in w for w in results["warnings"])
+
+    def test_clean_run_still_stamps_latest(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"_config_version": 44}), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        results = migrate_config(interactive=False, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert not [w for w in results["warnings"] if "failed and was skipped" in w]
+
+
 class TestCustomProviderCompatibility:
     """Custom provider compatibility across legacy and v12+ config schemas.
 

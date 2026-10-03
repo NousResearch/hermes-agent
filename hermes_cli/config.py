@@ -1370,6 +1370,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     has_explicit_version = stamp is not None
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
+    failed_versions: List[int] = []
     if floor_refused:
         msg = support_floor_message()
         results["warnings"].append(msg)
@@ -1378,13 +1379,21 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
-        run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
+        failed_versions = run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
+
+    # Stamp the highest contiguous success, not the latest version: a skipped step
+    # must re-run via `doctor --fix` instead of vanishing (#119658).
+    # ponytail: unversioned files keep the latest stamp; per-step re-run for them
+    # would flip the legacy-key-only policy once a version key exists.
+    stamp_ver = latest_ver
+    if has_explicit_version and failed_versions:
+        stamp_ver = max(current_ver, min(failed_versions) - 1)
 
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
 
-    if current_ver < latest_ver and not quiet and not floor_refused:
-        print(f"Config version: {current_ver} → {latest_ver}")
+    if current_ver < latest_ver and not quiet and not floor_refused and stamp_ver > current_ver:
+        print(f"Config version: {current_ver} → {stamp_ver}")
 
     missing_env = get_missing_env_vars(required_only=True)
     if missing_env and not quiet:
@@ -1409,7 +1418,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     if current_ver < latest_ver and not floor_refused:
         config = read_raw_config()
-        config["_config_version"] = latest_ver
+        config["_config_version"] = stamp_ver
         _persist_migration(config)
 
     missing_skill_config = get_missing_skill_config_vars()

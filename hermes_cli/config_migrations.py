@@ -829,13 +829,19 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
 
 
 def run_migrations(
-    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False
+) -> List[int]:
     """Apply every registered migration whose target version exceeds *current_ver*; a config
     with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
+
+    Returns the target versions of the steps that raised and were skipped, in ascending
+    order (empty when every attempted step succeeded). ``migrate_config`` stamps the
+    highest contiguous success from this so a skipped step re-runs next time (#119658).
     """
+    failed: List[int] = []
     for target_ver, migration_fn in MIGRATIONS:
         if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
             try:
@@ -845,9 +851,10 @@ def run_migrations(
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
                 results.setdefault("warnings", []).append(warning)
-                # Quiet callers (profile creation, unattended update) discard ``results`` and
-                # migrate_config still stamps the latest version, so without a log line the
-                # skipped step vanishes for good.
+                failed.append(target_ver)
+                # Quiet callers (profile creation, unattended update) discard ``results``,
+                # so without a log line a skipped step is easy to miss entirely.
                 logger.warning("%s", warning)
                 if not quiet:
                     print(f"  ⚠ {warning}")
+    return failed

@@ -4,7 +4,6 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
-import hashlib
 import json
 import logging
 import os
@@ -170,25 +169,24 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> Tuple[list, list, Path]:
-    """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
-    first-wins dedup / the collision resolver prefer them."""
-    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-    project_dirs = list(get_project_skills_dirs())
+def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
+    """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
+    ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
+    from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
     active_skills_dir = _skills_dir()
-    all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
-    all_dirs += get_external_skills_dirs()
-    return project_dirs, all_dirs, active_skills_dir
+    roots = [(t, d) for t, d in get_skill_search_roots(active_skills_dir)
+             if t != TIER_LOCAL or d.exists()]
+    return roots, active_skills_dir
 
 
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
-    """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
+    """All skills (name, description, category) across project/local/create_dir/external dirs,
+    first-wins by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    from agent.skill_utils import TIER_PROJECT, iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
-    project_dirs, dirs_to_scan, _ = _skill_search_dirs()
-    signature = _skills_scan_signature(dirs_to_scan, disabled)
+    roots, _ = _skill_search_dirs()
+    signature = _skills_scan_signature([d for _t, d in roots], disabled)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
@@ -197,8 +195,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         return [dict(s) for s in cached[2]]
     skills = []
     seen_names: set = set()
-    for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
-        _iter = iter_project_skill_files if scan_dir in project_dirs else lambda d: iter_skill_index_files(d, "SKILL.md")
+    for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
+        _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
@@ -488,59 +486,49 @@ def _rank_same_root_candidate(candidate, root: Path) -> tuple:
     return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
 
 
-def _provably_same_skill(candidates) -> bool:
-    """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
-    or byte-identical content (copy). Anything else is two different skills sharing a name,
-    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
-    try:
-        if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
-            return True
-        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
-    except OSError:
-        return False
-
-
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
-    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
-    skill_md set iff no error."""
+def _locate_skill(name: str, local_category_name: Optional[str], roots):
+    """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
+    (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
+    same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
+    skill_md)``; skill_md set iff no error."""
+    from agent.skill_utils import TIER_PROJECT, pick_skill_candidate
+    all_dirs = [d for _t, d in roots]
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
-    if len(candidates) > 1 and project_dirs:
-        # A project skill intentionally overrides a same-named local/external skill;
-        # ambiguity WITHIN the project tier (two different skills) still refuses.
-        candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    tier_of = {d: t for t, d in roots}
     if len(candidates) > 1:
-        # The refusal below guards against one skill silently shadowing another. Copies of ONE
-        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
-        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
-        # cross-tier spread still refuses.
-        roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
-        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
-            root = roots.pop()
-            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
-            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
-                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
-                            name, len(candidates), ranked[0][1],
-                            "; ".join(str(smd) for _sd, smd in ranked[1:]))
-                candidates = [ranked[0]]
+        owned = [(c, _owning_search_dir(c[1], all_dirs)) for c in candidates]
+        won, contenders = pick_skill_candidate([
+            (tier_of[root], str(root), _rank_same_root_candidate(c, root), c[1]) for c, root in owned])
+        if won is not None:
+            if dropped := [str(smd) for i, (_sd, smd) in enumerate(candidates) if i != won]:
+                logger.info("Skill '%s' resolved to %s by precedence (project > local > create_dir > "
+                            "external_dirs, then identical same-root copies); not loaded: %s",
+                            name, candidates[won][1], "; ".join(dropped))
+            candidates = [candidates[won]]
+        else:
+            candidates = [candidates[i] for i in contenders]
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
+        # A root-level copy's path IS the bare name, so it can't disambiguate itself.
+        load_names = sorted({_owned_relative(sd, smd, all_dirs) for sd, smd in candidates} - {name})
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
         return _fail(
-            f"Ambiguous skill name '{name}': {len(candidates)} skills match across your local skills dir "
-            "and external_dirs. Refusing to guess — load one explicitly by its categorized path.",
-            matches=paths,
-            hint="Pass the full relative path instead of the bare name (e.g., 'category/skill-name'), "
-            "or rename one of the colliding skills so each name is unique."), None, None
+            f"Ambiguous skill name '{name}': "
+            + (f"use one of {', '.join(load_names)}. " if load_names else "")
+            + f"{len(candidates)} different skills share this name in the same skills directory tier; "
+            "refusing to guess.",
+            matches=paths, load_names=load_names,
+            hint="Pass the exact relative path instead of the bare name, or rename one of the "
+            "colliding skills so each name is unique."), None, None
     skill_dir, skill_md = candidates[0] if candidates else (None, None)
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).
-    if skill_md is not None and project_dirs:
+    if skill_md is not None and tier_of.get(_owning_search_dir(skill_md, all_dirs)) == TIER_PROJECT:
         from agent.skill_utils import is_quarantined_project_skill
-        if _under_any(skill_md, project_dirs) and is_quarantined_project_skill(skill_md):
+        if is_quarantined_project_skill(skill_md):
             return _fail(
                 f"Project skill '{name}' is quarantined: the security scan flagged its content as "
                 "dangerous. It will not load until the repo's skill content changes and passes a re-scan.",
@@ -551,6 +539,13 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
+
+
+def _owned_relative(skill_dir: Optional[Path], skill_md: Path, all_dirs) -> str:
+    """Exact load path of a candidate: its skill dir (or flat ``.md`` stem) relative to its root."""
+    root = _owning_search_dir(skill_md, all_dirs)
+    target = skill_dir if skill_dir is not None else skill_md.with_suffix("")
+    return target.relative_to(root).as_posix() if root is not None else str(target)
 
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
@@ -590,9 +585,9 @@ def skill_view(
         # since `bare` is not namespace-checked.
         if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
-        project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
-        error, skill_dir, skill_md = _locate_skill(
-            name, local_category_name, project_dirs, all_dirs)
+        roots, active_skills_dir = _skill_search_dirs()
+        all_dirs = [d for _t, d in roots]
+        error, skill_dir, skill_md = _locate_skill(name, local_category_name, roots)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content

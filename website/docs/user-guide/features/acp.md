@@ -303,6 +303,10 @@ toolsets, so name any plugin toolset you want gone in
 `!shutdown` from the owner stops the agent in any mode, and Buzz ignores that
 command from everyone else.
 
+## Slash commands and skills
+
+Hermes advertises its ACP slash commands (`/model`, `/steer`, `/queue`, `/compress`, ...) to the editor when a session is created, loaded, resumed or forked, so they appear in the client's `/` palette. Installed skills join that list: every skill Hermes would accept as `/<skill-name>` in the CLI or a chat platform is advertised under the same name, scoped to the session's workspace (project-local skills included) and filtered by the same enable/disable rules. Typing `/<skill-name> <instruction>` in the editor loads the skill exactly as the CLI does — stacked invocations (`/skill-a /skill-b do X`) work too — and the expanded instruction is what reaches the model. Built-in commands keep precedence over a skill of the same name; a skill that fails to load is reported in the editor and never reaches the model as raw text. Reopen the session after installing or removing skills to refresh the menu.
+
 ## Configuration and credentials
 
 ACP mode uses the same Hermes configuration as the CLI:

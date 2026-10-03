@@ -113,6 +113,22 @@ def test_faster_whisper_targets_are_gated(monkeypatch):
     assert supported == {"win32-arm64": False, "darwin-x64": False, "linux-x64": True}
 
 
+def test_silk_is_not_supported_on_python_312_or_newer(monkeypatch):
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", {"silk": "python_version < '3.12'"})
+    assert not extras.extra_supported(
+        "silk",
+        environment={
+            "python_version": "3.14",
+            "python_full_version": "3.14.7",
+            "sys_platform": "win32",
+            "platform_system": "Windows",
+            "platform_machine": "AMD64",
+            "os_name": "nt",
+        },
+        importable=lambda _: False,
+    )
+
+
 @pytest.fixture
 def synced(monkeypatch):
     calls: list[list[str]] = []

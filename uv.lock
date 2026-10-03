@@ -2742,7 +2742,7 @@ requires-dist = [
     { name = "packaging", marker = "python_full_version >= '3.14'", specifier = "==26.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", marker = "python_full_version >= '3.14'", specifier = "==1.1.1" },
-    { name = "pilk", marker = "extra == 'silk'", specifier = "==0.2.4" },
+    { name = "pilk", marker = "python_full_version < '3.12' and extra == 'silk'", specifier = "==0.2.4" },
     { name = "pillow", marker = "python_full_version >= '3.14'", specifier = "==12.3.0" },
     { name = "pillow-heif", marker = "python_full_version >= '3.14'", specifier = ">=1.4.0,<2" },
     { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'piper') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'piper') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'piper')", specifier = "==1.8.0" },

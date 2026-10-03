@@ -151,6 +151,82 @@ def _resolve_local_ref(root: Dict[str, Any], ref: str) -> Optional[Dict[str, Any
     return node if isinstance(node, dict) else None
 
 
+# Keys whose values are maps of subschemas (recurse per entry) vs. plain data (never rewritten).
+_SCHEMA_MAP_KEYS = {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"}
+_DATA_KEYS = {"const", "default", "enum", "examples", "dependentRequired"}
+
+
+def _normalize_json_schema_node(schema: Any) -> Any:
+    """Rewrite the few standard-JSON-Schema shapes ``parametersJsonSchema`` still 400s on, each
+    verified live (anomalyco/opencode#51009): ``required`` naming undeclared properties, draft-04
+    boolean ``exclusiveMinimum``/``exclusiveMaximum``, draft-07 tuple ``items: [...]``."""
+    if isinstance(schema, list):
+        return [_normalize_json_schema_node(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else None
+    out: Dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _DATA_KEYS:
+            out[key] = value
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: _normalize_json_schema_node(child) for name, child in value.items()}
+        elif key == "required" and properties is not None and isinstance(value, list):
+            out[key] = [name for name in value if isinstance(name, str) and name in properties]
+        elif key in ("exclusiveMinimum", "exclusiveMaximum") and isinstance(value, bool):
+            bound = schema.get("minimum" if key == "exclusiveMinimum" else "maximum")
+            if value and isinstance(bound, (int, float)):
+                out[key] = bound
+        elif key == "minimum" and schema.get("exclusiveMinimum") is True:
+            continue
+        elif key == "maximum" and schema.get("exclusiveMaximum") is True:
+            continue
+        elif key == "items" and isinstance(value, list):
+            out["prefixItems"] = [_normalize_json_schema_node(item) for item in value]
+        elif key == "additionalItems" and isinstance(schema.get("items"), list):
+            out["items"] = _normalize_json_schema_node(value)
+        else:
+            out[key] = _normalize_json_schema_node(value)
+    return out
+
+
+def _cut_required_ref_loops(schema: Any, target: str, safe: bool) -> Any:
+    """Gemini accepts a ``$ref`` loop only when it passes through an optional property or a
+    possibly-empty array ``items``; any other self-reference to *target* becomes ``{}``."""
+    if isinstance(schema, list):
+        return [_cut_required_ref_loops(item, target, safe) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    if schema.get("$ref") == target and not safe:
+        return {}
+    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    out: Dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _DATA_KEYS:
+            out[key] = value
+        elif key == "items":
+            min_items = schema.get("minItems")
+            out[key] = _cut_required_ref_loops(value, target, safe or not (isinstance(min_items, (int, float)) and min_items > 0))
+        elif key == "properties" and isinstance(value, dict):
+            out[key] = {name: _cut_required_ref_loops(child, target, safe or name not in required)
+                        for name, child in value.items()}
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: _cut_required_ref_loops(child, target, safe) for name, child in value.items()}
+        else:
+            out[key] = _cut_required_ref_loops(value, target, safe)
+    return out
+
+
+def _cut_all_required_ref_loops(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply ``_cut_required_ref_loops`` for every ``$defs``/``definitions`` entry and the root."""
+    for defs_key in ("$defs", "definitions"):
+        defs = schema.get(defs_key)
+        if isinstance(defs, dict):
+            schema[defs_key] = {name: _cut_required_ref_loops(body, f"#/{defs_key}/{name}", False)
+                                for name, body in defs.items()}
+    return _cut_required_ref_loops(schema, "#", False)
+
+
 def _inline_refs(node: Any, root: Dict[str, Any], budget: List[int], stack: tuple = ()) -> Any:
     """Recursively inline same-document ``$ref`` nodes; ``ValueError`` on an unresolvable
     or circular reference or an exhausted budget (the caller then keeps the original)."""
@@ -177,18 +253,21 @@ def _inline_refs(node: Any, root: Dict[str, Any], budget: List[int], stack: tupl
 
 
 def prepare_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
-    """Full JSON Schema for ``parametersJsonSchema``: deep-copied, root ``$schema`` dropped,
-    same-document ``$ref`` inlined, object root guaranteed. A schema whose references
-    cannot all be resolved is sent untouched so the provider names the real problem."""
+    """Full JSON Schema for ``parametersJsonSchema``: deep-copied, root ``$schema`` dropped, the
+    handful of shapes Gemini rejects normalized (``_normalize_json_schema_node``), same-document
+    ``$ref`` inlined, object root guaranteed. A schema whose references cannot all be inlined
+    (circular or unresolvable) is sent with its ``$ref``s, which Gemini accepts as long as every
+    loop passes through an optional property or possibly-empty array — other loops are cut to
+    ``{}`` so one recursive MCP schema no longer 400s the whole request."""
     if not isinstance(parameters, dict) or not parameters:
         return dict(_EMPTY_OBJECT_SCHEMA)
-    schema = copy.deepcopy(parameters)
+    schema = _normalize_json_schema_node(copy.deepcopy(parameters))
     schema.pop("$schema", None)
     try:
         schema = _inline_refs(schema, schema, [_MAX_REF_EXPANSIONS])
     except ValueError as exc:
-        logger.debug("Gemini tool schema kept as-is ($ref inlining skipped): %s", exc)
-        return schema
+        logger.debug("Gemini tool schema kept with $refs ($ref inlining skipped): %s", exc)
+        return _cut_all_required_ref_loops(schema)
     schema.pop("$defs", None)
     schema.pop("definitions", None)
     if not schema:

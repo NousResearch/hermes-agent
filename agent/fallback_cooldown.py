@@ -21,6 +21,26 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
+def candidate_pool_exhausted(provider: str, model: str, *, pool=None) -> bool:
+    """True when every credential for provider/model is benched beyond the retry horizon.
+
+    A short throttle (<= the retry loop's 600s Retry-After cap) is still considered usable. This
+    policy is shared by the live agent fallback walk and pre-agent gateway resolution so surfaces
+    do not disagree about whether a configured fallback can actually take the turn.
+    """
+    provider = (provider or "").strip().lower()
+    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != provider:
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(provider)
+        except Exception:
+            return False
+    if pool is None or not pool.has_credentials() or pool.has_available(model=model):
+        return False
+    until = pool.next_available_at(model=model)
+    return until is None or until - time.time() > 600
+
+
 def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so

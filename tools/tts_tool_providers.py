@@ -26,6 +26,23 @@ from tools.xai_http import hermes_xai_user_agent
 logger = logging.getLogger("tools.tts_tool")
 
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
+
+
+def _import_edge_tts_with_platform_trust(importer):
+    """Use the same platform trust context as Hermes' other HTTP clients."""
+    from agent.ssl_verify import _shared_context, install_truststore
+
+    install_truststore()
+    edge_tts = importer()
+    modules = [getattr(edge_tts, name, None) for name in ("communicate", "voices")]
+    if any(module is None or not hasattr(module, "_SSL_CTX") for module in modules):
+        raise ImportError("Edge TTS does not expose its SSL contexts")
+    context = _shared_context(None)
+    for module in modules:
+        module._SSL_CTX = context
+    return edge_tts
+
+
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"

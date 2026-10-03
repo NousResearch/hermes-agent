@@ -155,13 +155,8 @@ class TestCheckTtsRequirementsMistral:
              patch("tools.tts_tool._check_neutts_available", return_value=False):
             assert check_tts_requirements() is True
 
-    def test_mistral_key_missing_returns_false(self, mock_mistral_module):
+    def test_mistral_key_missing_returns_false(self):
         from tools.tts_tool import check_tts_requirements
 
-        with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError), \
-             patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError), \
-             patch("tools.tts_tool._import_openai_client", side_effect=ImportError), \
-             patch("tools.tts_tool._check_neutts_available", return_value=False), \
-             patch("tools.tts_tool._check_kittentts_available", return_value=False), \
-             patch("tools.tts_tool._check_piper_available", return_value=False):
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
             assert check_tts_requirements() is False

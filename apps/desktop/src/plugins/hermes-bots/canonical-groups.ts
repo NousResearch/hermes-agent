@@ -98,6 +98,12 @@ interface GroupSurface {
   methods?: string[]
   /** The installation this route reaches (`authority_gateway_id`), when advertised. */
   installId?: string
+  /** Who runs that installation (`room_identity.operator_name`), when its operator set a name. A display label only. */
+  operatorName?: string
+  /** It reports staying on (`room_identity.always_on`). */
+  alwaysOn?: boolean
+  /** It can join a group hosted on another computer: the same checks Electron makes before asking it for a grant. */
+  peer?: boolean
   error?: unknown
 }
 
@@ -117,6 +123,24 @@ function advertisedInstallation(value: unknown): string | undefined {
   return typeof id === 'string' && id ? id : undefined
 }
 
+function advertisedOperator(value: unknown): string | undefined {
+  const name = (value as { room_identity?: { operator_name?: unknown } } | null)?.room_identity?.operator_name
+
+  return typeof name === 'string' && name.trim() ? name.trim().slice(0, 200) : undefined
+}
+
+interface AdvertisedLink { enabled?: unknown; authentication?: unknown; endpoint?: { available?: unknown }
+  catalog?: { persistent_process?: unknown; installation_id?: unknown; text?: unknown; attachments?: unknown } }
+
+function advertisedPeer(value: unknown): boolean {
+  const capability = value as { features?: unknown; room_link?: AdvertisedLink; authority_gateway_id?: unknown } | null
+  const link = capability?.room_link
+
+  return Array.isArray(capability?.features) && capability.features.includes('peer_setup_recovery') && link?.enabled === true &&
+    link.authentication === 'proof-v2' && !!link.endpoint?.available && !!link.catalog?.persistent_process &&
+    link.catalog.installation_id === capability?.authority_gateway_id && !!link.catalog.text && !link.catalog.attachments
+}
+
 export function knownGroupExecutionMode(route: CanonicalGroupRoute): GroupExecutionMode | undefined {
   return groupSurfaces.get(JSON.stringify([route.connectionId, route.profile]))?.mode
 }
@@ -128,7 +152,9 @@ export function readGroupExecutionMode(route: CanonicalGroupRoute, epoch?: numbe
   if (!refresh && epoch !== undefined && previous?.epoch === epoch) {return previous.read}
 
   const record = { epoch, mode: previous?.mode, read: canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    .then(value => ({ mode: groupExecutionMode(value), methods: advertisedGroupMethods(value), installId: advertisedInstallation(value) }))
+    .then(value => ({ mode: groupExecutionMode(value), methods: advertisedGroupMethods(value), installId: advertisedInstallation(value),
+      operatorName: advertisedOperator(value), peer: advertisedPeer(value),
+      alwaysOn: (value as { room_identity?: { always_on?: unknown } } | null)?.room_identity?.always_on === true }))
     .catch(error => ({ mode: groupExecutionMode(undefined, error, previous?.mode), error })) }
 
   groupSurfaces.set(key, record)

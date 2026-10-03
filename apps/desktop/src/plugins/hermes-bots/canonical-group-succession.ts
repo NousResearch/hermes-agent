@@ -7,13 +7,19 @@ import type { CanonicalGroupRoute } from './canonical-groups'
  * Desktop reads their state, words it, and offers only the actions they advertise. */
 
 export const SUCCESSION_POLL_MS = 15_000
+/** While the room's own host answers: a host that pauses to stay safe appends nothing, so only a status read shows it. */
+export const HOSTED_POLL_MS = 30_000
 export const MOVING_POLL_MS = 2_000
+/** A move watched on a computer that doesn't answer is read less and less often, up to this. */
+export const MOVING_BACKOFF_MAX_MS = 30_000
 export const CONSENT_CONFIRM_MS = 30_000
 
-const STATES = ['ok', 'host_unreachable', 'host_restarting', 'moving', 'continued_on_two', 'moved_away'] as const
+const STATES = ['ok', 'host_unreachable', 'host_restarting', 'moving', 'continued_on_two', 'moved_away', 'paused'] as const
+const AUTOMATIC = ['ready', 'not_ready', 'unavailable', 'off'] as const
+const MODES = ['majority', 'careful', 'ask'] as const
 const READINESS = ['caught_up', 'behind', 'offline', 'unknown', 'unsupported', 'needs_reauthorization'] as const
-const STEPS = ['fencing', 'catching_up', 'reconciling', 'finishing'] as const
-const UNAVAILABLE = ['not_owner', 'no_successor', 'successor_behind_offline', 'host_reachable'] as const
+const STEPS = ['waiting_for_turns', 'fencing', 'catching_up', 'reconciling', 'finishing'] as const
+const UNAVAILABLE = ['not_owner', 'no_successor', 'successor_behind_offline', 'host_reachable', 'takeover_waiting'] as const
 
 export type SuccessionState = typeof STATES[number]
 export type BackupReadiness = typeof READINESS[number]
@@ -29,9 +35,27 @@ export interface SuccessionBackup extends SuccessionComputer {
   readiness: BackupReadiness
   behind_by: number
   last_seen: number | null
+  /** Counts toward the majority that lets the group move by itself. */
+  voter: boolean
+  /** An always-on computer can take over automatically; a laptop continues when you choose. */
+  always_on: boolean
+}
+/** Whether the group moves by itself if its host goes offline, and why not. */
+export interface SuccessionAutomatic {
+  state: typeof AUTOMATIC[number]
+  mode: typeof MODES[number] | null
+  standby: SuccessionComputer | null
+  reason: string | null
+  /** Voters that are offline; a name may be unknown. */
+  offline: SuccessionComputer[]
+  needed: number
+  /** The owner's setting as the computers have stored it, and as requested while they haven't yet. */
+  enabled: boolean | null
+  pending: boolean | null
 }
 export interface SuccessionWork { completed: number; elsewhere: number; unknown: number; waiting_for_host: number }
-export interface SuccessionBot { member_id: string; name: string | null }
+/** A Bot that can't take part after a move; `on` is the computer it runs on, and whether that computer answers now. */
+export interface SuccessionBot { member_id: string; name: string | null; on: (SuccessionComputer & { reachable: boolean }) | null }
 export interface SuccessionStatus {
   state: SuccessionState
   host: SuccessionComputer & { reachable: boolean; since: number | null }
@@ -39,11 +63,23 @@ export interface SuccessionStatus {
   owner: { name: string | null }
   backups: SuccessionBackup[]
   at_risk: number
-  moving: { to: SuccessionComputer; step: MoveStep | null } | null
+  /** `running`: turns a planned move waits for (`step: "waiting_for_turns"`). */
+  moving: { to: SuccessionComputer; step: MoveStep | null; reason: string | null; running: number } | null
   conflict: SuccessionComputer[]
+  /** When two computers both ran the group (Unix seconds), if known. */
+  conflict_window: { start: number; end: number } | null
+  /** The side of a conflict that keeps serving; the other stopped. */
+  conflict_running_on: SuccessionComputer | null
+  automatic: SuccessionAutomatic | null
+  /** The host stopped itself to stay safe (`state: "paused"`): it can't reach a majority (`lost_majority`, `isolated`), or
+   * its connection to the other computers isn't ready (`no_lease_layer`). */
+  paused: { reason: string; waiting_for: SuccessionComputer[] } | null
+  /** A move into this host, until the old host is a copy again; after a careful move (`evidence`) the owner may go back. */
+  moved_in: { from: SuccessionComputer | null; proof_kind: string | null } | null
   moved: { to: SuccessionComputer; branch_id: string | null; separate_events: number } | null
   work: SuccessionWork | null
-  actions: { action: string; targets: string[] }[]
+  /** `turns_off_automatic`: continuing anyway also turns automatic moves off for the group. */
+  actions: { action: string; targets: string[]; enabled?: boolean; turns_off_automatic?: boolean }[]
   unavailable_reason: typeof UNAVAILABLE[number] | null
   previous_host: (SuccessionComputer & { offline_since: number | null }) | null
   unavailable_bots: SuccessionBot[]
@@ -54,7 +90,10 @@ export interface SuccessionPreview {
   preview_id: string
   target: SuccessionComputer & { operator_name: string | null }
   owner: { name: string | null }
+  /** Messages the target is still catching up from another computer. */
   behind_by: number
+  /** Recent messages that only the old host has. */
+  at_risk: number
   work: SuccessionWork | null
   unavailable_bots: SuccessionBot[]
   cautions: SuccessionCaution[]
@@ -64,6 +103,7 @@ type Json = Record<string, unknown>
 const record = (value: unknown): Json | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Json : null
 const oneOf = <T extends string>(values: readonly T[], value: unknown): T | null => values.includes(value as T) ? value as T : null
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) > 0 ? value as number : 0
+const position = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : null
 const seconds = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 
 /** Display labels only: bounded, never an identifier substitute. */
@@ -87,7 +127,10 @@ function bots(value: unknown): SuccessionBot[] {
   return Array.isArray(value) ? value.flatMap(item => {
     const bot = record(item)
 
-    return typeof bot?.member_id === 'string' && bot.member_id ? [{ member_id: bot.member_id, name: displayLabel(bot.name) }] : []
+    const on = computer(bot?.on)
+
+    return typeof bot?.member_id === 'string' && bot.member_id ? [{ member_id: bot.member_id, name: displayLabel(bot.name),
+      on: on && { ...on, reachable: record(bot?.on)?.reachable === true } }] : []
   }) : []
 }
 
@@ -99,7 +142,8 @@ function backup(value: unknown): SuccessionBackup[] {
 
   return [{ ...base, allowed, designated, successor: item.successor === true && allowed && designated,
     kind: item.kind === 'backup' ? 'backup' : 'member', operator_name: displayLabel(item.operator_name),
-    readiness: oneOf(READINESS, item.readiness) ?? 'unknown', behind_by: count(item.behind_by), last_seen: seconds(item.last_seen) }]
+    readiness: oneOf(READINESS, item.readiness) ?? 'unknown', behind_by: count(item.behind_by), last_seen: seconds(item.last_seen),
+    voter: item.voter === true, always_on: item.always_on === true }]
 }
 
 function actions(value: unknown) {
@@ -109,7 +153,8 @@ function actions(value: unknown) {
     if (typeof entry?.action !== 'string') {return []}
     const targets = [...Array.isArray(entry.targets) ? entry.targets : [], entry.target].filter((id): id is string => typeof id === 'string' && !!id)
 
-    return [{ action: entry.action, targets }]
+    return [{ action: entry.action, targets, ...typeof entry.enabled === 'boolean' ? { enabled: entry.enabled } : {},
+      ...entry.turns_off_automatic === true ? { turns_off_automatic: true } : {} }]
   }) : []
 }
 
@@ -125,6 +170,9 @@ export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
   const previous = record(item.previous_host), previousComputer = computer(item.previous_host)
   const attempt = record(item.last_attempt), attemptTarget = computer(attempt?.to)
   const movingTo = computer(moving?.to), movedTo = computer(moved?.to)
+  const automatic = record(item.automatic), automaticState = oneOf(AUTOMATIC, automatic?.state), paused = record(item.paused)
+  const movedIn = record(item.moved_in), flag = (value: unknown) => typeof value === 'boolean' ? value : null
+  const start = seconds(conflict?.start), end = seconds(conflict?.end)
 
   return {
     state,
@@ -134,8 +182,18 @@ export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
     owner: { name: displayLabel(record(item.owner)?.name) },
     backups: Array.isArray(item.backups) ? item.backups.flatMap(backup) : [],
     at_risk: count(record(item.at_risk)?.count),
-    moving: movingTo ? { to: movingTo, step: oneOf(STEPS, moving?.step) } : null,
+    moving: movingTo ? { to: movingTo, step: oneOf(STEPS, moving?.step), reason: typeof moving?.reason === 'string' ? moving.reason : null,
+      running: count(moving?.running) } : null,
     conflict: Array.isArray(conflict?.hosts) ? conflict.hosts.flatMap(entry => computer(entry) ?? []) : [],
+    conflict_window: start && end ? { start, end } : null,
+    conflict_running_on: computer(conflict?.running_on),
+    automatic: automaticState ? { state: automaticState, mode: oneOf(MODES, automatic?.mode), standby: computer(automatic?.standby),
+      reason: typeof automatic?.reason === 'string' ? automatic.reason : null,
+      offline: Array.isArray(automatic?.offline) ? automatic.offline.flatMap(entry => typeof entry === 'string' ? [{ install_id: '', name: displayLabel(entry) }]
+        : computer(entry) ?? []) : [],
+      needed: count(automatic?.needed), enabled: flag(automatic?.enabled), pending: flag(automatic?.pending) } : null,
+    paused: state === 'paused' ? { reason: typeof paused?.reason === 'string' ? paused.reason : 'lost_majority',
+      waiting_for: Array.isArray(paused?.waiting_for) ? paused.waiting_for.flatMap(entry => computer(entry) ?? []) : [] } : null,
     moved: movedTo ? { to: movedTo, branch_id: typeof moved?.branch_id === 'string' && moved.branch_id ? moved.branch_id : null,
       separate_events: count(moved?.separate_events) } : null,
     work: work(item.work),
@@ -143,7 +201,8 @@ export function parseSuccessionStatus(value: unknown): SuccessionStatus | null {
     unavailable_reason: oneOf(UNAVAILABLE, item.unavailable_reason),
     previous_host: previousComputer ? { ...previousComputer, offline_since: seconds(previous?.offline_since) } : null,
     unavailable_bots: bots(item.unavailable_bots),
-    last_attempt: attemptTarget && typeof attempt?.error === 'string' && attempt.error ? { to: attemptTarget, error: attempt.error } : null
+    last_attempt: attemptTarget && typeof attempt?.error === 'string' && attempt.error ? { to: attemptTarget, error: attempt.error } : null,
+    moved_in: movedIn ? { from: computer(movedIn.from), proof_kind: typeof movedIn.proof_kind === 'string' ? movedIn.proof_kind : null } : null
   }
 }
 
@@ -157,6 +216,7 @@ export function parseSuccessionPreview(value: unknown): SuccessionPreview | null
     target: { ...target, operator_name: displayLabel(record(item.target)?.operator_name) },
     owner: { name: displayLabel(record(item.owner)?.name) },
     behind_by: count(item.behind_by),
+    at_risk: count(record(item.at_risk)?.count),
     work: work(item.work),
     unavailable_bots: bots(item.unavailable_bots),
     cautions: Array.isArray(item.cautions) ? item.cautions.flatMap(entry => {
@@ -235,6 +295,35 @@ export async function allowSuccessor(ownRoute: CanonicalGroupRoute, roomId: stri
 
   return { confirmed: result.confirmed === true }
 }
+
+/** The owner's setting, on the host: whether the group may move by itself. */
+export async function setAutomatic(hostRoute: CanonicalGroupRoute, roomId: string, enabled: boolean) {
+  const result = record(await canonicalGroupRequest<unknown>(hostRoute, 'groups.custody.automatic', { room_id: roomId, enabled }))
+
+  if (result?.automatic !== enabled) {throw new Error('The setting was not recorded')}
+}
+
+/** The highest seq a majority of the group's computers holds, from its host (`groups.custody.status`). */
+export async function readProtectedSeq(hostRoute: CanonicalGroupRoute, roomId: string) {
+  return position(record(await canonicalGroupRequest<unknown>(hostRoute, 'groups.custody.status', { room_id: roomId }))?.protected_seq)
+}
+
+/** A planned move while the host is up (a handover): no caution is needed. */
+export async function moveGroup(hostRoute: CanonicalGroupRoute, roomId: string, targetInstallId: string) {
+  return parseSuccessionStatus(await canonicalGroupRequest<unknown>(hostRoute, 'groups.succession.move', { room_id: roomId, target_install_id: targetInstallId }))
+}
+
+/** The owner doesn't wait for running turns: the planned move goes ahead, on the host. */
+export const moveNow = (hostRoute: CanonicalGroupRoute, roomId: string) =>
+  canonicalGroupRequest<unknown>(hostRoute, 'groups.succession.move_now', { room_id: roomId })
+
+/** The owner overrides "paused to stay safe" on the host. */
+export const continueAnyway = (hostRoute: CanonicalGroupRoute, roomId: string) =>
+  canonicalGroupRequest<unknown>(hostRoute, 'groups.succession.continue_anyway', { room_id: roomId })
+
+/** Hand an older host the newer side's transitions (and the configurations they verify against), in log order. */
+export const learnSuccession = (olderRoute: CanonicalGroupRoute, roomId: string, events: unknown[]) =>
+  canonicalGroupRequest<unknown>(olderRoute, 'groups.succession.learn', { room_id: roomId, events })
 
 export const removeBackup = (hostRoute: CanonicalGroupRoute, roomId: string, installId: string) =>
   canonicalGroupRequest<unknown>(hostRoute, 'groups.custody.remove', { room_id: roomId, install_id: installId })

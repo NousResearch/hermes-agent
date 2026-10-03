@@ -1,12 +1,15 @@
-import { Button, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Popover, PopoverContent,
-  PopoverTrigger, Switch, useI18n } from '@hermes/plugin-sdk'
+import { Button, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, gatewayActivationEpoch, Popover,
+  PopoverContent, PopoverTrigger, Switch, useI18n } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
+import { AutomaticSection, automaticSublabel } from './canonical-group-automatic'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CONSENT_CONFIRM_MS, offeredTargets, offers } from './canonical-group-succession'
 import type { DesktopComputer, SuccessionBackup } from './canonical-group-succession'
 import type { SuccessionController } from './canonical-group-succession-state'
 import { computerName } from './canonical-group-succession-view'
+import { ownership } from './canonical-group-successor-offer'
+import { readGroupExecutionMode } from './canonical-groups'
 import { useBots } from './i18n'
 
 type Words = ReturnType<typeof useBots>['succession']
@@ -43,6 +46,10 @@ function BackupRow({ controller, backup, onRemove }: { controller: SuccessionCon
   const hint = pending?.error ? words.changeFailed : pending ? Date.now() - pending.since >= CONSENT_CONFIRM_MS ? words.waitingToConfirm(host) : words.updating
     : blocked && designate ? words.notAllowed(backup.operator_name, name) : null
 
+  // Someone else's computer, when both names are known and differ: it keeps the whole history. The row already says it
+  // keeps a full copy, so a computer whose owner isn't known gets no extra line.
+  const guest = ownership(status?.owner.name, backup.operator_name) === 'guest' ? backup.operator_name : null
+
   return <li className="grid gap-1.5" data-install-id={backup.install_id} data-slot="backup-copy">
     <span className="text-xs text-(--ui-text-primary)"><bdi>{readinessLine(words, backup, name, locale)}</bdi></span>
     {designate && backup.readiness !== 'unsupported' && <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
@@ -54,6 +61,9 @@ function BackupRow({ controller, backup, onRemove }: { controller: SuccessionCon
       {words.canContinue}
     </label>}
     {hint && <span className={pending?.error ? 'text-xs text-destructive' : 'text-xs text-(--ui-text-tertiary)'} role={pending?.error ? 'alert' : undefined}>{hint}</span>}
+    {!hint && automaticSublabel(words, status, backup.always_on, pending && !pending.error ? pending.on : backup.successor) &&
+      <span className="text-xs text-(--ui-text-tertiary)">{automaticSublabel(words, status, backup.always_on, pending && !pending.error ? pending.on : backup.successor)}</span>}
+    {guest && <span className="text-xs text-(--ui-text-tertiary)" data-slot="guest-history">{words.guestHistory(guest)}</span>}
     {removable && <div><Button onClick={onRemove} size="inline" variant="text">{words.stopKeepingCopy(name)}</Button></div>}
   </li>
 }
@@ -63,6 +73,8 @@ function AddBackupDialog({ controller, open, onClose }: { controller: Succession
   const status = controller.status
   const [adding, setAdding] = useState<string | null>(null)
   const [failed, setFailed] = useState<{ id: string; text: string } | null>(null)
+  // Someone else's computer keeps the whole history too: said before it's added, and a second Add confirms.
+  const [guest, setGuest] = useState<{ id: string; person: string } | null>(null)
   const inGroup = new Set([status?.host.install_id, ...status?.backups.map(backup => backup.install_id) ?? []])
   const candidates = controller.computers.filter(computer => !inGroup.has(computer.installId))
   const host = computerName(controller, status?.host)
@@ -73,6 +85,12 @@ function AddBackupDialog({ controller, open, onClose }: { controller: Succession
     setFailed(null)
 
     try {
+      if (guest?.id !== computer.connectionId) {
+        const operator = (await readGroupExecutionMode({ connectionId: computer.connectionId, profile: 'default' }, gatewayActivationEpoch())).operatorName
+
+        if (ownership(controller.operatorName, operator) === 'guest') {return setGuest({ id: computer.connectionId, person: operator! })}
+      }
+
       await controller.addBackup(computer)
       onClose()
     } catch (error) {
@@ -81,7 +99,7 @@ function AddBackupDialog({ controller, open, onClose }: { controller: Succession
     } finally {setAdding(null)}
   }
 
-  return <Dialog onOpenChange={value => {if (!value && !adding) {setFailed(null); onClose()}}} open={open}>
+  return <Dialog onOpenChange={value => {if (!value && !adding) {setFailed(null); setGuest(null); onClose()}}} open={open}>
     <DialogContent className="max-w-sm">
       <DialogHeader>
         <DialogTitle>{words.addBackupTitle}</DialogTitle>
@@ -94,6 +112,7 @@ function AddBackupDialog({ controller, open, onClose }: { controller: Succession
             <Button aria-label={`${words.addBackupAction}: ${computer.label}`} disabled={!!adding} loading={adding === computer.connectionId}
               onClick={() => void add(computer)} size="sm" variant="secondary">{words.addBackupAction}</Button>
           </div>
+          {guest?.id === computer.connectionId && <p className="text-xs text-(--ui-text-secondary)" data-slot="guest-history">{words.guestHistory(guest.person)}</p>}
           {failed?.id === computer.connectionId && <p className="text-xs text-destructive" role="alert">{failed.text}</p>}
         </li>)}
       </ul> : <p className="text-sm text-(--ui-text-secondary)">{words.addBackupEmpty}</p>}
@@ -103,7 +122,7 @@ function AddBackupDialog({ controller, open, onClose }: { controller: Succession
 
 /** Group info, Backup copies: where the group runs, which computers hold a full copy, and which can continue it.
  * Owner controls come only from the host's `actions`. */
-export function CanonicalGroupBackups({ controller }: { controller: SuccessionController }) {
+export function CanonicalGroupBackups({ controller, group }: { controller: SuccessionController; group: string }) {
   const words = useBots().succession
   const labels = useCanonicalGroupLabels()
   const { locale } = useI18n()
@@ -133,6 +152,8 @@ export function CanonicalGroupBackups({ controller }: { controller: SuccessionCo
           <p>{eligible.length ? words.continueOnList(host, new Intl.ListFormat(locale, { type: 'conjunction' }).format(eligible))
             : managing ? words.nothingCanContinue(host) : words.pausesUntilBack(host)}</p>
           {status.at_risk > 0 && <p>{words.atRisk(status.at_risk, host)}</p>}
+          <AutomaticSection controller={controller} group={group}
+            onAddBackup={window.hermesDesktop?.roomSetup?.addBackup ? () => setAdding(true) : undefined} />
           {offers(status, 'add_backup') && !!window.hermesDesktop?.roomSetup?.addBackup && <div>
             <Button onClick={() => setAdding(true)} size="sm" variant="secondary">{words.addBackup}</Button>
           </div>}

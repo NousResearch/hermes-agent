@@ -38,11 +38,42 @@ const SAMPLES: Partial<Record<keyof SuccessionMessages, unknown[][]>> = {
   keep: names(['Home VPS']),
   keepTitle: names(['Home VPS']),
   keepBody: names(['Mac mini']),
-  movedWhileOffline: [0, ...counts].flatMap(n => name.map(value => [value, n]))
+  movedWhileOffline: [0, ...counts].flatMap(n => name.map(value => [value, n])),
+  readyMajority: names(['Mac mini', 'Home VPS'], [null, null]),
+  readyCareful: names(['Mac mini', 'Home VPS'], [null, null]),
+  notReady: names(['Home VPS', 1, 'Mac mini'], ['Home VPS and Laptop', 2, null]),
+  needsComputers: counts.flatMap(n => name.map(value => [value, n])),
+  moveTitle: names(['Harbor launch', 'Home VPS'], ['Harbor launch', null]),
+  movingAutomatically: names(['Mac mini', 'Home VPS'], [null, null]),
+  pausedSafeBody: names(['Mac mini', 'Home VPS'], [null, 'Home VPS and Laptop']),
+  continueAnywayBody: names(['Home VPS', 1], ['Home VPS and Laptop', 2]),
+  movedAutomatically: names(['Home VPS', 'Mac mini', '14:02'], [null, null, null]),
+  movedHandover: names(['Home VPS', 'Mac mini'], [null, null]),
+  carefulTitle: names(['Harbor launch', 'Home VPS'], ['Harbor launch', null]),
+  carefulBody: names(['Mac mini', 'Home VPS'], [null, null]),
+  goBackBody: names(['Home VPS', 'Mac mini', '14:02'], [null, null, null]),
+  ranOnBoth: names(['Harbor launch', 'Mac mini', 'Home VPS', 'Oct 3, 9:30 AM', 'Oct 3, 9:45 AM']),
+  runningTwiceBody: names(['Mac mini', 'Home VPS', 'Harbor launch']),
+  didntReach: names(['Home VPS', 'Mac mini'], [null, null]),
+  reofferRefused: ['permission_denied', 'invalid_params', 'other'].flatMap(reason => name.map(value => [value, reason])),
+  votersUnreachable: names(['Laptop', 1, 'Mac mini'], ['Laptop and Pi', 2, null]),
+  votersUnreachableCount: counts.flatMap(n => name.map(value => [n, value])),
+  targetCatchingUp: counts.flatMap(n => name.map(value => [value, n])),
+  runningOn: names(['Home VPS', 'Mac mini']),
+  guestHistory: names(['Sam']),
+  movingAfterTurns: counts.flatMap(n => name.map(value => [value, n])),
+  moveBackNudge: [...counts.map(n => ['Atlas Bot', n, 'Mac mini']), ['Atlas Bot and Mira Bot', 2, null]],
+  hostedAlwaysOn: names(['Home VPS', true], ['Home VPS', false]),
+  hostSleeps: names(['Laptop', 'Home VPS']),
+  hostProfileBlocked: names(['Laptop']),
+  hostPeerNotReady: names(['Laptop']),
+  hostUnavailable: names(['Laptop']),
+  hostTip: names(['Home VPS', true], ['Home VPS', false]),
+  unknownHistory: names(['Home VPS'])
 }
 
 /** Copy that really is the same words in that language. */
-const SAME_AS_ENGLISH = new Set(['de.menuOffline', 'de.computerNumber'])
+const SAME_AS_ENGLISH = new Set(['de.menuOffline', 'de.computerNumber', 'de.hostLabel'])
 
 function renders(key: keyof SuccessionMessages, leaf: Leaf): string[] {
   if (typeof leaf === 'string') {return [leaf]}
@@ -84,5 +115,13 @@ it('keeps the names it is given in every locale', () => {
     expect(messages.continuedSummary('Home VPS', 2, 1, 'Mac mini'), locale).toContain('Mac mini')
     expect(messages.managedBy('Sam', 'Home VPS'), locale).toContain('Sam')
     expect(messages.waitingTask('Mac mini', 'file'), locale).toContain('Mac mini')
+
+    const kept: [string, string[]][] = [[messages.didntReach('Home VPS', 'Mac mini'), ['Home VPS', 'Mac mini']],
+      [messages.runningOn('Home VPS', 'Mac mini'), ['Home VPS', 'Mac mini']], [messages.votersUnreachable('Laptop', 1, 'Mac mini'), ['Laptop', 'Mac mini']],
+      [messages.guestHistory('Sam'), ['Sam']]]
+
+    for (const [text, given] of kept) {
+      for (const value of given) {expect(text, locale).toContain(value)}
+    }
   }
 })

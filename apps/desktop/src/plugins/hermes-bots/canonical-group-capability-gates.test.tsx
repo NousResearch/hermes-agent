@@ -474,3 +474,127 @@ it('lets your other computers continue a new group in one step, on by default, o
     expect(notify).not.toHaveBeenCalled()
   } finally {window.hermesDesktop = desktop}
 })
+
+/** A gateway that can host groups and join one hosted elsewhere, run by `operator`. */
+const computerCapabilities = (install: string, operator: string, extra: Record<string, unknown> = {}) => ({
+  ...CANONICAL_GROUP_CAPABILITIES, authority_gateway_id: `install:${install.repeat(32)}`, features: ['peer_setup_recovery'],
+  room_link: { enabled: true, authentication: 'proof-v2', endpoint: { available: true, url: `https://${install}.example` },
+    catalog: { persistent_process: true, installation_id: `install:${install.repeat(32)}`, text: true, attachments: false, catalog_digest: install } },
+  room_identity: { operator_name: operator, always_on: false }, ...extra })
+
+function threeComputers(byConnection: Record<string, unknown>) {
+  const room = { room_id: 'harbor', name: 'Harbor launch', members: [] }
+  const create = vi.fn().mockResolvedValue({ ok: true, room })
+  window.hermesDesktop = { roomSetup: { recover: vi.fn().mockResolvedValue({ ok: true }), create } } as unknown as typeof window.hermesDesktop
+  vi.mocked(host.connections).mockResolvedValue([{ id: 'local', label: 'Mac mini', installId: 'a'.repeat(32) },
+    { id: 'vps', label: 'Home VPS', installId: 'b'.repeat(32) }, { id: 'laptop', label: 'Laptop', installId: 'c'.repeat(32) }] as never)
+  request.mockImplementation(async (route: { connectionId: string }, method: string) => {
+    if (method === 'groups.capabilities') {return byConnection[route.connectionId]}
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+
+  return create
+}
+
+const acrossComputers = [{ name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
+  { name: 'default', handle: 'mira', connectionId: 'vps', display_name: 'Mira Bot' },
+  { name: 'default', handle: 'rex', connectionId: 'laptop', display_name: 'Rex Bot' }]
+
+async function chooseAll() {
+  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+  await act(async () => {await new Promise(resolve => setTimeout(resolve, 0))})
+}
+
+it('hosts a group across computers on your always-on computer by default, and creates it there', async () => {
+  const desktop = window.hermesDesktop
+
+  const create = threeComputers({ local: computerCapabilities('a', 'Dana'), laptop: computerCapabilities('c', 'Dana'),
+    vps: computerCapabilities('b', 'Dana', { room_identity: { operator_name: 'Dana', always_on: true } }) })
+
+  try {
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={acrossComputers} />)})
+    await chooseAll()
+    const vps = await screen.findByRole('radio', { name: 'Home VPS' }) as HTMLInputElement
+    expect(vps.checked).toBe(true)
+    expect(screen.getByText('Hosted on Home VPS because it’s always on. The group keeps running when this computer sleeps.')).toBeTruthy()
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create.mock.calls[0][0].home).toEqual({ connectionId: 'vps', profile: 'default' })
+    // Listed where you created it, bound to the computer that hosts it.
+    expect(Object.entries($canonicalGroupBindings.get())).toEqual([[expect.stringContaining('local'), { connectionId: 'vps', profile: 'default', roomId: 'harbor' }]])
+  } finally {window.hermesDesktop = desktop}
+})
+
+it('keeps a computer that can’t host visible but disabled, and says what a sleeping host means', async () => {
+  const desktop = window.hermesDesktop
+
+  const create = threeComputers({ local: computerCapabilities('a', 'Dana'), laptop: computerCapabilities('c', 'Dana', { driver: false }),
+    vps: computerCapabilities('b', 'Dana', { room_identity: { operator_name: 'Dana', always_on: true } }) })
+
+  try {
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={acrossComputers} />)})
+    await chooseAll()
+    const laptop = await screen.findByRole('radio', { name: /^Laptop/ }) as HTMLInputElement
+    expect(laptop.disabled).toBe(true)
+    expect(screen.getByText('Laptop can’t host this group.')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Mac mini' }))
+    expect(screen.getByText('Mac mini sleeps. While it’s asleep the group moves to Home VPS, and Mac mini’s Bots wait until it moves back.')).toBeTruthy()
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create.mock.calls[0][0].home).toEqual({ connectionId: 'local', profile: 'default' })
+    expect(Object.values($canonicalGroupBindings.get())).toEqual([{ connectionId: 'local', profile: 'default', roomId: 'harbor' }])
+  } finally {window.hermesDesktop = desktop}
+})
+
+it('suggests an always-on computer whose owner isn’t known instead of choosing it, and names the computer, not a person', async () => {
+  const desktop = window.hermesDesktop
+  // This computer is Dana's; the others report no operator name, so whose they are isn't known.
+  const unnamed = (install: string, extra: Record<string, unknown> = {}) => computerCapabilities(install, '', extra)
+
+  const create = threeComputers({ local: computerCapabilities('a', 'Dana'), laptop: unnamed('c'),
+    vps: unnamed('b', { room_identity: { operator_name: null, always_on: true } }) })
+
+  try {
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={acrossComputers} />)})
+    await chooseAll()
+    expect((await screen.findByRole('radio', { name: 'Mac mini' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.queryByText(/because it’s always on/)).toBeNull()
+    expect(screen.getByText('Home VPS will keep a full copy of this group’s history, including earlier messages.')).toBeTruthy()
+    expect(screen.getByText('Laptop will keep a full copy of this group’s history, including earlier messages.')).toBeTruthy()
+    expect(screen.queryByText(/’s computer will keep/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tip: host on Home VPS, which is always on, so the group keeps running when this computer sleeps.' }))
+    expect((screen.getByRole('radio', { name: 'Home VPS' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByText('Hosted on Home VPS because it’s always on. The group keeps running when this computer sleeps.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Tip:/ })).toBeNull()
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create.mock.calls[0][0].home).toEqual({ connectionId: 'vps', profile: 'default' })
+  } finally {window.hermesDesktop = desktop}
+})
+
+it('never preselects another person’s computer, names it before adding it, and offers no choice when nothing else could host', async () => {
+  const desktop = window.hermesDesktop
+  // Mira's always-on computer is Sam's, and can't join groups hosted elsewhere.
+  const sams = computerCapabilities('b', 'Sam', { room_link: undefined, room_identity: { operator_name: 'Sam', always_on: true } })
+  let create = threeComputers({ local: computerCapabilities('a', 'Dana'), laptop: computerCapabilities('c', 'Dana'), vps: sams })
+
+  try {
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={acrossComputers} />)})
+    await chooseAll()
+    expect(await screen.findByText('Sam’s computer will keep a full copy of this group’s history, including earlier messages.')).toBeTruthy()
+    expect((await screen.findByRole('radio', { name: 'Mac mini' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: 'Home VPS' }) as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByText('Home VPS isn’t set up to join a group on another computer yet.')).toBeTruthy()
+    expect(screen.queryByText(/because it’s always on/)).toBeNull()
+    cleanup()
+
+    // Neither other computer can join a group elsewhere: no choice, and the group is created as before.
+    activation.epoch++
+    create = threeComputers({ local: computerCapabilities('a', 'Dana'), laptop: { ...computerCapabilities('c', 'Dana'), room_link: undefined }, vps: sams })
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={acrossComputers} />)})
+    await chooseAll()
+    await screen.findByText('Sam’s computer will keep a full copy of this group’s history, including earlier messages.')
+    expect(screen.queryByRole('radio')).toBeNull()
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create.mock.calls[0][0].home).toEqual({ connectionId: 'local', profile: 'default' })
+  } finally {window.hermesDesktop = desktop}
+})

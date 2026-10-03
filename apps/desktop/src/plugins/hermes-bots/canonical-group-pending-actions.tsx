@@ -29,6 +29,21 @@ const validAttempt = (action: CanonicalPendingAction) => Boolean(text(action.mem
   Number.isSafeInteger(action.execution_generation) && action.execution_generation > 0)
 const snapshot = (action: CanonicalPendingAction): CanonicalPendingAction => ({ ...action })
 
+/** What the row is about. After a move, work whose outcome is unknown says where it may have finished. */
+function ActionTitle({ action, labels, memberName, unknownTitle }: { action: CanonicalPendingAction; labels: Labels; memberName: string; unknownTitle?: string }) {
+  const title = action.kind === 'output_retry'
+    ? (!isPendingFileAction(action) ? labels.pendingFilesBlockedTitle : action.operation === 'discard' ? labels.pendingFilesCleanupTitle : labels.pendingFilesTitle)
+    : action.kind === 'approval' ? labels.pendingApprovalTitle : action.kind === 'retry' ? labels.pendingRetryTitle
+    : action.kind === 'stopping' ? labels.pendingStoppingTitle : unknownTitle ?? labels.pendingUnknownTitle
+
+  if (unknownTitle && title === unknownTitle) {
+    return <p className="grid min-w-0 gap-0.5 text-sm"><bdi className="font-medium">{memberName}</bdi>
+      <span className="text-(--ui-text-secondary)">{unknownTitle}</span></p>
+  }
+
+  return <p className="text-sm font-medium"><bdi>{title.replace('{name}', memberName)}</bdi></p>
+}
+
 function PendingActionRow({ action, member, memberName, canSkip, busy, labels, unknownTitle, onAction, onSkip, onRefresh }: {
   action: CanonicalPendingAction; member?: CanonicalRoomMember; memberName: string; canSkip: boolean; busy: boolean; labels: Labels
   unknownTitle?: string
@@ -49,16 +64,11 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, u
   const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
   const fileOutput = action.kind === 'output_retry'
   const filePending = isPendingFileAction(action)
-  const title = fileOutput ? (!filePending ? labels.pendingFilesBlockedTitle : action.operation === 'discard' ? labels.pendingFilesCleanupTitle : labels.pendingFilesTitle)
-    : action.kind === 'approval' ? labels.pendingApprovalTitle : action.kind === 'retry' ? labels.pendingRetryTitle
-    : action.kind === 'stopping' ? labels.pendingStoppingTitle : unknownTitle ?? labels.pendingUnknownTitle
   return <article aria-busy={submitting || undefined} className="grid min-w-0 gap-3 border-t border-(--ui-stroke-secondary) py-3"
     data-member-id={action.member_id} data-request-id={action.request_id} data-task-id={action.task_id} data-testid="group-chat-pending-action">
     <div className="flex items-center gap-2">
       <CanonicalMemberFace member={member} name={memberName} seed={action.member_id} />
-      {unknownTitle && title === unknownTitle ? <p className="grid min-w-0 gap-0.5 text-sm"><bdi className="font-medium">{memberName}</bdi>
-        <span className="text-(--ui-text-secondary)">{unknownTitle}</span></p>
-        : <p className="text-sm font-medium"><bdi>{title.replace('{name}', memberName)}</bdi></p>}
+      <ActionTitle action={action} labels={labels} memberName={memberName} unknownTitle={unknownTitle} />
     </div>
     {approval?.content}
     {fileOutput && !filePending && <p className="text-sm text-(--ui-text-secondary)" role="status">{labels.pendingFilesBlockedHelp}</p>}

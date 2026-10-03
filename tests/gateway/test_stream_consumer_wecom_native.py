@@ -596,7 +596,7 @@ class TestClarifyEagerReseed:
 
         # User answered → request an eager re-seed.  NO on_delta yet.
         consumer.request_reopen_seed()
-        await self._drain(consumer, 0.05)  # let run() process _REOPEN_SEED
+        assert await self._wait_until(lambda: consumer._native_stream_opened, timeout=2.0)
 
         seeds_after = len(
             [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
@@ -605,7 +605,6 @@ class TestClarifyEagerReseed:
             "eager re-seed must emit exactly one new empty seed frame before "
             f"any delta (before={seeds_before}, after={seeds_after})"
         )
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
         assert consumer._awaiting_reopen_after_boundary is False
         assert consumer._reopen_seeded_eagerly is True
 
@@ -1030,7 +1029,7 @@ class TestClarifyEagerReseed:
 
         # 第二轮 eager seed：即便标志有残留，仍能正确再次开流。
         consumer.request_reopen_seed()
-        await self._drain(consumer, 0.05)
+        assert await self._wait_until(lambda: consumer._native_stream_opened, timeout=2.0)
 
         seeds_after = len(
             [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
@@ -1039,7 +1038,6 @@ class TestClarifyEagerReseed:
             "第二轮 eager seed 必须再发一个新的空 seed 帧 "
             f"(before={seeds_before_second_boundary}, after={seeds_after})"
         )
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
         assert consumer._reopen_seeded_eagerly is True
         assert consumer._awaiting_reopen_after_boundary is False
 

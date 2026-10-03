@@ -517,6 +517,7 @@ _WAKE = {"display_kind": "internal_notification"}
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("allow_silence", [False, True])
 @pytest.mark.parametrize(("reply", "prompt", "owed"), [
     ("[SILENT]", _WAKE, []),
     ("NO_REPLY", _WAKE, []),
@@ -524,8 +525,13 @@ _WAKE = {"display_kind": "internal_notification"}
     ("NO_REPLY", {}, ["⚠️ The model returned only a silence marker for a message that needed a reply. "
                       "Try again or rephrase."]),
     ("NO_REPLY", {"display_metadata": {"reply_expected": False}}, []),
+    ("\u200b\ufeff", {}, ["\u200b\ufeff"]),
+    ("\u200b\ufeff", {"display_metadata": {"reply_expected": False}}, ["\u200b\ufeff"]),
+    ("\u200b\ufeff", _WAKE, ["\u200b\ufeff"]),
 ])
-async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(tmp_path, reply, prompt, owed):
+async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(
+    tmp_path, reply, prompt, owed, allow_silence,
+):
     """A crash-left reply is owed exactly what live delivery would have sent: nothing for a silence
     marker on a machinery turn, a muted diagnostic wake or a message the adapter reported as not
     addressed to the bot (and the finished turn is not resumed), the unexpected-silence notice for
@@ -534,6 +540,9 @@ async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
     runner, store = _db_runner(tmp_path)
+    runner.config = GatewayConfig(allow_human_silence_markers=allow_silence)
+    if allow_silence and (reply == "NO_REPLY" or (reply == "\u200b\ufeff" and not prompt.get("display_kind"))):
+        owed = []
     source = _turn(store, "quiet", marked=True, reply=reply, **prompt)
 
     assert await runner._recover_unclean_sessions() == (0, len(owed))

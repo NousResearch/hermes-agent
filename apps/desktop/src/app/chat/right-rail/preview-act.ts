@@ -28,12 +28,15 @@
  */
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
+import { previewDragError } from '@/lib/preview-act/drag-validation'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
 import type { PreviewOwner } from '@/store/preview-ownership'
 
 import {
+  checkDrive,
   clearCharsBack,
   clickAt,
+  dragFrom,
   glideTo,
   pointerPlaced,
   pressKey,
@@ -41,7 +44,7 @@ import {
   typeText,
   wheelBy
 } from './preview-drive'
-import { activePreviewInput, type PreviewInputHandle } from './preview-input'
+import { activePreviewInput, leasePreviewInput, type PreviewInputHandle } from './preview-input'
 import { activePreviewNav, type PreviewNavHandle } from './preview-nav'
 import { activePreviewScriptRunner, type PreviewScriptRunner } from './preview-script-runner'
 
@@ -281,7 +284,7 @@ ${
 }
 
 /** Mark the hit, let the page react, and hand back a fresh inventory. */
-function buildFinishScript(settleMs: number): string {
+function buildFinishScript(settleMs: number, strictReadback = false): string {
   return `(function () {
 ${preamble()}
   watch('strike');
@@ -294,7 +297,7 @@ ${preamble()}
       out.hit = w.__hermesHit || null;
       return JSON.stringify(out);
     } catch (err) {
-      return JSON.stringify({ note: 'The page changed before it could be re-read: ' + err, success: true });
+      return JSON.stringify({ note: 'The page changed before it could be re-read: ' + err, success: ${!strictReadback} });
     }
   });
 })()`
@@ -685,6 +688,43 @@ async function driveAction(
   return { ...result, acted, note: hitNote(hit), success: true }
 }
 
+/** Drag success describes native delivery, never an arbitrary page outcome. */
+async function driveDrag(
+  run: PreviewScriptRunner,
+  input: PreviewInputHandle,
+  action: PreviewActAction,
+  signal?: AbortSignal
+): Promise<PreviewActResult> {
+  checkDrive(input, signal)
+  const located = await runJson(run, buildLocateScript(action, false))
+  checkDrive(input, signal)
+
+  if (located.kind !== 'answered') {
+    return { error: 'The preview target could not be located; no drag was started.', success: false }
+  }
+
+  if (!located.result.success || !located.result.point) {
+    return { ...located.result, success: false }
+  }
+
+  await dragFrom(input, located.result.point, { x: action.dx!, y: action.dy! }, signal)
+  checkDrive(input, signal)
+  const after = await runJson(run, buildFinishScript(SETTLE_MS, true))
+  checkDrive(input, signal)
+
+  if (after.kind !== 'answered' || !after.result.success) {
+    return { error: 'Drag input was delivered, but the original guest readback failed. Do not replay automatically.', success: false }
+  }
+
+  const { hit, ...result } = after.result as PreviewActResult & { hit?: { trusted: boolean } }
+
+  if (hit?.trusted !== true) {
+    return { error: 'The original page did not witness trusted drag input. Do not replay automatically.', success: false }
+  }
+
+  return { ...result, acted: 'drag input delivered', note: 'Native input delivery does not verify application state changed.' }
+}
+
 /** Flag a click the overlay intercepted, which would otherwise look like a page
  *  that simply ignored it. */
 function hitNote(hit?: { tag: string; trusted: boolean } | null): string | undefined {
@@ -736,7 +776,7 @@ async function driveScroll(
 
   // A person does not move the mouse to scroll; the wheel turns wherever their
   // hand already is. Only send it somewhere if it has never been anywhere.
-  if (!pointerPlaced() && anchor.point) {
+  if (!pointerPlaced(input) && anchor.point) {
     await glideTo(input, anchor.point)
   }
 
@@ -760,6 +800,12 @@ export async function actOnActivePreview(
   signal?: AbortSignal,
   owner?: PreviewOwner
 ): Promise<PreviewActResult> {
+  const error = previewDragError(action)
+
+  if (error || signal?.aborted) {
+    return { error: error ?? 'Preview interaction cancelled.', success: false }
+  }
+
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
@@ -805,30 +851,53 @@ export async function actOnActivePreview(
     return trip.kind === 'answered' ? trip.result : { acted: typed.kind, note: NAVIGATED, success: true }
   }
 
-  const input = activePreviewInput(owner)
+  let release: (() => void) | undefined
 
-  if (input && DRIVEN.indexOf(typed.kind) !== -1) {
-    return driveAction(run, input, typed, signal)
+  try {
+    const input = activePreviewInput(owner)
+    const interaction = DRIVEN.includes(typed.kind) || typed.kind === 'drag' || typed.kind === 'scroll'
+
+    if (typed.kind === 'drag' && (!input?.run || !input.identity)) {
+      return { error: 'Native drag requires a captured preview guest input channel.', success: false }
+    }
+
+    // The lease starts before locating (which can scroll/focus) and lasts through
+    // readback and cleanup. All interactions share it, not just other drags.
+    if (input && interaction) {
+      release = leasePreviewInput(input)
+      checkDrive(input, signal)
+    }
+
+    const pinnedRun = input?.run ?? run
+
+    if (input && typed.kind === 'drag') {
+      return await driveDrag(pinnedRun, input, typed, signal)
+    }
+
+    if (input && DRIVEN.includes(typed.kind)) {
+      return await driveAction(pinnedRun, input, typed, signal)
+    }
+
+    // Jumping to an end remains a scripted glide, but still holds the lease.
+    const plain = typed.kind === 'scroll' && !typed.to && !typed.ref && !typed.selector
+
+    if (plain && input) {
+      return await driveScroll(pinnedRun, input, typed)
+    }
+
+    const settle = typed.kind === 'elements' ? 0 : SETTLE_MS
+    const scripted = await runJson(pinnedRun, buildScriptedScript(typed, settle))
+
+    if (scripted.kind === 'failed') {
+      return { error: scripted.error, success: false }
+    }
+
+    return scripted.kind === 'silent' ? { acted: typed.kind, note: NAVIGATED, success: true } : scripted.result
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error), success: false }
+  } finally {
+    release?.()
   }
-
-  // A plain page scroll is a wheel gesture. Jumping to an end is not — no hand
-  // wheels to the bottom of a long article — so `to` stays a scripted glide.
-  const plain = typed.kind === 'scroll' && !typed.to && !typed.ref && !typed.selector
-
-  if (plain && input) {
-    return driveScroll(run, input, typed)
-  }
-
-  const settle = typed.kind === 'elements' ? 0 : SETTLE_MS
-  const scripted = await runJson(run, buildScriptedScript(typed, settle))
-
-  if (scripted.kind === 'failed') {
-    return { error: scripted.error, success: false }
-  }
-
-  // The action almost certainly landed — a page that stops answering right
-  // after a click is one that navigated. Say so instead of failing it.
-  return scripted.kind === 'silent' ? { acted: typed.kind, note: NAVIGATED, success: true } : scripted.result
 }
 
 // Self-accept so an edit here, or to the in-page sources this module

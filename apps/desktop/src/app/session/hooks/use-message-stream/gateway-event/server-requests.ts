@@ -16,6 +16,7 @@ import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actio
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
+import { previewDragError } from '@/lib/preview-act/drag-validation'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
@@ -540,6 +541,15 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
     return
   }
 
+  const validationError = previewDragError(
+    Object.fromEntries(Object.entries(p).filter(([key]) => key !== 'session_id')), 'action')
+
+  if (validationError) {
+    answerValue(request, { error: validationError, success: false })
+
+    return
+  }
+
   // The agent drives ITS session's page: with a tile focused, the primary's
   // agent must not reach into the tile's tabs (#73890).
   const owner = previewOwnerFor(sessionId)
@@ -557,34 +567,22 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       }, 50)
     : undefined
 
-  const action = {
-    allowShortcut: p.allow_shortcut === true,
-    amount: p.amount as never,
-    key: p.key as never,
-    kind: (str(p.action) || '') as never,
-    max: p.max as never,
-    ref: p.ref as never,
-    selector: p.selector as never,
-    submit: p.submit as never,
-    text: p.text as never,
-    to: p.to as PreviewActAction['to']
-  }
+  // Keep presence and raw types until validation: null is not omission, and
+  // a drag with incompatible/unknown fields must not become valid by mapping.
+  const action = Object.fromEntries(Object.entries(p)
+    .filter(([key]) => key !== 'session_id')
+    .map(([key, value]) => [key === 'action' ? 'kind' : key === 'allow_shortcut' ? 'allowShortcut' : key, value])) as
+      Omit<PreviewActAction, 'kind'> & { kind: string }
 
   void (async () => {
     try {
-      // After pop-out the live webview lives in the Browser window; this
-      // window still owns the session gate, so forward the action there and
-      // answer with the pop-out's result. No pop-out answering (null) falls
-      // through to the local engine, which keeps the legacy NOTHING_OPEN
-      // error for a genuinely closed pane.
+      // A remote write with a lost response may already have happened.
       if (!hasLivePreviewSurface(owner)) {
-        const remote = await requestPopoutPreviewAct(action, owner)
+        const remote = await requestPopoutPreviewAct(action, owner, signal)
 
-        if (remote) {
-          answerValue(request, remote)
+        answerValue(request, remote ?? { error: 'No live preview answered. The action was not replayed locally.', success: false })
 
-          return
-        }
+        return
       }
 
       const run = await loadPreviewEngine()

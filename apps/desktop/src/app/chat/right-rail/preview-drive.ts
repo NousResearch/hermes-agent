@@ -44,15 +44,24 @@ const WHEEL_MS = 240
 /** Where the pointer was left, so the next glide starts from there instead of
  *  jumping. Module-level because the pointer is a property of the pane, not of
  *  any one action. The origin is a placeholder, not a position — see below. */
-let pointer: DrivePoint = { x: 0, y: 0 }
-let placed = false
+const pointers = new WeakMap<object, DrivePoint>()
+const pointerFor = (input: PreviewInputHandle) => pointers.get(input.identity ?? input) ?? { x: 0, y: 0 }
+const place = (input: PreviewInputHandle, point: DrivePoint) => pointers.set(input.identity ?? input, point)
+
+export function checkDrive(input: PreviewInputHandle, signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error('Preview interaction cancelled.')
+  }
+
+  input.assertCurrent?.()
+}
 
 /** Whether the pointer has ever been sent anywhere. Until it has, its notional
  *  spot is the top-left corner, which is a real coordinate a caller can wheel
  *  or click at by accident — so callers that only need it to be SOMEWHERE
  *  sensible have to know the difference. */
-export function pointerPlaced(): boolean {
-  return placed
+export function pointerPlaced(input: PreviewInputHandle): boolean {
+  return pointers.has(input.identity ?? input)
 }
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -61,13 +70,15 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const easeOut = (t: number) => 1 - Math.pow(1 - t, 3)
 
 /** Walk the pointer to `to`, letting the page hover everything on the way. */
-export async function glideTo(input: PreviewInputHandle, to: DrivePoint): Promise<void> {
-  const from = pointer
+export async function glideTo(input: PreviewInputHandle, to: DrivePoint, signal?: AbortSignal): Promise<void> {
+  const from = pointerFor(input)
+  checkDrive(input, signal)
 
   for (let step = 1; step <= GLIDE_STEPS; step++) {
+    checkDrive(input, signal)
     const progress = easeOut(step / GLIDE_STEPS)
 
-    input.send({
+    await input.send({
       type: 'mouseMove',
       x: Math.round(from.x + (to.x - from.x) * progress),
       y: Math.round(from.y + (to.y - from.y) * progress)
@@ -75,13 +86,66 @@ export async function glideTo(input: PreviewInputHandle, to: DrivePoint): Promis
     await wait(GLIDE_MS / GLIDE_STEPS)
   }
 
-  pointer = to
-  placed = true
+  checkDrive(input, signal)
+  place(input, to)
+}
+
+/** A held native gesture. A failed send may still have delivered input, so
+ * release is attempted even when mouseDown throws, at the last attempted point. */
+export async function dragFrom(
+  input: PreviewInputHandle,
+  from: DrivePoint,
+  delta: DrivePoint,
+  signal?: AbortSignal
+): Promise<void> {
+  if (![from.x, from.y, delta.x, delta.y].every(Number.isFinite) ||
+      Math.abs(delta.x) > 2000 || Math.abs(delta.y) > 2000 || (!delta.x && !delta.y)) {
+    throw new Error('Invalid native drag coordinates.')
+  }
+
+  await glideTo(input, from, signal)
+  checkDrive(input, signal)
+  input.focus()
+  checkDrive(input, signal)
+  let last = from
+  let failure: unknown
+  let failed = false
+
+  try {
+    await input.send({ button: 'left', clickCount: 1, type: 'mouseDown', ...last })
+
+    for (let step = 1; step <= 12; step++) {
+      checkDrive(input, signal)
+      last = { x: from.x + delta.x * step / 12, y: from.y + delta.y * step / 12 }
+      place(input, last)
+      await input.send({ type: 'mouseMove', modifiers: ['leftbuttondown'], ...last })
+      await wait(20)
+    }
+
+    checkDrive(input, signal)
+  } catch (error) {
+    failure = error
+    failed = true
+  } finally {
+    try {
+      await (input.release ?? input.send)({ button: 'left', clickCount: 1, type: 'mouseUp', ...last })
+    } catch (error) {
+      const original = failed ? `${failure instanceof Error ? failure.message : String(failure)}; ` : ''
+      failure = new Error(`${original}Failed to release the original preview guest: ${error instanceof Error ? error.message : String(error)}`)
+      failed = true
+    }
+  }
+
+  if (failed) {
+    throw failure
+  }
 }
 
 /** Press and release at the pointer's current spot. `clicks` of 3 selects the
  *  text under it, which is how a field gets cleared without a modifier key. */
 export async function clickAt(input: PreviewInputHandle, clicks = 1): Promise<void> {
+  const pointer = pointerFor(input)
+
   for (let click = 1; click <= clicks; click++) {
     input.send({ button: 'left', clickCount: click, type: 'mouseDown', x: pointer.x, y: pointer.y })
     input.send({ button: 'left', clickCount: click, type: 'mouseUp', x: pointer.x, y: pointer.y })
@@ -94,6 +158,7 @@ export async function clickAt(input: PreviewInputHandle, clicks = 1): Promise<vo
  *  moves the content down, i.e. scrolls UP — so it is the inverse of the number
  *  a caller asks for, and of DOM `WheelEvent.deltaY`. */
 export async function wheelBy(input: PreviewInputHandle, down: number): Promise<void> {
+  const pointer = pointerFor(input)
   let sent = 0
 
   for (let step = 1; step <= WHEEL_STEPS; step++) {

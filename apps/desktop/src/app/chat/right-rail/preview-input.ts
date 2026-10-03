@@ -28,12 +28,18 @@ export type PreviewInputEvent =
   | { button: 'left'; clickCount: number; type: 'mouseDown' | 'mouseUp'; x: number; y: number }
   | { deltaX: number; deltaY: number; type: 'mouseWheel'; x: number; y: number }
   | { keyCode: string; modifiers?: string[]; type: 'char' | 'keyDown' | 'keyUp' }
-  | { type: 'mouseMove'; x: number; y: number }
+  | { modifiers?: string[]; type: 'mouseMove'; x: number; y: number }
 
 export interface PreviewInputHandle {
   /** Give the guest keyboard focus, so key events reach its active element. */
   focus: () => void
-  send: (event: PreviewInputEvent) => void
+  send: (event: PreviewInputEvent) => void | Promise<void>
+  /** Captured guest identity, shared across captures of this guest. */
+  identity?: object
+  run?: (code: string) => Promise<unknown>
+  assertCurrent?: () => void
+  /** Cleanup may reach the original surviving guest, never a replacement. */
+  release?: (event: PreviewInputEvent) => void | Promise<void>
 }
 
 /** Convert a point the act engine measured in guest CSS pixels into the
@@ -46,10 +52,24 @@ export function toWebviewInputSpace(event: PreviewInputEvent, zoomFactor: number
   return { ...event, x: Math.round(event.x * zoomFactor), y: Math.round(event.y * zoomFactor) }
 }
 
-const handles = new Map<string, PreviewInputHandle>()
+type InputSource = PreviewInputHandle | (() => PreviewInputHandle | null)
+const handles = new Map<string, InputSource>()
+const leased = new WeakSet<object>()
+
+export function leasePreviewInput(input: PreviewInputHandle): () => void {
+  const identity = input.identity ?? input
+
+  if (leased.has(identity)) {
+    throw new Error("Another interaction is using this preview guest.")
+  }
+
+  leased.add(identity)
+
+  return () => leased.delete(identity)
+}
 
 /** Register a live pane's input channel; returns an idempotent unregister. */
-export function registerPreviewInput(tabId: string, handle: PreviewInputHandle): () => void {
+export function registerPreviewInput(tabId: string, handle: InputSource): () => void {
   handles.set(tabId, handle)
 
   return () => {
@@ -65,5 +85,7 @@ export function registerPreviewInput(tabId: string, handle: PreviewInputHandle):
 export function activePreviewInput(owner?: PreviewOwner): PreviewInputHandle | null {
   const tab = activePreviewTabFor(owner)
 
-  return (tab && handles.get(tab.id)) || null
+  const source = tab && handles.get(tab.id)
+
+  return typeof source === 'function' ? source() : source || null
 }

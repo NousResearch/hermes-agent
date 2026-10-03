@@ -175,6 +175,27 @@ describe('TreeGroup', () => {
 
       expect(fixed.length).toBeGreaterThan(0)
     })
+
+    it.each([800, 300])('keeps the right reservation draggable with interactive tabs at width %i', width => {
+      mountCrowdedStrip(width)
+      // A single tab leaves free space: this is independent of the crowded-tab handle.
+      render(<TreeGroup leftEdge node={terminalGroup(false)} rightEdge topEdge />)
+      const header = container!.querySelector<HTMLElement>('[data-panel-header]')!
+
+      const spacer = [...header.children].find(
+        element => (element as HTMLElement).style.width === 'var(--panel-titlebar-right, 0px)'
+      )!
+
+      expect(spacer).toBeDefined()
+      expect(spacer.classList.contains('[-webkit-app-region:drag]')).toBe(true)
+      expect(spacer.childElementCount).toBe(0)
+      const tabs = header.querySelectorAll<HTMLElement>('[data-tree-tab]')
+      expect(tabs.length).toBeGreaterThan(0)
+
+      for (const tab of tabs) {
+        expect(tab.classList.contains('[-webkit-app-region:no-drag]')).toBe(true)
+      }
+    })
   })
 
   it('hides a keep-alive pane through hide/restore while a plain pane still parks', () => {

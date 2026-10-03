@@ -773,7 +773,7 @@ export function TreeGroup({
             />
           )}
           {topEdge && (
-            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-right, 0px)' }} />
+            <div aria-hidden="true" className="shrink-0 [-webkit-app-region:drag]" style={{ width: 'var(--panel-titlebar-right, 0px)' }} />
           )}
         </div>
       )}

@@ -1,0 +1,5 @@
+name: merge-gateway-provider
+kind: model-provider
+version: 1.0.0
+description: Merge Gateway — multi-provider routing, governance, and observability
+author: Matthew Feroz (MatthewFeroz)

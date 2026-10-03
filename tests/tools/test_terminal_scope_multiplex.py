@@ -128,6 +128,54 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     assert os.environ["TERMINAL_DOCKER_VOLUMES"] == _LAUNCH_VOLUMES
 
 
+def test_idle_reaper_keeps_each_profiles_lifetime(tmp_path, monkeypatch):
+    """The unscoped cleanup thread must retain each sandbox for its owner's TTL."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import tools.terminal_tool as tt
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+
+    homes = [
+        _profile(tmp_path, name, f"terminal:\n  backend: docker\n  lifetime_seconds: {ttl}\n")
+        for name, ttl in (("alpha", 1800), ("beta", 300))
+    ]
+    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "300")
+    monkeypatch.setattr(tt, "_active_environments", {})
+    monkeypatch.setattr(tt, "_last_activity", {})
+    monkeypatch.setattr(tt, "_env_lifetimes", {})
+    monkeypatch.setattr(tt, "_creation_locks", {})
+    monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+    environments = {}
+
+    def create_env(*_args, **kwargs):
+        env = SimpleNamespace(cleanup=Mock())
+        environments[kwargs["task_id"]] = env
+        return env
+
+    monkeypatch.setattr(tt, "_create_configured_env", create_env)
+    for home in (homes[0], homes[1], homes[0]):
+        with install_and_reset_profile_terminal_scope(home):
+            config = tt._get_env_config()
+            assert config["lifetime_seconds"] == (1800 if home == homes[0] else 300)
+            plan = SimpleNamespace(
+                config=config, env_type="docker", effective_task_id=home.name,
+                image="image", cwd=".", effective_timeout=10, host_cwd=None,
+            )
+            tt._acquire_env(plan, None)
+
+    with tt._env_lock:
+        for key in environments:
+            tt._last_activity[key] = time.time() - 700
+    tt._cleanup_inactive_envs(300)
+
+    assert "alpha" in tt._active_environments
+    assert "beta" not in tt._active_environments
+    environments["alpha"].cleanup.assert_not_called()
+    environments["beta"].cleanup.assert_called_once()
+
+
 def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     """#101132/#95470: a docker profile that does NOT set docker_volumes or
     docker_shared_container_key must not inherit the launch profile's."""

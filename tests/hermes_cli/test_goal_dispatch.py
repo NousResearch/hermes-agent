@@ -133,8 +133,9 @@ def test_control_verb_with_trailing_words_never_replaces_the_goal(command, pause
     mgr.set('original objective')
     if paused:
         mgr.pause(reason='user-paused')
-    _dispatch(mgr, command)
+    result = _dispatch(mgr, command)
     assert goals.load_goal(mgr.session_id).goal == 'original objective'
+    assert ('(ignored ' in result.output) == (' ' in command)
 
 
 def test_double_dash_sets_control_word_goal_and_announces_the_replace():

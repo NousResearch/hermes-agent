@@ -2067,6 +2067,35 @@ class TestElementTokenAttachment:
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
 
 
+class TestZeroDeliveryTypeVerdict:
+    """Zero-delivery `type` verdict: web inputs behind trusted-event checks
+    swallow synthetic keystrokes entirely (delivered 0 of N). Retrying the
+    same delivery rung cannot help; the actionable next step is the AX
+    set_value path, which bypasses synthetic-event filtering."""
+
+    def _result(self, delivered):
+        from tools.computer_use.backend import ActionResult
+        return ActionResult(
+            ok=True,
+            action="type",
+            message="type_text incomplete",
+            code="type_text_incomplete",
+            meta={"delivered_chars": delivered, "requested_chars": 11},
+        )
+
+    def test_zero_delivery_recommends_set_value(self):
+        from tools.computer_use.tool import _classify_action_result
+        verdict = _classify_action_result(self._result(0))
+        assert verdict["decision"] == "escalate"
+        assert verdict["recommended"] == "set_value"
+        assert "set_value" in verdict["hint"]
+
+    def test_partial_delivery_keeps_generic_ladder(self):
+        from tools.computer_use.tool import _classify_action_result
+        verdict = _classify_action_result(self._result(7))
+        assert verdict.get("recommended") != "set_value"
+
+
 class TestSessionLifecycle:
     """Surface gap (audit June 2026): Hermes never declared a cua-driver
     session, so the agent-cursor overlay was inert and per-run state

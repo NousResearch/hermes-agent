@@ -1022,9 +1022,12 @@ class GatewayAdapterLifecycleMixin:
         )
         from gateway.config import load_gateway_config
         from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from agent.i18n import warm_catalog
+
         def prepare():
             hydrate_profile_secret_sources(profile_home)
             with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                warm_catalog()
                 profile_runtime_cfg = _load_gateway_config()
                 from hermes_cli.plugins import discover_plugins, get_plugin_manager
                 discover_plugins()

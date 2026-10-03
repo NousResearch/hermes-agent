@@ -341,6 +341,32 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_result_left_intact(self):
+        """Mixed batch: a multimodal (list content) tool message plus enough
+        string content to stay over budget even after the strings are
+        persisted. The multimodal entry must be skipped, not crashed on
+        (regression test for #126945)."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        multimodal = [
+            {"type": "text", "text": "screenshot summary"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+        msgs = [
+            {"role": "tool", "tool_call_id": "t-mm", "content": multimodal},
+            *[
+                {"role": "tool", "tool_call_id": f"t{i}", "content": "x" * 2_000}
+                for i in range(3)
+            ],
+        ]
+        result = enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=100))
+        assert result[0]["content"] == multimodal
+        assert all(
+            PERSISTED_OUTPUT_TAG in m["content"]
+            for m in result[1:]
+            if isinstance(m["content"], str)
+        )
+
 # ── Per-tool threshold integration ────────────────────────────────────
 
 class TestPerToolThresholds:

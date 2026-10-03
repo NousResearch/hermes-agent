@@ -1,4 +1,8 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+
+import { Check as CheckIcon, Copy as CopyIcon } from "lucide-react";
+
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 /**
  * Lightweight markdown renderer for LLM output.
@@ -13,10 +17,13 @@ export function Markdown({
   content,
   highlightTerms,
   streaming,
+  codeCopy = false,
 }: {
   content: string;
   highlightTerms?: string[];
   streaming?: boolean;
+  /** Show a copy button on fenced code blocks (mobile chat uses this). */
+  codeCopy?: boolean;
 }) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
   const caret = streaming ? <StreamingCaret /> : null;
@@ -29,6 +36,7 @@ export function Markdown({
           block={block}
           highlightTerms={highlightTerms}
           caret={caret && i === blocks.length - 1 ? caret : null}
+          codeCopy={codeCopy}
         />
       ))}
       {blocks.length === 0 && caret}
@@ -42,6 +50,90 @@ function StreamingCaret() {
       aria-hidden
       className="inline-block w-[0.5em] h-[1em] ml-0.5 align-[-0.15em] bg-foreground/50 animate-pulse"
     />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Code block + copy button                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Fenced code block. With `codeCopy` the block gains a header row holding
+ * the language label and a copy button; the button lives in that header
+ * (not absolutely positioned over the code) so it never interferes with
+ * the horizontal scrolling of wide code — the scroll container is the
+ * <pre> only, and the header stays fixed above it.
+ *
+ * Without `codeCopy` (desktop) the rendering is byte-identical to the
+ * original bare <pre>.
+ */
+function CodeBlock({
+  block,
+  caret,
+  codeCopy,
+}: {
+  block: { type: "code"; lang: string; content: string };
+  caret?: ReactNode;
+  codeCopy?: boolean;
+}) {
+  const pre = (
+    <pre className="px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+      <code>
+        {block.content}
+        {caret}
+      </code>
+    </pre>
+  );
+
+  if (!codeCopy) {
+    return (
+      <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+        <code>
+          {block.content}
+          {caret}
+        </code>
+      </pre>
+    );
+  }
+
+  return (
+    <div className="border border-border bg-secondary/60">
+      <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-card/80 pl-3 pr-1.5 py-1">
+        <span className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70 select-none">
+          {block.lang || "code"}
+        </span>
+        <CopyCodeButton text={block.content} />
+      </div>
+      {pre}
+    </div>
+  );
+}
+
+function CopyCodeButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    void copyTextToClipboard(text).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <button
+      type="button"
+      aria-label={copied ? "Copied" : "Copy code"}
+      onClick={handleCopy}
+      className="flex items-center gap-1 rounded border border-border/60 bg-card/80 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors shrink-0"
+    >
+      {copied ? (
+        <CheckIcon className="h-3 w-3" />
+      ) : (
+        <CopyIcon className="h-3 w-3" />
+      )}
+      {copied ? "Copied" : "Copy"}
+    </button>
   );
 }
 
@@ -160,21 +252,16 @@ function Block({
   block,
   highlightTerms,
   caret,
+  codeCopy,
 }: {
   block: BlockNode;
   highlightTerms?: string[];
   caret?: ReactNode;
+  codeCopy?: boolean;
 }) {
   switch (block.type) {
     case "code":
-      return (
-        <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
-          <code>
-            {block.content}
-            {caret}
-          </code>
-        </pre>
-      );
+      return <CodeBlock block={block} caret={caret} codeCopy={codeCopy} />;
 
     case "heading": {
       const Tag = `h${Math.min(block.level, 4)}` as "h1" | "h2" | "h3" | "h4";

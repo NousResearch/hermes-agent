@@ -1398,10 +1398,12 @@ class TestCafConversion:
         )
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        from tools.transcription_tools import _convert_caf_to_wav
+        from tools.transcription_audio import _convert_caf_to_wav
         result = _convert_caf_to_wav(str(caf_path), str(work_dir))
         assert result == wav_path
         assert Path(result).exists()
+        Path(result).unlink()
+        Path(result).parent.rmdir()
 
 
     def test_transcribe_caf_not_converted_for_local(self, tmp_path, monkeypatch):
@@ -1447,7 +1449,7 @@ class TestCafConversion:
             outputs.append(output)
             output.write_bytes(b"converted recording")
 
-        def transcribe(file_path, *_args):
+        def transcribe(file_path, *_args, **_kwargs):
             assert Path(file_path).read_bytes() == b"converted recording"
             if outcome == "provider-error":
                 raise RuntimeError("transcription failed")
@@ -1479,7 +1481,7 @@ class TestTranscribeCredentialReadGuard:
         from agent.file_safety import get_read_block_error
 
         env_file = tmp_path / ".env"
-        env_file.write_text("OPENAI_API_KEY=sk-secret\n")
+        env_file.write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
 
         expected = get_read_block_error(str(env_file))
         assert expected, "test setup: a .env file should be read-blocked"
@@ -1490,6 +1492,70 @@ class TestTranscribeCredentialReadGuard:
         # The error is the shared read-guard message, not an audio-validation
         # or provider error — proving the guard fired before dispatch.
         assert result["error"] == expected
+
+
+class TestRequestScopedTranscriptionOverrides:
+    @pytest.mark.parametrize(
+        ("configured", "requested", "expected"),
+        [(" ", None, "zh"), (" en ", None, "en"), ("en", "fr", "fr")],
+    )
+    def test_request_language_preserves_config_resolution(
+        self, monkeypatch, tmp_path, sample_wav, configured, requested, expected
+    ):
+        import json
+        from tools.transcription_tools import _dispatch_stt_provider, _load_stt_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        config = {
+            "stt": {
+                "provider": "openai",
+                "language": "zh",
+                "openai": {"language": configured},
+            }
+        }
+        (tmp_path / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        client = MagicMock()
+        client.audio.transcriptions.create.return_value = "hi"
+        with (
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+            patch("tools.transcription_tools._HAS_OPENAI", True),
+            patch("openai.OpenAI", return_value=client),
+        ):
+            result = _dispatch_stt_provider(
+                sample_wav, "openai", _load_stt_config(), language=requested
+            )
+        assert result["success"] is True
+        assert client.audio.transcriptions.create.call_args.kwargs["language"] == expected
+
+    def test_language_and_prompt_reach_provider_without_plugin_hooks(self):
+        from tools.transcription_tools import _dispatch_stt_provider
+
+        with (
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+            patch("tools.transcription_tools._transcribe_openai") as transcribe_openai,
+        ):
+            transcribe_openai.return_value = {
+                "success": True,
+                "transcript": "ok",
+                "provider": "openai",
+            }
+            _dispatch_stt_provider(
+                "/tmp/request.wav",
+                "openai",
+                {"provider": "openai", "openai": {}},
+                model="whisper-1",
+                source="api_server",
+                language="zh",
+                prompt="FunASR SenseVoice",
+            )
+
+        transcribe_openai.assert_called_once_with(
+            "/tmp/request.wav",
+            "whisper-1",
+            language="zh",
+            prompt="FunASR SenseVoice",
+        )
 
 
 @pytest.mark.platforms("posix", "windows")

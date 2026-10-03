@@ -1106,6 +1106,22 @@ def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
     return {}
 
 
+# An OpenRouter ``@preset/<slug>`` id (bare, or ``<model>@preset/<slug>``) is a full routing
+# pin authored in OpenRouter's control plane, so Hermes must not ALSO send a request-level
+# ``provider`` body there: OpenRouter gives that body precedence over the preset's policy, and
+# a leftover ``provider_routing`` block then silently reroutes the request off the pin.
+OPENROUTER_PRESET_MARKER = "@preset/"
+
+
+def is_openrouter_preset_model(model: str | None) -> bool:
+    """True when *model* is an OpenRouter ``@preset/<slug>`` id (with or without a base model).
+
+    One chokepoint for both OpenRouter bodies that could carry ``provider``: the registered
+    profile and the profile-less legacy branch, which reach the wire by different code paths.
+    """
+    return OPENROUTER_PRESET_MARKER in (model or "")
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
 

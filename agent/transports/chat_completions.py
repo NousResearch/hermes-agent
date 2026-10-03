@@ -19,6 +19,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from hermes_constants import is_openrouter_preset_model
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
 # declarations); aliased on the wire, mapped back in normalize_response.
@@ -513,7 +514,12 @@ class ChatCompletionsTransport(ProviderTransport):
         extra_body: dict[str, Any] = {}
         is_openrouter = params.get("is_openrouter", False)
         base_url = params.get("base_url")
-        if is_openrouter and params.get("provider_preferences"):
+        # An ``@preset/<slug>`` id is a full server-side pin, and OpenRouter gives a
+        # request-level ``provider`` body precedence over the preset's own policy — so sending
+        # prefs here would reroute the request off the endpoint the user pinned (#94589).
+        # Same rule the OpenRouter profile applies; this branch is the one taken when the
+        # provider has no registered profile, so the profile's copy never runs.
+        if is_openrouter and params.get("provider_preferences") and not is_openrouter_preset_model(model):
             extra_body["provider"] = params["provider_preferences"]
         # Pareto Code router plugin (same shape as the OpenRouter profile path).
         if is_openrouter and model == "openrouter/pareto-code":

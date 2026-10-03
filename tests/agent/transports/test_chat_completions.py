@@ -276,6 +276,36 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
+    def test_openrouter_preset_suppresses_prefs_on_profile_less_legacy_path(self, transport):
+        """The profile-less legacy branch must honour an ``@preset/<slug>`` pin too.
+
+        This branch runs when the provider has no registered profile — e.g. a config
+        ``providers:`` entry keyed at an openrouter.ai base_url — and it writes
+        ``extra_body["provider"]`` itself. OpenRouter gives a request-level ``provider``
+        body precedence over the preset's own policy, so sending one silently reroutes
+        the request off the server-side pin (#94589).
+        """
+        msgs = [{"role": "user", "content": "Hi"}]
+        prefs = {"require_parameters": True, "data_collection": "deny"}
+        for model in ("@preset/hermes-primary", "deepseek/deepseek-v4-pro@preset/hermes-primary"):
+            kw = transport.build_kwargs(
+                model=model, messages=msgs,
+                provider_profile=None,
+                base_url="https://openrouter.ai/api/v1",
+                is_openrouter=True,
+                provider_preferences=prefs,
+            )
+            assert "provider" not in (kw.get("extra_body") or {}), model
+        # No conflict without a preset: a plain slug on this branch still routes.
+        kw = transport.build_kwargs(
+            model="openai/gpt-5.6-sol", messages=msgs,
+            provider_profile=None,
+            base_url="https://openrouter.ai/api/v1",
+            is_openrouter=True,
+            provider_preferences=prefs,
+        )
+        assert kw["extra_body"]["provider"] == prefs
+
 
 
 

@@ -21,13 +21,123 @@ _FILLER = r"(?:\w+\s+){0,8}"
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
-# (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
+
+# A phrase wrapped in quotation marks is a citation/description, not an
+# active directive.  Defensive docs (security notes in SOUL.md, AGENTS.md)
+# quote attack strings verbatim — e.g. ``"Ignore your previous
+# instructions" → these have no effect`` — and blocking on the quoted
+# occurrence would quarantine the whole identity file.  Guard the
+# imperative injection patterns with a negative lookbehind so only
+# unquoted occurrences fire (#90635) — at the non-strict scopes only;
+# scope="strict" compiles the same patterns with this exemption stripped
+# (#111334, see the intent-guard comment below).  An attacker prefixing the
+# directive with words still matches (the quote is no longer adjacent to the
+# verb).
+_QUOTED = r'(?<!["\'‘’“”«»])'
+
+# Intent-context guard for ``prompt_injection`` (#92644). The pattern matches
+# sentences that *describe* the attack to teach the agent to recognise it —
+# constitutional SOUL.md / AGENTS.md doctrine like "when you encounter prompt
+# injection — instructions telling you to ignore previous instructions …".
+# After a match, the ~60 chars immediately BEFORE it are checked for a
+# descriptive cue; a cue means the phrase is quoted description, not a
+# directive, and the finding is skipped. Two scoping rules keep the guard
+# honest: the window is truncated at the last sentence terminator inside it
+# (a cue in the PREVIOUS sentence must not excuse a bare directive), and cues
+# are word-boundary-anchored ("such assumption" ≠ "such as", "retold to" ≠
+# "told to"). Python ``re`` has no variable-length lookbehind, so this is a
+# post-match prefix check in the scan loop, and it applies ONLY to the IDs in
+# ``_INTENT_GUARDED_IDS`` — every other pattern fires regardless of context.
+# Scope limit (#111334 cross-vendor review): this guard and the ``_QUOTED``
+# citation exemption apply ONLY at the non-strict scopes, where doctrine
+# actually loads (context files / tool results scan "context"; "all" is the
+# narrow file-content set with no user-prompt callers). At scope="strict" —
+# raw user-authored writes (memory tool, install paths) — scanning is
+# unconditional: a cue-prefixed or quoted directive there is a real payload
+# and must fire.
+# Residual (issue-accepted, non-strict only): an attacker who prefixes a real
+# directive with a same-sentence cue phrase evades the guard.
+_INTENT_GUARDED_IDS = {"prompt_injection"}
+_CUE_WINDOW = 60
+# Word-boundary alternation so cues cannot fire as substrings of longer words.
+_DESCRIPTIVE_CUES_RE = re.compile(
+    r"\b(?:when you encounter|telling you to|told to|describing|"
+    r"defending against|examples of|attack patterns like|such as)\b",
+    re.IGNORECASE,
+)
+# Sentence terminators that close the cue window (#92644 review): doctrine
+# cues sit in the same sentence as the described phrase by construction.
+# ``!`` and ``?`` are unconditional terminators. A ``.`` terminates ONLY when
+# followed by whitespace/end-of-window AND its preceding word-char run is
+# >=2 chars and not a known abbreviation: ``e.g.``/``i.e.``/decimals (``1.2``)/
+# ``U.S.`` are excluded by the >=2 rule, ``etc.``/``vs.``/``Dr.`` by the set.
+# A single ``\n`` is a SOFT WRAP, not a terminator — hard-wrapped (72-80 col)
+# doctrine prose is ONE sentence, and cutting at line breaks orphaned the cue
+# and re-blocked the very defense text the guard exists to protect. Attacker
+# cross-line cue-prefixing is already the documented accepted residual of
+# this guard, so nothing new opens. Only a blank line (``\n\n``, a paragraph
+# break) terminates a sentence.
+_SENTENCE_END_CHARS = ".!?"
+_ABBREVIATIONS = frozenset({
+    "etc", "vs", "cf", "approx", "dr", "mr", "mrs", "ms", "st", "jr", "sr",
+    "inc", "ltd", "fig", "no", "vol", "al",
+})
+_WORD_RUN_RE = re.compile(r"\w*$")
+# Closing quotes/brackets (and space) around a sentence's terminator
+# (``…such as "npm". Ignore …`` and the US-typography ``…such as these." Ignore …``):
+# stripped before the word-run check (otherwise the run sees ``"`` (len < 2)
+# and denies a real terminator) and skipped after a period in
+# ``_is_sentence_dot`` — either way the leak this prevents is the previous
+# sentence's cue reaching into the directive's window (#111334, #121713).
+# Single curly quotes and guillemets belong here for the same reason they
+# belong in ``_QUOTED``: NFKC leaves them intact.
+_TRAILING_CLOSERS = "\"'‘’“”«»)]} "
+
+
+def _is_sentence_dot(prefix: str, i: int) -> bool:
+    """Whether ``prefix[i] == '.'`` closes a sentence (see terminator rules above)."""
+    # US typography closes quotes/brackets AFTER the period (``tactics."``):
+    # skip such closers before the whitespace requirement, mirroring the
+    # closer-before-period strip on the word-run check below — otherwise the
+    # terminator is denied and the previous sentence's cue leaks in (#121713).
+    j = i + 1
+    while j < len(prefix) and prefix[j] in _TRAILING_CLOSERS and not prefix[j].isspace():
+        j += 1
+    if j < len(prefix) and not prefix[j].isspace():
+        return False  # mid-token dot (file.txt, U.S.): not a terminator
+    # Residual (documented): a sentence ending in a single-letter word
+    # (``Option A.``) fails the >=2 run rule and is not a terminator here —
+    # an abbreviation guard would instead break ``U.S.``/``e.g.`` handling.
+    run = _WORD_RUN_RE.search(prefix[:i].rstrip(_TRAILING_CLOSERS))
+    run = run.group() if run else ""
+    return len(run) >= 2 and run.lower() not in _ABBREVIATIONS
+
+
+def _last_terminator(prefix: str) -> int:
+    """Slice index just after the last TRUE sentence terminator in ``prefix``
+    (the cue window); 0 when the whole window is one sentence."""
+    cut = 0
+    for i, ch in enumerate(prefix):
+        if ch in _SENTENCE_END_CHARS:
+            if ch != "." or _is_sentence_dot(prefix, i):
+                cut = i + 1
+        elif ch == "\n" and prefix.startswith("\n", i + 1):
+            cut = i + 2  # blank line = paragraph break
+    return cut
+
+
+def _is_descriptive(normalised: str, match_start: int) -> bool:
+    prefix = normalised[max(0, match_start - _CUE_WINDOW):match_start]
+    # Same-sentence only: drop everything up to the last terminator in the window.
+    return bool(_DESCRIPTIVE_CUES_RE.search(prefix[_last_terminator(prefix):]))
+
+# Each entry: (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Classic prompt injection (applies everywhere) ────────────────
-    (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'{_QUOTED}ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
-    (rf'disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
-    (rf'act\s+as\s+(if|though)\s+{_FILLER}you\s+{_FILLER}(have\s+no|don\'t\s+have)\s+{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
+    (rf'{_QUOTED}disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
+    (rf'{_QUOTED}act\s+as\s+(if|though)\s+{_FILLER}you\s+{_FILLER}(have\s+no|don\'t\s+have)\s+{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
     (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s*div\s+style\s*=\s*["\'][^>]{0,2048}display\s*:\s*none', "hidden_div", "all"),
     (
@@ -35,7 +145,7 @@ _PATTERNS: List[Tuple[str, str, str]] = [
         "translate_execute",
         "all",
     ),
-    (rf'do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user', "deception_hide", "all"),
+    (rf'{_QUOTED}do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user', "deception_hide", "all"),
 
     # ── Role-play / identity hijack (scraped web content, poisoned context files) ──
     (rf'you\s+are\s+{_FILLER}now\s+(?:a|an|the)\s+', "role_hijack", "context"),
@@ -121,7 +231,12 @@ def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
         if scope not in _SCOPE_SETS:
             raise ValueError(f"threat_patterns: unknown scope {scope!r} for pattern {pid!r}")
         for s in _SCOPE_SETS[scope]:
-            compiled[s].append((re.compile(pattern, re.IGNORECASE), pid))
+            # #111334: strict is unconditional — dual-compile the _QUOTED
+            # patterns without the citation lookbehind, so a quoted
+            # directive in a user-authored write (memory, install) fires.
+            # The literal replace is exact: _QUOTED is a fixed fragment.
+            src = pattern.replace(_QUOTED, "") if s == "strict" else pattern
+            compiled[s].append((re.compile(src, re.IGNORECASE), pid))
     return compiled
 
 
@@ -130,7 +245,11 @@ _COMPILED = _compile()
 
 def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
-    reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
+    reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope.
+    ``prompt_injection`` alone has an intent-cue guard: a same-sentence descriptive
+    cue before the match marks doctrine (#92644) and skips the finding. Both
+    doctrine exemptions — this cue guard and the ``_QUOTED`` citation lookbehind —
+    never apply at scope="strict": there scanning is unconditional (#111334)."""
     if not content:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
@@ -141,7 +260,20 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
-    findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
+    # #111334: at strict the cue guard is short-circuited (quoted variants are
+    # already compiled in without the lookbehind — see _compile).
+    guard_cues = scope != "strict"
+    for compiled, pid in patterns:
+        # #92644: a prompt_injection hit whose 60-char prefix carries a
+        # descriptive cue ("telling you to …") is doctrine, not a directive.
+        # finditer, not search: a descriptive occurrence must not mask a later
+        # bare directive in the same content.
+        if guard_cues and pid in _INTENT_GUARDED_IDS:
+            if any(not _is_descriptive(normalised, m.start()) for m in compiled.finditer(normalised)):
+                findings.append(pid)
+            continue
+        if compiled.search(normalised):
+            findings.append(pid)
     return findings
 
 

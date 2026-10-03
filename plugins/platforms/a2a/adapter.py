@@ -34,7 +34,7 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
-# Outcomes that end the request thread's wait but not the task (see A2AAdapter._detach).
+# Outcomes that end the request thread's wait but not the task (see A2AAdapter._finish -> _park_task).
 _TIMED_OUT = (protocol.STATE_FAILED, "[agent did not reply in time]")
 _CLIENT_GONE = (protocol.STATE_FAILED, "[client disconnected]")
 _STILL_WORKING = "[still working: poll tasks/get for the reply]"

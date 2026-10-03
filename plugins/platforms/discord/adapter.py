@@ -4331,11 +4331,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         Only the account username is matched: it is unique, while a display name or server nickname is
         chosen by the member and can copy an allowlisted name.
         """
+        self._username_resolved_ids = set()
         if not self._allowed_user_ids or not self._client:
             return
         numeric_ids = set()
         to_resolve = set()
-        self._username_resolved_ids = set()
         for entry in self._allowed_user_ids:
             if entry.isdigit():
                 numeric_ids.add(entry)

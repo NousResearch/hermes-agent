@@ -16,6 +16,11 @@ MAX_TODO_ITEMS = 256
 # oversized result is dropped before parsing (AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
+_REPEATED_MARKER = " … [repeated]"
+# Consecutive identical units of this length (or shorter) repeated 5+ times
+# are collapsed. Bound keeps the scan O(n * 80) on already-capped content.
+_MAX_REPEAT_UNIT_CHARS = 80
+_MIN_REPEAT_COUNT = 5
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
@@ -126,11 +131,53 @@ class TodoStore:
         return "\n".join(lines) if len(lines) > 1 else None
 
     @staticmethod
+    def _collapse_repeated_units(content: str) -> str:
+        """Collapse each 5+ consecutive run of unit U (len 1..80) to ``U+U+[repeated]``.
+
+        Linear scan: at each index try unit lengths 1..min(80, remain//5) and
+        take the longest qualifying span. No backtracking regex.
+        """
+        n = len(content)
+        if n < _MIN_REPEAT_COUNT:
+            return content
+        parts: List[str] = []
+        i = 0
+        while i < n:
+            remain = n - i
+            best_span = 0
+            best_unit_len = 0
+            for unit_len in range(1, min(_MAX_REPEAT_UNIT_CHARS, remain // _MIN_REPEAT_COUNT) + 1):
+                unit = content[i:i + unit_len]
+                count = 1
+                pos = i + unit_len
+                while pos + unit_len <= n and content[pos:pos + unit_len] == unit:
+                    count += 1
+                    pos += unit_len
+                if count >= _MIN_REPEAT_COUNT:
+                    span = count * unit_len
+                    if span > best_span:
+                        best_span = span
+                        best_unit_len = unit_len
+            if best_unit_len:
+                unit = content[i:i + best_unit_len]
+                parts.append(unit + unit + _REPEATED_MARKER)
+                i += best_span
+            else:
+                parts.append(content[i])
+                i += 1
+        return "".join(parts)
+
+    @staticmethod
     def _cap_content(content: str) -> str:
-        """Truncate to MAX_TODO_CONTENT_CHARS keeping the head (the actionable part) + marker."""
+        """Truncate to MAX_TODO_CONTENT_CHARS, then collapse 5+ repeated units.
+
+        Cap first so the scan stays O(n * 80) and an oversized write still
+        ends with the GHSA truncation marker; collapse then removes filler
+        that is already at most 4000 chars (``"a"*57`` and ``"1 选 "*57``).
+        """
         if len(content) > MAX_TODO_CONTENT_CHARS:
-            return content[:MAX_TODO_CONTENT_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
-        return content
+            content = content[:MAX_TODO_CONTENT_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+        return TodoStore._collapse_repeated_units(content)
 
     @staticmethod
     def _validate(item: Dict[str, Any]) -> Dict[str, str]:
@@ -196,6 +243,11 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     if todos is None:
         items = store.read()
     else:
+        if isinstance(todos, str):  # LLMs sometimes send a JSON string instead of a list
+            try:
+                todos = json.loads(todos)
+            except (json.JSONDecodeError, TypeError):
+                return tool_error("todos must be a list of objects, got unparseable string")
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
         items = store.write(todos, merge)
@@ -242,7 +294,7 @@ TODO_SCHEMA = {
                         },
                         "content": {
                             "type": "string",
-                            "description": "Task description"
+                            "description": "Concise, non-repetitive task description"
                         },
                         "status": {
                             "type": "string",
@@ -268,50 +320,6 @@ TODO_SCHEMA = {
         "required": []
     }
 }
-
-# Pre-rename names that replay as the Todo tool. model_tools._LEGACY_TOOL_ALIASES derives its todo
-# entries from this, so the alias map and the transcript/TUI predicates below cannot drift.
-TODO_LEGACY_ALIASES = ("todo",)
-TODO_TOOL_NAMES = frozenset((TODO_SCHEMA["name"], *TODO_LEGACY_ALIASES))
-
-
-def is_todo_tool_name(name: Any) -> bool:
-    """True for the Todo tool's current name or a legacy alias (an already-unwrapped dispatch name)."""
-    return isinstance(name, str) and name in TODO_TOOL_NAMES
-
-
-def is_todo_tool_call(tool_call: Any) -> bool:
-    """True when a transcript tool_call entry (dict or object) invoked the Todo tool.
-
-    Covers the current name, legacy aliases, and the ``tool_call`` bridge (``todo_list`` is deferred by
-    default, and the transcript keeps the bridge name). The bridge is peeled from the recorded arguments
-    only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / agent.tool_executor
-    imports: TUI resume and run_agent call this without loading either.
-    """
-    from agent.message_sanitization import _tc_field
-
-    fn = _tc_field(tool_call, "function")
-    name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")
-    if is_todo_tool_name(name):
-        return True
-    # Cheap heuristic before the bridge modules load: skip args without a literal "todo". Only a
-    # unicode-escaped name slips past, which json.dumps never writes for ASCII.
-    if isinstance(raw_args, str) and "todo" not in raw_args:
-        return False
-    from tools.tool_search_catalog import TOOL_CALL_NAME
-
-    if name != TOOL_CALL_NAME:
-        return False
-    try:
-        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(args, dict):
-        return False
-    from tools.tool_search_validation import normalize_tool_call_entries
-
-    entries, error = normalize_tool_call_entries(args)
-    return not error and len(entries) == 1 and is_todo_tool_name(entries[0]["name"])
 
 
 from tools.registry import registry, tool_error

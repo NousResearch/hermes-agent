@@ -1009,6 +1009,30 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
+def _extract_embed_text(obj: Any) -> str:
+    """Flatten a message's (or snapshot's) embeds into plain text.
+
+    Bot-to-bot traffic (error relays, CI alerts, log streams) often carries
+    its entire payload in embeds with empty ``content``, which would
+    otherwise be invisible to the agent's reply/backfill context.
+    """
+    parts = []
+    for embed in getattr(obj, "embeds", None) or []:
+        for attr in ("title", "description"):
+            val = getattr(embed, attr, None)
+            if val:
+                parts.append(str(val))
+        for field in getattr(embed, "fields", None) or []:
+            fname = getattr(field, "name", None) or ""
+            fval = getattr(field, "value", None) or ""
+            if fname or fval:
+                parts.append(f"{fname}: {fval}".strip(": ").strip())
+        footer_text = getattr(getattr(embed, "footer", None), "text", None)
+        if footer_text:
+            parts.append(str(footer_text))
+    return "\n".join(parts).strip()
+
+
 # Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
 # Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
 _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
@@ -5152,6 +5176,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
+                if not content:
+                    # Forwarded messages: the wrapper has empty content; the real payload lives
+                    # in message_snapshots. Resolved here (not only at admission) so a forward
+                    # that predates this turn is still readable in backfilled context.
+                    snap_parts = []
+                    for snap in getattr(msg, "message_snapshots", None) or []:
+                        snap_content = getattr(snap, "content", None)
+                        if snap_content:
+                            snap_parts.append(snap_content.strip())
+                        snap_embed_text = _extract_embed_text(snap)
+                        if snap_embed_text:
+                            snap_parts.append(snap_embed_text)
+                    if snap_parts:
+                        content = "[Forwarded] " + "\n".join(snap_parts)
+                if not content:
+                    # Embed-only messages (error relays, CI alerts).
+                    content = _extract_embed_text(msg)
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
@@ -5173,20 +5214,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if is_bot_author:
                     name = f"{name} [bot]"
                 # Tag non-allowlisted senders [unverified] so the LLM treats them as background; bots bypass.
-                trust_tag = ""
-                if not is_bot_author:
-                    author_id = str(getattr(msg.author, "id", ""))
-                    is_authorized = self._is_sender_authorized(
-                        author_id, chat_type="thread" if is_thread_channel else "group",
-                        chat_id=channel_id,
-                    )
-                    if is_authorized is False:
-                        trust_tag = "[unverified] "
-                        has_unverified = True
+                trust_tag, tagged_unverified = self._context_trust_tag(
+                    msg.author, is_bot_author=is_bot_author,
+                    is_thread_channel=is_thread_channel, channel_id=channel_id,
+                )
+                if tagged_unverified:
+                    has_unverified = True
                 return f"{trust_tag}[{name}] {content}"
             # ── Primary window: recent channel activity since the last bot turn ──
             collected: List[Tuple[str, str]] = []  # (message_id, line)
             seen_ids: set = set()
+            hit_partition = False
             # oldest_first=False explicitly — discord.py 2.x flips the default to True when `after=`
             # is given, selecting the *earliest* N messages (see test_fetch_channel_context_cache_*).
             async for msg in channel.history(
@@ -5202,6 +5240,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     continue
                 # Partition point: our own conversational message (needed for cold start).
                 if msg.author == self._client.user:
+                    hit_partition = True
                     break
                 line = _keep(msg)
                 if line is None:
@@ -5234,6 +5273,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     reply_collected.append((mid, line))
                     if mid:
                         seen_ids.add(mid)
+            # Threads spun off a channel message contain only a thread_starter_message system
+            # pointer — the real content lives in the parent channel under the same ID as the
+            # thread. Without it, a thread created from another bot's message backfills empty.
+            # Cold scans only (no partition hit, no cached window): if the bot already spoke in
+            # the thread, the starter was surfaced when it first engaged.
+            if isinstance(channel, discord.Thread) and not hit_partition and _after_obj is None:
+                starter_id = str(getattr(channel, "id", ""))
+                if starter_id not in seen_ids:
+                    starter_line, starter_unverified = await self._fetch_thread_starter_line(channel)
+                    if starter_line:
+                        if starter_unverified:
+                            has_unverified = True
+                        # Appended last: collected is newest-first here, and the reverse below
+                        # puts the starter at the chronological top.
+                        collected.append((starter_id, starter_line))
             if not collected and not reply_collected:
                 return ""
             # history is newest-first; reverse each window, reply context (older) first.
@@ -5281,6 +5335,70 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
+
+    def _context_trust_tag(
+        self, author: Any, *, is_bot_author: bool, is_thread_channel: bool, channel_id: str,
+    ) -> Tuple[str, bool]:
+        """Return ``("[unverified] "|"", has_unverified)`` for one context line's author.
+
+        Shared by ``_fetch_channel_context``'s ``_keep`` and the thread-starter helper so
+        salvaged history uses one authorization framing instead of a bespoke formatter.
+        Bots bypass the check (their output is already attributable), and a missing
+        authorization check returns None — "trust unknown", never "unauthorized".
+        """
+        if is_bot_author:
+            return "", False
+        is_authorized = self._is_sender_authorized(
+            str(getattr(author, "id", "")),
+            chat_type="thread" if is_thread_channel else "group",
+            chat_id=channel_id,
+        )
+        if is_authorized is False:
+            return "[unverified] ", True
+        return "", False
+
+    async def _fetch_thread_starter_line(self, thread: Any) -> Tuple[str, bool]:
+        """Return ``(line, has_unverified)`` for the thread's starter message.
+
+        For threads created from a message, the starter lives in the parent
+        channel with the same ID as the thread.  Returns ``("", False)`` for
+        standalone threads (the fetch 404s) or when the starter has no
+        readable content.
+
+        Deliberately does not apply DISCORD_ALLOW_BOTS filtering: the starter
+        is what the thread is *about* — a user asking about it in the thread
+        is an explicit request for that content regardless of its author.
+        """
+        starter = getattr(thread, "starter_message", None)
+        if starter is None:
+            parent = getattr(thread, "parent", None)
+            if parent is None or not hasattr(parent, "fetch_message"):
+                return "", False
+            try:
+                starter = await parent.fetch_message(thread.id)
+            except Exception:
+                return "", False
+        content = getattr(starter, "clean_content", None) or getattr(starter, "content", None) or ""
+        embed_text = _extract_embed_text(starter)
+        if embed_text:
+            content = f"{content}\n{embed_text}".strip()
+        if not content and getattr(starter, "attachments", None):
+            content = "(attachment)"
+        if not content:
+            return "", False
+        name = (
+            getattr(starter.author, "display_name", None)
+            or getattr(starter.author, "name", None)
+            or "unknown"
+        )
+        is_bot_author = getattr(starter.author, "bot", False)
+        if is_bot_author:
+            name = f"{name} [bot]"
+        trust_tag, unverified = self._context_trust_tag(
+            starter.author, is_bot_author=is_bot_author,
+            is_thread_channel=True, channel_id=str(getattr(thread, "id", "")),
+        )
+        return f"{trust_tag}[{name} — thread starter] {content}", unverified
 
     async def _resolve_interaction_channel(self, interaction: discord.Interaction) -> Optional[Any]:
         """Return the interaction channel, fetching it if the payload is partial."""
@@ -6028,6 +6146,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             for snap in message.message_snapshots:
                 if getattr(snap, "content", None):
                     snapshot_text_parts.append(snap.content.strip())
+                # Embed-only forwards (bot alerts, error relays) carry their
+                # payload in embeds with empty content.
+                snap_embed_text = _extract_embed_text(snap)
+                if snap_embed_text:
+                    snapshot_text_parts.append(snap_embed_text)
                 snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
@@ -6112,12 +6235,41 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             notify_error,
                         )
                     return False
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
+
+        # Resolve the reply reference early so the referenced message's
+        # attachments can join the media pipeline below (vision routing for
+        # "what's this?" replies to screenshots) and so embed-only targets
+        # (bot error messages) still yield reply context.
+        reply_to_id = None
+        reply_to_text = None
+        reference_attachments: list = []
+        _ref = message.reference
+        # Forwards also populate message.reference (type=forward) pointing at
+        # the original — skip those; their content is handled via
+        # message_snapshots above.
+        _is_forward_ref = getattr(getattr(_ref, "type", None), "name", "") == "forward"
+        if _ref and _ref.message_id and not _is_forward_ref:
+            reply_to_id = str(_ref.message_id)
+            ref_msg = _ref.resolved
+            if ref_msg is None:
+                # Not in discord.py's cache and not inlined in the gateway
+                # payload — fetch it (same channel by definition for replies).
+                try:
+                    ref_msg = await message.channel.fetch_message(_ref.message_id)
+                except Exception:
+                    ref_msg = None
+            if ref_msg is not None:
+                reply_to_text = getattr(ref_msg, "content", None) or None
+                _ref_embed_text = _extract_embed_text(ref_msg)
+                if _ref_embed_text:
+                    reply_to_text = (
+                        f"{reply_to_text}\n{_ref_embed_text}".strip()
+                        if reply_to_text
+                        else _ref_embed_text
+                    )
+                reference_attachments = list(getattr(ref_msg, "attachments", None) or [])
+
+        all_attachments = list(message.attachments) + snapshot_attachments + reference_attachments
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
@@ -6197,12 +6349,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,

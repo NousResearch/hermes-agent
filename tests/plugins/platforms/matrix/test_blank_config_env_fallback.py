@@ -50,7 +50,15 @@ def test_explicit_env_beats_yaml_and_yaml_beats_default(monkeypatch):
                           "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS") == set()
 
 
-def test_matrix_supports_inchannel_continuable():
+
+
+def test_matrix_inchannel_continuable_requires_flat_room_routing(monkeypatch):
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
-    assert MatrixAdapter.supports_inchannel_continuable is True
+    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "true")
+    threaded = MatrixAdapter(PlatformConfig(enabled=True, extra={}))
+    assert threaded.supports_inchannel_continuable is False
+
+    room_scoped = MatrixAdapter(PlatformConfig(enabled=True, extra={"session_scope": "room"}))
+    assert room_scoped.supports_inchannel_continuable is True

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Brain,
@@ -13,7 +13,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, getManagementProfile } from "@/lib/api";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
@@ -42,6 +42,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { ReasoningEffortSelect } from "@/components/ReasoningEffortSelect";
 import { errorMessage } from "@/lib/api-error";
 import { assignmentToPickerCurrent } from "@/lib/model-picker-current";
 
@@ -543,6 +544,7 @@ function ModelCard({
 
 type PickerTarget =
   | { kind: "main" }
+  | { kind: "delegation" }
   | { kind: "aux"; task: string };
 
 type MoaPickerTarget =
@@ -937,7 +939,7 @@ function MoaModelsModal({
   );
 }
 
-function ModelSettingsPanel({
+export function ModelSettingsPanel({
   aux,
   refreshKey,
   onSaved,
@@ -950,37 +952,51 @@ function ModelSettingsPanel({
   const [moaModalOpen, setMoaModalOpen] = useState(false);
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
-  const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
-    null,
-  );
+  const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null);
+  const [routingConfirmation, setRoutingConfirmation] = useState<null | { provider: string; model: string; reset: boolean; profile: string }>(null);
+  const [routingBusy, setRoutingBusy] = useState(false);
+  const [routingError, setRoutingError] = useState<string | null>(null);
+  const routingRequest = useRef(0);
 
   const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
+  const profile = getManagementProfile();
+  const currentProfile = useRef(profile);
+  if (currentProfile.current !== profile) {
+    currentProfile.current = profile;
+    routingRequest.current += 1;
+    setRoutingConfirmation(null);
+    setRoutingBusy(false);
+    setRoutingError(null);
+  }
 
   useEffect(() => {
     api.getMoaModels().then(setMoa).catch(() => setMoa(null));
   }, [refreshKey]);
 
   const applyAssignment = async ({
-    scope,
-    task,
-    provider,
-    model,
-    confirmExpensiveModel,
+    scope, task, provider, model, confirmExpensiveModel,
   }: {
     confirmExpensiveModel?: boolean;
-    scope: "main" | "auxiliary";
+    scope: "main" | "auxiliary" | "delegation";
     task: string;
     provider: string;
     model: string;
   }) => {
-    const result = await api.setModelAssignment({
-      confirm_expensive_model: confirmExpensiveModel,
-      scope,
-      task,
-      provider,
-      model,
-    });
+    if (scope === "delegation") {
+      const requestProfile = profile;
+      const requestId = ++routingRequest.current;
+      const result = await api.setDelegationRouting({ provider, model, profile: requestProfile });
+      if (currentProfile.current !== requestProfile || routingRequest.current !== requestId) return { confirm_required: false };
+      if (result.routing_confirmation_required) {
+        setRoutingError(null);
+        setRoutingConfirmation({ provider, model, reset: false, profile: requestProfile });
+        return { confirm_required: false };
+      }
+      if (result.ok) onSaved();
+      return { confirm_required: false };
+    }
+    const result = await api.setModelAssignment({ confirm_expensive_model: confirmExpensiveModel, scope, task, provider, model });
     if (!result.confirm_required) onSaved();
     return result;
   };
@@ -1017,6 +1033,9 @@ function ModelSettingsPanel({
               {mainProv && mainModel && " · "}
               {mainModel || "(unset)"}
             </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
+              <ReasoningEffortSelect scope="main" refreshKey={refreshKey} profile={profile} onSaved={onSaved} />
+            </div>
           </div>
           <Button
             size="sm"
@@ -1025,6 +1044,19 @@ function ModelSettingsPanel({
           >
             Change
           </Button>
+        </div>
+
+        {/* Delegation workers: empty overrides inherit the main assignment. */}
+        <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2">
+          <div className="flex items-center gap-2"><Zap className="h-3 w-3 text-text-tertiary" /><span className="text-display text-xs font-medium tracking-wider">Delegation workers</span></div>
+          <div className="text-xs font-mono text-text-secondary truncate">{aux?.delegation?.provider || mainProv || "(unset)"} · {aux?.delegation?.model || mainModel || "(unset)"}</div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
+            <span>{aux?.delegation?.max_iterations ?? 250} iterations · {aux?.delegation?.max_concurrent_children ?? 10} concurrent · depth {aux?.delegation?.max_spawn_depth ?? 1}</span>
+            <ReasoningEffortSelect scope="delegation" refreshKey={refreshKey} profile={profile} onSaved={onSaved} />
+            <Button size="sm" outlined onClick={() => { setRoutingError(null); setRoutingConfirmation({ provider: "", model: "", reset: true, profile }); }} className="text-xs uppercase">Reset to parent routing</Button>
+            <Button size="sm" outlined onClick={() => setPicker({ kind: "delegation" })} className="text-xs uppercase">Change model</Button>
+          </div>
+          <div className="text-xs text-text-tertiary">Reset inherits the parent model and provider. Reasoning effort is set separately. Changes apply to new sessions.</div>
         </div>
 
         {/* Auxiliary tasks summary + open modal */}
@@ -1082,11 +1114,12 @@ function ModelSettingsPanel({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title="Set Main Model"
+            title={picker.kind === "delegation" ? "Set Delegation Model" : "Set Main Model"}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
+              const targetScope = picker.kind === "delegation" ? "delegation" : "main";
               const result = await applyAssignment({
                 confirmExpensiveModel,
-                scope: "main",
+                scope: targetScope,
                 task: "",
                 provider,
                 model,
@@ -1113,6 +1146,37 @@ function ModelSettingsPanel({
           model={pendingReloadModel}
           onCancel={() => setPendingReloadModel(null)}
         />
+        {routingConfirmation && <ConfirmDialog
+          open
+          destructive
+          title={routingConfirmation.reset ? "Reset to parent routing?" : "Clear custom delegation routing?"}
+          description={routingConfirmation.reset ? "This removes the delegation-specific provider, endpoint, and credential so workers use the parent routing." : "Changing provider will remove the configured custom endpoint and credential. The model change will not be applied unless you confirm."}
+          confirmLabel={routingConfirmation.reset ? "Reset routing" : "Change provider and clear routing"}
+          onCancel={() => { setRoutingConfirmation(null); setRoutingError(null); }}
+          onConfirm={() => {
+            const pending = routingConfirmation;
+            if (!pending || pending.profile !== currentProfile.current) {
+              setRoutingConfirmation(null);
+              return;
+            }
+            const requestId = ++routingRequest.current;
+            setRoutingBusy(true);
+            setRoutingError(null);
+            void api.setDelegationRouting({ provider: pending.provider, model: pending.model, reset_routing: pending.reset, confirm_clear_routing: true, profile: pending.profile })
+              .then((result) => {
+                if (currentProfile.current !== pending.profile || routingRequest.current !== requestId) return;
+                if (result.ok) { setRoutingConfirmation(null); onSaved(); }
+              })
+              .catch((error) => {
+                if (currentProfile.current === pending.profile && routingRequest.current === requestId) setRoutingError(errorMessage(error));
+              })
+              .finally(() => {
+                if (currentProfile.current === pending.profile && routingRequest.current === requestId) setRoutingBusy(false);
+              });
+          }}
+          loading={routingBusy}
+        />}
+        {routingError && <div role="alert" className="text-xs text-destructive">{routingError}</div>}
         {moaModalOpen && moa && (
           <MoaModelsModal
             config={moa}

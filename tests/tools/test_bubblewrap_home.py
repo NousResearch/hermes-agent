@@ -12,9 +12,12 @@ import pytest
 
 from tools.environments import bubblewrap_home
 from tools.environments.bubblewrap_home import (
+    ALLOWED_HOME_ENTRIES,
     DENIED_HOME_PATHS,
+    allow_unit,
     denied_home_names,
     denied_home_paths,
+    resolve_allowlist,
 )
 
 
@@ -81,3 +84,106 @@ class TestDenylist:
     def test_module_denylist_entries_are_relative(self):
         assert all(not os.path.isabs(rel) and not rel.startswith("~") for rel in DENIED_HOME_PATHS)
         assert bubblewrap_home.DENIED_HOME_PATHS is DENIED_HOME_PATHS
+
+
+def _allowlist(home, path_env="", allow_items=()):
+    return resolve_allowlist(
+        home, path_env, allow_items,
+        denied_names=denied_home_names(home), denied_paths=denied_home_paths(home),
+    )
+
+
+class TestAllowlist:
+    def test_allowlist_shipped_set(self):
+        assert set(ALLOWED_HOME_ENTRIES) == {
+            ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".bash_aliases", ".profile",
+            ".zshrc", ".zshenv", ".zprofile", ".inputrc", ".gitconfig", ".editorconfig",
+            ".tool-versions", ".terminfo", ".cache", ".cargo", ".rustup", ".nvm", ".bun", ".deno",
+            ".gem", ".npm", ".pyenv", ".rbenv", ".sdkman", ".volta", ".asdf", ".m2", ".gradle",
+            ".dotnet", ".pub-cache", ".conda", ".nix-profile",
+            ".config/git", ".config/pip", ".config/uv", ".config/npm", ".config/pnpm",
+            ".config/yarn", ".config/go", ".config/fontconfig",
+            ".local/bin", ".local/lib", ".local/include",
+            ".local/share/uv", ".local/share/pipx", ".local/share/pnpm", ".local/share/virtualenvs",
+            ".local/share/man", ".local/share/bash-completion", ".local/share/fonts", ".local/share/mime",
+        }
+        assert len(ALLOWED_HOME_ENTRIES) == len(set(ALLOWED_HOME_ENTRIES))
+
+    def test_allowlist_default_holds_the_shipped_set(self, home):
+        assert set(_allowlist(home)) == set(ALLOWED_HOME_ENTRIES)
+
+    @pytest.mark.parametrize("rel, unit", [
+        (".zz-tool/bin", ".zz-tool"),
+        (".zz-tool", ".zz-tool"),
+        (".local/bin", ".local/bin"),
+        (".local/share/zz/bin", ".local/share/zz"),
+        (".config/zz-app/deep/er", ".config/zz-app"),
+        (".local", None),
+        (".local/share", None),
+        (".config", None),
+        ("bin", None),
+        ("Documents/.hidden", None),
+    ])
+    def test_allowlist_unit_is_the_smallest_holder(self, home, rel, unit):
+        assert allow_unit(home, os.path.join(home, rel)) == unit
+
+    def test_allowlist_unit_is_none_outside_home(self, home):
+        assert allow_unit(home, "/usr/bin") is None
+        assert allow_unit(home, home) is None
+
+    def test_allowlist_path_rule_adds_the_smallest_units(self, home):
+        path_env = os.pathsep.join([
+            "/usr/bin", os.path.join(home, ".zz-tool", "bin"), os.path.join(home, ".local", "bin"),
+            os.path.join(home, ".local", "share", "zz", "bin"), os.path.join(home, "bin"), "",
+        ])
+        allowed = _allowlist(home, path_env)
+        assert ".zz-tool" in allowed
+        assert ".local/bin" in allowed
+        assert ".local/share/zz" in allowed
+        assert ".local" not in allowed
+        assert ".local/share" not in allowed
+        assert "bin" not in allowed
+
+    def test_allowlist_path_rule_follows_a_symlinked_home(self, home, tmp_path):
+        link = tmp_path / "home-link"
+        link.symlink_to(home)
+        allowed = _allowlist(str(link), os.path.join(home, ".zz-tool", "bin"))
+        assert ".zz-tool" in allowed
+
+    def test_allowlist_path_rule_never_shows_a_denied_path(self, home, caplog):
+        allowed = _allowlist(home, os.path.join(home, ".ssh", "bin"))
+        assert ".ssh" not in allowed
+
+    def test_allowlist_accepts_operator_units(self, home):
+        allowed = _allowlist(home, allow_items=(".zz-extra", ".config/zz-app", "~/.zz-tilde", " .zz-space "))
+        assert {".zz-extra", ".config/zz-app", ".zz-tilde", ".zz-space"} <= set(allowed)
+
+    @pytest.mark.parametrize("item", [
+        "/etc/passwd", ".config", ".local/share", ".config/a/b/c", ".config/a/b", "Documents", "..", ".", "",
+        ".zz/../.ssh",
+    ])
+    def test_allowlist_drops_an_item_that_is_not_a_unit(self, home, caplog, item):
+        with caplog.at_level("WARNING"):
+            allowed = _allowlist(home, allow_items=(item,))
+        assert set(allowed) == set(ALLOWED_HOME_ENTRIES)
+        warnings = [r for r in caplog.records if "bubblewrap_home_allow" in r.getMessage()]
+        assert len(warnings) == (1 if item.strip() else 0)
+
+    @pytest.mark.parametrize("item", [".aws", ".config/gh", ".ssh"])
+    def test_allowlist_denylist_wins_over_the_allow_key(self, home, caplog, item):
+        with caplog.at_level("WARNING"):
+            allowed = _allowlist(home, allow_items=(item,))
+        assert item not in allowed
+        assert len([r for r in caplog.records if "bubblewrap_home_allow" in r.getMessage()]) == 1
+
+    def test_allowlist_keeps_a_unit_that_only_contains_a_denied_path(self, home):
+        assert ".cargo" in _allowlist(home)
+
+    def test_allowlist_reads_no_process_environment(self, home, monkeypatch):
+        monkeypatch.setenv("PATH", os.path.join(home, ".zz-env", "bin"))
+        monkeypatch.setenv("HOME", "/nonexistent")
+        assert ".zz-env" not in _allowlist(home, "/usr/bin")
+
+    def test_allowlist_is_sorted_and_unique(self, home):
+        allowed = _allowlist(home, os.path.join(home, ".cargo", "bin"), (".cargo",))
+        assert list(allowed) == sorted(set(allowed))

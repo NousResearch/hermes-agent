@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from agent.outbound_webhooks import WebhookTarget, _build_delivery
 from gateway.config import (
     GatewayConfig,
     Platform,
@@ -200,3 +201,57 @@ class TestCrossPlatformDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+
+# ===================================================================
+# Test 6: Hermes outbound hook -> Hermes inbound webhook
+# ===================================================================
+
+class TestHermesOutboundWebhook:
+    """agent/outbound_webhooks.py signs with X-Hermes-Signature-256 and tags deliveries with
+    X-Hermes-Event / X-Hermes-Delivery. The inbound adapter must honour all three, otherwise
+    the documented "wake another Hermes instance" flow 401s (or ignores the route's event filter
+    and re-runs the agent on the sender's retry)."""
+
+    @pytest.mark.asyncio
+    async def test_hermes_delivery_accepted_filtered_and_deduplicated(self):
+        secret = "shared-hermes-secret"
+        routes = {
+            "peer": {
+                "secret": secret,
+                "events": ["post_tool_call"],
+                "prompt": "Peer ran {tool_name}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        target = WebhookTarget(url="http://peer:8644/webhooks/peer", events=["post_tool_call"], secret=secret)
+        body = json.dumps({"hook_event_name": "post_tool_call", "tool_name": "terminal",
+                           "delivery_id": "hermes-d-1"}).encode()
+        delivery = _build_delivery("post_tool_call", target, body, "hermes-d-1")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/peer", data=body, headers=delivery["headers"])
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "post_tool_call"
+            assert data["delivery_id"] == "hermes-d-1"
+
+            # The sender retries on connection errors/5xx with the same delivery id.
+            resp = await cli.post("/webhooks/peer", data=body, headers=delivery["headers"])
+            assert resp.status == 200
+            assert (await resp.json())["status"] == "duplicate"
+
+        await asyncio.sleep(0.05)
+
+        assert len(captured_events) == 1
+        assert "Peer ran terminal" in captured_events[0].text

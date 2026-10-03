@@ -200,9 +200,14 @@ _TAB_PROBES = {
 
 
 def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
-    """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
-    (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    """Focus a matching tab and return the origin of the page actually attached.
+
+    ``origin`` is only a candidate filter.  Do not return it after focus: the
+    supervisor reports the target URL it attached, and the page can navigate
+    between target discovery and the caller's origin check.  Re-reading the
+    current page origin catches that stale-navigation window; the target URL
+    remains a fallback when the non-secret read is unavailable.
+    """
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -210,7 +215,23 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    if not focused.get("ok"):
+        return None
+
+    from agent.vault_store import normalize_origin
+
+    focused_origin = None
+    focused_url = str(focused.get("url") or "").strip()
+    if focused_url:
+        try:
+            focused_origin = normalize_origin(focused_url)
+        except Exception:
+            focused_origin = None
+
+    # The focused target may have navigated after Target.getTargets.  Prefer
+    # the live page URL so callers compare the attached page, not stale target
+    # metadata or the requested candidate.
+    return _current_page_origin(task_id) or focused_origin
 
 
 # ---------------------------------------------------------------------------
@@ -338,15 +359,40 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends import backend_for_handle
+    from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    backend = backend_for_handle(handle) if handle else None
+    allowed = None
+    if backend is not None:
+        try:
+            meta = backend.get_meta(handle)
+        except UnlockRequired:
+            return json.dumps({"success": False, "error_type": "unlock_required",
+                               "error": f"{backend.display_name} locked; call browser_vault_unlock."})
+        if meta is None:
+            return json.dumps({"success": False, "error": f"No vault item with handle {handle!r}. Use browser_vault_list."})
+        allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+        if not allowed:
+            return json.dumps({"success": False, "error_type": "no_origin",
+                               "error": f"Vault item {handle!r} has no bound origin; refusing to enter a code."})
+        origin = None
+        for candidate in allowed:
+            origin = _focus_bound_origin(effective_task_id, candidate, "otp")
+            if origin:
+                break
+        origin = origin or _current_page_origin(effective_task_id)
+    else:
+        _focus_bound_origin(effective_task_id, "", "otp")
+        origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if allowed is not None and origin not in allowed:
+        return json.dumps({"success": False, "error_type": "origin_mismatch",
+                           "error": (f"Refused: current page origin ({origin}) does not match "
+                                      f"the vault item's bound origin(s) ({', '.join(allowed)}).")})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -362,7 +408,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
     if backend is not None:
         try:
             code = backend.resolve_otp(handle)

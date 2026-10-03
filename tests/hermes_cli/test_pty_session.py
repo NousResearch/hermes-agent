@@ -21,8 +21,6 @@ def test_ringbuffer_drops_oldest_over_capacity():
     assert rb.truncated is True
 
 
-
-
 class FakeBridge:
     """Implements the bridge contract PtySession depends on."""
 
@@ -315,8 +313,6 @@ async def test_same_key_reattaches_same_session():
     await reg.close_all()
 
 
-
-
 @pytest.mark.asyncio
 async def test_new_key_at_capacity_raises_when_none_reapable():
     reg = make_registry(max_sessions=1)
@@ -368,8 +364,6 @@ async def test_concurrent_attach_on_one_token_forks_one_pty():
     assert s1._ws is ws_b and ws_b.close_code is None
     assert ws_a.close_code == WS_CLOSE_SUPERSEDED
     await reg.close_all()
-
-
 
 
 async def _two_idle_sessions_first_close_gated(reg):
@@ -494,6 +488,115 @@ async def test_close_other_sessions_removes_old_profile_session():
     # The displaced viewer gets the documented supersede code rather than going silent.
     assert old_ws.close_code == WS_CLOSE_SUPERSEDED
     await reg.close_all()
+@pytest.mark.asyncio
+async def test_close_orphaned_sessions_closes_pty_stranded_by_token_rotation():
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    stranded_bridge = FakeBridge([b""])
+    current_bridge = FakeBridge([b""])
+    stranded = PtySession("old-token\0\0session-a", stranded_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("new-token\0\0session-a", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await stranded.start()
+    await current.start()
+    stranded.detach(None)                 # New chat rotated the token and walked away
+    reg._sessions[stranded.key] = stranded
+    reg._sessions[current.key] = current
+
+    await reg.close_orphaned_sessions("session-a", keep_key=current.key)
+
+    assert stranded_bridge.closed
+    assert stranded.key not in reg._sessions
+    assert reg._sessions[current.key] is current
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_close_orphaned_sessions_keeps_a_pty_someone_is_viewing():
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    viewed_bridge = FakeBridge([b""])
+    current_bridge = FakeBridge([b""])
+    viewed = PtySession("old-token\0\0session-a", viewed_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("new-token\0\0session-a", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await viewed.start()
+    await current.start()
+    assert await viewed.attach(FakeWS())  # a second tab is still watching that terminal
+    reg._sessions[viewed.key] = viewed
+    reg._sessions[current.key] = current
+
+    await reg.close_orphaned_sessions("session-a", keep_key=current.key)
+
+    assert not viewed_bridge.closed
+    assert reg._sessions[viewed.key] is viewed
+    assert reg._sessions[current.key] is current
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_close_orphaned_sessions_without_resume_target_touches_nothing():
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    other_bridge = FakeBridge([b""])
+    other = PtySession("old-token\0\0", other_bridge, buffer_cap=1024, read_timeout=0.01)
+    await other.start()
+    other.detach(None)
+    reg._sessions[other.key] = other
+
+    await reg.close_orphaned_sessions(None, keep_key="new-token\0\0")
+
+    assert not other_bridge.closed
+    assert reg._sessions[other.key] is other
+    await reg.close_all()
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("token\0profile\0session-a", "session-a"),
+        ("token\0\0session-b", "session-b"),
+        ("token\0profile\0", ""),
+        ("token", ""),
+    ],
+)
+def test_resume_target_reads_the_last_key_segment(key, expected):
+    from hermes_cli.pty_session import _resume_target
+
+    assert _resume_target(key) == expected
+
+
+class PidBridge(FakeBridge):
+    """A bridge that reports a child pid, like a real PTY does."""
+
+    def __init__(self, chunks, pid):
+        super().__init__(chunks)
+        self.pid = pid
+
+
+@pytest.mark.asyncio
+async def test_close_orphaned_sessions_finds_the_lease_holder_without_a_resume_key():
+    """The reported repro starts a *fresh* chat, so chat A's key carries no
+    resume target. Only the process holding the session lease identifies it."""
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    fresh_a = PtySession("old-token\0\0", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
+    unrelated = PtySession("other-token\0\0", PidBridge([b""], 5151), buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("new-token\0\0session-a", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    for session in (fresh_a, unrelated, current):
+        await session.start()
+        session.detach(None)
+        reg._sessions[session.key] = session
+
+    await reg.close_orphaned_sessions("session-a", keep_key=current.key, holder_pid=4242)
+
+    assert fresh_a.bridge.closed and fresh_a.key not in reg._sessions
+    # A detached terminal for a different session is somebody's reconnect
+    # window, not this resume's business.
+    assert not unrelated.bridge.closed and reg._sessions[unrelated.key] is unrelated
+    assert reg._sessions[current.key] is current
 
 
 @pytest.mark.asyncio
@@ -509,7 +612,37 @@ async def test_reap_reaps_dead_process_even_when_attached():
     await reg.reap_idle()
     assert "tok" not in reg._sessions
     assert b.closed is True
+
+
     await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_close_orphaned_sessions_leaves_a_lease_holding_pty_that_is_viewed():
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    watched = PtySession("old-token\0\0", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("new-token\0\0session-a", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    await watched.start()
+    await current.start()
+    assert await watched.attach(FakeWS())
+    reg._sessions[watched.key] = watched
+    reg._sessions[current.key] = current
+
+    await reg.close_orphaned_sessions("session-a", keep_key=current.key, holder_pid=4242)
+
+    assert not watched.bridge.closed and reg._sessions[watched.key] is watched
+    await reg.close_all()
+
+
+def test_runs_pid_tolerates_a_bridge_without_one():
+    from hermes_cli.pty_session import PtySession
+
+    session = PtySession("tok", FakeBridge([b""]), buffer_cap=8, read_timeout=0.01)
+    assert session.runs_pid(None) is False
+    assert session.runs_pid(123) is False
+    assert PidBridge([b""], 7).pid == 7
 
 
 @pytest.mark.asyncio
@@ -524,3 +657,5 @@ async def test_reap_keeps_live_attached_session():
     assert "tok" in reg._sessions
     assert b.closed is False
     await reg.close_all()
+
+

@@ -34,7 +34,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
-from agent.i18n import t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
@@ -44,6 +43,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -77,12 +77,7 @@ _MODEL_PICKER_CANCEL_ACTION = "hermes_model_cancel"
 # Rendered when a live-looking picker message can no longer resolve (gateway
 # restart, aged-out state entry, or a value the stored state no longer
 # covers): the message is rewritten to this so the control visibly dies.
-
-
-def _model_picker_expired_notice() -> str:
-    return t("platform.shared.model_picker_expired")
-
-
+_MODEL_PICKER_EXPIRED_NOTICE = "⏳ This model picker expired — please run /model again."
 _MODEL_PICKER_ACTION_IDS = (
     _MODEL_PICKER_PROVIDER_ACTION,
     _MODEL_PICKER_MODEL_ACTION,
@@ -1503,7 +1498,8 @@ class SlackAdapter(BasePlatformAdapter):
             dropped = len(chunks) - 5
             chunks = chunks[:5]
             chunks[-1] = (
-                chunks[-1].rstrip() + t("platform.slack.slash.reply_truncated", count=str(dropped)))
+                chunks[-1].rstrip() + f"\n\n_[Reply truncated: {dropped} more part(s) exceeded "
+                "Slack's ephemeral reply limit.]_")
         try:
             async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 for idx, chunk in enumerate(chunks):
@@ -1676,7 +1672,7 @@ class SlackAdapter(BasePlatformAdapter):
         @self._app.command(_slash_pattern)
         async def handle_hermes_command(ack, command):
             slash = (command.get("command") or "").lstrip("/")
-            await ack(response_type="ephemeral", text=t("platform.slack.slash.running", command=slash))
+            await ack(response_type="ephemeral", text=f"Running `/{slash}`…")
             await self._handle_slash_command(command)
 
         # Approval buttons, slash-confirm buttons (tools/slash_confirm.py), feedback.
@@ -1891,8 +1887,7 @@ class SlackAdapter(BasePlatformAdapter):
             client = self._get_client(parent_chat_id)
             if client is None:
                 return None
-            seed_text = t("platform.slack.handoff.seed",
-                          name=(name or t("platform.shared.handoff.default_name")).strip()[:80])
+            seed_text = f":thread: Hermes handoff — *{(name or 'session').strip()[:80]}*"
             result = await client.chat_postMessage(channel=parent_chat_id, text=seed_text)
             ts = _slack_response_payload(result).get("ts")
             return str(ts) if ts else None
@@ -2075,11 +2070,10 @@ class SlackAdapter(BasePlatformAdapter):
         return self._native_task_card_key(chat_id, reply_to, metadata) is not None
 
     async def send_native_task_card_progress(
-        self, chat_id: str, tasks: List[Dict[str, str]], *, title: Optional[str] = None,
+        self, chat_id: str, tasks: List[Dict[str, str]], *, title: str = "Hermes is working",
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
         fallback_text: Optional[str] = None) -> SendResult:
         """Start or update a Slack-native plan/task progress stream."""
-        title = title or t("platform.slack.task_card.title")
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not tasks:
@@ -2776,10 +2770,9 @@ class SlackAdapter(BasePlatformAdapter):
         as stuck (live-status phrases and ``typing_status_text`` always win over this)."""
         elapsed = int(time.monotonic() - started) if started is not None else 0
         if elapsed < 30:
-            return t("platform.slack.status.thinking")
+            return "is thinking..."
         mins, secs = divmod(elapsed, 60)
-        return t("platform.slack.status.still_working",
-                 elapsed=f"{mins}m{secs:02d}s" if mins else f"{secs}s")
+        return f"still working… ({f'{mins}m{secs:02d}s' if mins else f'{secs}s'})"
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
@@ -2879,6 +2872,133 @@ class SlackAdapter(BasePlatformAdapter):
             cached = self._api_human_users_cache = frozenset(
                 str(p).strip() for p in parts if str(p).strip())
         return cached
+
+    def _slack_bot_hop_limit(self) -> int:
+        """How many bot->bot mention hops a thread may carry. Default 1.
+
+        A bot mention is a valid summons under allow_bots=mentions, so two
+        agents that mention each other by name form a loop with no terminator.
+        Measured on 2026-09-07: an agent CAN post a real ``<@Uxxxx>`` user
+        element, so nothing in Slack itself stops this. 0 disables bot->bot,
+        1 permits a single hop (claim -> answer), higher goes deeper.
+        """
+        raw = self.config.extra.get("bot_hop_limit")
+        if raw is None:
+            raw = os.getenv("SLACK_BOT_HOP_LIMIT", "1")
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "[Slack] Unknown bot_hop_limit=%r; treating as 1", raw
+            )
+            return 1
+        return max(0, value)
+
+    def _slack_count_bot_hops(self, messages: list) -> int:
+        """Count bot-authored messages that mention someone, in order.
+
+        A human message anywhere in the chain resets the count to zero: Sam can
+        always re-open a thread that agents have exhausted. Pure function over
+        an already-fetched message list so it is testable without Slack.
+
+        A bot *user* (peer agent posting with a bot token) carries no bot_id,
+        bot_profile or bot_message subtype, so the stamp alone misses it and
+        the budget reads as zero forever. Measured 2026-09-27 in #bots thread
+        1790374247.542449: Hermes, Argo, ClaudeCode, Hypest and Aside kept
+        answering each other with only a ``user`` field. Known fleet bot user
+        ids count as bots too. A new bot user still needs the stamp or an
+        entry here, otherwise it slips through the same hole.
+        (Local patch 376; re-applied 2026-09-30 after an update dropped it.)
+        """
+        bot_users = getattr(self, "_fleet_bot_user_ids", (
+            "U0C01906BKL",  # Hermes
+            "U0BVASPN63F",  # Argo
+            "U0C0VLG6FNC",  # ClaudeCode
+            "U0C0VLG0XG8",  # Hypest
+            "U0C4HQG6D5G",  # Aside
+        ))
+        hops = 0
+        for msg in messages:
+            is_bot = bool(
+                msg.get("bot_id")
+                or msg.get("bot_profile")
+                or msg.get("subtype") == "bot_message"
+                or msg.get("user") in bot_users
+            )
+            if not is_bot:
+                hops = 0
+                continue
+            if "<@" in (msg.get("text") or ""):
+                hops += 1
+        return hops
+
+    async def _slack_bot_hop_exhausted(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str | None = None,
+        incoming_ts: str | None = None,
+    ) -> bool:
+        """True when this thread already used up its bot->bot hop budget.
+
+        ``incoming_ts`` is the ts of the message being judged right now. It is
+        excluded from the count, because the budget describes what the thread
+        ALREADY carried, not the summons under evaluation. Without that, an
+        unthreaded bot message (where the caller falls back to the message's own
+        ts) counted itself and blocked the very first hop: measured on
+        2026-09-07 09:41 UTC, every bot-to-bot mention was dropped.
+
+        Fails CLOSED on an API error or an incomplete read (2026-09-30, from the
+        unmerged fix/slack-event-claims-hop-guard-20260927 branch): a bot summons
+        whose thread history cannot be counted is exactly the loop this guard
+        exists to stop, so it is dropped. Humans never reach this gate, so a
+        Slack outage cannot silence Sam. It also fails CLOSED on limit 0.
+
+        The count walks the WHOLE thread, not the first page. Slack returns the
+        oldest page and ``has_more`` marks the rest, so a single ``limit=20``
+        call on a long thread drops every later bot mention and the budget looks
+        open again. Measured 2026-09-27: thread 1790465661.474809 in #bots grew
+        past 50 replies and bots kept answering each other.
+        """
+        limit = self._slack_bot_hop_limit()
+        if limit <= 0:
+            return True
+        try:
+            messages = await self._slack_thread_messages(
+                channel_id, thread_ts, team_id)
+        except Exception as exc:  # noqa: BLE001 - unknown history = uncountable
+            logger.warning("[Slack] hop-limit lookup failed, dropping bot summons: %s", exc)
+            return True
+        if incoming_ts:
+            messages = [msg for msg in messages if msg.get("ts") != incoming_ts]
+        return self._slack_count_bot_hops(messages) >= limit
+
+    async def _slack_thread_messages(
+        self, channel_id: str, thread_ts: str, team_id: str | None = None,
+    ) -> list:
+        """Every reply in a thread, oldest first, across all pages.
+
+        ``conversations.replies`` returns the oldest page and sets ``has_more``
+        when newer replies exist. One page is not the thread. A truncated read
+        (``has_more`` with no cursor, or still more after the page cap) raises,
+        because a partial count reads as an open budget.
+        """
+        client = self._get_client(channel_id, team_id)
+        messages: list = []
+        cursor = None
+        for _ in range(25):
+            kwargs = {"channel": channel_id, "ts": thread_ts, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = await client.conversations_replies(**kwargs)
+            messages.extend(resp.get("messages") or [])
+            if not resp.get("has_more"):
+                return messages
+            meta = resp.get("response_metadata") or {}
+            cursor = meta.get("next_cursor")
+            if not cursor:
+                raise RuntimeError("Slack bot-hop history truncated without cursor")
+        raise RuntimeError("Slack bot-hop history exceeds bounded pagination")
 
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
@@ -3118,12 +3238,12 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "feedback_buttons",
                     "action_id": "hermes_feedback",
                     "positive_button": {
-                        "text": {"type": "plain_text", "text": t("platform.slack.feedback.good")[:75]},
-                        "accessibility_label": t("platform.slack.feedback.good_a11y")[:75],
+                        "text": {"type": "plain_text", "text": "Good Response"},
+                        "accessibility_label": ("Submit positive feedback on this response"),
                         "value": "positive"},
                     "negative_button": {
-                        "text": {"type": "plain_text", "text": t("platform.slack.feedback.bad")[:75]},
-                        "accessibility_label": t("platform.slack.feedback.bad_a11y")[:75],
+                        "text": {"type": "plain_text", "text": "Bad Response"},
+                        "accessibility_label": ("Submit negative feedback on this response"),
                         "value": "negative"}}]}
 
     def _append_feedback_block(self, blocks: Optional[list]) -> Optional[list]:
@@ -3455,7 +3575,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "[%s] Failed to send local Slack image %s: %s", self.name, image_path, e, exc_info=True
             )
             return await self._send_failure_notice(
-                chat_id, caption, t("platform.shared.media.image_failed"), reply_to, metadata)
+                chat_id, caption, "⚠️ Couldn't deliver the image attachment.", reply_to, metadata)
 
     async def _send_failure_notice(
         self, chat_id: str, caption: Optional[str], notice: str, reply_to: Optional[str],
@@ -3524,7 +3644,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Send a video file to Slack."""
         return await self._send_local_file(
             chat_id, video_path, caption, reply_to, metadata, "video", os.path.basename(video_path),
-            f"Video file not found: {video_path}", t("platform.shared.media.video_failed"))
+            f"Video file not found: {video_path}", "⚠️ Couldn't deliver the video attachment.")
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
@@ -3535,7 +3655,7 @@ class SlackAdapter(BasePlatformAdapter):
         display_name = file_name or os.path.basename(file_path)
         return await self._send_local_file(
             chat_id, file_path, caption, reply_to, metadata, "document", display_name,
-            f"File not found: {file_path}", t("platform.shared.media.file_failed", name=display_name),
+            f"File not found: {file_path}", f"⚠️ Couldn't deliver the file attachment ({display_name}).",
         )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -4531,7 +4651,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _peer_bot_drop(
         self, event: dict, user_id: str, bot_uid: Optional[str], channel_id: str, team_id: str,
-        is_mentioned: bool) -> bool:
+        is_mentioned: bool, thread_ts: Optional[str] = None,
+        incoming_ts: Optional[str] = None) -> bool:
         """True when a bot *user* post (peer agent: no bot_id/subtype) must be dropped.
         Such posts would otherwise re-trigger via old thread mentions or active sessions and cause
         agent-agent loops. Under ``mentions`` only the current text counts as a summons."""
@@ -4544,7 +4665,26 @@ class SlackAdapter(BasePlatformAdapter):
         if not sender_is_bot_user:
             return False
         allow_bots = self._slack_allow_bots()
-        return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
+        if allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned):
+            return True
+        # Hop limit: a bot mention IS a valid summons, so two agents that mention each other by
+        # name form a loop with no terminator. Measured 2026-09-07: an agent can post a real
+        # <@Uxxxx> user element, so Slack itself stops nothing. Only a first-hop bot summons wakes
+        # us; any human message in the thread resets the budget.
+        # Callers always pass ``event_thread_ts or ts`` (a message always has a ts), so
+        # thread_ts is truthy at every real call site. The missing-thread_ts case is still
+        # handled explicitly and separately from the gate itself, so the gate's own if-condition
+        # stays a pure await call and cannot be silently defanged by an `and`/`or` in front of it.
+        if not thread_ts:
+            return False
+        if await self._slack_bot_hop_exhausted(
+                channel_id=channel_id, thread_ts=thread_ts, team_id=team_id,
+                incoming_ts=incoming_ts):
+            logger.info(
+                "[Slack] Dropping bot message: bot->bot hop limit reached in %s thread %s",
+                channel_id, thread_ts)
+            return True
+        return False
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
@@ -4635,7 +4775,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Internal triggers (reactions) skip the mention requirement but NOT
         # allowed_channels or user authorization.
         force_process = bool(event.get("_hermes_force_process"))
-        if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
+        if await self._peer_bot_drop(
+                event, user_id, bot_uid, channel_id, team_id, is_mentioned,
+                thread_ts=event_thread_ts or ts, incoming_ts=ts):
             return
         if (
             not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(
@@ -4946,21 +5088,10 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    _EA_HEADER = f":warning: *{EA_HEADER_TEXT}*\n"
     _EA_CODE_OPEN = "```"
     _EA_CODE_CLOSE = "```\n"
-
-    # Resolved per call (not at class-body time) so the active language applies; the budget
-    # below measures ``len()`` of these resolved strings against the 3000-char section cap.
-    @property
-    def _EA_HEADER(self) -> str:  # noqa: N802 — base class attr name
-        return f":warning: *{t('gateway.exec_approval.header')}*\n"
-
-    @property
-    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
-        line = t("gateway.exec_approval.smart_deny_line")
-        label, sep, rest = line.partition(":")
-        return "\n" + (f"*{label}{sep}*{rest}" if sep else line)
-
+    _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
     _EA_REASON_BUDGET = 500
     _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
     _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
@@ -4984,7 +5115,7 @@ class SlackAdapter(BasePlatformAdapter):
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
                 {"type": "actions", "elements": actions}]
-            return t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
+            return f"⚠️ Command approval required: {prompt.command[:100]}", blocks
 
         return await self._send_interactive_prompt(
             prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
@@ -4998,7 +5129,7 @@ class SlackAdapter(BasePlatformAdapter):
         def _build() -> Tuple[str, list]:
             # Same 3000-char section cap as send_exec_approval: budget the body
             # against the rendered title.
-            _title = (title or t("platform.slack.confirm.default_title"))[:150]
+            _title = (title or "Confirm")[:150]
             budget = 3000 - len(f"*{_title}*\n\n") - len("...")
             body = message[:budget] + "..." if len(message) > budget else message
             # session_key|confirm_id in the button value lets the callback resolve
@@ -5009,13 +5140,10 @@ class SlackAdapter(BasePlatformAdapter):
                 {
                     "type": "actions",
                     "elements": [
-                        self._button(t("platform.slack.confirm.approve_once")[:75],
-                                     "hermes_confirm_once", value, style="primary"),
-                        self._button(t("platform.slack.confirm.always_approve")[:75],
-                                     "hermes_confirm_always", value),
-                        self._button(t("platform.slack.confirm.cancel")[:75],
-                                     "hermes_confirm_cancel", value, style="danger")]}]
-            return f"{_title}: {body[:100]}", blocks
+                        self._button("Approve Once", "hermes_confirm_once", value, style="primary"),
+                        self._button("Always Approve", "hermes_confirm_always", value),
+                        self._button("Cancel", "hermes_confirm_cancel", value, style="danger")]}]
+            return f"{title or 'Confirm'}: {body[:100]}", blocks
 
         return await self._send_interactive_prompt(chat_id, metadata, _build, "send_slash_confirm")
 
@@ -5038,14 +5166,16 @@ class SlackAdapter(BasePlatformAdapter):
                 "value": str(idx),
             })
         extra = (
-            t("platform.slack.picker.more_available", count=str(len(providers) - 100))
+            f"\n*{len(providers) - 100} more available — type `/model <name>` directly*"
             if len(providers) > 100
             else ""
         )
-        section_text = t(
-            "platform.slack.picker.provider_header",
-            model=current_model or t("platform.shared.unknown"),
-            provider=provider_label, extra=extra)
+        section_text = (
+            f"*⚙ Model Configuration*\n"
+            f"Current model: `{current_model or 'unknown'}`\n"
+            f"Provider: {provider_label}\n\n"
+            f"Select a provider:{extra}"
+        )
         return [
             {"type": "section", "text": {"type": "mrkdwn", "text": section_text[:3000]}},
             {
@@ -5053,13 +5183,13 @@ class SlackAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "type": "static_select",
-                        "placeholder": {"type": "plain_text", "text": t("platform.slack.picker.choose_provider")[:150], "emoji": True},
+                        "placeholder": {"type": "plain_text", "text": "Choose a provider…", "emoji": True},
                         "action_id": _MODEL_PICKER_PROVIDER_ACTION,
                         "options": options,
                     },
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": t("platform.slack.picker.cancel")[:75], "emoji": True},
+                        "text": {"type": "plain_text", "text": "Cancel", "emoji": True},
                         "style": "danger",
                         "action_id": _MODEL_PICKER_CANCEL_ACTION,
                         "value": "cancel",
@@ -5089,15 +5219,15 @@ class SlackAdapter(BasePlatformAdapter):
             })
         total = (provider or {}).get("total_models", len(models))
         extra = (
-            t("platform.slack.picker.more_available", count=str(total - len(models)))
+            f"\n*{total - len(models)} more available — type `/model <name>` directly*"
             if total > len(models)
             else ""
         )
-        section_text = t("platform.slack.picker.model_header", provider=pname, extra=extra)
+        section_text = f"*⚙ Model Configuration*\n\nProvider: *{pname}*\nSelect a model:{extra}"
         elements = [
             {
                 "type": "static_select",
-                "placeholder": {"type": "plain_text", "text": t("platform.slack.picker.choose_model", provider=pname)[:150], "emoji": True},
+                "placeholder": {"type": "plain_text", "text": f"Choose a model from {pname}…"[:150], "emoji": True},
                 "action_id": _MODEL_PICKER_MODEL_ACTION,
                 "options": options,
             },
@@ -5105,13 +5235,13 @@ class SlackAdapter(BasePlatformAdapter):
         if provider_slug:
             elements.append({
                 "type": "button",
-                "text": {"type": "plain_text", "text": t("platform.slack.picker.back")[:75], "emoji": True},
+                "text": {"type": "plain_text", "text": "◀ Back", "emoji": True},
                 "action_id": _MODEL_PICKER_BACK_ACTION,
                 "value": provider_slug,
             })
         elements.append({
             "type": "button",
-            "text": {"type": "plain_text", "text": t("platform.slack.picker.cancel")[:75], "emoji": True},
+            "text": {"type": "plain_text", "text": "Cancel", "emoji": True},
             "style": "danger",
             "action_id": _MODEL_PICKER_CANCEL_ACTION,
             "value": "cancel",
@@ -5162,7 +5292,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": t("platform.slack.picker.fallback_provider"),
+                "text": "⚙ Model Configuration — select a provider",
                 "blocks": sanitize_blocks(blocks),
             }
             if thread_ts:
@@ -5263,7 +5393,7 @@ class SlackAdapter(BasePlatformAdapter):
             # control visibly instead of silently swallowing clicks
             # (mirrors the clarify handler's expiry notice).
             await self._update_picker_message(
-                channel_id, team_id, msg_ts, _model_picker_expired_notice()
+                channel_id, team_id, msg_ts, _MODEL_PICKER_EXPIRED_NOTICE
             )
             return
 
@@ -5274,7 +5404,7 @@ class SlackAdapter(BasePlatformAdapter):
         if action_id == _MODEL_PICKER_CANCEL_ACTION:
             self._model_picker_state.pop(marker, None)
             await self._update_picker_message(
-                channel_id, team_id, msg_ts, t("platform.slack.picker.cancelled")
+                channel_id, team_id, msg_ts, "❌ Model selection cancelled."
             )
             return
 
@@ -5296,14 +5426,14 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Invalid provider picker index token: %r", idx_token)
                 self._model_picker_state.pop(marker, None)
                 await self._update_picker_message(
-                    channel_id, team_id, msg_ts, _model_picker_expired_notice()
+                    channel_id, team_id, msg_ts, _MODEL_PICKER_EXPIRED_NOTICE
                 )
                 return
             provider_slug = provider.get("slug", "")
             if not provider.get("models"):
                 await self._update_picker_message(
                     channel_id, team_id, msg_ts,
-                    t("platform.slack.picker.no_models_for_provider", provider=provider_slug),
+                    f"No models available for `{provider_slug}`.",
                 )
                 self._model_picker_state.pop(marker, None)
                 return
@@ -5315,7 +5445,7 @@ class SlackAdapter(BasePlatformAdapter):
                 await self._get_client(channel_id, team_id=team_id or None).chat_update(
                     channel=channel_id,
                     ts=msg_ts,
-                    text=t("platform.slack.picker.fallback_model", provider=provider.get('name', provider_slug)),
+                    text=f"⚙ Model Configuration — {provider.get('name', provider_slug)}",
                     blocks=sanitize_blocks(blocks),
                 )
             except Exception as e:
@@ -5340,7 +5470,7 @@ class SlackAdapter(BasePlatformAdapter):
                 await self._get_client(channel_id, team_id=team_id or None).chat_update(
                     channel=channel_id,
                     ts=msg_ts,
-                    text=t("platform.slack.picker.fallback_provider"),
+                    text="⚙ Model Configuration — select a provider",
                     blocks=sanitize_blocks(blocks),
                 )
             except Exception as e:
@@ -5365,21 +5495,21 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Invalid model picker index token: %r", idx_token)
                 self._model_picker_state.pop(marker, None)
                 await self._update_picker_message(
-                    channel_id, team_id, msg_ts, _model_picker_expired_notice()
+                    channel_id, team_id, msg_ts, _MODEL_PICKER_EXPIRED_NOTICE
                 )
                 return
 
             if not on_model_selected:
                 self._model_picker_state.pop(marker, None)
                 await self._update_picker_message(
-                    channel_id, team_id, msg_ts, _model_picker_expired_notice()
+                    channel_id, team_id, msg_ts, _MODEL_PICKER_EXPIRED_NOTICE
                 )
                 return
 
             # Pop the state up-front (double-click guard, mirrors approval).
             self._model_picker_state.pop(marker, None)
             await self._update_picker_message(
-                channel_id, team_id, msg_ts, t("platform.slack.picker.switching", model=model_id)
+                channel_id, team_id, msg_ts, f"⚙ Switching to `{model_id}`…"
             )
 
             switch_failed = False
@@ -5392,18 +5522,19 @@ class SlackAdapter(BasePlatformAdapter):
                 # Compare against the same i18n prefix so both failure
                 # shapes get the failed header.
                 try:
-                    _error_prefix = t("gateway.model.error_prefix", error="").strip()
+                    from agent.i18n import t as _t
+
+                    _error_prefix = _t("gateway.model.error_prefix", error="").strip()
                 except Exception:
                     _error_prefix = "Error:"
                 if _error_prefix and str(confirmation).startswith(_error_prefix):
                     switch_failed = True
             except Exception as exc:
                 logger.error("[Slack] Model picker callback failed: %s", exc, exc_info=True)
-                confirmation = t("platform.slack.picker.switch_failed", error=str(exc))
+                confirmation = f"❌ Model switch failed: {exc}"
                 switch_failed = True
 
-            header = t("platform.slack.picker.switch_failed_header" if switch_failed
-                       else "platform.slack.picker.switched_header")
+            header = "⚙ Model Switch Failed" if switch_failed else "⚙ Model Switched"
             await self._update_picker_message(
                 channel_id, team_id, msg_ts, f"{header}\n\n{confirmation}"
             )
@@ -5432,14 +5563,13 @@ class SlackAdapter(BasePlatformAdapter):
             # chunk anyway so larger lists degrade gracefully instead of 400ing.
             elements = []
             for idx, choice in enumerate(choices):
-                label = str(choice).strip() or t("platform.slack.clarify.option_n", n=str(idx + 1))
+                label = str(choice).strip() or f"Option {idx + 1}"
                 elements.append(
                     self._button(
                         label[:75], f"hermes_clarify_choice_{idx}",
                         f"{clarify_id}|{idx}", emoji=True))
             elements.append(
-                self._button(t("platform.slack.clarify.other")[:75], "hermes_clarify_other",
-                             f"{clarify_id}|other", emoji=True)
+                self._button("✏️ Other…", "hermes_clarify_other", f"{clarify_id}|other", emoji=True)
             )
             blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
             for start in range(0, len(elements), 5):
@@ -5565,16 +5695,15 @@ class SlackAdapter(BasePlatformAdapter):
     _APPROVAL_CHOICES: ClassVar[Dict[str, str]] = {
         "hermes_approve_once": "once", "hermes_approve_session": "session",
         "hermes_approve_always": "always", "hermes_deny": "deny"}
-    # choice → catalog key; resolved through ``t()`` at click time so the active language applies.
-    _APPROVAL_DECISION_KEYS: ClassVar[Dict[str, str]] = {
-        "once": "platform.slack.approval.resolved_once", "session": "platform.slack.approval.resolved_session",
-        "always": "platform.slack.approval.resolved_always", "deny": "platform.slack.approval.resolved_deny"}
+    _APPROVAL_DECISIONS: ClassVar[Dict[str, str]] = {
+        "once": "✅ Approved once by {user}", "session": "✅ Approved for session by {user}",
+        "always": "✅ Approved permanently by {user}", "deny": "❌ Denied by {user}"}
     _CONFIRM_CHOICES: ClassVar[Dict[str, str]] = {
         "hermes_confirm_once": "once", "hermes_confirm_always": "always",
         "hermes_confirm_cancel": "cancel"}
-    _CONFIRM_DECISION_KEYS: ClassVar[Dict[str, str]] = {
-        "once": "platform.slack.approval.resolved_once", "always": "platform.slack.confirm.resolved_always",
-        "cancel": "platform.slack.confirm.resolved_cancel"}
+    _CONFIRM_DECISIONS: ClassVar[Dict[str, str]] = {
+        "once": "✅ Approved once by {user}", "always": "🔒 Always approved by {user}",
+        "cancel": "❌ Cancelled by {user}"}
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
         """Handle a slash-confirm button click from Block Kit."""
@@ -5587,7 +5716,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
         session_key, confirm_id = value.split("|", 1)
         choice = self._CONFIRM_CHOICES.get(action_id, "cancel")
-        decision_text = t(self._CONFIRM_DECISION_KEYS[choice], user=user_name)
+        decision_text = self._CONFIRM_DECISIONS[choice].format(user=user_name)
         await self._finalize_interactive_message(
             channel_id, msg_ts, self._section_text(message), decision_text,
             "Confirmation prompt", "slash-confirm", team_id or None)
@@ -5644,9 +5773,11 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0
-        decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
+        decision_text = self._APPROVAL_DECISIONS[choice].format(user=user_name)
         if not count:
-            decision_text = t("platform.shared.approval_expired")
+            decision_text = (
+                "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+            )
         await self._finalize_interactive_message(
             channel_id, msg_ts, self._section_text(message), decision_text,
             "Command approval request", "approval", team_id or None)
@@ -5691,7 +5822,7 @@ class SlackAdapter(BasePlatformAdapter):
         from tools import clarify_gateway as _clarify_mod
         # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
         # gateway's text-intercept resolves it from the user's next message.
-        expired_text = t("platform.slack.clarify.expired", user=user_name)
+        expired_text = f"⏳ This prompt expired — please send a new request. (by {user_name})"
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
                 # Entry evicted/gateway restarted — a typed answer would go nowhere.
@@ -5701,7 +5832,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Not terminal: the clarify stays pending for typed text, so keep the card entry —
             # the gateway still has to retire it on timeout / reset / typed answer.
             await self._update_clarify_message(
-                channel_id, msg_ts, original_text, t("platform.slack.clarify.awaiting", user=user_name))
+                channel_id, msg_ts, original_text, f"✏️ Awaiting typed answer from {user_name}…")
             return
         try:
             idx = int(token)
@@ -5718,14 +5849,11 @@ class SlackAdapter(BasePlatformAdapter):
                 resolved_text = str(entry.choices[idx])
         except Exception:
             resolved_text = None
-        display_text = resolved_text
         if resolved_text is None:
-            resolved_text = f"choice {idx + 1}"  # model-facing fallback; stays English
-            display_text = t("platform.slack.clarify.choice_n", n=str(idx + 1))
+            resolved_text = f"choice {idx + 1}"
         if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text):
             await self._update_clarify_message(
-                channel_id, msg_ts, original_text,
-                t("platform.slack.clarify.resolved", user=user_name, choice=display_text))
+                channel_id, msg_ts, original_text, f"✅ {user_name}: {resolved_text}")
             # Privacy: choice text may carry user context — INFO gets metadata only.
             logger.info(
                 "Slack button resolved clarify (id=%s, choice_index=%d, user=%s)", clarify_id, idx,

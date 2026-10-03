@@ -761,6 +761,31 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_update_body(args: argparse.Namespace) -> int:
+    author = args.author or _profile_author()
+    with kbc.connect_closing() as conn:
+        result = kb.update_task_body(
+            conn,
+            args.task_id,
+            args.body,
+            author=author,
+        )
+    if result is None:
+        return _err(f"no such task: {args.task_id}")
+    payload = {
+        "task_id": args.task_id,
+        "changed": bool(result["changed"]),
+        "body_sha256": result["new_sha256"],
+        "body_length": result["new_length"],
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        state = "updated" if result["changed"] else "unchanged"
+        print(f"Canonical body {state} for {args.task_id}")
+    return 0
+
+
 def _cmd_attach(args: argparse.Namespace) -> int:
     """Attach a local file via the shared ``store_attachment_bytes`` path (same 25 MB cap and name
     sanitisation as the dashboard upload and agent tool)."""
@@ -1323,7 +1348,7 @@ _HANDLERS = {
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
-    "comment": _cmd_comment, "attach": _cmd_attach,
+    "comment": _cmd_comment, "update-body": _cmd_update_body, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,

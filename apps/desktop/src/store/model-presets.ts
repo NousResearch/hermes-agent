@@ -113,19 +113,6 @@ export async function applyModelPreset(
 
   const writeKey = (dimension: string) => `${ctx.scope ?? ''}::${ctx.sessionId}::${dimension}`
 
-  for (const dimension of [...(effort !== undefined ? ['effort'] : []), ...(tier !== undefined ? ['speed'] : [])]) {
-    const key = writeKey(dimension)
-
-    if (!pendingWrites.has(key)) {
-      confirmedValues.set(
-        key,
-        dimension === 'effort'
-          ? (previous.effort ?? '')
-          : previous.serviceTier || (previous.fast ? 'priority' : 'normal')
-      )
-    }
-  }
-
   if (primary) {
     if (effort !== undefined) {
       setCurrentReasoningEffort(effort)
@@ -164,11 +151,22 @@ export async function applyModelPreset(
         return
       }
 
-      try {
-        const key = writeKey(dimension)
-        const preceding = pendingWrites.get(key)
+      const key = writeKey(dimension)
+      const preceding = pendingWrites.get(key)
 
-        const write = Promise.resolve(preceding)
+      if (!preceding) {
+        confirmedValues.set(
+          key,
+          dimension === 'effort'
+            ? (previous.effort ?? '')
+            : previous.serviceTier || (previous.fast ? 'priority' : 'normal')
+        )
+      }
+
+      let write: Promise<void> | undefined
+
+      try {
+        write = Promise.resolve(preceding)
           .catch(() => {})
           .then(async () => {
             await ctx.request('config.set', {
@@ -181,13 +179,7 @@ export async function applyModelPreset(
 
         pendingWrites.set(key, write)
 
-        try {
-          await write
-        } finally {
-          if (pendingWrites.get(key) === write) {
-            pendingWrites.delete(key)
-          }
-        }
+        await write
       } catch (err) {
         const confirmedValue = confirmedValues.get(writeKey(dimension)) ?? ''
 
@@ -224,6 +216,13 @@ export async function applyModelPreset(
         }
 
         notifyError(err, ctx.failMessage)
+      } finally {
+        // Rollback must read the last confirmed value before the final writer
+        // releases the chain. Draft/skipped writes never enter these maps.
+        if (pendingWrites.get(key) === write) {
+          pendingWrites.delete(key)
+          confirmedValues.delete(key)
+        }
       }
     })
   )

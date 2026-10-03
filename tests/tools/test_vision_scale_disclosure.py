@@ -25,7 +25,11 @@ PIL = pytest.importorskip("PIL")
 from PIL import Image  # noqa: E402
 
 from tools.computer_use.tool import _shrink_capture_for_vision  # noqa: E402
-from tools.vision_tools import _build_scale_note, vision_analyze_tool  # noqa: E402
+from tools.vision_tools import (  # noqa: E402
+    _EMBED_MAX_DIMENSION,
+    _build_scale_note,
+    vision_analyze_tool,
+)
 
 
 ORIG_W, ORIG_H = 3024, 1964
@@ -131,6 +135,75 @@ class TestBuildScaleNote:
         assert note is not None
         assert "(300, 200)" in note
         assert "crop" in note.lower()
+
+    def test_mild_downscale_stays_silent_about_legibility(self):
+        # 1.5x keeps printed text usable — the coordinate note stays alone.
+        note = _build_scale_note(
+            {"orig_width": 1050, "orig_height": 840,
+             "new_width": 700, "new_height": 560},
+            None,
+        )
+        assert note is not None
+        assert "1.50" in note
+        assert "Small printed text" not in note
+
+    def test_large_downscale_warns_about_small_text(self):
+        # #124509: a 4x downscale of an invoice photo misread "30" as "9".
+        note = _build_scale_note(
+            {"orig_width": 3539, "orig_height": 2499,
+             "new_width": 884, "new_height": 624},
+            None,
+        )
+        assert note is not None
+        assert "4.00" in note                      # coordinate mapping still disclosed
+        assert "Small printed text" in note        # and now the legibility warning
+        assert "do not" in note and "region" in note
+        # The hint bound must track the real long-edge trigger, not a hand-maintained
+        # per-side number (#124512).
+        assert "longest side" in note              # phrased as a long-edge bound
+        assert f"~{_EMBED_MAX_DIMENSION}px" in note  # derived from the actual threshold
+        assert "quote exact figures" in note
+
+    def test_legibility_bound_derives_from_embed_max_dimension(self):
+        # The note must reference _EMBED_MAX_DIMENSION live: if the dimension
+        # threshold changes, the hint text follows — it cannot drift (#124512).
+        note = _build_scale_note(
+            {"orig_width": 3539, "orig_height": 2499,
+             "new_width": 884, "new_height": 624},
+            None,
+        )
+        assert note is not None
+        assert f"~{_EMBED_MAX_DIMENSION}px" in note
+        with patch("tools.vision_tools._EMBED_MAX_DIMENSION", 2000):
+            patched_note = _build_scale_note(
+                {"orig_width": 3539, "orig_height": 2499,
+                 "new_width": 884, "new_height": 624},
+                None,
+            )
+        assert patched_note is not None
+        assert "~2000px" in patched_note
+        assert f"~{_EMBED_MAX_DIMENSION}px" in note
+
+    def test_legibility_warning_only_keyed_on_the_larger_axis(self):
+        # An extreme aspect ratio must not trip the warning on its thin axis alone.
+        note = _build_scale_note(
+            {"orig_width": 2000, "orig_height": 20,
+             "new_width": 500, "new_height": 20},
+            None,
+        )
+        assert note is not None
+        assert "4.00" in note
+        assert "Small printed text" in note
+
+    def test_legibility_warning_combined_with_crop_offset(self):
+        note = _build_scale_note(
+            {"orig_width": 3539, "orig_height": 2499,
+             "new_width": 884, "new_height": 624},
+            {"x": 10, "y": 20, "width": 100, "height": 100},
+        )
+        assert note is not None
+        assert "Small printed text" in note
+        assert "(10, 20)" in note                   # crop disclosure not crowded out
 
 
 def _mock_llm_response(text: str = "described"):

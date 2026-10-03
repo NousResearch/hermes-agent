@@ -3,14 +3,14 @@
 tool results, turns that into a hard 400/404 — even with a working ``auxiliary.vision`` model in config. This module
 decides: multimodal envelope, or pre-analyse via aux vision so the main model only ever sees text?
 
-Decision order (mirrors ``vision_analyze``):
-1. ``auxiliary.vision`` explicitly configured (provider not ""/"auto", or model / base_url set) → aux routing; users
-   who pay for a vision model want it used.
-2. User-declared ``supports_vision`` for the active route (escape hatch for custom/local VLMs absent from models.dev)
-   → honour it (True → multimodal).
-3. The shared ``vision_analyze`` gate (profile veto, then provider tool-result media OR catalog vision) says yes →
-   multimodal — the same predicate, so the lane never depends on which tool asked.
-4. Everything else (non-vision model, provider rejecting multimodal tool results, lookup failure) → aux routing.
+Decision order (mirrors inbound image routing where the tool-result provider permits media):
+1. With `agent.vision_capability_first`, a model advertised as vision-capable uses native media
+   when the provider accepts image tool results; a text-only model uses aux. Unknown falls through.
+2. User-declared `supports_vision: true` for the active route keeps multimodal (the custom/local
+   escape hatch), even with an explicitly configured auxiliary backend.
+3. An explicitly configured `auxiliary.vision` routes to aux by default.
+4. The shared `vision_analyze` tool-result gate determines the remaining cases; missing or
+   ambiguous capability routes to aux.
 
 Fails *closed* toward aux routing when metadata is missing or ambiguous: a screenshot sent to a model that cannot read
 it is a hard failure, while aux routing costs one extra LLM call and yields a usable description.
@@ -64,10 +64,26 @@ def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[
     # native vision (maintainer decision, 2026-08-28, reversing #29135's fallback-only posture: config that
     # only takes effect when the main model gets worse is a trap, not a setting). Native vision remains the
     # default for unconfigured installs, and the fallback when the aux backend is unset.
+    #
+    # Exception (parity with agent.image_routing): a per-model ``supports_vision: true`` DECLARED in config
+    # is a direct user statement that this model takes images, and it beats the aux-de-facto rule — same
+    # precedence the declaration already has on the no-aux path below (``test_user_declared_vision_support_
+    # keeps_custom_provider_native``), so the declaration means one thing regardless of aux config.
+    user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
+    agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+    if isinstance(agent_cfg, dict) and agent_cfg.get("vision_capability_first") is True:
+        from agent.image_routing import _lookup_supports_vision
+
+        capability = _lookup_supports_vision(provider, model, cfg)
+        if capability is True and _provider_accepts_multimodal_tool_result(provider, model, cfg):
+            return False
+        if capability is False:
+            return True
+    if user_declared is True:
+        return False
     if _explicit_aux_vision_override(cfg):
         return True
-    user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
-    if isinstance(user_declared, bool):  # True → multimodal, False → aux
+    if isinstance(user_declared, bool):  # False → aux (declaration says text-only)
         return not user_declared
     # The shared gate already folds the capability lookup in; demanding a second `is True` here made
     # the two lanes disagree for whitelisted providers whose model the catalog does not know.

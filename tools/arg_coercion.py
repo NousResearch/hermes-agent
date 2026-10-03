@@ -107,6 +107,19 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         trimmed = value.strip()
         expects_array = _schema_accepts_kind(schema, "array")
         expects_object = _schema_accepts_kind(schema, "object")
+        # Nested scalar repair: a model-emitted string sitting at a
+        # type:integer/number/boolean position is coerced here, mirroring the
+        # top-level pass in coerce_tool_args. Without it, "1758700000000000"
+        # reaches the MCP server as a string and fails validation at the type
+        # layer (search/format-agnostic, so int64 micro timestamps are not the
+        # trigger -- nesting is). Schema-guided, so a legitimate numeric-looking
+        # type:string field is untouched.
+        for scalar_type in ("integer", "number", "boolean"):
+            if _schema_accepts_kind(schema, scalar_type):
+                coerced = _coerce_value(value, scalar_type, schema=schema)
+                if coerced is not value:
+                    return coerced
+                break
         if not ((expects_array and trimmed.startswith("[")) or (expects_object and trimmed.startswith("{"))):
             return value
         try:

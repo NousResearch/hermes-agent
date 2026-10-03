@@ -556,8 +556,8 @@ def reload_skills() -> Dict[str, Any]:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
-    from tools import skills_tool
-    skills_tool._SKILLS_CACHE.clear()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
+    from tools.skills_tool import clear_skills_cache
+    clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     before = command_snapshot(before_commands)
     new_commands = scan_skill_commands()
     result = diff_command_snapshots(before, command_snapshot(new_commands))

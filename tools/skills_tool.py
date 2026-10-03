@@ -38,6 +38,11 @@ _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
 
 
+def clear_skills_cache() -> None:
+    """Drop the scanned catalog so the next listing re-scans (explicit reloads must not wait out the TTL)."""
+    _SKILLS_CACHE.clear()
+
+
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     """O(#dirs + #categories) stat-based change signature; platform is read via
     ``agent.skill_utils.sys`` so test patches are honored."""
@@ -335,8 +340,8 @@ def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
 def _collect_skill_candidates(name, local_category_name, all_dirs):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
-    Collision detection is the point: silent shadowing of a local skill by a same-named
-    external one is a real bug class, so the caller refuses >1."""
+    Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
+    (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
     from agent.skill_utils import iter_skill_index_files
     candidates: List[Tuple[Optional[Path], Path]] = []
     seen_md: set = set()

@@ -172,6 +172,52 @@ def test_nudge_mentions_hermes_verify_when_manifest_exists(hermes_home):
     assert "hermes verify --json" in nudge
 
 
+@pytest.mark.parametrize("with_verify_command", [False, True])
+def test_nudge_requires_detect_only_for_implicit_compose_recipe(
+    hermes_home, with_verify_command,
+):
+    project = hermes_home / "deployment"
+    project.mkdir()
+    (project / ".git").mkdir()
+    (project / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    if with_verify_command:
+        scripts = project / "scripts"
+        scripts.mkdir()
+        (scripts / "run_tests.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    service = project / "service.yaml"
+    service.write_text("enabled: true\n", encoding="utf-8")
+    changed = str(service)
+    mark_workspace_edited(session_id="s1", cwd=project, paths=[changed])
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+
+    assert nudge is not None
+    assert "hermes verify --detect-only --json" in nudge
+    assert "explicit .hermes/environment.json" in nudge
+    assert "Run `hermes verify --json`" not in nudge
+    assert ("scripts/run_tests.sh" in nudge) is with_verify_command
+
+
+@pytest.mark.parametrize("manifest", ["{broken", '{"recipe": []}'])
+def test_nudge_invalid_manifest_does_not_bypass_compose_warning(hermes_home, manifest):
+    project = hermes_home / "deployment"
+    project.mkdir()
+    (project / ".git").mkdir()
+    (project / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    hermes_dir = project / ".hermes"
+    hermes_dir.mkdir()
+    (hermes_dir / "environment.json").write_text(manifest, encoding="utf-8")
+    service = project / "service.yaml"
+    service.write_text("enabled: true\n", encoding="utf-8")
+    mark_workspace_edited(session_id="s1", cwd=project, paths=[str(service)])
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[str(service)])
+
+    assert nudge is not None
+    assert "hermes verify --detect-only --json" in nudge
+    assert "Run `hermes verify --json`" not in nudge
+
+
 def test_nudge_keeps_plain_wording_without_recipe_start(hermes_home):
     # Verify commands but no start script and no manifest: today's wording.
     project = _workspace(hermes_home, scripts={"test": "vitest"})

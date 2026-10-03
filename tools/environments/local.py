@@ -993,11 +993,7 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     """
     if _IS_WINDOWS:
         return args, None, run_env
-    try:
-        from tools import process_registry as _pr
-    except Exception as exc:  # pragma: no cover - import cycle guard
-        logger.debug("foreground executor scope unavailable: %s", exc)
-        return args, None, run_env
+    from tools import process_registry as _pr
     supervised = False
     try:
         if not (_pr._IS_LINUX and _pr._is_supervised_gateway_process()):

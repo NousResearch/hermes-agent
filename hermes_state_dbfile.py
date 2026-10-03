@@ -305,7 +305,10 @@ def _iter_darwin_fd_targets():
                                   _DARWIN_FD_RECORD_SIZE) <= 0:
                 continue
             raw = record.raw
-            identity = (struct.unpack_from("<I", raw, _DARWIN_FD_DEV_OFFSET)[0],
+            # vst_dev is a 64-bit dev_t on macOS (APFS synthetic device numbers
+            # exceed 2**32); a 32-bit unpack truncates it and count_db_holders
+            # never matches. The 8-byte field at 24 abuts vst_ino at 32.
+            identity = (struct.unpack_from("<Q", raw, _DARWIN_FD_DEV_OFFSET)[0],
                         struct.unpack_from("<Q", raw, _DARWIN_FD_INO_OFFSET)[0])
             target = raw[_DARWIN_FD_PATH_OFFSET:].split(b"\x00", 1)[0].decode("utf-8", "replace")
             yield pid, fd, target, identity

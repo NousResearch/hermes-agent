@@ -1,0 +1,26 @@
+manifest_version: 1
+name: payagentic
+connector_slug: payagentic
+description: >-
+  Read-only PayAgentic wallets, balances, transactions, policies, agents and approval status.
+source: https://payagentic.ai/platform/developers
+transport:
+  type: http
+  url: https://mcp.payagentic.ai/mcp
+auth:
+  type: oauth
+  oauth:
+    scope: wallets:read policies:read transactions:read agents:read approvals:read offline_access
+suggest:
+  keywords:
+    - payagentic
+  hosts:
+    - payagentic.ai
+post_install: |
+  Authorize your PayAgentic organization through browser OAuth. Hermes uses
+  its own client metadata and PKCE; no shared API key or wallet key is needed.
+  Once authorization succeeds, review the six read-only tools. These tools
+  cannot initiate payments, fund wallets, approve requests or change policies.
+  Disconnect in Hermes and revoke the grant in PayAgentic's Developers → MCP
+  servers page. If discovery or sign-in fails, stop and contact PayAgentic
+  support at hello@payagentic.ai; never substitute another client's tokens.

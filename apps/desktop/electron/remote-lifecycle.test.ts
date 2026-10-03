@@ -172,6 +172,88 @@ test('POSIX relaunch gate refuses live and uncertain install markers without exe
   }
 })
 
+test('POSIX relaunch gate retries a transient update-clear probe before failing boot (#125060)', async () => {
+  const calls: string[] = []
+  let attempts = 0
+  const ssh = {
+    async exec(command) {
+      calls.push(command)
+      attempts += 1
+
+      if (attempts === 1) {
+        throw new Error('ssh channel reset')
+      }
+
+      return 'CLEAR'
+    }
+  }
+
+  await assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes')
+
+  assert.equal(attempts, 2)
+  assert.equal(calls.length, 2)
+  assert.match(calls[0], /__htp/)
+  assert.match(calls[0], /\.hermes-update-in-progress/)
+})
+
+test('POSIX relaunch gate preserves terminal SSH failures without retry (#125060)', async () => {
+  for (const kind of ['host-key-changed', 'auth-failed']) {
+    let attempts = 0
+    const terminal: any = new Error(kind)
+    terminal.kind = kind
+    const ssh = {
+      async exec() {
+        attempts += 1
+        throw terminal
+      }
+    }
+
+    await assert.rejects(
+      () => assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes'),
+      (error: any) => error === terminal && error.kind === kind
+    )
+    assert.equal(attempts, 1)
+  }
+})
+
+test('POSIX relaunch gate reports exhausted probe transport as retryable, not an active update (#125060)', async () => {
+  let attempts = 0
+  const ssh = {
+    async exec() {
+      attempts += 1
+      throw new Error('connection reset')
+    }
+  }
+
+  await assert.rejects(
+    () => assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes'),
+    (error: any) => {
+      assert.equal(error.kind, 'transient-transport-error')
+      assert.match(error.message, /Could not prove that the remote Hermes install is clear/)
+      return true
+    }
+  )
+  assert.equal(attempts, 2)
+})
+
+test('POSIX relaunch gate keeps LIVE and UNCERTAIN marker verdicts fail-closed without retry (#125060)', async () => {
+  for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
+    let attempts = 0
+    const ssh = {
+      async exec() {
+        attempts += 1
+        return observation
+      }
+    }
+
+    await assert.rejects(
+      () => assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes'),
+      (error: any) => error.kind === 'update-in-progress'
+    )
+    assert.equal(attempts, 1)
+  }
+})
+
 test('POSIX relaunch gate permits absent/dead markers and normalizes named-profile homes install-wide', async () => {
   const commands: string[] = []
 

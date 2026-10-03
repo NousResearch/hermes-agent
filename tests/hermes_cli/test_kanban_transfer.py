@@ -17,6 +17,7 @@ with it":
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import tarfile
 import time
@@ -129,6 +130,29 @@ def test_round_trip_preserves_content(kanban_root, tmp_path):
     assert set(tasks) == {"scratch task", "worktree task"}
     assert tasks["scratch task"]["body"] == "body"
     assert tasks["scratch task"]["assignee"] == "coder"
+
+
+def test_export_migrates_a_board_this_release_has_not_opened(kanban_root, tmp_path):
+    """``boards export`` runs before any other command touches the board.
+
+    Nothing on the export path opens the source through ``connect``, so the
+    snapshot carries the previous release's schema. The scrub writes columns
+    added since (``claim_pidns``); the snapshot has to be migrated first, or
+    the first post-upgrade backup dies with "no such column".
+    """
+    _seed_board()
+    kb._INITIALIZED_PATHS.clear()
+    # The board as the previous release left it: one additive column short.
+    with sqlite3.connect(str(kb.kanban_db_path("alpha"))) as raw:
+        raw.execute("ALTER TABLE tasks DROP COLUMN claim_pidns")
+
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    result = kt.import_board(archive)
+    assert result["counts"]["tasks"] == 2
+    tasks = _tasks_by_title(result["board"])
+    assert all(row["claim_pidns"] is None for row in tasks.values())
 
 
 def test_attachment_blob_travels_and_is_readable(kanban_root, tmp_path):

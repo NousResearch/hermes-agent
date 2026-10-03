@@ -127,13 +127,13 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     if not parsed_skills:
         return None
 
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
         missing_display = ", ".join(missing_skills)
         if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            raise ValueError(format_missing_skills(missing_skills))
         logging.warning(
             "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
             "List available skills with `hermes skills list`.",

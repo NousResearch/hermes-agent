@@ -245,6 +245,32 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
 
 
+def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
+    """``Ambiguous skill name X: use one of <paths>`` when a failed skill_view *payload* is a same-tier
+    name collision, else None — so preload/cron say why instead of "Unknown"/"not found"."""
+    load_names = payload.get("load_names") if isinstance(payload, dict) else None
+    return f"Ambiguous skill name {identifier}: use one of {', '.join(load_names)}" if load_names else None
+
+
+def _missing_skill_label(identifier: str) -> str:
+    """Display form of an identifier that failed to load (failure path only: re-asks skill_view)."""
+    try:
+        from tools.skills_tool import skill_view
+        from agent.skill_utils import normalize_skill_lookup_name
+        payload = json.loads(skill_view(normalize_skill_lookup_name(identifier), preprocess=False))
+    except Exception:
+        return identifier
+    return ambiguous_skill_label(identifier, payload) or identifier
+
+
+def format_missing_skills(missing: list[str]) -> str:
+    """One error line for unresolved preload identifiers: ambiguous ones keep their own wording,
+    the rest are reported as ``Unknown skill(s): ...``."""
+    ambiguous = [m for m in missing if m.startswith("Ambiguous skill name ")]
+    unknown = [m for m in missing if m not in ambiguous]
+    return "; ".join(ambiguous + ([f"Unknown skill(s): {', '.join(unknown)}"] if unknown else []))
+
+
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
     """Append a ``[Skill config: ...]`` block with resolved ``metadata.hermes.config``
     values so the agent needn't read config.yaml. Any failure leaves the message without it."""
@@ -677,8 +703,8 @@ def build_preloaded_skills_prompt(
         lambda name: (f'[IMPORTANT: The user launched this CLI session with the "{name}" skill '
                       "preloaded. Treat its instructions as active guidance for the duration of this "
                       "session unless the user overrides them.]"),
-        task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
-        already_loaded=excluded_loaded_names,
+        task_id, missing_label=_missing_skill_label, disabled_names=_disabled_skill_names(),
+        disabled_as_missing=True, already_loaded=excluded_loaded_names,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
 

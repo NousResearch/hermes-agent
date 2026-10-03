@@ -1055,7 +1055,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     ", ".join(loaded_skills),
                 )
             else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
+                from agent.skill_commands import format_missing_skills
+                raise ValueError(format_missing_skills(missing_skills))
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]

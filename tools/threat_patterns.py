@@ -74,7 +74,9 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # benign vars, and every real secret it caught ($OPENAI_API_KEY) already ends in KEY/TOKEN.
     (rf'curl\s+[^\n]{{0,2048}}{_SECRET_VAR}', "exfil_curl", "all"),
     (rf'wget\s+[^\n]{{0,2048}}{_SECRET_VAR}', "exfil_wget", "all"),
-    (r'cat\s+[^\n]{0,2048}(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
+    # Require ``cat`` to be a standalone shell token: a word boundary alone would
+    # still match command names such as ``pw-cat``.
+    (r'(?<![^\s;|&()])cat\s+[^\n]{0,2048}(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
     (r'(send|post|upload|transmit)\s+[^\n]{0,2048}\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (rf'(include|output|print|share)\s+{_FILLER}(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),
 

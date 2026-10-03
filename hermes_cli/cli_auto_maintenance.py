@@ -18,7 +18,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     if session_db is None:
         return
     try:
-        from hermes_cli.config import load_config as _load_full_config
+        from hermes_cli.config import bounded_min_interval_hours, load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home  # lazy: tests patch it
         _hermes_home_maint = _get_hermes_home()
 
@@ -45,19 +45,20 @@ def _run_state_db_auto_maintenance(session_db) -> None:
                 logger.debug(skip_msg, _exc)
 
         cfg = (_load_full_config().get("sessions") or {})
+        _min_interval_hours = bounded_min_interval_hours(cfg.get("min_interval_hours"))
 
         # Auto-archive is independent of auto_prune: run it before prune's early return.
         if cfg.get("auto_archive", False):
             session_db.maybe_auto_archive(
                 idle_days=float(cfg.get("auto_archive_days", 3)),
-                min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+                min_interval_hours=_min_interval_hours,
             )
 
         if not cfg.get("auto_prune", False):
             return
         session_db.maybe_auto_prune_and_vacuum(
             retention_days=int(cfg.get("retention_days", 90)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            min_interval_hours=_min_interval_hours,
             min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
             sessions_dir=_hermes_home_maint / "sessions",

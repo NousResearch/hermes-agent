@@ -437,6 +437,13 @@ def text_to_speech_tool(
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    # Model-tool calls and gateway auto-TTS converge here. Check the final
+    # spoken script before any chunk, output file or provider is started.
+    from tools.tts_synthesis_policy import enforce_pre_synthesis
+    try:
+        text = enforce_pre_synthesis(text, provider)
+    except ValueError as exc:
+        return tool_error(str(exc), success=False)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

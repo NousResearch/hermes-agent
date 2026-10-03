@@ -92,6 +92,12 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
     assert ts.resolve_streaming_provider({"provider": "edge"}) is None
 
 
+def test_resolved_streamer_reports_actual_backend(monkeypatch):
+    _register_fake(monkeypatch, "openai")
+    streamer = ts.resolve_streaming_provider({"provider": "edge", "streaming": {"provider": "openai"}})
+    assert streamer is not None and streamer.provider_name == "openai"
+
+
 # ── Built-in provider availability ───────────────────────────────────────
 
 

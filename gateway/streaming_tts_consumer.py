@@ -38,6 +38,8 @@ class StreamingTTSConsumer:
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
+        from tools.tts_tool import _get_provider
+        self._provider = getattr(self._streamer, "provider_name", _get_provider(tts_config))
         self._chunker = SentenceChunker.from_config(tts_config)
         # Provisional: refreshed from the streamer when the handle opens on the first PCM chunk,
         # since an OpenAI-compatible endpoint reports its real rate only in the response (#76466).
@@ -192,6 +194,8 @@ class StreamingTTSConsumer:
                 self._strip_markdown = lambda t: t  # noqa: E731
         if not (cleaned := self._strip_markdown(clause).strip()):
             return
+        from tools.tts_synthesis_policy import enforce_pre_synthesis
+        cleaned = enforce_pre_synthesis(cleaned, getattr(self, "_provider", "edge"))
         iterator = iter(self._streamer.stream(cleaned))
         while True:
             # next() runs in a thread so a blocking provider never stalls the loop.

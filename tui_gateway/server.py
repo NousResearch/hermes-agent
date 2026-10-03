@@ -1582,7 +1582,14 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         # resume policy: those records have a separate precedence contract.
         from hermes_state import SessionDB
         route = SessionDB.session_gateway_runtime(row)
-        provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+        route_provider = str(route.get("provider") or "").strip()
+        # An unusable nested identity must not erase the older endpoint/wire or
+        # billing fallback. Adopt a concrete route as a unit, never mix its wire
+        # with the retained top-level endpoint.
+        if (route_provider and route_provider.lower() not in _BARE_BILLING_PROVIDERS
+                and _is_routable_provider(route_provider)):
+            provider = route_provider
+            base_url, api_mode = (str(route.get(k) or "").strip() for k in ("base_url", "api_mode"))
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):

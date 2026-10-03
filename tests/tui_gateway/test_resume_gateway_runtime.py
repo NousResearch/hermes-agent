@@ -58,6 +58,52 @@ def test_missing_or_invalid_metadata_does_not_restore_provider(row):
     assert restored.get("model_override", {}).get("provider") is None
 
 
+@pytest.mark.parametrize("provider", ["some-dead-provider", "auto", "custom", "  "])
+def test_unusable_gateway_route_preserves_session_endpoint(provider, tmp_path):
+    import json
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("stale-route", source="telegram", model="m1")
+        config = {
+            "base_url": "https://myproxy.example/v1", "api_mode": "chat_completions",
+            "gateway_runtime": {"provider": provider, "api_mode": "codex_responses"},
+        }
+        db.update_session_meta("stale-route", json.dumps(config), "m1")
+        from hermes_constants import get_hermes_home
+        from tui_gateway.server import _resolve_agent_model_runtime
+        import yaml
+
+        # A real configured default differs from the row's endpoint. No provider
+        # request is sent: only the resume/build resolution chain runs.
+        (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({
+            "model": {"default": "m1", "provider": "custom:fixture"},
+            "custom_providers": [{"name": "fixture", "base_url": "https://default.invalid/v1",
+                                  "api_key": "fixture-not-a-real-key", "api_mode": "chat_completions"}],
+        }), encoding="utf-8")
+        restored = _stored_session_runtime_overrides(db.get_session("stale-route"))
+        assert restored["model_override"] == {
+            "model": "m1", "provider": None,
+            "base_url": config["base_url"], "api_mode": config["api_mode"],
+        }
+        model, runtime = _resolve_agent_model_runtime(
+            restored["model_override"], restored.get("provider_override"))
+        assert model == "m1"
+        assert runtime["base_url"] == config["base_url"]
+        assert runtime["api_mode"] == config["api_mode"]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("provider", ["some-dead-provider", "auto", "custom", "  "])
+def test_unusable_gateway_route_preserves_billing_fallback(provider):
+    row = {"model": "m1", "billing_provider": "anthropic", "model_config": {
+        "gateway_runtime": {"provider": provider, "api_mode": "codex_responses"}}}
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["provider"], restored["base_url"], restored["api_mode"]) == (
+        "anthropic", None, None)
+
+
 def test_gateway_endpoint_is_not_combined_with_older_top_level_endpoint():
     row = {"model": "current-model", "billing_provider": "anthropic", "model_config": {
         "base_url": "https://old.invalid/v1", "api_mode": "chat_completions",

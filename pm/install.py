@@ -448,6 +448,15 @@ def _install(
                 if progress is not None:
                     progress("verify", 0, 0, "")
                 reason = package.verify(staged, target)
+                if reason and package.name == "node":
+                    # Host package installation belongs to this install path,
+                    # never verify(): doctor and adoption also use that probe.
+                    from pm.libatomic import repair_node_libatomic_failure
+
+                    reason = repair_node_libatomic_failure(
+                        reason, target=target, host=current_target(),
+                        retry=lambda: package.verify(staged, target),
+                    )
                 if reason:
                     raise InstallError(package.name, f"staged entry failed verification: {reason}")
                 if facts is None:

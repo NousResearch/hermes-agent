@@ -207,6 +207,9 @@ def _published(env: Any, rdir: str) -> Dict[str, str]:
 
 
 def published_env(env: Any, profile: str) -> Dict[str, str]:
+    from tools.environments import streams
+    if env is None or streams.exec_prefix(env) is None:
+        return {}
     return _published(env, _remote_dir(env, profile))
 
 
@@ -281,6 +284,9 @@ def stop(env: Any, profile: str) -> bool:
     """Kill the launcher's session (Xvnc, dbus, Xfce, anything the desktop spawned) and, as a backstop, every
     process still holding this profile's rfb.sock or Xauthority path (a launcher that lost its pid file left
     an Xvnc that 'Server is already active for display 20' on the next start). True when something was live."""
+    from tools.environments import streams
+    if env is None or streams.exec_prefix(env) is None:
+        return False
     rdir = _remote_dir(env, profile)
     q = shlex.quote(rdir)
     script = f"""

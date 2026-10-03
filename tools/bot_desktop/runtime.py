@@ -472,8 +472,13 @@ def published_env() -> Dict[str, str]:
     must not load config (that initializes HERMES_HOME). A sandbox-hosted screen leaves a host-side marker at
     start; only its presence routes to the sandbox probe."""
     from tools.bot_desktop import sandbox_host
-    if sandbox_host._read_marker():
-        return _sandbox_published_env()
+    marker = sandbox_host._read_marker()
+    if marker:
+        env = _sandbox_env(create=False)
+        if env is not None and sandbox_host._owner_identity(env) == {
+            key: marker[key] for key in sandbox_host._owner_identity(env) if key in marker
+        }:
+            return sandbox_host.published_env(env, _profile_name())
     if _launcher_pid() is None:
         return {}
     raw = _read(state_dir() / "env")
@@ -491,8 +496,13 @@ def rfb_socket_path() -> Optional[Path]:
     """Host path of the RFB socket; None when down OR when the screen lives in a sandbox (use
     :func:`open_rfb_stream` there: the socket is not on this filesystem)."""
     from tools.bot_desktop import sandbox_host
-    if sandbox_host._read_marker():
-        return None
+    marker = sandbox_host._read_marker()
+    if marker:
+        env = _sandbox_env(create=False)
+        if env is not None and sandbox_host._owner_identity(env) == {
+            key: marker[key] for key in sandbox_host._owner_identity(env) if key in marker
+        }:
+            return None
     sock = state_dir() / "rfb.sock"
     return sock if _launcher_pid() is not None and sock.exists() else None
 

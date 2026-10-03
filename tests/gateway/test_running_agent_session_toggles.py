@@ -1,4 +1,4 @@
-"""Regression tests: /yolo and /verbose dispatch mid-agent-run.
+"""Regression tests: safe session controls dispatch mid-agent-run.
 
 When an agent is running, the gateway's running-agent guard rejects most
 slash commands with "⏳ Agent is running — /{cmd} can't run mid-turn"
@@ -8,6 +8,8 @@ slash commands with "⏳ Agent is running — /{cmd} can't run mid-turn"
     pending approval prompt without waiting for the agent to finish.
   * /verbose — cycles the per-platform tool-progress display mode;
     affects the ongoing stream.
+  * /title — reads or writes session metadata without steering or
+    interrupting the running agent.
 
 Commands whose handlers say "takes effect on next message" stay on the
 catch-all by design:
@@ -19,6 +21,7 @@ These tests lock in both behaviors so the allowlist doesn't silently
 grow or shrink.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -44,7 +47,7 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
-def _make_runner():
+def _make_runner(session_db=None):
     """Minimal GatewayRunner with an active running agent for this session."""
     from gateway.run import GatewayRunner
 
@@ -77,7 +80,11 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = None
+    if session_db is not None:
+        from hermes_state import AsyncSessionDB
+
+        session_db = AsyncSessionDB(session_db)
+    runner._session_db = session_db
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -136,6 +143,87 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_title_set_dispatches_mid_run_without_interrupting_agent(tmp_path):
+    """A title write can share the DB with the active turn's persistence."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-1", "telegram")
+    runner = _make_runner(session_db=db)
+    runner._schedule_telegram_topic_title_rename = MagicMock()
+
+    session_key = build_session_key(_make_source())
+    running_agent = runner._running_agents[session_key]
+    result, message_id = await asyncio.gather(
+        runner._handle_message(_make_event("/title Research task")),
+        runner._session_db.append_message(
+            "sess-1", "assistant", "active turn is still persisting"
+        ),
+    )
+
+    assert "Research task" in result
+    assert "can't run mid-turn" not in result
+    assert message_id > 0
+    assert db.get_session_title("sess-1") == "Research task"
+    assert db.get_messages("sess-1")[-1]["content"] == (
+        "active turn is still persisting"
+    )
+    assert runner._running_agents[session_key] is running_agent
+    running_agent.interrupt.assert_not_called()
+    assert runner._pending_messages == {}
+    runner._schedule_telegram_topic_title_rename.assert_called_once_with(
+        _make_source(), "sess-1", "Research task"
+    )
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_title_show_dispatches_mid_run_without_renaming_topic(tmp_path):
+    """Bare /title reports metadata while leaving the active turn untouched."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-1", "telegram")
+    db.set_session_title("sess-1", "Research task")
+    runner = _make_runner(session_db=db)
+    runner._schedule_telegram_topic_title_rename = MagicMock()
+
+    session_key = build_session_key(_make_source())
+    running_agent = runner._running_agents[session_key]
+    result = await runner._handle_message(_make_event("/title"))
+
+    assert "Research task" in result
+    assert "sess-1" in result
+    assert runner._running_agents[session_key] is running_agent
+    running_agent.interrupt.assert_not_called()
+    assert runner._pending_messages == {}
+    runner._schedule_telegram_topic_title_rename.assert_not_called()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_busy_dispatch_with_missing_plain_handler_fails_closed():
+    """A dispatch policy cannot bypass the guard without a wired handler."""
+    from hermes_cli.commands import CommandDef
+
+    runner = _make_runner()
+    command = CommandDef(
+        "unwired", "test-only unwired command", "Info", busy_policy="dispatch"
+    )
+    source = _make_source()
+    session_key = build_session_key(source)
+    running_agent = runner._running_agents[session_key]
+
+    result = await runner._dispatch_busy_slash_command(
+        _make_event("/unwired"), command, session_key, source
+    )
+
+    assert "can't run mid-turn" in result
+    assert runner._running_agents[session_key] is running_agent
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
     """Total turn age must not evict an agent with fresh activity.
 
@@ -164,5 +252,4 @@ async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
     runner._handle_verbose_command.assert_awaited_once()
     assert runner._running_agents[sk] is agent
     assert result == "tool progress: new"
-
 

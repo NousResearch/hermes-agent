@@ -289,3 +289,69 @@ def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
 
     assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
     assert len(rows["deepseek"]["models"]) == 50
+
+
+def test_explicit_only_drops_ambient_rows_but_keeps_current_and_custom(monkeypatch):
+    """``explicit_only`` reuses the Desktop explicit-provider filter: an ambient gh CLI Copilot row
+    goes, the current provider and a user-defined endpoint stay."""
+    providers = [
+        _make_provider("openai-codex", models=["gpt-5.4"], is_current=True),
+        _make_provider("copilot", models=["gpt-5.4"]),
+        _make_provider("custom:lab", models=["lab-1"], is_user_defined=True,
+                       source="user-config", api_url="http://lab/v1"),
+    ]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: [dict(p) for p in providers])
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda slug: False)
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+
+    kept = model_switch_providers.list_picker_providers(current_provider="openai-codex", explicit_only=True)
+    assert [p["slug"] for p in kept] == ["openai-codex", "custom:lab"]
+
+    everything = model_switch_providers.list_picker_providers(current_provider="openai-codex")
+    assert [p["slug"] for p in everything] == ["openai-codex", "copilot", "custom:lab"]
+
+
+def test_explicit_only_hides_default_config_moa_row(monkeypatch):
+    """The DEFAULT_CONFIG MoA preset is not user configuration; explicit_only hides the virtual row
+    unless the raw config enables a preset (same rule as the Desktop picker, #61889)."""
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: [_make_provider("openai-codex", models=["gpt-5.4"], is_current=True)])
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "_prepend_moa_picker_provider",
+                        lambda providers, current_provider="": [_make_provider("moa", models=["default"],
+                                                                               source="virtual")] + providers)
+    monkeypatch.setattr("hermes_cli.inventory._raw_config_has_enabled_moa_preset", lambda: False)
+
+    kept = model_switch_providers.list_picker_providers(
+        current_provider="openai-codex", include_moa=True, explicit_only=True)
+    assert [p["slug"] for p in kept] == ["openai-codex"]
+
+    monkeypatch.setattr("hermes_cli.inventory._raw_config_has_enabled_moa_preset", lambda: True)
+    kept = model_switch_providers.list_picker_providers(
+        current_provider="openai-codex", include_moa=True, explicit_only=True)
+    assert [p["slug"] for p in kept] == ["moa", "openai-codex"]
+
+
+def test_explicit_filter_does_not_fail_open_on_unscoped_secret_read(monkeypatch):
+    """Under multiplex with no profile scope the explicit-config env check raises; swallowing it
+    would return every row, ambient Copilot included. The error must reach the caller instead."""
+    from agent import secret_scope
+
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+    rows = [_make_provider("openai-codex", models=["gpt-5.4"], is_current=True),
+            _make_provider("copilot", models=["gpt-5.4"])]
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        with pytest.raises(secret_scope.UnscopedSecretError):
+            model_switch_providers.filter_explicit_picker_rows(rows, current_provider="openai-codex")
+        token = secret_scope.set_secret_scope({})
+        try:
+            kept = model_switch_providers.filter_explicit_picker_rows(rows, current_provider="openai-codex")
+        finally:
+            secret_scope.reset_secret_scope(token)
+    finally:
+        secret_scope.set_multiplex_active(False)
+    assert [p["slug"] for p in kept] == ["openai-codex"]

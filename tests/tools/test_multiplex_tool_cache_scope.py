@@ -69,6 +69,82 @@ def test_camofox_vnc_memo_is_keyed_by_the_profiles_server_url(two_homes, monkeyp
         assert cam.get_vnc_url() == "http://camofox-a:6001"
 
 
+def test_camofox_novnc_status_discovery_is_keyed_by_the_profiles_server_url(two_homes, monkeypatch):
+    """Current Camofox exposes noVNC only via /vnc/status (no vncPort on /health): the
+    multiplexed per-server memo must still hand each profile its OWN server's viewer URL."""
+    import tools.browser_camofox as cam
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, url):
+            self._url = url
+
+        def json(self):
+            if self._url.endswith("/vnc/status"):
+                port = 6080 if "camofox-a" in self._url else 6081
+                return {"running": True, "novncPort": port, "path": "/vnc.html"}
+            return {"ok": True}  # modern /health: no vncPort field at all
+
+    monkeypatch.setattr(cam.requests, "get", lambda url, *a, **k: _Resp(url))
+    monkeypatch.setattr(cam, "_vnc_url_by_profile_and_server", {})
+    a, b = two_homes
+    with _scoped(a):
+        assert cam.check_camofox_available() is True
+        assert cam.get_vnc_url() == "http://camofox-a:6080/vnc.html"
+    with _scoped(b):
+        assert cam.get_vnc_url() == "http://camofox-b:6081/vnc.html"
+    with _scoped(a):
+        assert cam.get_vnc_url() == "http://camofox-a:6080/vnc.html"
+
+
+def test_camofox_vnc_url_override_is_scoped_to_the_profile_that_set_it(tmp_path, monkeypatch):
+    """Profiles sharing one Camofox server must each get their OWN answer: the profile that pins
+    ``browser.camofox.vnc_url`` must not hand that address to a sibling on the same server, and the
+    sibling's discovered address must not satisfy the pinning profile."""
+    import tools.browser_camofox as cam
+
+    shared = "http://camofox-shared:9377"
+    pinned = "https://pinned.example.ts.net/vnc.html"
+    a = _make_home(
+        tmp_path / "A",
+        {"browser": {"camofox": {"vnc_url": pinned}}},
+        f"CAMOFOX_URL={shared}\n",
+    )
+    b = _make_home(tmp_path / "A" / "profiles" / "B", {}, f"CAMOFOX_URL={shared}\n")
+    monkeypatch.setenv("HERMES_HOME", str(a))
+    monkeypatch.delenv("CAMOFOX_URL", raising=False)
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, url):
+            self._url = url
+
+        def json(self):
+            if self._url.endswith("/vnc/status"):
+                return {"running": True, "novncPort": 6080, "path": "/vnc.html"}
+            return {"ok": True}
+
+    monkeypatch.setattr(cam.requests, "get", lambda url, *a, **k: _Resp(url))
+    monkeypatch.setattr(cam, "_vnc_url_by_profile_and_server", {})
+
+    with _scoped(a):
+        assert cam.check_camofox_available() is True
+        assert cam.get_vnc_url() == pinned
+    with _scoped(b):
+        assert cam.get_vnc_url() == "http://camofox-shared:6080/vnc.html"
+    with _scoped(a):
+        assert cam.get_vnc_url() == pinned
+
+    # Reverse order on a fresh memo: the discovered answer must not satisfy the pinning profile.
+    monkeypatch.setattr(cam, "_vnc_url_by_profile_and_server", {})
+    with _scoped(b):
+        assert cam.get_vnc_url() == "http://camofox-shared:6080/vnc.html"
+    with _scoped(a):
+        assert cam.get_vnc_url() == pinned
+
+
 def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypatch):
     """One mechanism (dict keyed by home / override bypass) across the sites that read per-profile
     config or per-home files: aux-vision routing, tirith binary path, learned image cost table, aux

@@ -258,6 +258,56 @@ class TestAdapterInit:
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
 
+    def test_create_agent_preserves_named_custom_provider_with_session_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "requested_provider": "omniroute",
+                "base_url": "http://localhost:20128/v1",
+                "api_key": "sk-omniroute-key",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "MainAgent")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda model="": None),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        def fake_resolve_runtime_provider(requested=None, target_model=None):
+            if requested == "omniroute":
+                return {
+                    "provider": "custom",
+                    "requested_provider": "omniroute",
+                    "base_url": "http://localhost:20128/v1",
+                    "api_key": "sk-omniroute-key",
+                }
+            raise RuntimeError(f"Unknown provider: {requested}")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve_runtime_provider)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session", session_model="MainAgent")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["provider"] == "custom"
+        assert captured["requested_provider"] == "omniroute"
+        assert captured["base_url"] == "http://localhost:20128/v1"
+        assert captured["api_key"] == "sk-omniroute-key"
+        assert captured["model"] == "MainAgent"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

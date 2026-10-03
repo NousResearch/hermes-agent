@@ -336,7 +336,7 @@ def prune_pre_checkpoint_items(
                 retained_reversed.append(item)
                 user_remaining -= cost
             else:
-                content = item["content"]
+                content = item.get("content")
                 if isinstance(content, str):
                     head = content[: user_remaining * 4]
                     keep = bool(head.strip())

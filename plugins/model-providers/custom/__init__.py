@@ -4,7 +4,14 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+import re
+
+from agent.reasoning_effort import (
+    B_AI_GLM53_EFFORTS,
+    B_AI_GLM53_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    clamp_effort,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
 from utils import base_url_host_matches
@@ -25,6 +32,24 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
         return False
     host = (parsed.hostname or "").lower().rstrip(".")
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
+
+
+# Matches the glm-5.3 family as a delimited slug ("glm-5.3-flash", "glm-5.3-flashx",
+# "zai-org/glm-5.3"), never GLM-5.2 and unrelated "-5.3x" strings.
+_GLM53_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])glm-5\.3(?:[^a-z0-9]|$)")
+
+
+def _is_glm53_on_relay(model: str | None, base_url: str | None) -> bool:
+    """True for glm-5.3* models served by an OpenAI-compatible relay that is NOT z.ai native.
+
+    The native z.ai endpoint accepts the full graded effort scale (#91789); b.ai-style
+    MaaS relays mirroring the same model only accept low/high/max and reject the rest
+    with an opaque HTTP 400 (code 400001).
+    """
+    slug = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if not _GLM53_SLUG_RE.search(slug):
+        return False
+    return not base_url_host_matches(str(base_url or ""), "z.ai")
 
 
 class CustomProfile(ProviderProfile):
@@ -79,6 +104,8 @@ class CustomProfile(ProviderProfile):
                 # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
                 # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
                 top_level["reasoning_effort"] = "default"
+            elif _is_glm53_on_relay(ctx.get("model"), ctx.get("base_url")):
+                top_level["reasoning_effort"] = clamp_effort(effort, B_AI_GLM53_EFFORTS, B_AI_GLM53_OVERRIDES)
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level

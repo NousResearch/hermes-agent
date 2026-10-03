@@ -51,6 +51,22 @@ _api_request_browser_control_principal: ContextVar[str] = ContextVar(
 _api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
     "api_server_browser_control_transport_family", default="")
 
+_LIVE_BOT_CHAT_ROUTE_ERROR = (
+    "A Desktop-owned Bot Chat uses its live model route; this request's model/provider pin "
+    "cannot be guaranteed. Send without a route pin or retry when the Desktop releases the chat."
+)
+
+
+class LiveBotChatRouteConflict(RuntimeError):
+    """A route-pinned turn must not enter a Desktop owner's unpinned mailbox."""
+
+
+def _explicit_route_pin(body: Any, virtual_model: str) -> bool:
+    return isinstance(body, dict) and bool(
+        body.get("provider") or (body.get("model") and body["model"] != virtual_model)
+        or body.get("require_model_lock"))
+
+
 class _ArtifactScopeFacade:
     """Minimal scope for ``artifact_scope_key``: server-derived principal + session + transport family."""
     __slots__ = ("principal_id", "session_id", "transport_family")
@@ -3399,6 +3415,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return None, lock_error
+        route_pinned = _explicit_route_pin(body, self._model_name) or bool(runtime_request.get("require_model_lock"))
+        if route_pinned and await self._live_bot_chat_owner(session_id):
+            return None, _error_response(_LIVE_BOT_CHAT_ROUTE_ERROR, 409, code="live_owner_route_unavailable")
         if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return None, _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
@@ -3438,7 +3457,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return {
             "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
             "user_message": user_message, "runtime_request": runtime_request,
-            "lock_active": lock_active, "run_kwargs": run_kwargs}, None
+            "lock_active": lock_active, "route_pinned": route_pinned, "run_kwargs": run_kwargs}, None
 
     @staticmethod
     def _session_headers(session_id: str, gateway_session_key: Optional[str]) -> Dict[str, str]:
@@ -3478,8 +3497,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return ""
         return "confirmed" if runtime else "accepted"
 
+    async def _live_bot_chat_owner(self, session_id: str) -> bool:
+        """Whether this session is the canonical Bot Chat tip held by Desktop."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return False
+        home = Path(db.db_path).parent
+        from tools.bot_live_delivery import find_canonical_live_owner
+
+        def _probe() -> bool:
+            owner = find_canonical_live_owner(home)
+            return bool(owner and db.get_compression_tip(session_id) == owner["session_id"])
+
+        return await asyncio.to_thread(_probe)
+
     async def _admit_to_live_bot_chat(
         self, session_id: str, message: Any, author: Optional[Dict[str, Any]],
+        *, route_pinned: bool = False,
     ) -> Optional[Tuple[Path, Dict[str, Any]]]:
         """Admit a turn aimed at the canonical Bot Chat to the Desktop session that holds it live.
 
@@ -3501,6 +3535,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
             if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
                 return None
+            if route_pinned:
+                raise LiveBotChatRouteConflict()
             return deliver_to_live_owner(home, owner, message, author=author)
 
         record = await asyncio.to_thread(_admit)
@@ -3517,7 +3553,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         receipt on the same budget as the local path, so the peer still gets the reply on this call.
         """
         session_id = ctx["session_id"]
-        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        try:
+            admitted = await self._admit_to_live_bot_chat(
+                session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"],
+                route_pinned=ctx["route_pinned"])
+        except LiveBotChatRouteConflict:
+            return _error_response(_LIVE_BOT_CHAT_ROUTE_ERROR, 409, code="live_owner_route_unavailable")
         if admitted is None:
             return None
         record = await self._await_live_bot_chat_receipt(*admitted)
@@ -3558,7 +3599,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         the run's single ``assistant.completed`` event; a receipt still open at the budget is a
         ``run.queued`` event (the 202 shape), a failed one an ``error`` event carrying the reason."""
         session_id = ctx["session_id"]
-        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        try:
+            admitted = await self._admit_to_live_bot_chat(
+                session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"],
+                route_pinned=ctx["route_pinned"])
+        except LiveBotChatRouteConflict:
+            return _error_response(_LIVE_BOT_CHAT_ROUTE_ERROR, 409, code="live_owner_route_unavailable")
         if admitted is None:
             return None
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")

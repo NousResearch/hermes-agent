@@ -321,6 +321,20 @@ def test_run_body_carries_author_from_env(monkeypatch, capsys, fake_peer_server)
     assert _FakePeer.runs == [{"input": "long task", "session_id": "bc_existing", "author": AUTHOR}]
 
 
+def test_peer_run_and_dm_pass_explicit_model_provider(monkeypatch, fake_peer_server):
+    _peer_spark(monkeypatch, fake_peer_server, None)
+    route = dict(model="gpt-5.6-luna", provider="openai-codex")
+
+    assert peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="run", target="spark", message="work", idempotency_key="route-1",
+        json=True, **route)) == 0
+    assert _FakePeer.runs[-1] == {"input": "work", "session_id": "bc_existing", **route}
+
+    assert peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="dm", target="spark", message="ping", json=True, **route)) == 0
+    assert _FakePeer.chat_bodies[-1] == {"message": "ping", **route}
+
+
 # ── hidden canonical Bot Chat (issue #91583) ─────────────────────────────────
 
 

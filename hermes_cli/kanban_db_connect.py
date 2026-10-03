@@ -855,6 +855,13 @@ _TASK_RUN_COLUMNS = (
     # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # ``"<host>:<pid>"`` of the closer that wrote the terminal row (#113004).
+    # Distinct from ``profile`` (= the claimant at open time): ``profile`` records
+    # who owned the work; ``closed_by`` records who finally closed it, which
+    # matters when a non-claimant used ``force=True`` or when the fence refused
+    # and a follow-up owner still needs to leave an audit trail. NULL on legacy
+    # rows (closed before this column existed).
+    ("closed_by", "closed_by TEXT"),
 )
 
 

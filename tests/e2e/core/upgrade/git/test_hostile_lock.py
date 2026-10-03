@@ -220,6 +220,10 @@ def test_two_homes_cannot_update_one_checkout_at_once(rig):
     first = rig.update("home-a")
     try:
         H.wait_for(lambda: rig.fetchers(), timeout=180, what="the first update to reach its fetch")
+        # --ignored: a lock file in the worktree shows whatever the tree's .gitignore says.
+        status = I.git("status", "--porcelain", "--ignored", "--untracked-files=all", cwd=rig.checkout)
+        held = [line for line in status.splitlines() if "hermes-update" in line]
+        assert not held, f"the live update's lock is a worktree file (autostash takes it): {held}"
         code, out = _finish(rig.update("home-b"), timeout=60)
         assert code == 2 and REFUSAL in out, f"second home's update was not refused (rc={code}):\n{out[-4000:]}"
         assert len(rig.fetchers()) == 1, f"two updates reached the fetch concurrently: {rig.fetchers()}"

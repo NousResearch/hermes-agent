@@ -528,6 +528,41 @@ def _real_profile_autoclose() -> bool:
     return bool(_browser_setting("real_profile_autoclose") or False)
 
 
+def _is_default_profile_owner(src: str, argv0: str, system: str | None = None) -> bool:
+    """True when ``src`` is the DEFAULT user-data-dir of the install ``argv0`` runs from.
+
+    A normally-launched browser runs its default profile with NO ``--user-data-dir`` flag,
+    so cmdline binding never sees its main process (only helpers such as crashpad name the
+    dir) and close-profile kills the helper while the browser — and the lock — survive
+    (#124213). Identity is the install PATH from ``_BROWSERS``, never the bare binary name:
+    Chromium's ``chrome.exe`` must not match Google Chrome's dir (#95549)."""
+    # ponytail: stock install paths/PATH names only; container wrappers (flatpak/bwrap)
+    # and renamed bundles fall back to no-match — extend _BROWSERS when a real report names one.
+    sysname = system or platform.system()
+    pm = ntpath if sysname == "Windows" else posixpath
+    norm_src = pm.normcase(pm.normpath(src))
+    exe = pm.normcase(pm.normpath(argv0))
+    for b in _BROWSERS:
+        default_dir = real_profile_data_dir(b.key, system=sysname)
+        if not default_dir or pm.normcase(pm.normpath(default_dir)) != norm_src:
+            continue
+        if sysname == "Darwin":
+            # "<Name>.app/Contents/MacOS/<binary>" suffix, so ~/Applications works too.
+            tail = "/".join(b.mac_app.split("/")[-4:])
+            if exe == pm.normcase(b.mac_app) or exe.endswith("/" + tail):
+                return True
+        elif sysname == "Windows":
+            for parts in b.win_install:
+                suffix = pm.normcase(pm.join(*parts))
+                if exe == suffix or exe.endswith(pm.sep + suffix):
+                    return True
+        elif exe in (pm.normcase(p) for p in b.linux_paths):
+            return True
+        elif pm.basename(exe) in b.linux_bins + (b.linux_exec or ()):
+            return True
+    return False
+
+
 def _processes_holding_profile(src: str):
     """Yield psutil.Process instances holding ``src`` open: Chromium-family binaries whose
     cmdline references THIS user-data-dir — never an unrelated same-PID process. An unreadable
@@ -553,6 +588,21 @@ def _processes_holding_profile(src: str):
         # Binding: the exact user-data-dir must appear in the cmdline, normalized.
         if (norm in os.path.normcase(os.path.normpath(joined))
                 or f"--user-data-dir={src}".lower() in joined.lower()):
+            yield proc
+            continue
+        # Default-profile main process (#124213): launched normally it carries NO
+        # --user-data-dir and NO --type= helper flag. An explicit --user-data-dir (even a
+        # different one) never falls through — only unflagged mains bind, and only to the
+        # default dir of their own install. Helpers without a dir naming are skipped here;
+        # they are covered as the matched main's children at kill time.
+        if not cmd:
+            continue
+        lowered = [a.lower() for a in cmd]
+        if any(a.startswith("--user-data-dir") for a in lowered):
+            continue
+        if any(a == "--type" or a.startswith("--type=") for a in lowered):
+            continue
+        if _is_default_profile_owner(src, cmd[0]):
             yield proc
 
 

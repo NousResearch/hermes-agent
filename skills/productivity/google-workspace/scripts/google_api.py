@@ -154,6 +154,10 @@ def _extract_bodies(msg: dict) -> dict[str, str]:
             text = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
         elif data and mime == "text/html" and not html:
             html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        if mime == "message/rfc822":
+            # A forwarded/attached email is a different message; its text and
+            # html must not be mistaken for the outer message's body.
+            return
         for sub in part.get("parts") or []:
             walk(sub)
 
@@ -185,6 +189,9 @@ def _extract_attachments(msg: dict) -> list[dict]:
                 "attachment_id": attachment_id,
                 "size": body.get("size", 0),
             })
+        if part.get("mimeType") == "message/rfc822":
+            # Count the forwarded email itself, not its inner attachments.
+            return
         for sub in part.get("parts") or []:
             walk(sub)
 

@@ -241,6 +241,16 @@ class TestSessionOps:
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["resume_session", "fork_session"])
+    async def test_resume_or_fork_of_unknown_session_fails_without_an_orphan(self, agent, mock_manager, method):
+        """Neither response can hand the client a usable replacement id, so an unknown id must be
+        an error the client can fall back from (session/new), not a success that binds nothing."""
+        with pytest.raises(acp.RequestError):
+            await getattr(agent, method)(cwd="/tmp", session_id="5f1c0f1e-0000-4000-8000-000000000001")
+
+        assert mock_manager._sessions == {}
+
 
 
 

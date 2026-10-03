@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 import urllib.parse
+from functools import partial
 from typing import Any, Dict, Optional
 
 import httpx
@@ -48,6 +49,9 @@ _DEFAULT_SCOPES = "openid profile email"
 _ALLOWED_ID_TOKEN_ALGS = ("RS256", "ES256", "RS384", "RS512", "ES384", "ES512")
 
 _DISCOVERY_TIMEOUT_SEC = 10.0
+_OIDC_RESPONSE_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+_OIDC_RESPONSE_CHUNK_BYTES = 64 * 1024
+
 # Discovery is effectively static; a soft TTL lets a long-running dashboard
 # pick up an IDP endpoint migration within the hour.
 _DISCOVERY_CACHE_TTL_SEC = 3600
@@ -71,6 +75,51 @@ def _origin(url: str) -> tuple:
     scheme = parts.scheme.lower()
     return (scheme, (parts.hostname or "").lower(),
             parts.port or {"https": 443, "http": 80}.get(scheme))
+
+
+def _request_limited_response(
+    method: str,
+    url: str,
+    *,
+    body_limit: Optional[int] = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Return a fully-read response without buffering unbounded IDP bodies."""
+    limit = _OIDC_RESPONSE_BODY_LIMIT_BYTES if body_limit is None else body_limit
+    with httpx.stream(method, url, **kwargs) as response:
+        declared = response.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) > limit:
+                    raise ProviderError(
+                        f"OIDC endpoint response exceeds {limit} bytes"
+                    )
+            except ValueError:
+                pass
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes(chunk_size=_OIDC_RESPONSE_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                raise ProviderError(
+                    f"OIDC endpoint response exceeds {limit} bytes"
+                )
+            chunks.append(chunk)
+
+        # iter_bytes() already decoded the body. Reusing Content-Encoding would
+        # decode it a second time; the wire length/framing no longer applies.
+        headers = httpx.Headers(response.headers)
+        for name in ("content-encoding", "content-length", "transfer-encoding"):
+            headers.pop(name, None)
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=headers,
+            content=b"".join(chunks),
+            request=response.request,
+        )
 
 
 class SelfHostedOIDCProvider(JwtOAuthProvider):
@@ -123,7 +172,13 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         extra_data, extra_headers = self._token_endpoint_auth(disco)
         data = {"token": refresh_token, "token_type_hint": "refresh_token", "client_id": self._client_id, **extra_data}
         try:
-            httpx.post(endpoint, data=data, headers={**JSON_HEADERS, **extra_headers}, timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC)
+            _request_limited_response(
+                "POST",
+                endpoint,
+                data=data,
+                headers={**JSON_HEADERS, **extra_headers},
+                timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC,
+            )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
         return None
@@ -165,6 +220,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         id_token, payload = exchange_token(
             disco["token_endpoint"], {**data, **extra_data}, headers=extra_headers, bad_request_exc=bad_request_exc,
             idp="IDP", endpoint="OIDC token endpoint", token_key="id_token",
+            post=partial(_request_limited_response, "POST"),
             missing_msg=(
                 "OIDC token response missing id_token — ensure the 'openid' "
                 "scope is configured and the client is allowed to receive an "
@@ -199,7 +255,13 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
             # canonicalises .well-known; proxies upgrade http→https) and httpx defaults to
             # not following. The token/revocation POSTs deliberately do NOT follow
             # redirects (they carry an auth code / refresh token).
-            response = httpx.get(url, headers=JSON_HEADERS, timeout=_DISCOVERY_TIMEOUT_SEC, follow_redirects=True)
+            response = _request_limited_response(
+                "GET",
+                url,
+                headers={"Accept": "application/json"},
+                timeout=_DISCOVERY_TIMEOUT_SEC,
+                follow_redirects=True,
+            )
         except httpx.RequestError as exc:
             raise ProviderError(f"OIDC discovery unreachable: {exc}") from exc
         if response.status_code != 200:

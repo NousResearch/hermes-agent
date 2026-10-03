@@ -16,9 +16,12 @@ All HTTP is mocked: nothing here talks to a real IDP.
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import time
 import urllib.parse
+import zlib
+from contextlib import contextmanager
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -46,6 +49,101 @@ _DISCOVERY_DOC = {
     "jwks_uri": f"{_ISSUER}/jwks",
     "revocation_endpoint": f"{_ISSUER}/revoke",
 }
+
+
+class _FakeStreamResponse:
+    def __init__(
+        self,
+        method: str,
+        url: str,
+        *,
+        chunks: list[bytes],
+        status_code: int = 200,
+        headers: Dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.request = httpx.Request(method, url)
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        _ = chunk_size
+        yield from self._chunks
+
+
+class TestLimitedResponse:
+    @pytest.mark.parametrize("declared", ["11", None, "invalid", "1"])
+    @pytest.mark.parametrize("operation", ["discovery", "login", "refresh"])
+    def test_limit_rejects_before_reading_unneeded_body(self, monkeypatch, rsa_keypair, declared, operation):
+        provider = _make_provider(rsa_keypair)
+        response = _FakeStreamResponse(
+            "GET", _ISSUER, chunks=[],
+            headers={"content-length": declared} if declared is not None else {},
+        )
+
+        def chunks(**kwargs):
+            yield b"x" * 6
+            yield b"y" * 5
+            pytest.fail("read beyond the limit")
+
+        response.iter_bytes = MagicMock(side_effect=chunks)
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", lambda *a, **kw: response)
+        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            if operation == "discovery":
+                provider._fetch_discovery()
+            elif operation == "login":
+                provider.complete_login(
+                    code="code", state="state", code_verifier="verifier",
+                    redirect_uri="https://hermes.example/auth/callback",
+                )
+            else:
+                provider.refresh_session(refresh_token="old-refresh")
+        if declared == "11":
+            response.iter_bytes.assert_not_called()
+        else:
+            response.iter_bytes.assert_called_once()
+
+    @pytest.mark.parametrize("encoding,compress", [("gzip", gzip.compress), ("deflate", zlib.compress)])
+    @pytest.mark.parametrize("status", [200, 400, 500])
+    def test_decoded_body_and_headers_agree(self, monkeypatch, encoding, compress, status):
+        body = b'{"error":"invalid_grant","padding":"' + b"x" * 1000 + b'"}'
+        responses = []
+
+        @contextmanager
+        def stream(*args, **kwargs):
+            response = httpx.Response(
+                status,
+                headers={"content-type": "application/json", "content-encoding": encoding,
+                         "content-length": str(len(compress(body)))},
+                stream=httpx.ByteStream(compress(body)),
+                request=httpx.Request("POST", f"{_ISSUER}/token"),
+            )
+            responses.append(response)
+            try:
+                yield response
+            finally:
+                response.close()
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", stream)
+        result = oidc_plugin._request_limited_response("POST", f"{_ISSUER}/token", body_limit=len(body))
+        assert result.status_code == status
+        assert result.content == body
+        assert result.json()["error"] == "invalid_grant"
+        assert "content-encoding" not in result.headers
+        assert int(result.headers["content-length"]) == len(body)
+        assert result.url == responses[0].url
+        # Wire length fits, but the decoded body exceeds the second limit.
+        assert len(compress(body)) < 100 < len(body)
+        with pytest.raises(ProviderError, match="exceeds 100 bytes"):
+            oidc_plugin._request_limited_response("POST", f"{_ISSUER}/token", body_limit=100)
+        assert all(response.is_closed for response in responses)
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +323,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(200, dict(_DISCOVERY_DOC))
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_get:
             disco1 = p._get_discovery()
             disco2 = p._get_discovery()
@@ -251,7 +349,7 @@ class TestDiscovery:
             200, forged, url="https://attacker.example/openid-configuration"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -262,7 +360,7 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="http://auth.example.com/discovery"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -275,7 +373,7 @@ class TestDiscovery:
             url="https://auth.example.com/.well-known/openid-configuration/application/o/hermes",
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             disco = p._fetch_discovery()
         assert disco["token_endpoint"] == f"{_ISSUER}/token"
@@ -287,10 +385,9 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="https://auth.example.com:443/x"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             assert p._fetch_discovery()["issuer"] == _ISSUER
-
 
 # ---------------------------------------------------------------------------
 # OIDC discovery against a REAL HTTP server that redirects (regression)
@@ -300,8 +397,9 @@ class TestDiscovery:
 class TestDiscoveryRealRedirect:
     """Discovery must follow a 3xx on the .well-known GET.
 
-    The rest of the discovery suite mocks ``httpx.get`` with a canned 200, so
-    it cannot see httpx's ``follow_redirects=False`` default. Many real IDPs
+    The rest of the discovery suite mocks the bounded request helper with a
+    canned 200, so it cannot see httpx's ``follow_redirects=False`` default.
+    Many real IDPs
     answer the discovery GET with a redirect rather than a direct 200 —
     Authentik canonicalises the ``.well-known`` path, and any IDP behind a
     reverse proxy doing http→https upgrade redirects too. Before the fix the
@@ -342,10 +440,54 @@ class TestDiscoveryRealRedirect:
             def log_message(self, *args):
                 pass
 
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                self.requests.append((self.path, dict(self.headers), urllib.parse.parse_qs(body.decode())))
+                self.do_GET()
+
         _H.routes = routes
+        _H.requests = []
         return _H
 
-    def test_real_same_origin_redirect_succeeds(self):
+    @pytest.mark.parametrize("auth_method", ["client_secret_basic", "client_secret_post"])
+    def test_compressed_grants_and_revoke_preserve_client_auth(self, rsa_keypair, auth_method):
+        provider = _make_provider(rsa_keypair, client_secret="secret", auth_methods=[auth_method])
+        token = _mint_id_token(rsa_keypair)
+        body = gzip.compress(json.dumps({"id_token": token, "token_type": "Bearer"}).encode())
+        httpd, port = self._serve(self._handler({
+            "/token": (200, {"Content-Type": "application/json", "Content-Encoding": "gzip"}, body),
+            "/revoke": (200, {}, b""),
+        }))
+        provider._discovery["token_endpoint"] = f"http://127.0.0.1:{port}/token"
+        provider._discovery["revocation_endpoint"] = f"http://127.0.0.1:{port}/revoke"
+        try:
+            session = provider.complete_login(
+                code="code", state="state", code_verifier="verifier",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
+            assert session.access_token == token
+            refreshed = provider.refresh_session(refresh_token="old-refresh")
+            assert refreshed.access_token == token
+            assert refreshed.refresh_token == "old-refresh"
+            provider.revoke_session(refresh_token="old-refresh")
+            requests = httpd.RequestHandlerClass.requests
+            assert [path for path, _, _ in requests] == ["/token", "/token", "/revoke"]
+            assert requests[0][2]["code_verifier"] == ["verifier"]
+            assert requests[1][2]["grant_type"] == ["refresh_token"]
+            assert requests[2][2]["token"] == ["old-refresh"]
+            for _, headers, data in requests:
+                if auth_method == "client_secret_basic":
+                    assert _decode_basic(headers["Authorization"]) == (_CLIENT_ID, "secret")
+                    assert "client_secret" not in data
+                else:
+                    assert data["client_secret"] == ["secret"]
+                    assert "Authorization" not in headers
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    @pytest.mark.parametrize("compressed", [False, True])
+    def test_real_same_origin_redirect_succeeds(self, compressed):
         httpd, port = self._serve(self._handler({}))
         try:
             issuer = f"http://127.0.0.1:{port}"
@@ -355,16 +497,21 @@ class TestDiscoveryRealRedirect:
                 "token_endpoint": f"{issuer}/token",
                 "jwks_uri": f"{issuer}/jwks",
             }).encode()
+            headers = {"Content-Type": "application/json"}
+            if compressed:
+                doc = gzip.compress(doc)
+                headers["Content-Encoding"] = "gzip"
             httpd.RequestHandlerClass.routes = {
                 "/.well-known/openid-configuration": (
                     302, {"Location": f"{issuer}/canonical"}, b""),
-                "/canonical": (200, {"Content-Type": "application/json"}, doc),
+                "/canonical": (200, headers, doc),
             }
             p = oidc_plugin.SelfHostedOIDCProvider(issuer=issuer, client_id=_CLIENT_ID)
             disco = p._fetch_discovery()
             assert disco["issuer"] == issuer
         finally:
             httpd.shutdown()
+            httpd.server_close()
 
     def test_real_redirect_to_other_origin_rejected(self):
         """A 302 to a different origin (here: another loopback port) serving a
@@ -483,7 +630,7 @@ class TestCompleteLogin:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -506,7 +653,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -521,7 +668,7 @@ class TestCompleteLogin:
             200, {"access_token": "opaque", "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="id_token"):
                 provider.complete_login(
@@ -534,7 +681,7 @@ class TestCompleteLogin:
     def test_400_raises_invalid_code(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
@@ -543,7 +690,6 @@ class TestCompleteLogin:
                     code_verifier="v",
                     redirect_uri="https://hermes.example/auth/callback",
                 )
-
 
 # ---------------------------------------------------------------------------
 # Confidential client (client_secret) — token-endpoint client authentication
@@ -572,7 +718,7 @@ class TestConfidentialClient:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, **_GOOD_TOKEN_RESP_KEYS})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.complete_login(
                 code="the-code",
@@ -644,7 +790,7 @@ class TestConfidentialClient:
             200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.refresh_session(refresh_token="rt_old")
         _, kwargs = mock_post.call_args
@@ -841,4 +987,3 @@ class TestPluginRegister:
         oidc_plugin.register(ctx)
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert registered._client_secret == "cfg-secret"
-

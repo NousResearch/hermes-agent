@@ -1124,11 +1124,15 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Path, session_key: str = "", *,
+                                           warn: bool = True) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
-    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
+    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
+    ``warn=False`` silences the unresolved-path warning for callers that log the miss themselves
+    (bare paths in reply prose are often not files at all)."""
     if not candidate.is_absolute():
         return None
+    report = _warn_unresolved_docker_media if warn else (lambda *_args: None)
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
     # TERMINAL_* env yet; the bridge is idempotent.
     with contextlib.suppress(Exception):
@@ -1146,7 +1150,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
         mounts.extend(
             (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
     if not mounts:
-        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
+        report(candidate, session_key, "no sandbox mounts resolved")
         return None
     # Longest container-prefix match; equal-length prefixes are tried in insertion order.
     candidate_posix = candidate.as_posix()
@@ -1154,14 +1158,14 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
                for prefix in (container_root.as_posix().rstrip("/") or "/",)
                if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
     if not matched:
-        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
+        report(candidate, session_key, "no mounted prefix matches")
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
         translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
-    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
+    report(candidate, session_key, "host file missing from sandbox")
     return None
 
 
@@ -3371,7 +3375,9 @@ class BasePlatformAdapter(ABC):
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
+        mutilated. A container path the Docker sandbox wrote (``/workspace/report.md``) is
+        translated to its host file the same way ``validate_media_delivery_path`` translates a
+        ``MEDIA:`` tag. Dispatch by type lives in ``gateway/run.py``."""
         ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
@@ -3387,6 +3393,12 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
+            if not os.path.isfile(expanded) and os.path.isabs(expanded):
+                # Same container-path case as the MEDIA: route: the file lives on the host at
+                # the bind-mount source, not at the path the sandboxed agent named.
+                translated = _translate_docker_container_media_path(Path(expanded), warn=False)
+                if translated is not None:
+                    expanded = str(translated)
             if os.path.isfile(expanded):
                 unique.setdefault(expanded, raw)
             else:
@@ -4348,12 +4360,20 @@ class BasePlatformAdapter(ABC):
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
+        local_queue = [(p, False, False) for p in local_files if not _as_image(p)]
+        if local_queue:
+            # Intent here plus the per-file confirmation below: a "Delivering" line with no matching
+            # "Delivered" is the trace of an upload that hung, which raises nothing and returns nothing.
+            logger.info("[%s] Delivering %d local file attachment(s)", self.name, len(local_queue))
+        queue += local_queue
         for path, is_voice, media_tag in queue:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
+                result = await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                record_delivery(result)
+                if not media_tag and result.success:
+                    logger.info("[%s] Delivered local file %s", self.name, _log_safe_path(path))
             except Exception as err:
                 record_delivery(SendResult(success=False, error=str(err)))
                 if media_tag:

@@ -130,18 +130,25 @@ def _is_protected_dir(p: Path) -> bool:
 
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
 def _protected_cron_paths(home: Path) -> frozenset:
-    """Defense-in-depth for quick(): EXACT cron control-plane paths (``cron/``, ``output/`` root,
-    ``jobs.json``, ``.tick.lock``) never deleted regardless of stored category (stale tracked.json).
-    Never widen to everything under ``cron/output/``: run artifacts there are disposable; only
-    wholesale deletion of ``output/`` is fatal."""
+    """Exact cron roots, state markers and store locks, never disposable.
+
+    Run artifacts under ``output/`` remain disposable; only its root is protected.
+    Per-fire locks are matched separately because their UUID names are dynamic.
+    """
+    names = ("output", "jobs.json", ".tick.lock", ".jobs.lock", "ticker_heartbeat",
+             "ticker_last_success", "ticker_last_error", "catch_up_occurrences")
     return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (home / parent,)
-                     for x in (base, base / "output", base / "jobs.json", base / ".tick.lock"))
+                     for x in (base, *(base / name for name in names)))
 
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(), regardless of what the stored category
 # says. This is a defense-in-depth guard against stale tracked.json entries from before #34840.
 def _is_protected_cron_path(p: Path) -> bool:
-    return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
+    resolved = p.resolve()
+    home = get_hermes_home()
+    return (str(resolved) in _protected_cron_paths(home)
+            or (resolved.parent in (home / "cron", home / "cronjobs")
+                and resolved.name.startswith(".fire-") and resolved.name.endswith(".lock")))
 
 
 def _is_never_track_path(p: Path) -> bool:
@@ -149,8 +156,9 @@ def _is_never_track_path(p: Path) -> bool:
     state, logs, memory, sessions, config/secrets, plugin sources, user project trees, git
     worktrees, and the cron control-plane.
 
-    ``track()`` refuses these on manual registration too, and ``quick()``/``dry_run()`` drop
-    stored entries for them regardless of category: quick()'s re-validation only re-checks
+    ``track()`` refuses these on manual registration too, and ``quick()`` drops stored
+    entries regardless of category. ``dry_run()`` excludes them from automatic deletion
+    but retains read-only prompt candidates. Quick's re-validation only re-checks
     ``cron-output`` and ``test``, so a manual ``track <state path> temp`` would otherwise age
     past 7 days and be deleted by the no-prompt on-session-end sweep."""
     if _is_protected_dir(p) or _is_protected_cron_path(p):
@@ -258,11 +266,12 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
         cat = item["category"]
-        # Stale cron-output entries and never-track paths are skipped by quick(); omit them here too.
-        if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_never_track_path(p):
+        # Preserve read-only preview coverage for protected files and aged research.
+        if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
             continue
         if _is_auto_delete(cat, age):
-            auto.append(item)
+            if not _is_never_track_path(p):
+                auto.append(item)
         elif _prompt_group(item, age):
             prompt.append(item)
     return auto, prompt

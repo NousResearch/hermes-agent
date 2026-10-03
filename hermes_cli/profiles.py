@@ -148,6 +148,9 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
+# OS credential dirs (file_safety.build_write_denied_prefixes) + direnv .envrc (_BLOCKED_PROJECT_ENV_BASENAMES).
+_OS_CREDENTIAL_STORES = (".ssh", ".aws", ".gnupg", ".kube", ".envrc")
+
 # Credential stores in a profile home, as paths relative to it, plus the directories where Hermes
 # keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
 # overwritten) on a distribution install. Add a store here when a writer or loader starts using one.
@@ -179,7 +182,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
     "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
-    ".ssh", ".aws", ".gnupg", ".kube", ".envrc",  # OS credential stores file_safety denies under a home
+    *_OS_CREDENTIAL_STORES,
 })
 _CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_CREDENTIAL_PATHS)
 
@@ -2243,7 +2246,7 @@ def _default_export_ignore(root_dir: Path):
 # PROFILE_CREDENTIAL_PATHS. ``bot-desktop`` is the screen's runtime state:
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 # The OS stores are dropped wherever they sit (a skill dir copied from a home carries its ``.ssh``).
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop", ".ssh", ".aws", ".gnupg", ".kube", ".envrc"})
+_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop", *_OS_CREDENTIAL_STORES})
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({

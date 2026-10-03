@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -35,7 +36,7 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
         (4444, "python.exe", r"C:\hermes\venv\Scripts\python.exe -m hermes_cli.main -p work kanban list"),
         (4545, "python.exe", r"C:\hermes\venv\Scripts\python.exe some_script.py"),
     ]
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: holders)
+    monkeypatch.setattr(update_cmd_windows, "_detect_venv_python_processes", lambda: holders)
 
     with pytest.raises(SystemExit) as exc:
         cli_main.cmd_update(_args())
@@ -49,7 +50,7 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
 
 
 def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, capsys, _quiet_preflight):
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr(update_cmd_windows, "_detect_venv_python_processes", lambda: [])
 
     def _boom(*_a, **_k):  # the mutating update body must never run behind the read-only flag
         raise AssertionError("update body ran")
@@ -58,3 +59,27 @@ def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, c
 
     assert cli_main.cmd_update(_args()) is None
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_list_venv_holders_never_consults_the_retired_main_stub(monkeypatch, capsys, _quiet_preflight):
+    """Regression #123050: the flag must read this module's live detector, not
+    ``hermes_cli.main._detect_venv_python_processes`` — that name is the retired-updater stub which
+    returns ``[]`` unconditionally, so the wiring used to report no holders on any machine and exit
+    0 instead of 3. Patching only the stub and asserting it is never touched proves the production
+    call path no longer reaches it."""
+    holders = [
+        (9191, "python.exe", r"C:\hermes\venv\Scripts\python.exe some_script.py"),
+    ]
+    monkeypatch.setattr(update_cmd_windows, "_detect_venv_python_processes", lambda: holders)
+    monkeypatch.setattr(
+        cli_main,
+        "_detect_venv_python_processes",
+        Mock(side_effect=AssertionError("retired hermes_cli.main stub was consulted")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.cmd_update(_args())
+
+    assert exc.value.code == update_cmd_windows.VENV_HOLDERS_EXIT == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert [(h["pid"], h["kind"]) for h in payload] == [(9191, "python")]

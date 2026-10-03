@@ -34,9 +34,16 @@ def exit_single_query(code: int) -> None:
     """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
     if os.environ.get("HERMES_KANBAN_TASK"):
         with contextlib.suppress(Exception):
+            # The worker log is append-mode across attempts and a killed worker writes no
+            # trailer, so the trailer carries its run id: the dead-worker sweep only
+            # honours a trailer tagged with the run it is reaping (#121255).
+            try:
+                suffix = f" run={int(os.environ.get('HERMES_KANBAN_RUN_ID') or '')}"
+            except (TypeError, ValueError):
+                suffix = ""
             # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
             # captures both streams.
-            print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)
+            print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}{suffix}", file=sys.stderr, flush=True)
     sys.exit(code)
 
 

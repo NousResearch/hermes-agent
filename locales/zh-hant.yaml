@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w 會建立隔離的 git 工作樹 — 非常適合平行的代理工作流程。"
   t050: "hermes -w -q \"Fix issue #42\" 結合了工作樹隔離與一次性查詢。"
   t051: "hermes chat -t web,terminal 只啟用特定工具集，讓工作階段更聚焦。"
-  t052: "hermes chat -s github-pr-workflow 會在啟動時預先載入技能。"
+  t052: "hermes chat -s github 會在啟動時預先載入技能。"
   t053: "hermes chat -q \"query\" 會執行單次非互動查詢後結束。"
   t054: "hermes chat --max-turns 1000 會覆寫每回合預設的 500 次迭代上限。"
   t055: "hermes chat --checkpoints 會在每次破壞性檔案變更前啟用檔案系統快照。"

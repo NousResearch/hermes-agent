@@ -3642,7 +3642,7 @@ tips:
   t049: "hermes -w creates an isolated git worktree — perfect for parallel agent workflows."
   t050: "hermes -w -q \"Fix issue #42\" combines worktree isolation with a one-shot query."
   t051: "hermes chat -t web,terminal enables only specific toolsets for a focused session."
-  t052: "hermes chat -s github-pr-workflow preloads a skill at launch."
+  t052: "hermes chat -s github preloads a skill at launch."
   t053: "hermes chat -q \"query\" runs a single non-interactive query and exits."
   t054: "hermes chat --max-turns 1000 overrides the default 500-iteration limit per turn."
   t055: "hermes chat --checkpoints enables filesystem snapshots before every destructive file change."

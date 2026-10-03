@@ -4390,7 +4390,7 @@ export const deOverrides = {
     githubSuggestions: {
       label: 'GitHub einrichten',
       tip: 'GitHub funktioniert hier über die gh-CLI-Skills – klicken, um Ihr Konto zu verbinden',
-      done: '/github-auth hinzugefügt',
+      done: '/github hinzugefügt',
       doneTip: 'Senden Sie die Nachricht, und der Agent führt Sie durch die GitHub-Anmeldung'
     },
     repairSuggestions: {

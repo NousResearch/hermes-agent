@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w 创建一个隔离的 git worktree——非常适合并行代理工作流。"
   t050: "hermes -w -q \"Fix issue #42\" 把 worktree 隔离与一次性查询结合起来。"
   t051: "hermes chat -t web,terminal 只启用指定的工具集，让会话更专注。"
-  t052: "hermes chat -s github-pr-workflow 在启动时预加载一个技能。"
+  t052: "hermes chat -s github 在启动时预加载一个技能。"
   t053: "hermes chat -q \"query\" 运行一次非交互式查询后退出。"
   t054: "hermes chat --max-turns 1000 覆盖默认的每回合 500 次迭代上限。"
   t055: "hermes chat --checkpoints 在每次破坏性文件更改之前启用文件系统快照。"

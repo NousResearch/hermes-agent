@@ -775,7 +775,7 @@ export const tr: Translations = {
     assigneePlaceholder: "atanan",
     priority: "Öncelik",
     skillsPlaceholder:
-      "beceriler (isteğe bağlı, virgülle ayrılmış): translation, github-code-review",
+      "beceriler (isteğe bağlı, virgülle ayrılmış): translation, github",
     noParent: "— üst yok —",
     workspacePathDir: "workspace yolu (zorunlu, ör. ~/projects/my-app)",
     workspacePathOptional:

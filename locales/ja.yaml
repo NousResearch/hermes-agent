@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w は隔離された git worktree を作成します。並列のエージェントワークフローに最適です。"
   t050: "hermes -w -q \"Fix issue #42\" は worktree による隔離と単発クエリを組み合わせます。"
   t051: "hermes chat -t web,terminal は特定のツールセットだけを有効にして、目的を絞ったセッションを開始します。"
-  t052: "hermes chat -s github-pr-workflow は起動時にスキルを事前読み込みします。"
+  t052: "hermes chat -s github は起動時にスキルを事前読み込みします。"
   t053: "hermes chat -q \"query\" は非対話のクエリを 1 回実行して終了します。"
   t054: "hermes chat --max-turns 1000 はターンあたりデフォルト 500 回の反復上限を上書きします。"
   t055: "hermes chat --checkpoints は破壊的なファイル変更のたびに、事前にファイルシステムのスナップショットを取ります。"

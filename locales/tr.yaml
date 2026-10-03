@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w yalıtılmış bir git worktree oluşturur — paralel ajan iş akışları için idealdir."
   t050: "hermes -w -q \"Fix issue #42\" worktree yalıtımını tek seferlik bir sorguyla birleştirir."
   t051: "hermes chat -t web,terminal odaklı bir oturum için yalnızca belirli araç setlerini etkinleştirir."
-  t052: "hermes chat -s github-pr-workflow başlangıçta bir skill'i önceden yükler."
+  t052: "hermes chat -s github başlangıçta bir skill'i önceden yükler."
   t053: "hermes chat -q \"query\" tek bir etkileşimsiz sorgu çalıştırır ve çıkar."
   t054: "hermes chat --max-turns 1000 tur başına varsayılan 500 yineleme sınırını geçersiz kılar."
   t055: "hermes chat --checkpoints her yıkıcı dosya değişikliğinden önce dosya sistemi anlık görüntüsü alır."

@@ -3545,7 +3545,7 @@ tips:
   t049: "A hermes -w elkülönített git worktree-t hoz létre — ideális párhuzamos ügynök-munkafolyamatokhoz."
   t050: "A hermes -w -q \"Fix issue #42\" a worktree-elkülönítést egyszeri lekérdezéssel kombinálja."
   t051: "A hermes chat -t web,terminal csak a megadott eszközkészleteket kapcsolja be egy fókuszált munkamenethez."
-  t052: "A hermes chat -s github-pr-workflow már indításkor betölt egy skillt."
+  t052: "A hermes chat -s github már indításkor betölt egy skillt."
   t053: "A hermes chat -q \"query\" egyetlen nem interaktív lekérdezést futtat, majd kilép."
   t054: "A hermes chat --max-turns 1000 felülírja az alapértelmezett, körönkénti 500 iterációs limitet."
   t055: "A hermes chat --checkpoints minden destruktív fájlmódosítás előtt fájlrendszer-pillanatképet készít."

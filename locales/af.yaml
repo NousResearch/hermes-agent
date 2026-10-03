@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w skep 'n geïsoleerde git-worktree — perfek vir parallelle agent-werkvloeie."
   t050: "hermes -w -q \"Fix issue #42\" kombineer worktree-isolasie met 'n eenmalige navraag."
   t051: "hermes chat -t web,terminal aktiveer net spesifieke gereedskapstelle vir 'n gefokusde sessie."
-  t052: "hermes chat -s github-pr-workflow laai 'n vaardigheid vooraf by die begin."
+  t052: "hermes chat -s github laai 'n vaardigheid vooraf by die begin."
   t053: "hermes chat -q \"query\" voer 'n enkele nie-interaktiewe navraag uit en sluit af."
   t054: "hermes chat --max-turns 1000 oorskry die verstek-limiet van 500 iterasies per beurt."
   t055: "hermes chat --checkpoints aktiveer lêerstelsel-momentopnames voor elke vernietigende lêerverandering."

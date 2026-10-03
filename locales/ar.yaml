@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w ينشئ worktree معزولًا في git — مثالي لسير عمل الوكلاء المتوازي."
   t050: "hermes -w -q \"Fix issue #42\" يجمع بين عزل worktree واستعلام لمرة واحدة."
   t051: "hermes chat -t web,terminal يفعّل مجموعات أدوات محددة فقط لجلسة مركّزة."
-  t052: "hermes chat -s github-pr-workflow يحمّل مهارة مسبقًا عند البدء."
+  t052: "hermes chat -s github يحمّل مهارة مسبقًا عند البدء."
   t053: "hermes chat -q \"query\" ينفّذ استعلامًا واحدًا غير تفاعلي ثم يخرج."
   t054: "hermes chat --max-turns 1000 يتجاوز الحد الافتراضي البالغ 500 تكرار لكل دور."
   t055: "hermes chat --checkpoints يفعّل لقطات نظام الملفات قبل كل تغيير مدمّر للملفات."

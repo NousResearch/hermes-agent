@@ -775,7 +775,7 @@ export const af: Translations = {
     assigneePlaceholder: "toegewysde",
     priority: "Prioriteit",
     skillsPlaceholder:
-      "vaardighede (opsioneel, kommageskei): translation, github-code-review",
+      "vaardighede (opsioneel, kommageskei): translation, github",
     noParent: "— geen ouer —",
     workspacePathDir: "werkruimtepad (verpligtend, bv. ~/projects/my-app)",
     workspacePathOptional:

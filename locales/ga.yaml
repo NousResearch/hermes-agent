@@ -3528,7 +3528,7 @@ tips:
   t049: "Cruthaíonn hermes -w worktree git leithlisithe — foirfe le haghaidh sreabha oibre gníomhairí comhthreomhara."
   t050: "Cuireann hermes -w -q \"Fix issue #42\" leithlisiú worktree agus iarratas aon-uaire le chéile."
   t051: "Ní chumasaíonn hermes chat -t web,terminal ach tacair uirlisí sonracha le haghaidh seisiúin dhírithe."
-  t052: "Réamhlódálann hermes chat -s github-pr-workflow scil ag am tosaithe."
+  t052: "Réamhlódálann hermes chat -s github scil ag am tosaithe."
   t053: "Ritheann hermes chat -q \"query\" iarratas neamh-idirghníomhach amháin agus scoireann."
   t054: "Sáraíonn hermes chat --max-turns 1000 an teorainn réamhshocraithe de 500 atriall in aghaidh an tseala."
   t055: "Cumasaíonn hermes chat --checkpoints roghchóipeanna den chóras comhad roimh gach athrú millteach ar chomhaid."

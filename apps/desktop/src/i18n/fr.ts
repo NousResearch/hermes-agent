@@ -4403,7 +4403,7 @@ export const frOverrides = {
     githubSuggestions: {
       label: 'Configurer GitHub',
       tip: 'GitHub fonctionne ici grâce aux skills de la CLI gh ; cliquez pour connecter votre compte',
-      done: 'Ajout de /github-auth',
+      done: 'Ajout de /github',
       doneTip: "Envoyez le message et l'agent vous guidera dans la connexion à GitHub"
     },
     repairSuggestions: {

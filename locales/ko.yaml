@@ -3528,7 +3528,7 @@ tips:
   t049: "hermes -w는 격리된 git 워크트리를 만들어요 — 병렬 에이전트 워크플로에 딱 맞아요."
   t050: "hermes -w -q \"Fix issue #42\"는 워크트리 격리와 일회성 질의를 결합해요."
   t051: "hermes chat -t web,terminal은 특정 도구 세트만 활성화해서 집중된 세션을 만들어요."
-  t052: "hermes chat -s github-pr-workflow는 시작 시 스킬을 미리 불러와요."
+  t052: "hermes chat -s github는 시작 시 스킬을 미리 불러와요."
   t053: "hermes chat -q \"query\"는 비대화형 질의를 한 번 실행하고 종료해요."
   t054: "hermes chat --max-turns 1000은 턴당 기본 500회 반복 한도를 재정의해요."
   t055: "hermes chat --checkpoints는 파괴적인 파일 변경 전마다 파일 시스템 스냅샷을 활성화해요."

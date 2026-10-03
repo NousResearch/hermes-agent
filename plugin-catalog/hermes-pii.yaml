@@ -1,0 +1,15 @@
+name: hermes-pii
+repo: https://github.com/lukefx/hermes-pii
+sha: dc751aaca22394bbd48ecbb79910fcaf9ee0edd1
+description: "Uses local Presidio and spaCy to detect and redact supported PII in outgoing text fields. If detection fails, original text passes through."
+maintainer: lukefx
+tier: community
+category: general
+version: "0.1.0.dev1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

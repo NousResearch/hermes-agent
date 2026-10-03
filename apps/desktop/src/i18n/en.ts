@@ -697,6 +697,7 @@ export const en: Translations = {
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
+      'session.stop': 'Stop active run',
       'session.newTab': 'New session tab',
       'session.newWindow': 'New window',
       'session.next': 'Next session',

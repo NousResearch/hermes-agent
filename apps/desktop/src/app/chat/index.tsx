@@ -893,6 +893,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 focusKey={activeSessionId}
                 freshDraftKey={freshDraftKey}
                 gateway={gateway}
+                isPrimary={isPrimary}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
                 onAddContextRef={onAddContextRef}
                 onAddUrl={onAddUrl}

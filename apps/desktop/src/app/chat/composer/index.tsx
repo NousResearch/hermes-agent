@@ -98,6 +98,7 @@ import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
+import { shouldHandleStopActiveRun } from './stop-active-run'
 import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
@@ -120,6 +121,7 @@ export function ChatBar({
   focusKey,
   freshDraftKey,
   gateway,
+  isPrimary = false,
   maxRecordingSeconds = 120,
   profile,
   queueSessionKey,
@@ -405,6 +407,22 @@ export function ChatBar({
 
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
+
+  useEffect(() => {
+    const stopActiveRun = (event: Event) => {
+      if (!shouldHandleStopActiveRun(isPrimary, busy, awaitingInput)) {
+        return
+      }
+
+      event.preventDefault()
+      triggerHaptic('cancel')
+      void Promise.resolve(haltRun())
+    }
+
+    window.addEventListener('hermes:stop-active-run', stopActiveRun)
+
+    return () => window.removeEventListener('hermes:stop-active-run', stopActiveRun)
+  }, [awaitingInput, busy, haltRun, isPrimary])
 
   const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
     composerDockRef,

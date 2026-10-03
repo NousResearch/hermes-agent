@@ -169,12 +169,38 @@ def _pack_under_cap(pieces: List[str], max_chars: int, *, slice_oversized: bool 
 
 
 def _split_oversized_sentence(sentence: str, max_chars: int) -> List[str]:
-    """Split one over-limit sentence on word boundaries, then hard boundaries."""
+    """Split one over-limit sentence on the best boundary available.
+
+    Prefers clause boundaries (commas/semicolons/colons - natural TTS pauses), then
+    word boundaries, then hard character cuts.
+
+    Args:
+        sentence: The over-limit sentence.
+        max_chars: Maximum piece length in characters.
+
+    Returns:
+        Sentence pieces each under ``max_chars``.
+    """
+    clauses = [s.strip() for s in re.split(r"(?<=[;:,])\s+", sentence) if s.strip()]
+    if len(clauses) > 1 and all(len(c) <= max_chars for c in clauses):
+        return _pack_under_cap(clauses, max_chars, slice_oversized=True)
     return _pack_under_cap(sentence.split(), max_chars, slice_oversized=True)
 
 
 def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
-    """Split text under a provider cap without dropping normalized content."""
+    """Split text under a provider cap without dropping normalized content.
+
+    Cuts prefer the strongest boundary available: whole sentences (``.!?``) first,
+    so each TTS piece is spoken as complete thoughts; only a single sentence that
+    alone exceeds the cap falls back to clause cuts inside ``_split_oversized_sentence``.
+
+    Args:
+        text: Normalized text to split.
+        max_chars: Provider cap in characters (0 = built-in fallback).
+
+    Returns:
+        Sentence-aligned pieces each under the cap.
+    """
     if max_chars <= 0:
         max_chars = FALLBACK_MAX_TEXT_LENGTH
     normalized = " ".join((text or "").split())
@@ -183,7 +209,7 @@ def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
     if len(normalized) <= max_chars:
         return [normalized]
     expanded: List[str] = []
-    for sentence in filter(None, (s.strip() for s in re.split(r"(?<=[.!?;:,])\s+", normalized))):
+    for sentence in filter(None, (s.strip() for s in re.split(r"(?<=[.!?])\s+", normalized))):
         if len(sentence) <= max_chars:
             expanded.append(sentence)
         else:

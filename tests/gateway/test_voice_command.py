@@ -116,7 +116,7 @@ class TestHandleVoiceCommand:
         event = _make_event("/voice on")
         await runner._handle_voice_command(event)
         assert runner._VOICE_MODE_PATH.exists()
-        data = json.loads(runner._VOICE_MODE_PATH.read_text())
+        data = json.loads(runner._VOICE_MODE_PATH.read_text(encoding="utf-8"))
         assert data["telegram:123"] == "voice_only"
 
 
@@ -1060,6 +1060,82 @@ class TestVoiceTimeoutCleansRunnerState:
 
         assert "999" in callback_calls, \
             "_on_voice_disconnect must be called with chat_id on timeout"
+
+
+# =====================================================================
+# Inactivity timeout requires the bot to be ALONE before leaving
+# =====================================================================
+
+def _make_alone_check_adapter():
+    """Adapter stub bound to the real alone-check + timeout-handler methods."""
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = type("AdapterStub", (), {})()
+    adapter._voice_text_channels = {111: 999}
+    adapter._on_voice_disconnect = lambda chat_id: None
+    adapter._client = None
+    adapter.leave_calls = []
+
+    async def fake_leave(gid):
+        adapter.leave_calls.append(gid)
+
+    adapter._alone_in_voice_channel = DiscordAdapter._alone_in_voice_channel.__get__(adapter)
+    adapter._voice_inactivity_requires_alone = DiscordAdapter._voice_inactivity_requires_alone.__get__(adapter)
+    adapter._voice_timeout_handler = DiscordAdapter._voice_timeout_handler.__get__(adapter)
+    adapter.leave_voice_channel = fake_leave
+    return adapter
+
+
+def test_timeout_stays_while_humans_present():
+    """Expiry with humans in channel re-arms; leave only when the bot is alone."""
+    adapter = _make_alone_check_adapter()
+    # Two expiries with humans present, then one alone -> leave on the 3rd.
+    states = [
+        {"members": [{"user_id": 1, "is_bot": False}]},   # human present
+        {"members": [{"user_id": 1, "is_bot": False}]},   # human present
+        {"members": []},                                   # alone
+    ]
+    adapter.get_voice_channel_info = lambda gid: states.pop(0)
+    sleeps = []
+
+    async def fake_sleep(_t):
+        sleeps.append(_t)
+
+    with patch("asyncio.sleep", side_effect=fake_sleep):
+        asyncio.run(adapter._voice_timeout_handler(111, 300))
+
+    assert sleeps == [300, 300, 300], "must re-arm the wait while humans remain"
+    assert adapter.leave_calls == [111], "leave exactly once, when alone"
+
+
+def test_timeout_leaves_immediately_when_already_alone():
+    adapter = _make_alone_check_adapter()
+    adapter.get_voice_channel_info = lambda gid: {"members": []}
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        asyncio.run(adapter._voice_timeout_handler(111, 300))
+    assert adapter.leave_calls == [111]
+
+
+def test_timeout_fail_safe_leaves_when_info_unavailable():
+    """No channel info (stale client / mock) -> old leave behavior preserved."""
+    adapter = _make_alone_check_adapter()
+    adapter.get_voice_channel_info = lambda gid: None
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        asyncio.run(adapter._voice_timeout_handler(111, 300))
+    assert adapter.leave_calls == [111]
+
+
+def test_alone_check_ignores_other_bots():
+    """Another bot in the channel does not count as company."""
+    adapter = _make_alone_check_adapter()
+    adapter.get_voice_channel_info = lambda gid: {
+        "members": [{"user_id": 2, "is_bot": True}]
+    }
+    assert adapter._alone_in_voice_channel(111) is True
+    adapter.get_voice_channel_info = lambda gid: {
+        "members": [{"user_id": 3, "is_bot": False}]
+    }
+    assert adapter._alone_in_voice_channel(111) is False
 
 
 # =====================================================================

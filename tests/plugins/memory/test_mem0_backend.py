@@ -46,6 +46,43 @@ class FakePlatformClient:
 
 class TestPlatformBackend:
 
+    def test_init_passes_bounded_http_client_and_close_releases_it(self, monkeypatch):
+        """The SDK's default httpx pool is unbounded with no keepalive expiry (CLOSE_WAIT fd leak)."""
+        import httpx
+
+        seen = {}
+
+        class FakeMemoryClient:
+            def __init__(self, api_key=None, host=None, client=None):
+                seen["api_key"], seen["client"] = api_key, client
+                self.client = client
+
+        monkeypatch.setitem(sys.modules, "mem0", types.SimpleNamespace(MemoryClient=FakeMemoryClient))
+        backend = PlatformBackend("k")
+        http = seen["client"]
+        assert seen["api_key"] == "k"
+        assert isinstance(http, httpx.Client)
+        pool = http._transport._pool
+        assert pool._max_connections == 10
+        assert pool._max_keepalive_connections == 5
+        assert pool._keepalive_expiry == 30.0
+        assert not http.is_closed
+        backend.close()
+        assert http.is_closed
+
+    def test_init_failure_closes_http_client(self, monkeypatch):
+        seen = {}
+
+        class FailingMemoryClient:
+            def __init__(self, api_key=None, host=None, client=None):
+                seen["client"] = client
+                raise ValueError("invalid key")
+
+        monkeypatch.setitem(sys.modules, "mem0", types.SimpleNamespace(MemoryClient=FailingMemoryClient))
+        with pytest.raises(ValueError):
+            PlatformBackend("bad")
+        assert seen["client"].is_closed
+
     def _make(self):
         client = FakePlatformClient()
         backend = PlatformBackend.__new__(PlatformBackend)

@@ -81,17 +81,30 @@ def _live_system_guard(request, monkeypatch):
 
     test_pid = _os.getpid()
     lookalike_ok = request.node.get_closest_marker(_GATEWAY_LOOKALIKE_MARK) is not None
-    # Capture the test process's existing children at fixture start —
-    # any *new* children spawned by the test are also allowlisted via
-    # the live psutil walk below. Static set keeps the fast path cheap.
     try:
         import psutil as _psutil
-        _initial_children = {
-            c.pid for c in _psutil.Process(test_pid).children(recursive=True)
-        }
     except Exception:
         _psutil = None
-        _initial_children = set()
+
+    # The children snapshot is a fast-path allowlist; the live parents()
+    # walk in _is_own_subtree is the authority. Taking it at fixture setup
+    # walked the whole process table for EVERY test (about 15 ms per test
+    # on Windows) to serve the few tests that deliver a signal, so it is
+    # taken at the first guarded kill instead. Every PID in it is a
+    # descendant of this process at that moment, which the parents() walk
+    # would allow anyway, so the snapshot never widens what is allowed.
+    _children_snapshot = None
+
+    def _own_children() -> set:
+        nonlocal _children_snapshot
+        if _children_snapshot is None:
+            try:
+                _children_snapshot = {
+                    c.pid for c in _psutil.Process(test_pid).children(recursive=True)
+                } if _psutil is not None else set()
+            except Exception:
+                _children_snapshot = set()
+        return _children_snapshot
 
     def _is_own_subtree(pid: int) -> bool:
         # PID 0 means "our own process group"; -1 means "every process we
@@ -102,7 +115,7 @@ def _live_system_guard(request, monkeypatch):
             return True
         if pid < 0:
             return False
-        if pid == test_pid or pid in _initial_children:
+        if pid == test_pid or pid in _own_children():
             return True
         if _psutil is None:
             return False

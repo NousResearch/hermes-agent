@@ -6,7 +6,7 @@ description: SOMA extractive context engine — shrinks oversized tool results p
   calls; whole-session compaction is delegated to the built-in compressor.
 maintainer: enduserrr
 tier: community
-category: context-engine
+category: tools
 requires_hermes: '>=0.21.0'
 docs_url: https://github.com/enduserrr/SOMA-Hermes-compressor#readme
 version: 0.2.0

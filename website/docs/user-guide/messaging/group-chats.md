@@ -70,6 +70,8 @@ always allow.
 | `/group N approve <code> once\|deny` | Answer one waiting approval; `/group N` shows its code. |
 | `/group N approve <code> always` | Always allow that exact command for that Bot in that Group Chat, from this chat (see below). |
 | `/group N forget <code>` | Stop always allowing a command. |
+| `/group N continue` | When the group's host is offline, continue the group on this computer (see below). |
+| `/group N keep <computer>` | For a group continued on two computers, choose the one that keeps it. |
 | `/group help` | The command list. |
 
 `/group` also works while the chat's own conversation with the Bot is busy.
@@ -91,6 +93,36 @@ Bot's profile, and it ends when you forget it, when you revoke the chat, when th
 Chat is disbanded or moves to another gateway, or when the Bot's setup in the Group Chat
 changes. A command whose folder or connection changes while its approval is waiting is not
 run at all.
+
+## When a group's host goes offline
+
+A Group Chat runs on one computer, its *host*. Your other computers can keep a full copy of
+the group, and the ones you allow in Hermes Desktop can continue it if the host goes offline.
+On a gateway that supports this, `/group N` shows it:
+
+- `Host: Mac mini.` while all is well, or `Host: Mac mini, offline since 14:05 CEST. Paused.`
+  when the host can't be reached. Nothing new runs in a paused group.
+- `Can continue on: Home VPS, MacBook.`, or
+  `No computer can continue this group yet; choose one in Hermes Desktop.`
+  Messaging shows which computers can continue a group; you choose them in Desktop.
+- In `/group list`, a group another computer hosts is marked *backup copy*. `/group N` shows
+  it, but sending and stopping work happen on its host.
+
+`/group N continue` continues a paused group on **the computer whose Bot you're talking to**.
+It first shows what that involves: which Bots stay unavailable until the group moves back to
+the computer they run on, how much work finished, still runs on other computers or is
+unknown, and which recent messages this computer doesn't have yet. To go ahead, reply
+`/group N continue confirm`, or tap **Continue on …** where your chat shows buttons. Unknown
+work never runs again by itself.
+
+Only continue if the host is really offline. If it's still running somewhere you can't
+reach, both computers may keep working until they reconnect. `/group N` then says the group
+was continued on two computers, and `/group N keep <computer>` chooses the one that keeps
+it; messages from the other are kept and shown separately.
+
+Continuing and keeping belong to the group's owner. They work only in your private chat with
+the Bot, never in a shared chat, which still shows the group's state. A computer that can
+continue a paused group may also message you in that private chat with the command to reply.
 
 ## Good to know
 

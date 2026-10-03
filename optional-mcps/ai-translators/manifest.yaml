@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ai-translators
+description: Transcribe, subtitle and dub videos into 100+ languages, and translate text.
+source: https://www.ai-translators.com/mcp-server
+
+# Vendor-hosted remote MCP (URL only - Hermes never spawns a local process for this entry).
+# OAuth 2.1 with Dynamic Client Registration is served by the MCP server itself: RFC 9728
+# protected-resource metadata at
+#   https://www.ai-translators.com/.well-known/oauth-protected-resource/mcp
+# points at the authorization server, whose metadata carries a registration_endpoint and
+# advertises PKCE (S256). Hermes's MCP client and mcp_oauth_manager handle discovery, PKCE,
+# the token exchange and refresh. The user signs in with an ai-translators.com account, and
+# every tool call runs as that account (its own quotas and plan).
+
+transport:
+  type: http
+  url: https://www.ai-translators.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - subtitles
+    - dubbing
+    - translate video
+    - titulky
+    - dabing
+  hosts:
+    - ai-translators.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in with your
+  ai-translators.com account (or run `hermes mcp login ai-translators`).
+  Approve access, then restart the session so the tools load.
+
+  Typical flow: ai_translators_subtitle_video(url) -> poll
+  ai_translators_job_status -> ai_translators_dub_video(history_id,
+  confirm=true) -> ai_translators_download_output. Heavy jobs run in the
+  background, so poll instead of waiting inside a call.

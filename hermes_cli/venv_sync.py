@@ -382,6 +382,12 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
     _may_retry, _attempts, _backoff = completion_retry_state(root)
+    # Whether this launch committed a new dependency generation. Only a launch
+    # that did sync work may ask the bootstrap to re-exec for stale currency:
+    # re-execing on a stale verdict without doing work lands back here in the
+    # same state, so every CLI invocation (chat message, gateway stop, doctor)
+    # relaunches forever instead of reaching its command (#126908).
+    synced = False
     if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
         # The tail has failed often enough that every relaunch re-running it
         # does more harm than good (#122206: "every launch burns ~4 minutes").
@@ -412,8 +418,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                 if not pm.venv_is_current(project_root=root):
                     # Relaunching would land back here and sync again, forever.
                     raise RuntimeError("dependency sync left this install out of date")
+                synced = True
             else:
+                was_stale = not current
                 _finish_source_update(root, current=current, pending=pending)
+                synced = was_stale
         finally:
             lock.release()
     python = resolve_store_python(root)
@@ -425,9 +434,20 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     # venv interpreter symlinked to the same binary is still a different
     # interpreter (its own sys.prefix) and must re-exec once.
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
-    if not current or not same:
+    if not same:
         publish_launchers(root)
         return python
+    if synced:
+        if not pm.venv_is_current(project_root=root):
+            # The sync committed but the install still reports stale: relaunching
+            # would land back here and sync again, forever (#126908).
+            raise RuntimeError("dependency sync left this install out of date")
+        publish_launchers(root)
+        return python
+    # No sync work was done on this launch (retry deferred by backoff/cap, or
+    # the tail is owed to an explicit `hermes update`) and this process is
+    # already on the store interpreter: run the command on the previous
+    # dependencies instead of re-execing into the same state forever.
     if owed_to_cli:
         # Left owed, not dropped: say so (once, in the process that boots) where an
         # operator of the unit will read it.

@@ -19,6 +19,10 @@ def _no_tool_downloads(monkeypatch):
     import pm.client
 
     monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: None)
+    # Hermes agent shells export HERMES_SUPERVISED_CHILD=1; without clearing,
+    # every launch looks supervised and tails are wrongly left to `hermes update`.
+    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
 
 
 @pytest.fixture
@@ -53,6 +57,8 @@ def _self_checkout(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     return root
 
 
@@ -239,8 +245,13 @@ def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completi
     from hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
-    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: None)
+    state = {"current": False}
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: state["current"])
+
+    def sync(*args, **kwargs):
+        state["current"] = True
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
     venv_sync.prepare_launch(root, [])
     assert completion_tail.kwargs["stdout"] is sys.__stderr__
@@ -358,9 +369,15 @@ def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, co
     root.mkdir(parents=True)
     (root / ".git").mkdir()
     (root / "pyproject.toml").write_text("[project]\n")
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    state = {"current": False}
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: state["current"])
     calls = []
-    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kw: calls.append(args))
+
+    def sync(*args, **kwargs):
+        state["current"] = True
+        calls.append(args)
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
     assert json.loads((root / "install-stamp.json").read_text())["source"] == "adoption"
@@ -479,8 +496,14 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
 
     root = _self_checkout(tmp_path, monkeypatch)
     syncs = []
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
-    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: syncs.append(a))
+    state = {"current": False}
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: state["current"])
+
+    def sync(*args, **kwargs):
+        state["current"] = True
+        syncs.append(args)
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
     monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
 

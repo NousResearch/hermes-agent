@@ -587,6 +587,124 @@ class TestWebSearchSchema:
         fake_search.assert_called_once_with("docs", 100)
 
 
+class TestWebExtractFormat:
+    """web_extract format param (markdown default + summary) plumbing."""
+
+    def test_handler_defaults_format_to_markdown(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_extract")
+        mock_extract = MagicMock(return_value="{}")
+        with patch("tools.web_tools.web_extract_tool", new=mock_extract):
+            entry.handler({"urls": ["https://example.com"]})
+
+        mock_extract.assert_called_once_with(
+            ["https://example.com"], "markdown", char_limit=None
+        )
+
+    def test_handler_passes_summary_format(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_extract")
+        mock_extract = MagicMock(return_value="{}")
+        with patch("tools.web_tools.web_extract_tool", new=mock_extract):
+            entry.handler({"urls": ["https://example.com"], "format": "summary"})
+
+        mock_extract.assert_called_once_with(
+            ["https://example.com"], "summary", char_limit=None
+        )
+
+    def test_handler_rejects_unknown_format(self):
+        import asyncio
+        import json
+
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_extract")
+        mock_extract = MagicMock(return_value="{}")
+        with patch("tools.web_tools.web_extract_tool", new=mock_extract):
+            result = asyncio.run(
+                entry.handler({"urls": ["https://example.com"], "format": 20000})
+            )
+
+        mock_extract.assert_not_called()
+        payload = json.loads(result)
+        assert "Unknown web_extract format 20000" in payload["error"]
+
+    def test_code_execution_stub_keeps_char_limit_positional(self):
+        from tools.code_execution_tool import generate_hermes_tools_module
+
+        src = generate_hermes_tools_module(["web_extract"])
+        assert "def web_extract(urls: list, char_limit: int = None, *, format: str = None):" in src
+
+    def test_schema_exposes_summary_format(self):
+        import tools.web_tools
+
+        props = tools.web_tools.WEB_EXTRACT_SCHEMA["parameters"]["properties"]
+        assert props["format"]["enum"] == ["markdown", "summary"]
+
+    def test_firecrawl_provider_requests_and_returns_summary(self, monkeypatch):
+        import asyncio
+
+        from plugins.web.firecrawl import provider as fc
+
+        calls = []
+
+        class FakeClient:
+            def scrape(self, url, formats):
+                calls.append({"url": url, "formats": formats})
+                return {
+                    "summary": "Short AI summary.",
+                    "markdown": "# Full page markdown",
+                    "metadata": {"title": "Example", "sourceURL": url},
+                }
+
+        monkeypatch.setattr(fc, "_use_keyless_ring", lambda: False)
+        monkeypatch.setattr(fc, "_get_firecrawl_client", lambda: FakeClient())
+        monkeypatch.setattr(fc, "check_website_access", lambda url: None)
+        monkeypatch.setattr(fc, "is_safe_url", lambda url: True)
+
+        results = asyncio.run(
+            fc.FirecrawlWebSearchProvider().extract(
+                ["https://example.com/article"], format="summary"
+            )
+        )
+
+        assert calls == [{"url": "https://example.com/article", "formats": ["summary", "markdown"]}]
+        assert results[0]["content"] == "Short AI summary."
+        assert results[0]["raw_content"] == "Short AI summary."
+        assert results[0]["title"] == "Example"
+
+    def test_firecrawl_summary_falls_back_to_markdown_when_no_summary(self, monkeypatch):
+        """Firecrawl returns only the requested formats and may decline to summarise.
+
+        A page it will not summarise must come back as its markdown, not as an
+        empty success with no error.
+        """
+        import asyncio
+
+        from plugins.web.firecrawl import provider as fc
+
+        page = {"markdown": "# Full page body", "metadata": {"title": "Scan", "sourceURL": "u"}}
+
+        class FakeClient:
+            def scrape(self, url, formats):
+                # Like the SDK: only the formats asked for, and no summary for this page.
+                return {k: v for k, v in page.items() if k in formats or k == "metadata"}
+
+        monkeypatch.setattr(fc, "_use_keyless_ring", lambda: False)
+        monkeypatch.setattr(fc, "_get_firecrawl_client", lambda: FakeClient())
+        monkeypatch.setattr(fc, "check_website_access", lambda url: None)
+        monkeypatch.setattr(fc, "is_safe_url", lambda url: True)
+
+        results = asyncio.run(
+            fc.FirecrawlWebSearchProvider().extract(["https://example.com/scan"], format="summary")
+        )
+
+        assert results[0]["content"] == "# Full page body"
+        assert "error" not in results[0]
+
+
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
 

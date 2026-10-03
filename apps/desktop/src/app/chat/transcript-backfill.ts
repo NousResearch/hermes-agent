@@ -195,7 +195,15 @@ function renderedMessageKey(message: ChatMessage): string {
 export function removeLiveCopiesOfHydratedRows(messages: ChatMessage[]): ChatMessage[] {
   const hydratedKeys = new Set(messages.filter(message => message.rowId !== undefined).map(renderedMessageKey))
 
-  return messages.filter(message => message.rowId !== undefined || !hydratedKeys.has(renderedMessageKey(message)))
+  return messages.filter(
+    message =>
+      message.rowId !== undefined ||
+      // Optimistic user rows were deliberately re-grafted immediately before
+      // this helper runs. Their rendered content may repeat an older durable
+      // prompt, but their `user-` id is distinct provenance, not a live copy.
+      (message.role === 'user' && message.id.startsWith('user-')) ||
+      !hydratedKeys.has(renderedMessageKey(message))
+  )
 }
 
 /** A text-only refresh can omit the live tool bubble after the turn settles. */

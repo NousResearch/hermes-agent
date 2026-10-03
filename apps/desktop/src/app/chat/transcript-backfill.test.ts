@@ -251,6 +251,13 @@ describe('removeLiveCopiesOfHydratedRows', () => {
     expect(removeLiveCopiesOfHydratedRows([live, hydrated])).toEqual([hydrated])
   })
 
+  it('keeps a distinct pending repeated user turn', () => {
+    const durable = chat('same turn', 41)
+    const pending = { ...chat('same turn'), id: 'user-pending-repeat' }
+
+    expect(removeLiveCopiesOfHydratedRows([durable, pending])).toEqual([durable, pending])
+  })
+
   it('keeps repeated durable rows and unrelated live rows', () => {
     const first = chat('same turn', 41)
     const second = chat('same turn', 42)

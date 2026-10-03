@@ -744,9 +744,10 @@ _HEADER_VISION = (
 )
 
 _HEADER_TEXT_ONLY = (
-    " Your model cannot view images, so work text-first: page_info() for state, js() for "
-    "reading/extracting DOM text, fill_input(selector, text) for inputs, and "
-    "js(\"document.querySelector('…').click()\") for clicks — skip the screenshot-driven workflow described below."
+    " Screenshots will not reach you through tool results in this setup, so work text-first: page_info() for "
+    "state, js() for reading/extracting DOM text, fill_input(selector, text) for inputs, and "
+    "js(\"document.querySelector('…').click()\") for clicks — skip the screenshot-driven workflow described below. "
+    "This does not indicate whether you can see images attached by the user."
 )
 
 # Appended when the local engine is Lightpanda: no graphical renderer, and one CDP

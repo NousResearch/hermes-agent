@@ -30,8 +30,12 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   that profile's store; never a `~/.hermes/...` literal.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**
   `scheduler_provider.py::_start_multiplex` is ONE ticker iterating `profiles_to_serve()`
-  sequentially under `_profile_cron_scope(home)` (home + secret scope + terminal scope) — never N
-  threads (module globals race). Everything a tick touches lives inside that guard: store open,
+  sequentially under `_profile_cron_scope(home)` (home override + cron store; each fire then binds
+  that profile's secret + terminal scope in `scheduler.py::_run_one_job_body` through
+  `launch_profile_policy.served_secret_scope` / `served_terminal_overlay`, so the launch profile keeps
+  its env-only policy — the env frozen at activation once the host multiplexes, the live env's
+  `TERMINAL_*` before it, since a bound terminal scope is the whole policy — and every other profile
+  resolves from its files) — never N threads (module globals race). Everything a tick touches lives inside that guard: store open,
   lock path, backoff/failure counters (`_note_tick_failure`), job env construction, and the
   `on_session_end` flush of a finished job. Supervision (`scheduler_thread.py::
   SupervisedTickerThread`; start on gateway boot, stand down for homes another gateway already
@@ -79,7 +83,13 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   activates it before the first third-party import. A failed activation is fatal: the worker
   exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
   generation the collector may delete. The gateway never re-runs the boot — `hermes_bootstrap`
-  already did at its own launch (#122222).
+  already did at its own launch (#122222). The HOST decides the worker's grant; the worker cannot,
+  because its own process home is the fired profile's. Only the LAUNCH profile's worker gets an
+  unscrubbed env (frozen at activation under multiplex, payload `launch_env: true`) and a `TERMINAL_*`
+  overlay (payload `terminal_overlay`, which the worker's fire applies instead of recomputing). A
+  secondary's worker gets a scrubbed base on any host, no overlay, and under multiplex freezes an
+  EMPTY launch env: launch residue left in its env (systemd-injected keys, `TERMINAL_*` the strip
+  does not know) would otherwise read back as that profile's (#191).
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

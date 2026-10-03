@@ -118,16 +118,27 @@ def _worker_memory_max_bytes() -> int:
 
     The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
     isolation composes with PR #57121 instead of inventing a second knob.
+
+    Two overrides compose, tightest wins. The process env's value is the operator's host cap
+    (systemd ``Environment=``) and binds every served profile; once multiplexing it is read from the
+    env frozen at activation, so a later ``os.environ`` write cannot lift it. The routed profile's
+    terminal scope may only tighten it: that scope is files-only for a secondary profile, and
+    reading it alone dropped an env-only host cap for every secondary profile's workers.
     """
-    override_bound: Optional[int] = None
-    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
-    if override:
+    from tools.terminal_scope import terminal_env
+    from tui_gateway.launch_profile_policy import _launch_env
+
+    override_bounds: List[int] = []
+    for override in dict.fromkeys((_launch_env().get("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip(),
+                                   terminal_env("TERMINAL_LOCAL_MEMORY_MAX_MB").strip())):
+        if not override:
+            continue
         try:
             parsed = int(override) * 1024 * 1024
         except ValueError:
             parsed = -1
         if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
-            override_bound = parsed
+            override_bounds.append(parsed)
         else:
             logger.warning(
                 "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
@@ -158,10 +169,12 @@ def _worker_memory_max_bytes() -> int:
             max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
         )
         candidates.append(physical_bound)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
+        # AttributeError: no os.sysconf (Windows). The only production caller sits behind the
+        # Linux systemd gate, but the override composition above is platform-neutral.
         pass
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
-    return min(override_bound, safe_bound) if override_bound else safe_bound
+    return min([safe_bound, *override_bounds])
 
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
@@ -2187,9 +2200,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
         from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
+        from tools.terminal_scope import terminal_env
 
         try:
-            max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+            # The routed profile's terminal.timeout: os.environ holds the launch profile's.
+            max_timeout = int(terminal_env("TERMINAL_TIMEOUT", "180"))
         except (ValueError, TypeError):
             max_timeout = 180
         # The schema says minimum=1 but not every caller enforces it; timeout=0 is

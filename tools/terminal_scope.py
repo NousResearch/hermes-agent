@@ -204,9 +204,10 @@ def install_profile_terminal_scope(
 
 
 @contextmanager
-def install_and_reset_profile_terminal_scope(hermes_home: "Any") -> Iterator[None]:
+def install_and_reset_profile_terminal_scope(
+    hermes_home: "Any", *, env_overlay: Optional[Dict[str, str]] = None) -> Iterator[None]:
     """Install the profile's terminal policy for a bounded turn/fire. Never raises."""
-    token = install_profile_terminal_scope(hermes_home)
+    token = install_profile_terminal_scope(hermes_home, env_overlay=env_overlay)
     try:
         yield
     finally:

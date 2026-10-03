@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from typing import Dict, Iterator, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +30,18 @@ _lock = threading.Lock()
 _snapshot: Optional[Dict[str, str]] = None
 
 
-def capture_launch_env() -> Dict[str, str]:
+def capture_launch_env(env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     """Freeze the process env as the launch profile's own; the first capture wins.
 
     Called at activation, immediately before the first secondary home is registered as
-    served — the last moment ambient env is provably the launch profile's.
+    served — the last moment ambient env is provably the launch profile's. ``env`` freezes what a
+    spawning host granted instead (a cron worker for a secondary profile freezes nothing: the
+    launch residue its env still carries is never that profile's).
     """
     global _snapshot
     with _lock:
         if _snapshot is None:
-            _snapshot = dict(os.environ)
+            _snapshot = dict(os.environ if env is None else env)
         return dict(_snapshot)
 
 
@@ -120,8 +122,8 @@ def _launch_env() -> Dict[str, str]:
 def launch_terminal_env() -> Dict[str, str]:
     """The frozen launch ``TERMINAL_*`` overlay for a launch-profile turn's terminal scope.
 
-    Production always captured at activation; a first capture here only happens when the
-    multiplexer flag was set by another owner (the messaging gateway) or a harness.
+    Production always captured at activation (the messaging gateway included); a first capture
+    here only happens when a harness set the multiplexer flag directly.
     """
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
@@ -146,6 +148,43 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
+
+
+def is_multiplexed_launch_home(home: "str | Path") -> bool:
+    """Once this process multiplexes, the launch home is the ONE served home whose scope carries the
+    frozen launch env. Identity is the routing home pinned at activation
+    (``agent.secret_scope._is_process_home``), not the default root: a host launched by a named
+    profile hands its env to that profile, never to ``default``."""
+    from agent.secret_scope import _is_process_home, is_multiplex_active
+    return is_multiplex_active() and _is_process_home(Path(home))
+
+
+def served_secret_scope(home: "str | Path") -> Dict[str, str]:
+    """Secret mapping for a home a multiplexing host binds per turn / callback / tick: the launch
+    home's own ``launch_secret_scope`` (a scoped miss no longer reaches ``os.environ``, so a key that
+    only systemd / ``op run`` injected must come from the frozen env), every other home's files only.
+    Before activation every home gets its file mapping: a launch-home miss still reaches
+    ``os.environ`` there."""
+    if is_multiplexed_launch_home(home):
+        return launch_secret_scope(home)
+    from agent.secret_scope import build_profile_secret_scope
+    return build_profile_secret_scope(Path(home))
+
+
+def served_terminal_overlay(home: "str | Path") -> Optional[Dict[str, str]]:
+    """``env_overlay`` for a terminal scope a host binds for ``home``: the launch home's ``TERMINAL_*``
+    from the launch env (``_launch_env``: live before activation, frozen after), none for any other
+    home.
+
+    Not gated on multiplexing like ``served_secret_scope``: a secret miss still reaches ``os.environ``
+    before activation, but a bound terminal scope is the whole policy. Without the overlay a
+    single-profile host's cron fire turned an env-only ``TERMINAL_ENV=docker`` (systemd
+    ``Environment=``, ``op run``) into host execution while the same profile's unscoped turns ran in
+    the sandbox."""
+    from agent.secret_scope import _is_process_home
+    if not _is_process_home(Path(home)):
+        return None
+    return {k: v for k, v in _launch_env().items() if k.startswith("TERMINAL_")}
 
 
 @contextlib.contextmanager

@@ -423,6 +423,22 @@ class TestPythonReprFields:
 
     @pytest.mark.parametrize(
         "key",
+        ["x_bearer", "authBearer", "X_BEARER", "session_bearer"],
+    )
+    def test_bearer_suffix_key_is_redacted(self, key):
+        """``bearer``-suffixed keys (OAuth bearer-token fields) were missed by the
+        OpenHands/software-agent-sdk#4508 suffix widening — only the exact key name
+        ``bearer`` was covered, not ``*_bearer``/``*Bearer`` variants."""
+        secret = f"opaque-{key.lower()}-value-1234567890"
+        text = f"{{'{key}': '{secret}'}}"
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize(
+        "key",
         ["tokenizer", "secretary", "password_policy", "token_count", "keyring"],
     )
     def test_embedded_or_metadata_keyword_key_is_unchanged(self, key):

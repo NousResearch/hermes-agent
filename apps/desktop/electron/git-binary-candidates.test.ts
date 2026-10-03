@@ -97,6 +97,19 @@ describe('windowsGitCandidates (#61494)', () => {
     assert.equal(candidates.find(fs.existsSync), ugitGit)
   })
 
+  test('selects PM-managed Git before the hermes-bundled portable git', () => {
+    const managed = path.join(LAD, 'hermes', 'tools', 'git-2.53.0+3-win32-x64', 'cmd', 'git.exe')
+    const portable = path.join(env.localAppData, 'hermes', 'git', 'cmd', 'git.exe')
+    const fs = fakeFs(
+      { [path.join(LAD, 'hermes', 'tools')]: ['git-2.53.0+3-win32-x64'] },
+      [managed, portable]
+    )
+
+    const candidates = windowsGitCandidates(env, fs)
+
+    assert.equal(candidates.find(fs.existsSync), managed)
+  })
+
   test('still prefers the hermes-bundled portable git over UGit', () => {
     const ugitGit = ugitGitExe('5.50.1')
     const portable = path.join(env.localAppData, 'hermes', 'git', 'cmd', 'git.exe')

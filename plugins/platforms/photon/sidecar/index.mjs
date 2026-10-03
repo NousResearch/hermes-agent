@@ -132,11 +132,45 @@ const staleness = {
   lastProbeAt: 0,
   lastProbeOutcome: null, // "alive" | "inconclusive" | null
   zombieSuspected: false,
+  // Last outbound message send (space.send) — the deaf-stream's evidence
+  // window: a send during the silence whose echo never yields is the one
+  // positive signal that distinguishes a half-open stream from a quiet one.
+  lastOutboundSentAt: 0,
 };
 
 function noteInboundYield() {
   staleness.lastInboundAt = Date.now();
   staleness.zombieSuspected = false;
+}
+
+// How long a sent message's echo needs to come back on the stream before its
+// absence counts as deaf-stream evidence. One watchdog tick is conservative;
+// a healthy stream echoes within seconds.
+const OUTBOUND_ECHO_GRACE_MS = 30 * 1000;
+
+function noteOutboundSent() {
+  staleness.lastOutboundSentAt = Date.now();
+}
+
+/**
+ * Echo evidence for the zombie verdict: an outbound send made during the
+ * current silence (past the grace its echo needs) must be answered by a yield.
+ * A send with no yield after it is the positive deaf signal; without a send
+ * the silence is just a quiet line (#124021).
+ */
+function outboundEchoEvidence(now, silentForMs) {
+  const sentAt = staleness.lastOutboundSentAt;
+  if (!sentAt) {
+    return { awaited: false, arrived: false };
+  }
+  // sentAt > lastInboundAt (silentForMs = now - lastInboundAt) means the send
+  // happened after the last yield — during the current silence.
+  const sentDuringSilence = now - sentAt < silentForMs;
+  const graceElapsed = now - sentAt >= OUTBOUND_ECHO_GRACE_MS;
+  return {
+    awaited: sentDuringSilence && graceElapsed,
+    arrived: staleness.lastInboundAt > sentAt,
+  };
 }
 
 function stalenessSnapshot(now) {
@@ -720,12 +754,17 @@ function inboundStreamErrorMessage(e) {
 // STREAM_SILENCE_PROBE_MS, drive a cheap unary read (space.getMessage on a
 // synthetic id) over the same authenticated channel. Decision rules (see
 // stream-staleness.mjs):
-//   probe proves connectivity while the stream is silent -> the stream itself
-//     is the dead part -> markStreamDegraded -> existing exit-75 restart path.
-//   probe inconclusive (rejected/hung) -> do NOTHING: the network may just be
-//     down, and in that case the iterator eventually throws and the
-//     re-subscribe loop recovers on its own. Never restart on silence alone —
-//     shared lines can be legitimately quiet for hours.
+//   probe proves connectivity while the stream is silent AND a send made
+//     during the silence never echoed back -> the stream itself is the dead
+//     part -> markStreamDegraded -> existing exit-75 restart path. The send's
+//     echo is the evidence that distinguishes deaf from merely quiet: on a
+//     quiet dedicated line "silent + probe alive" is the normal state, and
+//     degrading on it restarted healthy lines every threshold (#124021).
+//   probe inconclusive (rejected/hung) or no send evidence -> do NOTHING: the
+//     network may just be down (the iterator eventually throws and the
+//     re-subscribe loop recovers on its own), or the line is legitimately
+//     quiet. Never restart on silence alone — shared lines can be quiet for
+//     hours.
 
 async function probeUpstream() {
   if (typeof app?.stop !== "function") {
@@ -778,15 +817,17 @@ async function zombieWatchdogTick() {
   watchdogProbeInFlight = true;
   try {
     const outcome = await probeUpstream();
-    if (isZombieSuspect(silentForMs, STREAM_SILENCE_PROBE_MS, outcome)) {
+    if (isZombieSuspect(silentForMs, STREAM_SILENCE_PROBE_MS, outcome, outboundEchoEvidence(now, silentForMs))) {
       staleness.zombieSuspected = true;
       const reason =
         `inbound stream silent for ${silentForMs}ms while an upstream probe ` +
-        "succeeded — half-open (zombie) gRPC stream suspected";
+        "succeeded and a sent message's echo never came back — half-open (zombie) " +
+        "gRPC stream suspected";
       console.error("photon-sidecar: " + reason);
       markStreamDegraded(reason);
     }
-    // Inconclusive: deliberately no action (see block comment above).
+    // Inconclusive or no send-echo evidence: deliberately no action (see block
+    // comment above) — a quiet healthy line must not restart every threshold.
   } catch (e) {
     console.error(
       "photon-sidecar: zombie watchdog tick failed: " +
@@ -1067,6 +1108,7 @@ const server = http.createServer(async (req, res) => {
         chooseSendFormat(format, text) === "markdown"
           ? spectrumMarkdown(text)
           : spectrumText(text);
+      noteOutboundSent();
       const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
     }
@@ -1076,6 +1118,7 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "spaceId and http(s) url are required");
       }
       const space = await resolveSpace(spaceId);
+      noteOutboundSent();
       const result = await space.send(spectrumRichlink(url.trim()));
       return ok(res, { messageId: result?.id || null });
     }
@@ -1098,6 +1141,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
+      noteOutboundSent();
       const result = await space.send(builder);
 
       // iMessage delivers the caption as a separate bubble; send it
@@ -1184,6 +1228,7 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "options must contain at least two choices");
       }
       const space = await resolveSpace(spaceId);
+      noteOutboundSent();
       const result = await space.send(spectrumPoll(title.trim(), choices));
       return ok(res, { messageId: result?.id || null });
     }
@@ -1198,6 +1243,7 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "unsupported effect");
       }
       const space = await resolveSpace(spaceId);
+      noteOutboundSent();
       const result = await space.send(
         imessageEffect(spectrumText(text.trim()), effectId)
       );

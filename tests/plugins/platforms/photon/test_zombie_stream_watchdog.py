@@ -124,30 +124,58 @@ def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
 def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None:
     """The core conservatism rule: shared lines can be quiet for hours, so a
     zombie is declared only when the stream is silent past threshold AND a
-    probe PROVED the wire works (stream dead, channel alive)."""
+    probe PROVED the wire works (stream dead, channel alive). Silence + an
+    alive probe alone is still ambiguous on a quiet dedicated line (#124021):
+    the echo evidence below decides."""
     out = _run_staleness_harness(
         """
         const MIN10 = 10 * 60 * 1000;
         const alive = { alive: true };
         const inconclusive = { alive: false };
+        const echoed = { awaited: true, arrived: true };
         const results = {
-          silentAndProbeAlive: isZombieSuspect(MIN10 * 2, MIN10, alive),
-          silentButProbeInconclusive: isZombieSuspect(MIN10 * 2, MIN10, inconclusive),
-          silentNoProbe: isZombieSuspect(MIN10 * 2, MIN10, null),
-          hoursOfSilenceInconclusive: isZombieSuspect(MIN10 * 36, MIN10, inconclusive),
-          notSilentEnough: isZombieSuspect(MIN10 - 1, MIN10, alive),
-          disabled: isZombieSuspect(MIN10 * 2, 0, alive),
+          silentProbeAliveNoSend: isZombieSuspect(MIN10 * 2, MIN10, alive, { awaited: false, arrived: false }),
+          silentProbeAliveSendEchoed: isZombieSuspect(MIN10 * 2, MIN10, alive, echoed),
+          silentButProbeInconclusive: isZombieSuspect(MIN10 * 2, MIN10, inconclusive, { awaited: false, arrived: false }),
+          silentNoProbe: isZombieSuspect(MIN10 * 2, MIN10, null, { awaited: false, arrived: false }),
+          hoursOfSilenceInconclusive: isZombieSuspect(MIN10 * 36, MIN10, inconclusive, { awaited: false, arrived: false }),
+          notSilentEnough: isZombieSuspect(MIN10 - 1, MIN10, alive, { awaited: true, arrived: false }),
+          disabled: isZombieSuspect(MIN10 * 2, 0, alive, { awaited: true, arrived: false }),
+          legacyThreeArgCall: isZombieSuspect(MIN10 * 2, MIN10, alive),
         };
         process.stdout.write(JSON.stringify(results));
         """
     )
-    assert out["silentAndProbeAlive"] is True
+    # Silence + probe-alive + NO send evidence is a quiet healthy line — the
+    # exact false-positive class live-evidenced in #124021 (~50 restarts/night).
+    assert out["silentProbeAliveNoSend"] is False
+    assert out["legacyThreeArgCall"] is False
+    # A send whose echo came back proves the stream alive, not deaf.
+    assert out["silentProbeAliveSendEchoed"] is False
     # Silence alone — even 6 hours of it — is NEVER a zombie verdict.
     assert out["silentButProbeInconclusive"] is False
     assert out["silentNoProbe"] is False
     assert out["hoursOfSilenceInconclusive"] is False
     assert out["notSilentEnough"] is False
     assert out["disabled"] is False
+
+
+def test_zombie_requires_a_send_whose_echo_never_came_back() -> None:
+    """The one positive deaf-stream signal (#124021): a send made during the
+    silence, past its echo grace, with no yield after it."""
+    out = _run_staleness_harness(
+        """
+        const MIN10 = 10 * 60 * 1000;
+        const alive = { alive: true };
+        const results = {
+          deafSend: isZombieSuspect(MIN10 * 2, MIN10, alive, { awaited: true, arrived: false }),
+          echoStillWithinGrace: isZombieSuspect(MIN10 * 2, MIN10, alive, { awaited: false, arrived: false }),
+        };
+        process.stdout.write(JSON.stringify(results));
+        """
+    )
+    assert out["deafSend"] is True
+    assert out["echoStillWithinGrace"] is False
 
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 

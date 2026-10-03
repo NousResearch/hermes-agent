@@ -72,15 +72,31 @@ export function shouldProbe(silentForMs, thresholdMs, sinceLastProbeMs, probeCoo
 
 /**
  * Final classification: zombie only on silence past threshold + probe-proven
- * connectivity. Never on silence alone, never on an inconclusive probe.
+ * connectivity + a send whose echo never came back. Never on silence alone,
+ * never on an inconclusive probe.
+ *
+ * The echo requirement (#124021, live-evidenced) closes the gap the probe
+ * cannot: on a quiet dedicated line "silent + probe alive" is the NORMAL state
+ * (the unary read round-trips on a healthy stream), so degrading on it
+ * restarted a healthy line every threshold window. An outbound send made
+ * during the silence is the one positive deaf-stream signal — its echo must
+ * arrive for the stream to be alive; without a send the silence stays
+ * inconclusive and the stream is left alone.
  *
  * @param {number} silentForMs ms since the inbound iterator last yielded
  * @param {number} thresholdMs silence threshold (<= 0 disables the watchdog)
  * @param {{alive: boolean}} probeOutcome
+ * @param {{awaited: boolean, arrived: boolean}} echoEvidence an outbound send
+ *   made during the current silence (past its echo grace) and whether any
+ *   yield came back after it
  * @returns {boolean}
  */
-export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome) {
+export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome, echoEvidence) {
   if (!(thresholdMs > 0)) return false;
   if (silentForMs < thresholdMs) return false;
-  return probeOutcome != null && probeOutcome.alive === true;
+  if (probeOutcome == null || probeOutcome.alive !== true) return false;
+  // Silence + a working wire is still ambiguous: quiet and deaf are
+  // indistinguishable until a send's echo is expected and never arrives.
+  if (!echoEvidence || echoEvidence.awaited !== true) return false;
+  return echoEvidence.arrived !== true;
 }

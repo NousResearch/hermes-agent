@@ -2662,7 +2662,8 @@ def run_job(
     finally:
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
-            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
+            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id,
+            execution_id=execution_id)
         scope.exit()
         if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)
@@ -2679,6 +2680,16 @@ def run_job(
                     defer_agent_teardown.append(agent)
             else:
                 _teardown_cron_agent(agent, job_id)
+                # Inline teardown just completed for THIS attempt: emit the durable
+                # drain signal. The deferred paths emit from their own teardown
+                # sites (run_one_job's post-delivery teardown and the detached
+                # worker's Future callback) — emitting here on the holder path would
+                # report "drained" while the agent's clients are still live, and log
+                # a second record when the real site emits. Never emitted from the
+                # early-return gates above — those never opened state.db or built an
+                # agent.
+                from cron.worker_drain import record_drain
+                record_drain(execution_id or "", job_id=job_id)
 
 
 def _teardown_cron_agent(
@@ -3386,6 +3397,12 @@ def _run_one_job_body(
             # every path so cron agents never leak their subprocesses/clients (#10200).
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
+            # Deferred teardown just completed for THIS attempt: emit the durable
+            # drain signal (#125513). Runs on the success, failure, claim-loss and
+            # every BaseException path below — exactly the external-deployer
+            # contract that a terminal ledger row alone could not prove.
+            from cron.worker_drain import record_drain
+            record_drain(execution_id, job_id=job["id"])
 
         _run_kwargs = {
             "defer_agent_teardown": _deferred_agents,

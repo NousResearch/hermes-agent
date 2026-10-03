@@ -318,8 +318,24 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     if pconfig is None:
-        return None, None, None, _not_configured_error(platform_name, platform, entry)
+        # Credentialless multiplex satellite: send through the host profile's bot that already
+        # serves this profile via gateway.profile_routes (tools/send_message_shared_bot.py).
+        host, reason = _shared_bot_host(platform_name, platform, config)
+        if host is not None:
+            return platform, host.pconfig, entry, None
+        msg = _not_configured_error(platform_name, platform, entry)
+        return None, None, None, f"{msg} Host-bot fallback: {reason}." if reason else msg
     return platform, pconfig, entry, None
+
+
+def _shared_bot_host(platform_name, platform, config):
+    """``(SharedBotHost | None, reason)``; a fault in the lookup is a refusal, never a send."""
+    try:
+        from tools.send_message_shared_bot import resolve_shared_bot_host
+        return resolve_shared_bot_host(platform_name, platform, config)
+    except Exception as exc:  # noqa: BLE001 - fail closed to the not-configured error
+        logger.debug("shared-bot host lookup failed for %s", platform_name, exc_info=True)
+        return None, f"host lookup failed ({type(exc).__name__})"
 
 
 def _not_configured_error(platform_name, platform, entry):

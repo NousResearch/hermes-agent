@@ -327,6 +327,12 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
+        _arg("--at", default=None, metavar="TS",
+             help="Timed wake: epoch seconds or ISO-8601 (naive = local time). The dispatcher "
+                  "returns the task to ready on its first tick at/after TS. Also re-times an "
+                  "already-scheduled task."),
+        _arg("--now", action="store_true",
+             help="Timed wake at now: the dispatcher returns the task to ready on its next tick."),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),

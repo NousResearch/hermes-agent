@@ -1005,14 +1005,46 @@ def _cmd_block(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 
+def _parse_wake_at(value: str) -> int:
+    """``--at`` -> epoch seconds: epoch digits or ISO-8601 (naive = local time)."""
+    value = (value or "").strip()
+    if value.isdigit():
+        return int(value)
+    from datetime import datetime
+
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+
+
 def _cmd_schedule(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
+    if getattr(args, "now", False) and getattr(args, "at", None):
+        return _err("use either --now or --at, not both")
+    wake_at: Optional[int] = int(time.time()) if getattr(args, "now", False) else None
+    if getattr(args, "at", None):
+        try:
+            wake_at = _parse_wake_at(args.at)
+        except ValueError:
+            return _err(f"invalid --at {args.at!r} (epoch seconds or ISO-8601)")
+    if wake_at is not None:
+        suffix += f" (wakes {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(wake_at))})"
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "SCHEDULED", lambda tid: kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid)))
+        def park(tid: str) -> bool:
+            # An already-scheduled task with a wake time is only re-timed.
+            if wake_at is None or kb._task_status(conn, tid) != "scheduled":
+                if not kb.schedule_task(conn, tid, reason=reason,
+                                        expected_run_id=_worker_run_id_for(tid)):
+                    return False
+            if wake_at is None:
+                return True
+            ok, err = kb.set_schedule_wake(conn, tid, wake_at=wake_at, actor=author, reason=reason)
+            if not ok:
+                print(f"cannot set wake for {tid}: {err}", file=sys.stderr)
+            return ok
+
+        op = _commented(conn, reason, author, "SCHEDULED", park)
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 

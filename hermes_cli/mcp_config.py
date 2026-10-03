@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -619,6 +620,7 @@ def cmd_mcp_add(args):
         cmd_args = cmd_args[1:]
     auth_type = getattr(args, "auth", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+    client_metadata_url = getattr(args, "client_metadata_url", None)
 
     server_config: Dict[str, Any] = {}
     try:
@@ -629,6 +631,21 @@ def cmd_mcp_add(args):
     except ValueError as exc:
         _error(str(exc))
         return
+
+    if client_metadata_url:
+        parsed_metadata_url = urlparse(client_metadata_url)
+        if (
+            not url
+            or auth_type != "oauth"
+            or parsed_metadata_url.scheme != "https"
+            or not parsed_metadata_url.netloc
+            or parsed_metadata_url.params
+            or parsed_metadata_url.query
+            or parsed_metadata_url.fragment
+        ):
+            _error("--client-metadata-url requires OAuth HTTP and a valid HTTPS CIMD URL")
+            return
+        server_config.setdefault("oauth", {})["client_metadata_url"] = client_metadata_url
 
     if url and explicit_env:
         _error("--env is only supported for stdio MCP servers (--command or stdio presets)")

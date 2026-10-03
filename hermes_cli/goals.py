@@ -1670,6 +1670,7 @@ def run_kanban_goal_loop(
             status = task_status_fn()
         except Exception as exc:
             _log(f"kanban goal loop: status check failed ({exc}); stopping")
+            _block(f"Goal-mode worker: task status check failed — {type(exc).__name__}: {exc}")
             return _result("stopped", "status check failed")
 
         terminal = _KANBAN_TERMINAL_STATUSES.get(status)
@@ -1680,6 +1681,7 @@ def run_kanban_goal_loop(
         if status not in ("running", "ready"):
             # Reclaimed / archived / unexpected — let the dispatcher own it.
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            _block(f"Goal-mode worker: task moved to unexpected status {status!r}; blocking for human review")
             return _result("stopped", f"status={status}")
 
         # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
@@ -1731,6 +1733,7 @@ def run_kanban_goal_loop(
             last_response = run_turn(prompt) or ""
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
+            _block(f"Goal-mode worker: turn execution failed — {type(exc).__name__}: {exc}")
             return _result("stopped", f"run_turn error: {type(exc).__name__}")
         turns_used += 1
 

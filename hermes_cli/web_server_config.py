@@ -746,7 +746,7 @@ def _normalize_aux_reasoning_effort(value: Optional[str]) -> Optional[str]:
 
 def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, base_url: str, api_key: str,
                                reasoning_effort: Optional[str] = _UNSET) -> dict:
-    from hermes_cli.config import save_config
+    from hermes_cli.config import save_config, store_aux_endpoint_key
     aux = cfg.get("auxiliary")
     if not isinstance(aux, dict):
         aux = {}
@@ -793,7 +793,7 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             # in. See #65254.
             slot_cfg["base_url"] = base_url
             if api_key:
-                slot_cfg["api_key"] = api_key
+                slot_cfg["api_key"] = store_aux_endpoint_key(task or "all", base_url, api_key)
         elif new_provider != prev_provider and new_provider != "custom":
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)

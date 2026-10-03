@@ -2805,6 +2805,26 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
+def store_aux_endpoint_key(slot: str, base_url: str, api_key: str) -> str:
+    """Save an auxiliary endpoint key to ``.env`` and return the ``${VAR}`` config.yaml stores.
+
+    Same storage as the main custom flow (#69449): secrets live in ``.env``, never in config.yaml.
+    The aux prefix and *slot* keep it from overwriting the main endpoint's key for the same host."""
+    key = str(api_key or "").strip()
+    if not key or (key.startswith("${") and key.endswith("}")):
+        return key
+    import urllib.parse
+    parsed = urllib.parse.urlparse(str(base_url or ""))
+    host = f"{parsed.hostname or ''}_{parsed.port}" if parsed.port else (parsed.hostname or "")
+    var = custom_endpoint_key_env(f"aux_{slot}_{host}")
+    save_env_value(var, key)
+    # save_env_value returns silently when the write is blocked; a reference to an unwritten
+    # variable would drop the typed key without telling anyone.
+    if (get_env_value(var) or "").strip() != key:
+        raise RuntimeError(f"failed to persist {var} to .env")
+    return f"${{{var}}}"
+
+
 def remove_env_value(key: str) -> bool:
     """Remove a key from ~/.hermes/.env and os.environ; True if it was found and removed."""
     if _env_write_blocked(key, "remove"):

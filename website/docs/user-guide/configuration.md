@@ -1762,6 +1762,8 @@ auxiliary:
 
 `base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint. With neither set, the main model's key is reused only when `base_url` has the main endpoint's exact origin (scheme, host and port). The main endpoint is the one the session is running on (after a `/model` switch, that one), paired with its own key, never with a key from a different endpoint.
 
+A key entered through `hermes model` → **Configure auxiliary models** → **Custom endpoint**, or through the dashboard's auxiliary model picker, is saved to `.env` and stored in `config.yaml` as a `${VAR}` reference, never as the key itself.
+
 **Using OpenAI API key for vision:**
 ```yaml
 # In ~/.hermes/.env:

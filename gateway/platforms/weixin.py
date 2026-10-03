@@ -559,7 +559,7 @@ def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
     for prefix, message_type in _MIME_PREFIX_TYPES:
         if any(m.startswith(prefix) for m in media_types):
             return message_type
-    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if text.lstrip().startswith("/") else MessageType.TEXT
 
 
 def _load_sync_buf(hermes_home: str, account_id: str) -> str:
@@ -874,10 +874,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         message_id = str(message.get("message_id") or "").strip()
         if not sender_id or sender_id == self._account_id or (message_id and self._dedup.is_duplicate(message_id)):
             return
-        # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
+        # Slash commands are intentionally repeatable (one /approve per pending
+        # approval). Message-ID dedup above still rejects transport retries.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
+        if text and not text.lstrip().startswith("/") and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
             return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)

@@ -61,10 +61,10 @@ refusal exists precisely so nothing gets lost.
 
 ## Maintenance commands refuse while someone is writing
 
-`hermes sessions optimize`, `hermes sessions optimize-storage` and `hermes sessions prune`
-rewrite the store (VACUUM, a full-text index rebuild, bulk deletes). Running one of them under
-a live gateway is how a fleet of agents ends up in the refusal above, so they now check first
-and refuse while another process holds the database:
+`hermes sessions optimize` and `hermes sessions optimize-storage` rewrite the store (VACUUM,
+a full-text index rebuild). Running one of them under a live gateway is how a fleet of agents
+ends up in the refusal above, so they now check first and refuse while another process holds
+the database:
 
 ```text
 Refusing `hermes sessions optimize-storage`: another process is using ~/.hermes/state.db.
@@ -79,6 +79,16 @@ Override with --force if you accept the risk.
 `--dry-run` previews are never blocked. `--force` runs anyway — use it only when you know
 the listed processes are idle (a reader you started yourself, for example). The same check
 runs when you type `sessions optimize` in the Desktop console.
+
+`hermes sessions prune` is **not** gated: it is batched `DELETE`s over the existing connection
+in a normal WAL transaction, so it is safe to run while a gateway, Desktop, dashboard or cron
+holds `state.db` — a nightly `hermes sessions prune --older-than 14d --yes` cron keeps working on
+a host with a permanently-running gateway. `--force` is still accepted there for existing
+scripts, but is no longer needed.
+
+One exception, and it is SQLite's rather than prune's: under
+`database.journal_mode: delete` (the non-WAL containment mode) no writer can open the store at
+all while another process holds it — the same is true of `hermes sessions list` on that box.
 
 ## Files you may find beside `state.db`
 

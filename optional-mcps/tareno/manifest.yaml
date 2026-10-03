@@ -1,0 +1,38 @@
+manifest_version: 1
+name: tareno
+connector_slug: tareno
+description: >-
+  Manage social accounts, calendars, drafts, media, analytics and Get Viral
+  research through Tareno's hosted OAuth MCP server.
+source: https://tareno.co/docs/mcp
+transport:
+  type: http
+  url: https://tareno.co/api/mcp
+auth:
+  type: oauth
+tools:
+  default_enabled:
+    - list_workspaces
+    - list_accounts
+    - list_posts
+    - get_platform_schema
+    - get_analytics_overview
+suggest:
+  keywords:
+    - tareno
+  hosts:
+    - tareno.co
+post_install: |
+  A Tareno account and access to the selected workspaces/social accounts are
+  required. Authenticate through browser OAuth or run hermes mcp login tareno.
+  No API key or client secret is required in this manifest.
+
+  The default tool selection is read-only. Use hermes mcp configure tareno
+  to opt into drafting, media import, scheduling, publishing or Get Viral tools.
+  Start a new session or use /reload-mcp after changing the connection.
+
+  Publishing, scheduling, editing scheduled posts, deleting drafts/scheduled
+  posts and starting paid Get Viral analysis use Tareno approval requests.
+  Confirm completion with get_action_status or the relevant run-status tool;
+  pending approval is not completed work. Preserve Hermes approval policies.
+  Service-plan limits, provider permissions and AI-credit costs apply.

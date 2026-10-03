@@ -1,0 +1,45 @@
+name: MCP client conformance
+
+# Runs the official @modelcontextprotocol/conformance client scenarios against Hermes' real MCP
+# stack (tests/conformance/mcp_client/) and compares every check with the committed baseline. A check
+# that regresses fails the job; a check that newly passes also fails, so the baseline is refreshed
+# in the same PR (`python tests/conformance/mcp_client/run.py --update-baseline`).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: MCP client conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.12.13"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.14
+        run: uv python install 3.14
+
+      - name: Install Hermes with the MCP extra
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.14 --extra mcp
+
+      - name: Set up Node (the conformance harness runs under npx)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+        with:
+          node-version: 22
+
+      - name: Run the conformance scenarios
+        run: .venv/bin/python tests/conformance/mcp_client/run.py

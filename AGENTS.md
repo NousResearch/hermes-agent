@@ -414,6 +414,10 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.
+- **MCP client conformance** is not pytest: `python tests/conformance/mcp_client/run.py` drives the official
+  `@modelcontextprotocol/conformance` client scenarios through the real MCP stack and diffs every check
+  against `tests/conformance/mcp_client/baseline.json` (CI lane `MCP client conformance`). A check that starts
+  passing fails the run until `--update-baseline` records it; never regenerate the baseline to hide a regression.
 - **Tests must not write to `~/.hermes/`.** The autouse `_isolate_hermes_home` fixture in
   `tests/conftest.py` redirects `HERMES_HOME`; never hardcode `~/.hermes/` in tests. Profile
   tests also mock `Path.home()` so `_get_profiles_root()` / `_get_default_hermes_home()` stay

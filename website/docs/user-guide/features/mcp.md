@@ -270,6 +270,11 @@ dashboard's own callback URL — so the browser you approve in must run on the
 same machine as the Hermes process. For a remote host, use `hermes mcp login`
 over SSH port-forwarding.
 
+A pre-registered `client_secret` is sent as `client_secret_post` unless you set
+`oauth.token_endpoint_auth_method`; when the server's metadata lists only
+`client_secret_basic`, Hermes sends HTTP Basic auth instead of failing the
+token exchange.
+
 ### Updating tool selection later
 
 ```bash
@@ -989,6 +994,8 @@ mcp_servers:
 ```
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
+
+Hermes answers the form with the schema's `default` values: accepting sends every field that declares a default (SEP-1034), declining or cancelling sends nothing. Fields without a default are left for the server to treat as omitted.
 
 ## Running Hermes as an MCP server
 

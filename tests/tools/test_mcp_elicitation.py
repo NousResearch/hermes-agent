@@ -65,6 +65,24 @@ class TestElicitationHandlerFormMode:
         assert handler.metrics["accepted"] == 1
         assert handler.metrics["declined"] == 0
 
+    def test_accept_answers_with_the_schema_defaults(self):
+        """SEP-1034: consent is the only input Hermes collects, so an accept carries each field's
+        declared default; a field without one is omitted rather than invented."""
+        handler = ElicitationHandler("defaults", {"timeout": 5})
+        params = _form_params("accept with defaults", {"type": "object", "properties": {
+            "name": {"type": "string", "default": "John Doe"},
+            "age": {"type": "integer", "default": 30},
+            "status": {"type": "string", "enum": ["active", "inactive"], "default": "active"},
+            "verified": {"type": "boolean", "default": True},
+            "note": {"type": "string"},
+        }})
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert result.content == {"name": "John Doe", "age": 30, "status": "active", "verified": True}
+
 
 
     def test_cancel_propagates_through(self):

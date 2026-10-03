@@ -435,6 +435,38 @@ class TestCallbackPortReservation:
         assert cfg["_resolved_port"] == 49399
         assert 49399 not in mod._reserved_sockets
 
+    def test_second_flow_rebinds_the_pinned_port_right_after_a_callback(self):
+        """A scope step-up or re-auth reuses the pinned/cached callback port seconds after the first
+        callback; the first flow's connection sits in TIME_WAIT and must not block the re-bind — by
+        a fresh process reserving the pin, or by the cached-port path binding without a reservation.
+        A port a sibling holds parked stays refused."""
+        import http.client
+        import socket as sock
+        import threading
+        import tools.mcp_oauth as mod
+
+        port = mod._reserve_callback_port()
+        handler_cls, _result = mod._make_callback_handler()
+        first = mod._start_callback_server(port, handler_cls)
+        threading.Thread(target=first.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True).start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/callback?code=abc&state=xyz")
+            conn.getresponse().read()
+            conn.close()
+        finally:
+            first.shutdown()
+            first.server_close()
+        assert mod._bind_reserved(port) == port  # next process pins the same port over the TIME_WAIT
+        thief = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+        thief.setsockopt(sock.SOL_SOCKET, sock.SO_REUSEADDR, 1)
+        with pytest.raises(OSError):  # a sibling's own probe still sees the parked pin as taken
+            thief.bind(("127.0.0.1", port))
+        thief.close()
+        mod._reserved_sockets.pop(port).close()
+        second = mod._start_callback_server(port, mod._make_callback_handler()[0])  # cached-port path: no parked socket
+        second.server_close()
+
     @pytest.mark.usefixtures("require_mcp_2_sdk")  # asserts the 2.0-only AuthorizationCodeResult.code
     def test_wait_for_callback_adopts_reserved_socket(self, monkeypatch):
         """E2E: reserve → _wait_for_callback binds the SAME socket and the

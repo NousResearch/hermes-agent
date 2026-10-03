@@ -75,6 +75,37 @@ async def test_web_extract_dispatches_urls_from_search_result_objects(extract_pr
     assert [entry["url"] for entry in result["results"]] == extract_provider.received_urls
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["token=opaque", "api_key=opaque", "%74oken=opaque"])
+async def test_web_extract_refuses_whole_call_for_sensitive_query_key(
+    extract_provider,
+    query,
+):
+    result = json.loads(await web_tools.web_extract_tool([
+        "https://example.com/ordinary",
+        f"https://example.org/callback?{query}",
+    ]))
+
+    assert result == {
+        "success": False,
+        "error": (
+            "Blocked: URL contains what appears to be an API key or token. "
+            "Secrets must not be sent in URLs."
+        ),
+    }
+    assert extract_provider.received_urls == []
+
+
+@pytest.mark.asyncio
+async def test_web_extract_dispatches_ordinary_query_key(extract_provider):
+    url = "https://example.com/search?topic=token"
+
+    result = json.loads(await web_tools.web_extract_tool([url]))
+
+    assert extract_provider.received_urls == [url]
+    assert result["results"][0]["url"] == url
+
+
 def test_web_extract_registry_dispatch_accepts_search_result_objects(
     extract_provider,
 ):

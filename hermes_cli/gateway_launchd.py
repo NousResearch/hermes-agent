@@ -23,8 +23,12 @@ def _gw():
 
 
 def get_launchd_label() -> str:
-    """Return the launchd service label, scoped per profile."""
-    suffix = _gw()._profile_suffix()
+    """Return the launchd service label, scoped per profile and root.
+
+    See ``gateway._native_service_suffix`` for why this is root-qualified rather than using
+    ``_profile_suffix`` directly (#93349: two custom roots with a same-named profile collide).
+    """
+    suffix = _gw()._native_service_suffix()
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 

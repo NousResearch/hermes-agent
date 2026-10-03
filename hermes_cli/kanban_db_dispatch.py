@@ -403,7 +403,20 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        # Epoch must match exactly; the start time drifts by ~1 s between reads on
+        # macOS (kern.boottime adjustment), so compare it with the shared tolerance.
+        current_fp = _process_fingerprint(int(pid))
+        if current_fp is None:
+            return True
+        cur_epoch, _, cur_start = current_fp.partition("|")
+        rec_epoch, _, rec_start = started_at.partition("|")
+        if cur_epoch != rec_epoch:
+            return True
+        from gateway.status import start_time_fingerprints_match
+        try:
+            return not start_time_fingerprints_match(rec_start, cur_start)
+        except (TypeError, ValueError):
+            return True
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:

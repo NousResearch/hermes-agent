@@ -1303,7 +1303,20 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    path = args.get("path")
+    if not path or not isinstance(path, str):
+        # Same guard _handle_write_file has (#19096). Without it, path defaults
+        # to the session cwd and the model gets a baffling "Cannot read
+        # '<cwd>': not a regular file (directory...)" — the reported directory
+        # is usually a PREFIX of the path it actually asked for, so the error
+        # reads like a path-truncation bug (#124860). A wrong parameter name
+        # (e.g. 'file_path' from relay models) is the most common trigger.
+        return tool_error(
+            "read_file: missing required field 'path'. The tool call most likely "
+            "used a wrong parameter name (e.g. 'file_path' instead of 'path'). "
+            "Re-emit the tool call with the file path under the 'path' key."
+        )
+    return read_file_tool(path=path, offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -1340,6 +1353,18 @@ def _handle_patch(args, **kw):
 
     tid = kw.get("task_id") or "default"
     mode = args.get("mode", "replace")
+    # Degenerate to an actionable message instead of flowing a None path into
+    # the patch machinery, where the failure surfaces far from the cause (#124860).
+    if mode == "replace" and not args.get("path"):
+        return tool_error(
+            "patch: missing required field 'path' for mode='replace'. Re-emit the "
+            "tool call with 'path', 'old_string' and 'new_string' set."
+        )
+    if mode == "patch" and not args.get("patch"):
+        return tool_error(
+            "patch: missing required field 'patch' for mode='patch'. Re-emit the "
+            "tool call with the V4A patch payload under the 'patch' key."
+        )
     return record_file_edit("patch", mode, lambda: patch_tool(
         mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
@@ -1356,9 +1381,28 @@ def _handle_search_files(args, **kw):
     target = target_map.get(raw_target, raw_target)
     # The schema documents path='.'; a present-but-blank (or JSON null) value
     # is not a missing key for dict.get, so apply the default here (#112424).
-    path = args.get("path", ".")
-    if path is None or (isinstance(path, str) and not path.strip()):
+    raw_path = args.get("path")
+    if raw_path is None or (isinstance(raw_path, str) and not raw_path.strip()):
+        # A missing/blank path is a LEGITIMATE default ('.') — unless the call
+        # also carries keys the schema doesn't know, in which case the intended
+        # path most likely arrived under a wrong parameter name (e.g.
+        # 'file_path'). Silently searching the session cwd would then return
+        # plausible-looking results from the wrong tree, which is strictly
+        # worse than a noisy error (#124860).
+        unknown = sorted(
+            k for k in args
+            if k != "task_id" and k not in SEARCH_FILES_SCHEMA["parameters"]["properties"]
+        )
+        if unknown:
+            return tool_error(
+                "search_files: no usable 'path' and unrecognized argument key(s) "
+                f"{unknown} — the search root was most likely sent under a wrong "
+                "parameter name. Re-emit the call with the search root under the "
+                "'path' key, or omit 'path' entirely to search the session directory."
+            )
         path = "."
+    else:
+        path = raw_path
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),

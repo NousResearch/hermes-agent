@@ -247,3 +247,66 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Parameter-name alias normalization ────────────────────────────────────
+
+
+class TestParamAliasNormalization:
+    """Models trained on other agent ecosystems (e.g. Claude Code's `file_path`)
+    emit alias keys for tools whose schema uses a different name. An unknown key
+    is silently dropped and the missing required param falls back to its default
+    (for read_file: the session cwd — a directory), producing a confusing
+    "not a regular file" error. Alias normalization renames known aliases to
+    their canonical schema names before dispatch."""
+
+    def _read_file_schema(self):
+        return {
+            "type": "object",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        }
+
+    def test_file_path_alias_is_renamed_to_path(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._read_file_schema()):
+            args = {"file_path": "/tmp/config.yaml", "limit": 5}
+            result = coerce_tool_args("read_file", args)
+            assert result["path"] == "/tmp/config.yaml"
+            assert "file_path" not in result
+            assert result["limit"] == 5
+
+    def test_native_file_path_schema_is_untouched(self):
+        """A tool whose schema genuinely uses `file_path` must not be rewritten."""
+        schema = {
+            "type": "object",
+            "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}},
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"file_path": "x"}
+            result = coerce_tool_args("some_tool", args)
+            assert result == {"file_path": "x"}
+
+    def test_canonical_key_takes_precedence(self):
+        """When both the alias and the canonical key are present, keep both as-is."""
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._read_file_schema()):
+            args = {"file_path": "a", "path": "b"}
+            result = coerce_tool_args("read_file", args)
+            assert result == {"file_path": "a", "path": "b"}
+
+    def test_no_alias_without_canonical_in_schema(self):
+        """No rewrite when the schema has neither the alias nor the canonical name."""
+        schema = {
+            "type": "object",
+            "parameters": {"type": "object", "properties": {"url": {"type": "string"}}},
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"file_path": "x"}
+            result = coerce_tool_args("some_tool", args)
+            assert result == {"file_path": "x"}

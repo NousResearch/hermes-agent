@@ -342,14 +342,61 @@ def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
     return UPDATE_AVAILABLE_NO_COUNT, []
 
 
+def _parked_branch_policy(config: dict) -> tuple[str, bool]:
+    """``(strategy, auto_switch)`` for ``updates.parked_branch_strategy`` /
+    ``updates.auto_switch_parked_branch``, read exactly as the updater reads them
+    (defaults ``"switch"`` / ``True``), tolerating a malformed section."""
+    updates = config.get("updates") if isinstance(config, dict) else None
+    updates = updates if isinstance(updates, dict) else {}
+    strategy = updates.get("parked_branch_strategy", "switch")
+    auto_switch = updates.get("auto_switch_parked_branch", True)
+    return (strategy if isinstance(strategy, str) else "switch", bool(auto_switch))
+
+
+def _parked_branch_message(branch: str, reason: str) -> str:
+    """Informational copy for a maintained branch: present-tense policy statement,
+    classification-specific first sentence, no inline config syntax."""
+    first = (f"Branch '{branch}' has never been pushed and contains local-only work."
+             if reason == "never-pushed"
+             else f"Branch '{branch}' was removed from the remote but still contains commits not in main.")
+    return (f"{first} Because updates.parked_branch_strategy is update_in_place, Hermes checks it "
+            "against origin/main and will update this branch in place rather than switching away "
+            "from it. Local commits remain on the branch; a merge conflict stops the update.")
+
+
 def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
-                  heal: Optional[tuple[Path, dict]]) -> None:
-    """Compare the checkout with ``selected_branch``'s remote tip, falling back to main if it was deleted."""
+                  heal: Optional[tuple[Path, dict]], parked_in_place: bool = False) -> None:
+    """Compare the checkout with ``selected_branch``'s remote tip, falling back to main if it was deleted.
+
+    A branch the remote does not advertise is the deliberate supported state when this checkout is
+    on it and the effective parked policy is ``update_in_place`` (the updater merges origin/main
+    INTO the branch; no switch): report the ordinary behind-status against main — the update
+    target — with additive parked markers instead of the terminal ``branch-local-only`` error.
+    ``parked_in_place`` is False for every other state (no explicit strategy, auto-switch disabled,
+    explicit --branch override), which keeps the full error.
+    """
     result["branch"] = selected_branch
     remote = _branch_remote(co, selected_branch)
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
     reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
     if reason:
+        if parked_in_place and co.current_branch == selected_branch:
+            target, _, failure = _branch_tip(co.repository, "main", co.root, co.git,
+                                              remote if co.embedded else "origin")
+            if target is None:
+                result.update(error="fetch-failed",
+                              message=f"Could not resolve the remote branch tip: {failure}" if failure
+                              else "Could not resolve the remote branch tip.")
+                return
+            behind, commits = _behind_count(co, target)
+            result["commits"] = commits
+            # The update target is main (Desktop turns status.branch into `hermes update --branch
+            # <branch>`); currentBranch keeps naming the maintained branch the checkout stays on.
+            result["branch"] = "main"
+            result.update(localOnly=True, parked=True, parkedStrategy="update_in_place",
+                          targetSha=target, behind=behind, updateAvailable=behind != 0,
+                          message=_parked_branch_message(selected_branch, reason))
+            return
         detail = ("has never been pushed" if reason == "never-pushed"
                   else "is gone from the remote but has commits that are not in main")
         result.update(error="branch-local-only", localOnly=True,
@@ -394,6 +441,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     if unsupported:
         return {**result, **unsupported}
     config = require_readable_config_before_write(home / "config.yaml")
+    parked_strategy, parked_auto_switch = _parked_branch_policy(config)
     if passive and (config.get("updates") or {}).get("check") is False:
         return {**result, "reason": "disabled"}
     channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
@@ -406,8 +454,16 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         result["channel"] = channel
     else:
         result["branch"] = selected_branch
+    # The informational parked state is exactly the updater's in-place policy: main channel, no
+    # explicit --branch override (an explicit target keeps today's error semantics), update_in_place
+    # configured, auto-switch not disabled. The effective policy is part of the cache identity so a
+    # config change invalidates a cached result instead of being masked by it.
+    parked_in_place = (channel == "main" and branch is None
+                       and parked_strategy == "update_in_place" and parked_auto_switch)
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None,
+                "parkedBranchStrategy": parked_strategy, "autoSwitchParkedBranch": parked_auto_switch,
+                "channelProtocol": 1}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
@@ -426,7 +482,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         # Only a Desktop-configured branch the caller did not override is healed.
         heal = branch_config_path and not branch and configured_branch == selected_branch
         _check_branch(result, co, selected_branch,
-                      heal=(branch_config_path, desktop_config) if heal else None)
+                      heal=(branch_config_path, desktop_config) if heal else None,
+                      parked_in_place=parked_in_place)
     _write_cache(cache_file, identity, now, result)
     return result
 

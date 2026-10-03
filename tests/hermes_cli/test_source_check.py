@@ -542,3 +542,245 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+# ---------------------------------------------------------------------------
+# Parked-branch policy (updates.parked_branch_strategy: update_in_place)
+#
+# The updater merges origin/main INTO a deliberately maintained custom branch
+# when the strategy is configured; the passive checker must report that state
+# as the ordinary behind-status against main (the update target) instead of the
+# terminal branch-local-only error. Every boundary below keeps the error.
+# ---------------------------------------------------------------------------
+
+
+def _in_place_config(home, strategy="update_in_place", auto_switch=None):
+    body = f"updates:\n  parked_branch_strategy: {strategy}\n"
+    if auto_switch is not None:
+        body += f"  auto_switch_parked_branch: {'true' if auto_switch else 'false'}\n"
+    (home / "config.yaml").write_text(body)
+
+
+def test_update_in_place_never_pushed_current_branch_is_informational(installation):
+    """Never-pushed current branch + update_in_place: ordinary behind-status against main,
+    parked markers, branch=main while currentBranch stays the maintained branch — no error."""
+    from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "maintained work")
+    git("checkout", "-q", "main")
+    git("commit", "-q", "--allow-empty", "-m", "upstream moved")
+    git("push", "-q", "origin", "main")
+    git("checkout", "-q", "local-work")
+    status = check_for_updates(install_root=root, home=home)
+    assert "error" not in status, status
+    assert status["branch"] == "main"
+    assert status["currentBranch"] == "local-work"
+    assert status["localOnly"] is True
+    assert status["parked"] is True
+    assert status["parkedStrategy"] == "update_in_place"
+    assert status["targetSha"] == git("ls-remote", "origin", "refs/heads/main").split()[0]
+    # No GitHub repository behind this remote: the existing uncountable contract applies.
+    assert status["behind"] == UPDATE_AVAILABLE_NO_COUNT
+    assert status["updateAvailable"] is True
+    assert "has never been pushed" in status["message"]
+    assert "will update this branch in place" in status["message"]
+    assert requests == [MAIN_CHANNEL]
+
+
+def test_update_in_place_deleted_remote_branch_is_informational_and_pin_survives(installation):
+    """Deleted-but-unmerged current branch + update_in_place: informational, and the Desktop
+    pin must NOT be healed to main (the checkout stays on the maintained branch)."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("branch", "pushed")
+    _commit_on(git, "pushed", "published work")
+    git("push", "-q", "-u", "origin", "pushed")
+    git("push", "-q", "origin", "--delete", "pushed")
+    git("fetch", "-q", "--prune", "origin")
+    git("checkout", "-q", "pushed")
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "pushed"}))
+    status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
+    assert "error" not in status, status
+    assert status["branch"] == "main"
+    assert status["currentBranch"] == "pushed"
+    assert status["parked"] is True
+    assert "was removed from the remote but still contains commits not in main" in status["message"]
+    # origin/main is an ancestor of the branch tip: nothing to merge in yet.
+    assert status["behind"] == 0
+    assert status["updateAvailable"] is False
+    assert json.loads(branch_file.read_text()) == {"branch": "pushed"}
+    assert requests == [MAIN_CHANNEL]
+
+
+@pytest.mark.parametrize("configured", ["switch", "false", None])
+def test_abandoned_unmerged_branch_keeps_the_full_error_without_update_in_place(installation, configured):
+    """The safety classification is unchanged when update_in_place is not configured: an
+    unpushed checked-out branch keeps the branch-local-only error and full safety message."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    if configured is not None:
+        _in_place_config(home, strategy=configured)
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "unpublished work")
+    status = check_for_updates(install_root=root, home=home)
+    assert status["branch"] == "local-work", status
+    assert status["error"] == "branch-local-only"
+    assert status["localOnly"] is True
+    assert "parked" not in status
+    assert "targetSha" not in status
+    assert "has never been pushed" in status["message"]
+    assert requests == [MAIN_CHANNEL]
+
+
+def test_update_in_place_with_auto_switch_disabled_keeps_the_error(installation):
+    """updates.auto_switch_parked_branch: false makes the updater skip before the in-place
+    decision, so the checker must not report the parked state as updatable."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home, auto_switch=False)
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "unpublished work")
+    status = check_for_updates(install_root=root, home=home)
+    assert status["branch"] == "local-work", status
+    assert status["error"] == "branch-local-only"
+    assert "parked" not in status
+    assert "targetSha" not in status
+    assert requests == [MAIN_CHANNEL]
+
+
+def test_update_in_place_branch_pinned_but_not_checked_out_keeps_the_error(installation):
+    """update_in_place covers the branch the checkout is ON. A Desktop-pinned branch that is not
+    checked out is not what the updater merges into, so the pin keeps its full warning."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("branch", "local-work")
+    _commit_on(git, "local-work", "unpublished work")
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "local-work"}))
+    status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
+    assert status["branch"] == "local-work", status
+    assert status["error"] == "branch-local-only"
+    assert "parked" not in status
+    assert json.loads(branch_file.read_text()) == {"branch": "local-work"}
+    assert requests == [MAIN_CHANNEL]
+
+
+def test_update_in_place_explicit_branch_override_keeps_error_semantics(installation):
+    """An explicit --branch <local-only> is a one-shot target request, not the implicit parked
+    state; it keeps today's branch-local-only error even under update_in_place. The same
+    checkout without the override is informational."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "unpublished work")
+    explicit = check_for_updates(install_root=root, home=home, branch="local-work")
+    assert explicit["branch"] == "local-work", explicit
+    assert explicit["error"] == "branch-local-only"
+    assert "parked" not in explicit
+    implicit = check_for_updates(install_root=root, home=home)
+    assert "error" not in implicit, implicit
+    assert implicit["branch"] == "main"
+    assert implicit["parked"] is True
+
+
+def test_update_in_place_dirty_tree_does_not_suppress_update_availability(installation):
+    """dirty answers "can the updater run now"; updateAvailable answers "is there upstream code
+    this checkout has not incorporated". A dirty maintained branch keeps the real availability;
+    the updater remains the mutation authority and will refuse the dirty state."""
+    from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "maintained work")
+    git("checkout", "-q", "main")
+    git("commit", "-q", "--allow-empty", "-m", "upstream moved")
+    git("push", "-q", "origin", "main")
+    git("checkout", "-q", "local-work")
+    (root / "dirty.txt").write_text("carried work")
+    status = check_for_updates(install_root=root, home=home)
+    assert "error" not in status, status
+    assert status["dirty"] is True
+    assert status["parked"] is True
+    assert status["updateAvailable"] is True
+    assert status["behind"] == UPDATE_AVAILABLE_NO_COUNT
+
+
+def test_parked_policy_changes_invalidate_the_cache_without_force(installation):
+    """The effective parked policy is part of the cache identity: flipping the strategy (both
+    directions) must produce a fresh verdict without force=True."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    cache = home / "cache.json"
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "unpublished work")
+    check = lambda: check_for_updates(install_root=root, home=home, cache_path=cache)
+    first = check()  # default strategy: switch
+    assert first["error"] == "branch-local-only", first
+    cached = json.loads(cache.read_text())
+    assert cached["identity"]["parkedBranchStrategy"] == "switch"
+    assert cached["identity"]["autoSwitchParkedBranch"] is True
+    _in_place_config(home)
+    second = check()
+    assert "error" not in second, second
+    assert second["parked"] is True
+    assert json.loads(cache.read_text())["identity"]["parkedBranchStrategy"] == "update_in_place"
+    (home / "config.yaml").write_text("updates:\n  parked_branch_strategy: switch\n")
+    third = check()
+    assert third["error"] == "branch-local-only", third
+
+
+def test_update_in_place_fully_merged_branch_still_heals_to_main(installation):
+    """A branch whose commits are all in main keeps its existing healing behavior: the Desktop pin
+    moves back to main even with update_in_place configured (strategy only affects live branches)."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("branch", "pushed")
+    _commit_on(git, "pushed", "published work")
+    git("push", "-q", "-u", "origin", "pushed")
+    git("merge", "-q", "--ff-only", "pushed")
+    git("push", "-q", "origin", "main")
+    git("push", "-q", "origin", "--delete", "pushed")
+    git("fetch", "-q", "--prune", "origin")
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "pushed"}))
+    status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
+    assert "error" not in status, status
+    assert status["branch"] == "main"
+    assert "parked" not in status
+    assert status["behind"] == 0
+    assert json.loads(branch_file.read_text())["branch"] == "main"
+    assert requests == [MAIN_CHANNEL]
+
+
+def test_update_in_place_local_head_containing_current_main_is_not_a_false_positive(installation):
+    """Regression: a maintained branch that already contains the current origin/main tip has
+    nothing to merge in — availability must be false (no invented update) and there is no error."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("checkout", "-q", "-b", "local-work")
+    git("commit", "-q", "--allow-empty", "-m", "local work on top of current main")
+    status = check_for_updates(install_root=root, home=home)
+    assert "error" not in status, status
+    assert status["branch"] == "main"
+    assert status["currentBranch"] == "local-work"
+    assert status["parked"] is True
+    assert status["behind"] == 0
+    assert status["updateAvailable"] is False

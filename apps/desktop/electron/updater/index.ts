@@ -65,6 +65,11 @@ export interface UpdaterStatusWire {
   targetSha?: string
   commits?: { sha: string; summary: string; author: string; at: number }[]
   dirty?: boolean
+  /** True when the checkout sits on a maintained branch the remote does not advertise and the
+   *  configured parked-branch policy updates it in place from main (origin/main merges INTO it). */
+  parked?: boolean
+  /** The effective parked-branch strategy reported alongside `parked` (e.g. `update_in_place`). */
+  parkedStrategy?: string
   hermesRoot?: string
   fetchedAt?: number
 }

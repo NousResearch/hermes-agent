@@ -48,16 +48,19 @@ def _assert_sanitized(captured):
 
 
 def _assert_path_preserved(env):
-    """Original PATH entries survive sanitization; the hermes console-script
-    dir may be prepended (see _sanitize_subprocess_env, issue #92998) so we
-    assert the contract, not byte equality."""
+    """Original PATH entries survive sanitization with their order and
+    precedence: the hermes console-script dir may be prepended (see
+    _sanitize_subprocess_env, issue #92998) and sane missing entries
+    (managed runtime, ``~/.local/bin``) may be appended (#124820 PATH parity),
+    so we assert the contract, not byte equality."""
     from tools.environments.local import _resolve_hermes_bin_dir
 
     path_val = env.get("PATH", "")
-    assert path_val.endswith("/usr/bin:/bin"), path_val
+    prefix = ""
     hermes_bin = _resolve_hermes_bin_dir()
-    if hermes_bin and path_val != "/usr/bin:/bin":
-        assert path_val.startswith(hermes_bin + os.pathsep), path_val
+    if hermes_bin and path_val.startswith(hermes_bin + os.pathsep):
+        prefix = hermes_bin + os.pathsep
+    assert path_val.startswith(prefix + "/usr/bin:/bin"), path_val
 
 
 def _patch_windows_hide_flags(monkeypatch, module):

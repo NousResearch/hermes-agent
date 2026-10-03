@@ -25,7 +25,12 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _append_missing_sane_path_entries,
+    _find_shell,
+    _resolve_safe_cwd,
+    _sanitize_subprocess_env,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
@@ -1277,8 +1282,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
     @staticmethod
     def _spawn_env(env_vars: dict) -> dict:
         """Sanitized child env; PYTHONUNBUFFERED so tqdm/datasets-style buffering
-        doesn't hide progress from process(action="poll")."""
-        env = _sanitize_subprocess_env(os.environ, env_vars)
+        doesn't hide progress from process(action="poll"). PATH gets the same
+        managed-runtime / ``~/.local/bin`` completion as foreground
+        ``LocalEnvironment`` runs (appended, so user entries keep precedence) —
+        without it a background job on an install whose only uv is the managed
+        ``$HERMES_HOME/bin`` one fails with ``command not found`` (#124820)."""
+        env = _sanitize_subprocess_env(
+            os.environ, env_vars, fix_path=_append_missing_sane_path_entries)
         env["PYTHONUNBUFFERED"] = "1"
         return env
 

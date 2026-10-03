@@ -179,8 +179,10 @@ def sanitized_cua_driver_env() -> Dict[str, str]:
     with contextlib.suppress(Exception):
         # cua-driver is a third-party binary — never hand it provider API keys via inherited env (same
         # policy as the manifest probe and MCP spawn; #53503/#55709/#58889 lineage).
-        from tools.environments.local import _sanitize_subprocess_env
-        return _sanitize_subprocess_env(env)
+        from tools.environments.local import _append_missing_sane_path_entries, _sanitize_subprocess_env
+        # PATH parity with foreground runs (#124820): a backend launched by systemd/GUI
+        # has no ~/.local/bin or managed runtime on PATH, where the driver may be installed.
+        return _sanitize_subprocess_env(env, fix_path=_append_missing_sane_path_entries)
     return env
 
 def _run_quiet(argv: List[str], *, timeout: float, swallow: Any = (), **kw: Any) -> Any:

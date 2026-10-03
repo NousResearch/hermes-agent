@@ -144,10 +144,11 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
     communicator thread and, on timeout/interrupt, kills the OS process.
     Raises ``TimeoutError``, ``_SearchInterrupted``, or ``RuntimeError``."""
     from tools.interrupt import is_interrupted  # lazy: keep plugin import light
-    from tools.environments.local import _sanitize_subprocess_env
+    from tools.environments.local import _append_missing_sane_path_entries, _sanitize_subprocess_env
     global _last_worker_proc
     request: dict[str, Any] = {"query": query, "safe_limit": safe_limit}
-    env = _sanitize_subprocess_env(dict(os.environ))
+    env = _sanitize_subprocess_env(
+        dict(os.environ), fix_path=_append_missing_sane_path_entries)
     if _test_hook:
         request["test_hook"] = _test_hook
         env["HERMES_DDGS_ALLOW_TEST_HOOKS"] = "1"

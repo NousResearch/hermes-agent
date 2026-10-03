@@ -10,7 +10,7 @@ Spawn a subagent with an isolated context + terminal session.
 
 - **Single:** `delegate_task(goal, context)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
-  parallel, capped by `delegation.max_concurrent_children` (default 3).
+  parallel, capped by `delegation.max_concurrent_children` (default 10).
 - **Background:** `delegate_task(background=true)` returns a handle
   immediately and keeps the parent loop going; the child's result
   re-enters the conversation as a new turn when it finishes.

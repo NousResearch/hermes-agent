@@ -1531,6 +1531,75 @@ def _missing_task_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> list[str]
     return [p for p in ids if p not in present]
 
 
+def _board_label(slug: str, display_name: Optional[str]) -> str:
+    """``'tech' (Tech Board)`` — quoted slug plus a parenthesized display name
+    when one exists and differs. The slug alone when they match, so default
+    boards are not advertised as ``'infra' (Infra)``."""
+    if display_name and display_name != slug:
+        return f"'{slug}' ({display_name})"
+    return f"'{slug}'"
+
+
+def _cross_board_task_hint(conn: sqlite3.Connection, missing_ids: list[str]) -> str:
+    """Error suffix naming the board each missing id actually lives on (#124396).
+
+    Boards are separate DBs, so an id that merely lives elsewhere reads exactly
+    like a typo. Read-only and best-effort: any probe failure yields no hint,
+    never masking the error it decorates. Paths resolve per slug rather than
+    :func:`kanban_db_path`, whose ``HERMES_KANBAN_DB`` worker pin would redirect
+    every probe back onto the pinned board.
+
+    The board is named by slug because that is the only spelling ``--board``
+    accepts, and a display name is free-form — it may be capitalized (the
+    synthesized default always is) or even collide with another board's slug.
+    The display name rides along in parentheses, clearly outside the quoted
+    slug, when it differs."""
+    if not missing_ids:
+        return ""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        own = row[2] if row else ""
+    except sqlite3.Error:
+        return ""
+    found: dict[str, str] = {}
+    display: dict[str, str] = {}
+    for meta in list_boards():
+        slug = meta.get("slug") or ""
+        path = kanban_home() / "kanban.db" if slug == DEFAULT_BOARD else board_dir(slug) / "kanban.db"
+        if not path.is_file():
+            continue
+        if own:
+            try:
+                if os.path.samefile(own, path):
+                    continue
+            except OSError:
+                pass
+        placeholders = ",".join("?" * len(missing_ids))
+        try:
+            probe = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+            try:
+                rows = probe.execute(
+                    f"SELECT id FROM tasks WHERE id IN ({placeholders})", missing_ids,
+                ).fetchall()
+            finally:
+                probe.close()
+        except sqlite3.Error:
+            continue
+        for hit in rows:
+            found.setdefault(hit[0], slug)
+            display.setdefault(hit[0], str(meta.get("name") or ""))
+    if not found:
+        return ""
+    hits = " ".join(
+        f"{task_id} exists on board {_board_label(found[task_id], display.get(task_id))}."
+        for task_id in missing_ids if task_id in found
+    )
+    return (
+        f"\n  {hits} Dependency links cannot cross boards — "
+        "create the card on this board, or move the work."
+    )
+
+
 def _inherit_notify_subs(
     conn: sqlite3.Connection, child_id: str, parents: Iterable[str], *,
     created_at: Optional[int] = None,
@@ -1723,7 +1792,9 @@ def link_tasks(
     with write_txn(conn):
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
-            raise ValueError(f"unknown task(s): {', '.join(missing)}")
+            raise ValueError(
+                f"unknown task(s): {', '.join(missing)}{_cross_board_task_hint(conn, missing)}"
+            )
         child = conn.execute(
             "SELECT status, current_run_id FROM tasks WHERE id = ?", (child_id,),
         ).fetchone()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -1439,6 +1440,95 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
         assert gated is False
         assert kb.get_task(conn, child).status == "ready"
         assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
+
+
+def test_link_tasks_unknown_id_names_the_board_it_lives_on(kanban_home):
+    """Regression test for issue #124396.
+
+    Boards are separate DBs, so an id that merely lives on another board reads
+    exactly like a typo. The error must say where the id is instead.
+    """
+    kb.create_board("tech", name="Tech Board")
+    with kbc.connect(board="tech") as other:
+        foreign = kb.create_task(other, title="lives on tech")
+
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id=foreign, child_id=child)
+        assert "unknown task(s)" in str(ei.value)
+        assert f"{foreign} exists on board 'tech' (Tech Board)." in str(ei.value)
+        assert "cannot cross boards" in str(ei.value)
+        assert conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? OR child_id = ?",
+            (foreign, foreign),
+        ).fetchall() == []
+
+
+def test_link_tasks_unknown_id_stays_terse_when_nowhere(kanban_home):
+    """An id missing everywhere keeps the original one-line error."""
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id="t_nowhere", child_id=child)
+        assert str(ei.value) == "unknown task(s): t_nowhere"
+
+
+def test_create_task_unknown_parent_names_the_board_it_lives_on(kanban_home):
+    """The create-with-parents lane shares the cross-board hint (#124396)."""
+    kb.create_board("tech", name="Tech Board")
+    with kbc.connect(board="tech") as other:
+        foreign = kb.create_task(other, title="lives on tech")
+
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError) as ei:
+            kb.create_task(conn, title="local", parents=(foreign,))
+        assert "unknown parent task(s)" in str(ei.value)
+        assert f"{foreign} exists on board 'tech' (Tech Board)." in str(ei.value)
+        assert conn.execute(
+            "SELECT id FROM tasks WHERE title = 'local'"
+        ).fetchall() == []
+
+
+def test_link_tasks_board_hint_names_a_slug_the_cli_accepts(kanban_home):
+    """The hint's quoted board token must be a usable ``--board`` value (#124396
+    review). ``--board`` resolves through ``_BOARD_SLUG_RE``, which rejects the
+    capitalized display name — including the synthesized default (``infra`` ->
+    ``Infra``) every board without a custom name gets."""
+    kb.create_board("infra")
+    with kbc.connect(board="infra") as other:
+        foreign = kb.create_task(other, title="lives on infra")
+
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id=foreign, child_id=child)
+        assert "exists on board 'infra'" in str(ei.value)
+        assert "exists on board 'Infra'" not in str(ei.value)
+        quoted = re.search(r"exists on board '([^']+)'", str(ei.value)).group(1)
+        assert kb._normalize_board_slug(quoted) == quoted
+
+
+def test_link_tasks_board_hint_slug_wins_over_colliding_display_name(kanban_home):
+    """A display name may equal another board's slug; the hint must still point
+    at the board that holds the task (#124396 review). Board ``waf`` displayed
+    as ``tech`` with an unrelated board actually slugged ``tech``: following the
+    hint must land on ``waf``, not on the decoy."""
+    kb.create_board("tech")
+    kb.create_board("waf", name="tech")
+    with kbc.connect(board="waf") as other:
+        foreign = kb.create_task(other, title="lives on waf")
+
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="local child")
+        with pytest.raises(ValueError) as ei:
+            kb.link_tasks(conn, parent_id=foreign, child_id=child)
+        assert f"{foreign} exists on board 'waf' (tech)." in str(ei.value)
+        assert f"{foreign} exists on board 'tech'" not in str(ei.value)
+        with kbc.connect(board="waf") as named:
+            assert named.execute(
+                "SELECT 1 FROM tasks WHERE id = ?", (foreign,)
+            ).fetchone() is not None
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):

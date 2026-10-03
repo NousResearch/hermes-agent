@@ -355,6 +355,9 @@ class GatewayAgentCacheMixin:
         lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
         eviction is NOT a boundary (a resumed turn rebuilds from these). getattr-guarded.
 
+        Clears state that lives OUTSIDE this object too: the terminal tool's per-session cwd
+        record, which must not carry a `cd` across a generation boundary (see the note below).
+
         Why a funnel: these boundaries used to each carry a hand-copied pop-list of the per-session dicts,
         and the lists drifted every time a new dict was added (#48031, #58403, #10702, #35809 were all
         "boundary X forgot dict Y" bugs — e.g. /new cleared the /model override but not the /model --once
@@ -374,6 +377,15 @@ class GatewayAgentCacheMixin:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(session_key, None)
+        # The terminal cwd record is conversation-scoped too, and it is keyed by the SESSION KEY —
+        # the stable chat lane, reused across generations — so nothing else ever drops it: the
+        # fresh conversation's first command would resolve a `cd` from the conversation that just
+        # ended instead of the profile's configured `terminal.cwd`. Clear it by the key it was
+        # written under (the same resolution the terminal tool uses).
+        with suppress(Exception):
+            from tools.terminal_tool import clear_session_cwd
+
+            clear_session_cwd(session_key)
         self._clear_session_boundary_security_state(session_key)
         logger.debug("Cleared conversation scope for %s (%s)", session_key, reason)
 

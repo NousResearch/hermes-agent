@@ -53,7 +53,10 @@ dependencies = [
   "tenacity==9.1.4; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
-  "ruamel.yaml==0.18.16; python_version >= '3.14'",
+  # Unmarked: hermes_yaml.py imports it on EVERY supported Python (3.11–3.14), so a
+  # version marker made the editable install of an older interpreter resolve without
+  # it and die at first import.
+  "ruamel.yaml==0.18.16",
   "requests==2.33.0; python_version >= '3.14'",  # CVE-2026-25645
   "jinja2==3.1.6; python_version >= '3.14'",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,

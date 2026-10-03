@@ -12,7 +12,7 @@ import platform
 import sys
 from pathlib import Path
 
-from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
+from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS, _CONDA_STATE_COMPANIONS
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -121,10 +121,18 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
 def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
     """Strip Hermes-owned PYTHONPATH entries, then the runtime marker vars. Order is
     load-bearing: PYTHONPATH filtering runs BEFORE the markers go so a validated Windows
-    base-interpreter launch (VIRTUAL_ENV -> <repo>/venv) can still prove ownership."""
+    base-interpreter launch (VIRTUAL_ENV -> <repo>/venv) can still prove ownership.
+
+    Conda's activation state is cleared unconditionally, companions included: the
+    marker loop above always removes CONDA_PREFIX, so a conditional strip could
+    never keep the companions in step — half-states (stray CONDA_SHLVL without a
+    prefix, or CONDA_PREFIX_1 from a doubly-activated parent) crash conda's own
+    shell hook just the same (see _CONDA_STATE_COMPANIONS)."""
     _strip_hermes_owned_pythonpath(env)
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
+    for _companion in _CONDA_STATE_COMPANIONS:
+        env.pop(_companion, None)
 
 
 def _strip_hermes_owned_pythonpath(env: dict) -> None:

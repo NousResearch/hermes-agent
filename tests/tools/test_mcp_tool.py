@@ -171,7 +171,12 @@ class TestLoadMCPConfig:
                 {
                     "$schema": MCP_SCHEMA_V1,
                     "mcpServers": {
-                        "worker": {"type": "stdio", "command": "python"}
+                        "worker": {
+                            "type": "stdio", "command": "python",
+                            "args": ["${PORTABLE_OPTION}", "${PORTABLE_MISSING}"],
+                            "env": {"PORTABLE_TOKEN": "${PORTABLE_TOKEN}",
+                                    "ROOT_PATH": "${PLUGIN_ROOT}"},
+                        }
                     },
                 }
             )
@@ -184,6 +189,8 @@ class TestLoadMCPConfig:
         bundled.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        monkeypatch.setenv("PORTABLE_TOKEN", "test-token")
+        monkeypatch.setenv("PORTABLE_OPTION", "--verbose")
         monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
 
         from tools.mcp_tool_config import _load_mcp_config
@@ -195,6 +202,9 @@ class TestLoadMCPConfig:
         assert server["cwd"] == str(plugin.resolve())
         assert server["env"]["PLUGIN_ROOT"] == str(plugin.resolve())
         assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
+        assert server["env"]["PORTABLE_TOKEN"] == "test-token"
+        assert server["env"]["ROOT_PATH"] == str(plugin.resolve())
+        assert server["args"] == ["--verbose", "${PORTABLE_MISSING}"]
         assert "agent_plugin" not in server
 
 

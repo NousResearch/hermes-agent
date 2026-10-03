@@ -438,9 +438,11 @@ class TestSummarizeToolResultClarify:
 
 def _refusals():
     """Refused-call results from the real producers: the approval gate messages in their terminal /
-    tool_error envelopes, and a pending gateway approval. ``expected`` lists substrings the summary
-    must contain."""
+    tool_error envelopes, a pending gateway approval, and a successful kanban_block (``status``
+    "blocked" with no error, which is not a refusal). ``expected`` lists substrings the summary must
+    contain; empty means it must not read as refused."""
     from tools import approval
+    from tools.kanban_tools import _ok
     from tools.registry import tool_error
     from tools.terminal_tool import _error_json
 
@@ -465,6 +467,9 @@ def _refusals():
         pytest.param("terminal", {"command": "rm -rf build"},
                      _error_json("", status="pending_approval"),
                      ["awaiting the user's approval, not run"], id="pending_approval"),
+        pytest.param("kanban_block", {"reason": "need creds"},
+                     _ok(task_id="t_1", run_id=None, status="blocked", block_kind="needs_input"),
+                     [], id="kanban_block_ok"),
     ]
 
 
@@ -477,6 +482,7 @@ class TestSummarizeToolResultRefusals:
         summary = _summarize_tool_result(tool_name, json.dumps(args), content)
 
         assert all(part in summary for part in expected), summary
+        assert ("not run" in summary) == bool(expected), summary
         assert "ran `" not in summary and "wrote to" not in summary
         assert len(summary) <= _PRUNE_MIN_CHARS - 1
 

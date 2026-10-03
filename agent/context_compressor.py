@@ -2023,7 +2023,7 @@ def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> 
         error = content.strip()
     if status == "pending_approval":
         outcome = "awaiting the user's approval, not run"
-    elif status == "blocked" or error.lstrip().startswith("BLOCKED"):
+    elif error and (status == "blocked" or error.lstrip().startswith("BLOCKED")):
         outcome = "BLOCKED, not run"
         if "NOT consented" in error:
             outcome += "; the user did NOT consent, do not retry or reach the same outcome another way"

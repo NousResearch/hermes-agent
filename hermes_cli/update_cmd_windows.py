@@ -956,7 +956,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         token = _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
     except RuntimeError as exc:
         if "rollback failures" not in str(exc):  # everything stopped was restarted in-line
-            pause_record.discharge(intended)
+            pause_record.abandon_pause(intended, adopted)
         raise
     return pause_record.finish_pause(token, intended, adopted)
 

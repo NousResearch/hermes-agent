@@ -317,6 +317,16 @@ def finish_pause(token: dict, intended: dict, adopted: dict | None) -> dict:
     return token
 
 
+def abandon_pause(intended: dict, adopted: dict | None) -> None:
+    """This run's own stops were rolled back in-line: only an adopted orphan set is still owed,
+    and it goes back on disk unowned for the next launch."""
+    if adopted is None:
+        discharge(intended)
+        return
+    carried = {key: intended[key] for key in ("pause_id", "pre_sha", "dirty_at_pause") if key in intended}
+    write({**adopted, **carried}, owner=UNOWNED)
+
+
 def drop_never_stopped(token: dict) -> dict:
     """Entries whose recorded process is still the same live incarnation were never stopped."""
     alive = {pid for pid, ct in (token.get("identities") or {}).items()

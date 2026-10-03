@@ -42,6 +42,7 @@ import {
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
+  unscopableMutatingRequest,
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
@@ -502,6 +503,18 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
+    name: 'a non-primary local plugin API request uses that profile process without a query scope',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/plugins/example/status'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
     name: 'a read-only local session request reuses the primary backend',
     profile: 'coder',
     opts: {
@@ -886,6 +899,79 @@ test('resolveProfileApiRequest keeps eligible local REST on the primary backend'
       backendProfile: null,
       requestPath: '/api/config?view=desktop&profile=iris'
     }
+  )
+})
+
+test('resolveProfileApiRequest routes every non-primary local plugin REST verb to its profile process', () => {
+  for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    const path = '/api/plugins/example/action?dry_run=true'
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        primaryProfile: 'default',
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: method
+      }),
+      { backendProfile: 'iris', requestPath: path },
+      `${method} plugin REST must reach the process that mounted iris's plugin API`
+    )
+  }
+})
+
+test('plugin API reads retain the pooled-process spawn exception without pooling ordinary reads', () => {
+  for (const method of ['GET', 'HEAD', 'OPTIONS', 'POST', 'PATCH', 'DELETE']) {
+    assert.equal(unscopableMutatingRequest({ requestPath: '/api/plugins/example/status', requestMethod: method }), true)
+  }
+  assert.equal(unscopableMutatingRequest({ requestPath: '/api/sessions', requestMethod: 'GET' }), false)
+  assert.equal(unscopableMutatingRequest({ requestPath: '/api/plugins-other', requestMethod: 'GET' }), false)
+  assert.equal(unscopableMutatingRequest({}), false)
+})
+
+test('plugin API routing preserves the primary and remote routing precedence', () => {
+  const path = '/api/plugins/example/action'
+  assert.deepEqual(
+    resolveProfileApiRequest('default', path, {
+      primaryProfile: 'default',
+      globalRemote: false,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: path }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', path, {
+      primaryProfile: 'default',
+      globalRemote: true,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: `${path}?profile=iris` }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', path, {
+      primaryProfile: 'default',
+      globalRemote: true,
+      profileRemoteOverride: true,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: 'iris', requestPath: path }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', path, {
+      primaryProfile: 'default',
+      primaryRemoteActive: true,
+      ownEntry: false,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: `${path}?profile=iris` }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', path, {
+      primaryProfile: 'default',
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: 'iris', requestPath: path }
   )
 })
 

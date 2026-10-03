@@ -784,12 +784,35 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
   return null
 }
 
+/**
+ * Plugin REST handlers and their enabled/disabled gate are registered per
+ * Hermes process at startup. A non-primary local profile therefore needs its
+ * own process; adding `?profile=` to the launch process cannot select that
+ * profile's plugin router or gate.
+ */
+function isPluginApiRequest(opts: ProfileRouteOptions): boolean {
+  const rawPath = String(opts.requestPath || '')
+
+  if (!rawPath) {
+    return false
+  }
+
+  try {
+    const pathname = new URL(rawPath, 'https://example.invalid').pathname
+    return pathname === '/api/plugins' || pathname.startsWith('/api/plugins/')
+  } catch {
+    return false
+  }
+}
+
 const SAFE_REQUEST_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /**
- * True when this is a REST request that CHANGES something and the server cannot
- * vouch for its profile scope (`localPrimaryRequestScope` → null: no
- * `?profile=`, no `body.profile`, no target named in the path).
+ * True when this REST request must retain a profile-owned backend process.
+ * This includes requests that change something the server cannot scope
+ * (`localPrimaryRequestScope` → null: no `?profile=`, no `body.profile`, no
+ * target named in the path), plus plugin API routes whose router and gate are
+ * fixed to the process's launch profile even for reads.
  *
  * Such a route has exactly one scope left — the backend process's own
  * `HERMES_HOME` — so it keeps a pooled, profile-scoped backend even though every
@@ -806,6 +829,14 @@ export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boole
     return false
   }
 
+  // Unlike ordinary reads, plugin REST is process-scoped too: the plugin API
+  // router and its authorization gate are registered for the process's
+  // launch profile, not dynamically selected by `?profile=`. Preserve the
+  // pooled-process escape in the backend-spawn guard for every HTTP verb.
+  if (isPluginApiRequest(opts)) {
+    return true
+  }
+
   if (SAFE_REQUEST_METHODS.has(String(opts.requestMethod || 'GET').toUpperCase())) {
     return false
   }
@@ -815,7 +846,7 @@ export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boole
 
 /**
  * The one place that answers "which backend serves profile P, and does its
- * REST path need a profile scope?". Six routes, in precedence order:
+ * REST path need a profile scope?". Seven routes, in precedence order:
  *
  *  1. The primary profile owns a local/window backend outright; on a global
  *     remote its label is still carried per request because launch home can
@@ -829,7 +860,11 @@ export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boole
  *  5. A local profile REST request the primary backend can scope reuses that
  *     backend, with `?profile=` when the handler reads the query (handlers that
  *     name their target in the path or `body.profile` get no query).
- *  6. Every other LOCAL profile also shares the one host backend
+ *  6. Non-primary local plugin REST uses a profile-owned process because API
+ *     router registration and enablement are startup-scoped. Remote routing
+ *     above remains unchanged; remote plugin API enablement is consequently
+ *     governed by the remote gateway's launch profile.
+ *  7. Every other LOCAL profile also shares the one host backend
  *     (multiplex-only: one `hermes serve` per HOST). The descriptor carries
  *     `sharedPrimary: true`, and the renderer honours it on BOTH request paths
  *     (`requestGatewayForProfile` and the session-owner
@@ -894,6 +929,14 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
     // A stored local profile must not be redirected into the remote primary,
     // even when its REST endpoint supports profile scoping.
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+
+  // Plugin routes are mounted and gated at Hermes server startup. The pooled
+  // local backend is launched with this profile's HERMES_HOME, so its router
+  // and enabled-plugin set are the ones serving the request. Do not forward
+  // these requests to the launch/shared host process with a profile query.
+  if (isPluginApiRequest(opts)) {
     return { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 

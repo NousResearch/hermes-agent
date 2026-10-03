@@ -64,6 +64,12 @@ let switchLifecycle: GatewaySwitchLifecycle | null = null
 /** Ownership handle returned by beginGatewaySwitch; see endGatewaySwitch. */
 export type GatewaySwitchToken = number
 
+export interface GatewaySwitchOptions {
+  /** Keep the project view while reconnecting the same backend. If the target
+   *  is not yet resolved, the caller must clear foreign scope before publishing it. */
+  preserveProjectScope?: boolean
+}
+
 let latestSwitchToken = 0
 
 /** True only while token owns the latest connection-switch lifecycle. */
@@ -91,7 +97,7 @@ export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle
  * $activeSessionId still named the previous backend's runtime and sent that id
  * to a backend that had never minted it — "session not found" (#93937).
  */
-export function beginGatewaySwitch(): GatewaySwitchToken {
+export function beginGatewaySwitch(options: GatewaySwitchOptions = {}): GatewaySwitchToken {
   const token = ++latestSwitchToken
   let wipeStarted = false
 
@@ -100,7 +106,7 @@ export function beginGatewaySwitch(): GatewaySwitchToken {
   try {
     switchLifecycle?.beforeConnectionSwitch()
     wipeStarted = true
-    wipeSessionListsForGatewaySwitch()
+    wipeSessionListsForGatewaySwitch(options)
 
     return token
   } catch (error) {
@@ -185,7 +191,7 @@ export function recoverActiveSourceAfterFailedGatewaySwitch(token: GatewaySwitch
  * close route overlays (Settings). Clear chat state in place; leave the URL
  * alone so the user stays where they were (e.g. mid-Gateway settings).
  */
-export function wipeSessionListsForGatewaySwitch(): void {
+export function wipeSessionListsForGatewaySwitch({ preserveProjectScope = false }: GatewaySwitchOptions = {}): void {
   // The next backend is a different runtime — don't carry the old one's
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()
@@ -199,9 +205,13 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // has never seen them, so drop the "already pushed" bookkeeping and let the
   // next reconcile re-assert the whole set against the new backend.
   resetSessionPinMirror()
+
   // Project ids belong to the outgoing backend's projects.db; a scope left
   // entered would root the next draft's cwd in the old source's project.
-  exitProjectScope()
+  if (!preserveProjectScope) {
+    exitProjectScope()
+  }
+
   setSessions([])
   // Reset AFTER the wipe: the wipe's empty payload schedules a sweep, and
   // resetting first would leave that timer live — sweeping every stored id

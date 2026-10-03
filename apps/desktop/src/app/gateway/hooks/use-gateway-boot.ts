@@ -73,6 +73,7 @@ import {
   refreshActiveProfile,
   touchActiveGatewayBackend
 } from '@/store/profile'
+import { exitProjectScope } from '@/store/project-scope'
 import { requestBackendRestart } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -164,6 +165,28 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
   }
 
   return connection.mode === 'local' ? 'local' : null
+}
+
+function sameProjectBackend(previous: HermesConnection | null, next: HermesConnection | null): boolean {
+  if (!previous || !next || normalizeProfileKey(previous.profile) !== normalizeProfileKey(next.profile)) {
+    return false
+  }
+
+  if (previous.mode === 'local' && next.mode === 'local') {
+    // Local backend restarts can change the loopback port, not projects.db.
+    return true
+  }
+
+  if (previous.mode !== next.mode || primaryRuntimeConnectionId(previous) !== primaryRuntimeConnectionId(next)) {
+    return false
+  }
+
+  // SSH reconnects can change the tunnel port. An edited remote descriptor,
+  // however, can point the same registry id at a different machine.
+  const source = (connection: HermesConnection) =>
+    connection.remoteIdentity || connection.remoteHost || connection.baseUrl
+
+  return Boolean(source(previous)) && source(previous) === source(next)
 }
 
 // A freshly spawned backend can block its event loop for 15-30s while it
@@ -766,13 +789,14 @@ export function useGatewayBoot({
       }
 
       let switchToken: null | ReturnType<typeof beginGatewaySwitch> = null
+      const previousConnection = $connection.get()
 
       try {
         // Barrier up + machine-context reset + session wipe, in one synchronous
         // step — the shared commit point of every connection switch. Keep this
         // inside the error boundary: lifecycle/wipe setup can throw before a
         // token is returned and must follow the normal boot-failure path.
-        switchToken = beginGatewaySwitch()
+        switchToken = beginGatewaySwitch({ preserveProjectScope: true })
         const ownsSwitch = () => !cancelled && switchToken !== null && isCurrentGatewaySwitch(switchToken)
         clearReconnectTimer()
         clearBootRetryTimer()
@@ -806,6 +830,13 @@ export function useGatewayBoot({
 
         if (!ownsSwitch()) {
           return
+        }
+
+        // A connection apply may only restart the backend already in use.
+        // Preserve its persisted project view; clear foreign ids BEFORE the
+        // new descriptor can wake draft/workspace consumers.
+        if (!sameProjectBackend(previousConnection, conn)) {
+          exitProjectScope()
         }
 
         publish(conn)

@@ -54,6 +54,21 @@ def test_transient_drops_retry_with_capped_exponential_backoff():
 
 
 @pytest.mark.real_retry_backoff
+def test_unexpected_eof_api_error_is_retried_as_sse_connection_drop():
+    from openai import APIError
+
+    request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+    error = APIError("unexpected EOF", request=request, body=None)
+    call = _bare_call(_agent())
+    waits = []
+
+    with patch.object(cch, "_wait_stream_retry_backoff", lambda agent, delay: waits.append(delay) or True):
+        assert call._handle_stream_error(error, attempt=0, max_retries=1) is True
+
+    assert waits == [1.0]
+    assert "error" not in call.result
+
+
 def test_backoff_wait_returns_immediately_on_interrupt():
     agent = _agent()
     call = _bare_call(agent)

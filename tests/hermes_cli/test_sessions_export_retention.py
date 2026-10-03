@@ -39,14 +39,10 @@ def test_filtered_backup_covers_protected_sessions_before_retention_prune(store,
     exported = {row["id"]: row for row in map(json.loads, backup.read_text(encoding="utf-8").splitlines())}
     with SessionDB() as db:
         assert Path(db.db_path).resolve().is_relative_to(tmp_path.resolve())
-        candidates = db.list_prune_candidates(
-            older_than_days=None, started_before=946684800, archived=None, include_pinned=True,
-        )
-        assert {row["id"] for row in candidates} <= exported.keys()
-        for row in candidates:
-            assert exported[row["id"]]["messages"]
-        assert exported["pinned"]["pinned"] == 1
-        assert exported["archived"]["archived"] == 1
+    assert set(exported) == {"normal", "pinned", "archived"}
+    assert all(row["messages"] for row in exported.values())
+    assert exported["pinned"]["pinned"] == 1
+    assert exported["archived"]["archived"] == 1
 
     # This fixture is the sole writer; bypass the unrelated host-wide holder inventory.
     _run(monkeypatch, "prune", "--before", "2000-01-01", "--include-archived", "--include-pinned", "--yes", "--force")

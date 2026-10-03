@@ -208,3 +208,14 @@ def test_resolution_never_raises(voice_home, monkeypatch):
     result = _resolve()
     assert result["stt"]["mode"] in {"direct", "relay"}
     assert result["tts"]["mode"] in {"direct", "relay"}
+
+
+def test_elevenlabs_stt_direct_carries_tag_audio_events(voice_home, monkeypatch):
+    """Client-direct must honor stt.elevenlabs.tag_audio_events like the relay does
+    (default False), or ElevenLabs tags a mic-open pop as "[clicking]"."""
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
+    voice_home({"stt": {"provider": "elevenlabs"}})
+    assert _resolve()["stt"]["tag_audio_events"] is False
+
+    voice_home({"stt": {"provider": "elevenlabs", "elevenlabs": {"tag_audio_events": True}}})
+    assert _resolve()["stt"]["tag_audio_events"] is True

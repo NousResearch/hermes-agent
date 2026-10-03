@@ -48,6 +48,17 @@ function deadMeterTake(durationMs: number): MicRecording {
   return { audio: new Blob(['voice'], { type: 'audio/webm' }), durationMs, heardSpeech: false, meterFailed: true }
 }
 
+/** The meter's context wasn't running when capture began (suspended). */
+function unverifiedTake(durationMs: number): MicRecording {
+  return {
+    audio: new Blob(['voice'], { type: 'audio/webm' }),
+    durationMs,
+    heardSpeech: false,
+    meterFailed: false,
+    meterUnverified: true
+  }
+}
+
 /** The options the hook handed to the most recent mic start. */
 function lastStartOptions(): MicRecorderOptions {
   return mocks.handle.start.mock.calls.at(-1)?.[0] ?? {}
@@ -97,6 +108,47 @@ describe('useVoiceConversation with a failed level meter', () => {
 
     await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(take.audio, expect.anything()))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('what time is it'))
+  })
+
+  it('sends a take recorded under a suspended meter to STT instead of dropping it as silence', async () => {
+    const { hook, onFatalError, onSubmit, onTranscribeAudio } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+    const take = unverifiedTake(2_400)
+    mocks.handle.stop.mockResolvedValueOnce(take)
+
+    await act(async () => {
+      lastStartOptions().onSilence?.()
+    })
+
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(take.audio, expect.anything()))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('what time is it'))
+    expect(onFatalError).not.toHaveBeenCalled()
+  })
+
+  it('does not count a slow-to-resume meter toward the dead-device limit', async () => {
+    const { hook, onFatalError } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+    for (let take = 1; take <= 3; take += 1) {
+      mocks.handle.stop.mockResolvedValueOnce(unverifiedTake(120))
+
+      await act(async () => {
+        lastStartOptions().onSilence?.()
+      })
+
+      await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(take + 1))
+    }
+
+    expect(onFatalError).not.toHaveBeenCalled()
   })
 
   it('re-arms on a too-short dead-meter take, then stops with an error when the meter dies again', async () => {

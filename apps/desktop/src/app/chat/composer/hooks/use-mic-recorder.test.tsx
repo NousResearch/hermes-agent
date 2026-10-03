@@ -28,7 +28,11 @@ function deferred() {
 class FakeAudioContext extends EventTarget {
   static instances: FakeAudioContext[] = []
   static throwOnConstruct = false
-  state: AudioContextState = 'running'
+  /** 'suspended' = autoplay/renderer handed back a context that isn't running. */
+  static initialState: AudioContextState = 'running'
+  /** Chromium leaves resume() pending (not rejected) when it won't resume. */
+  static resumeHangs = false
+  state: AudioContextState = FakeAudioContext.initialState
   closing = deferred()
 
   constructor() {
@@ -41,15 +45,31 @@ class FakeAudioContext extends EventTarget {
     FakeAudioContext.instances.push(this)
   }
 
+  /** Peak deviation from the 128 midline the fake mic reports (0 = silence, 42 = full scale). */
+  static amplitude = 0
+
   createAnalyser() {
-    return { fftSize: 0, getByteTimeDomainData: (data: Uint8Array) => data.fill(128) }
+    return {
+      fftSize: 0,
+      getByteTimeDomainData: (data: Uint8Array) => {
+        data.forEach((_, i) => {
+          data[i] = 128 + (i % 2 === 0 ? FakeAudioContext.amplitude : -FakeAudioContext.amplitude)
+        })
+      }
+    }
   }
 
   createMediaStreamSource() {
     return { connect: vi.fn() }
   }
 
-  resume = vi.fn(async () => undefined)
+  resume = vi.fn(async () => {
+    if (FakeAudioContext.resumeHangs) {
+      await new Promise(() => undefined)
+    }
+
+    this.state = 'running'
+  })
 
   close() {
     return this.closing.promise.then(() => {
@@ -83,6 +103,9 @@ const flush = () => act(async () => new Promise<void>(resolve => window.setTimeo
 beforeEach(() => {
   FakeAudioContext.instances = []
   FakeAudioContext.throwOnConstruct = false
+  FakeAudioContext.initialState = 'running'
+  FakeAudioContext.resumeHangs = false
+  FakeAudioContext.amplitude = 0
   vi.stubGlobal('AudioContext', FakeAudioContext)
   vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
   vi.stubGlobal(
@@ -168,6 +191,49 @@ describe('useMicRecorder level meter', () => {
     expect(onMeterFailure).toHaveBeenCalledOnce()
   })
 
+  // Speech captured while the meter's context is suspended reads as flat
+  // silence; the take must say so instead of claiming "no speech heard".
+  it('marks the take unverified when the meter context never starts running', async () => {
+    FakeAudioContext.initialState = 'suspended'
+    FakeAudioContext.resumeHangs = true
+    const onMeterFailure = vi.fn()
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start({ onMeterFailure, onSilence: vi.fn(), silenceLevel: 0.075, silenceMs: 1_250 })
+    })
+
+    let recording: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+
+    await act(async () => {
+      recording = await result.current.handle.stop()
+    })
+
+    expect(FakeAudioContext.instances[0].resume).toHaveBeenCalled()
+    expect(recording).toMatchObject({ heardSpeech: false, meterUnverified: true })
+    // Not a dead device: the take isn't reported as a meter failure.
+    expect(onMeterFailure).not.toHaveBeenCalled()
+  })
+
+  it('waits for a suspended meter to resume before the take counts as metered', async () => {
+    FakeAudioContext.initialState = 'suspended'
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start()
+    })
+
+    expect(FakeAudioContext.instances[0].state).toBe('running')
+
+    let recording: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+
+    await act(async () => {
+      recording = await result.current.handle.stop()
+    })
+
+    expect(recording).toMatchObject({ meterUnverified: false })
+  })
+
   it('does not report its own close at the end of a take as a failure', async () => {
     const onMeterFailure = vi.fn()
     const { result } = renderHook(() => useMicRecorder(copy))
@@ -186,5 +252,103 @@ describe('useMicRecorder level meter', () => {
 
     expect(onMeterFailure).not.toHaveBeenCalled()
     expect(recording).toMatchObject({ meterFailed: false })
+  })
+})
+
+
+// A USB mic pops (and a start chime rings) the instant capture opens: a few tens of
+// ms over the speech threshold, then silence. Counting that single loud frame as
+// speech started the 1.2s end-of-utterance clock before the user said a word, so the
+// take ended as just the pop — STT returned "[clicking]" and the real sentence, begun
+// a beat later, was lost. Speech must be sustained, and the open transient ignored.
+describe('useMicRecorder speech onset', () => {
+  let frames: FrameRequestCallback[] = []
+  let now = 0
+
+  beforeEach(() => {
+    frames = []
+    now = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        frames.push(callback)
+
+        return frames.length
+      })
+    )
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** Hold `amplitude` for `ms`, stepping the meter one 16 ms frame at a time. */
+  const hold = (amplitude: number, ms: number) => {
+    FakeAudioContext.amplitude = amplitude
+
+    for (let elapsed = 0; elapsed < ms; elapsed += 16) {
+      now += 16
+      const next = frames.shift()
+
+      next?.(now)
+    }
+  }
+
+  const LOUD = 20 // normalized ≈ 0.48, far over silenceLevel 0.075
+
+  async function startTake(onSilence = vi.fn()) {
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start({ onSilence, silenceLevel: 0.075, silenceMs: 1_250 })
+    })
+
+    return { onSilence, result }
+  }
+
+  it('does not treat the pop at mic-open as the start of speech', async () => {
+    const { onSilence, result } = await startTake()
+
+    hold(LOUD, 80)
+    hold(0, 2_000)
+
+    expect(onSilence).not.toHaveBeenCalled()
+
+    let recording: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+
+    await act(async () => {
+      recording = await result.current.handle.stop()
+    })
+
+    expect(recording).toMatchObject({ heardSpeech: false })
+  })
+
+  it('does not treat a short click mid-take as speech', async () => {
+    const { onSilence } = await startTake()
+
+    hold(0, 800)
+    hold(LOUD, 60)
+    hold(0, 2_000)
+
+    expect(onSilence).not.toHaveBeenCalled()
+  })
+
+  it('still ends the take after sustained speech goes quiet', async () => {
+    const { onSilence, result } = await startTake()
+
+    hold(0, 500)
+    hold(LOUD, 400)
+    hold(0, 1_400)
+
+    expect(onSilence).toHaveBeenCalledTimes(1)
+
+    let recording: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+
+    await act(async () => {
+      recording = await result.current.handle.stop()
+    })
+
+    expect(recording).toMatchObject({ heardSpeech: true })
   })
 })

@@ -68,6 +68,7 @@ function advance(ms: number) {
 /** Quiet room, then TTS starts and the user talks over it at `speechLevel`. */
 async function talkOverPlayback(speechLevel: number, thresholdMultiplier?: number | null) {
   let playing = false
+  micLevel = 0
   const onSpeech = vi.fn()
   const stop = monitorSpeechDuringPlayback({ isPlaying: () => playing, onSpeech, thresholdMultiplier })
 
@@ -107,5 +108,46 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
     for (const value of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(bargeInTriggerLevels(value)).toEqual(bargeInTriggerLevels(DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER))
     }
+  })
+})
+
+describe('monitorSpeechDuringPlayback — no deaf window after (re-)arming', () => {
+  // The monitor's SUSTAINED_MS; the trigger must fire within it (+2 frames).
+  const SUSTAINED_MS = 300
+
+  it('trips on speech from the very first frame, with no quiet calibration first', async () => {
+    const onSpeech = vi.fn()
+    micLevel = 0.2 // the user is already talking when the monitor opens
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech })
+
+    await flushMicrotasks()
+    advance(SUSTAINED_MS + 32)
+    stop()
+
+    expect(onSpeech).toHaveBeenCalledOnce()
+  })
+
+  it('does not learn speech into the floor: a level just over the quiet trigger still trips', async () => {
+    const onSpeech = vi.fn()
+    micLevel = 0.1
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech })
+
+    await flushMicrotasks()
+    advance(SUSTAINED_MS + 32)
+    stop()
+
+    expect(onSpeech).toHaveBeenCalledOnce()
+  })
+
+  it('still does not trip in a quiet room', async () => {
+    const onSpeech = vi.fn()
+    micLevel = 0.01
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech })
+
+    await flushMicrotasks()
+    advance(2_000)
+    stop()
+
+    expect(onSpeech).not.toHaveBeenCalled()
   })
 })

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { clearSpokenRepliesForTests, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 
@@ -13,7 +13,8 @@ import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
 
 vi.mock('@/lib/voice-playback', () => ({
-  playSpeechText: vi.fn()
+  playSpeechText: vi.fn(),
+  stopVoicePlayback: vi.fn()
 }))
 
 const SESSION_ID = 'session-under-test'
@@ -332,5 +333,58 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
       ])
     })
     await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('useAutoSpeakReplies — a voice conversation takes the speaker', () => {
+  afterEach(() => {
+    cleanup()
+    clearSpokenRepliesForTests()
+    $autoSpeakReplies.set(false)
+    setVoicePlaybackState({ ...IDLE_STATE })
+    vi.clearAllMocks()
+  })
+
+  function renderAutoSpeak(initialConversationActive: boolean) {
+    const $messages = atom<ChatMessage[]>([])
+
+    return renderHook(
+      ({ conversationActive }) =>
+        useAutoSpeakReplies({
+          conversationActive,
+          failureLabel: 'read-aloud failed',
+          markSpoken: vi.fn(),
+          pendingReply: () => null,
+          sessionId: SESSION_ID
+        }),
+      {
+        initialProps: { conversationActive: initialConversationActive },
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+  }
+
+  it('stops a read-aloud clip still playing when the conversation starts', () => {
+    $autoSpeakReplies.set(true)
+    setVoicePlaybackState({ ...IDLE_STATE, messageId: 'a1', source: 'read-aloud', status: 'speaking' })
+    const hook = renderAutoSpeak(false)
+
+    expect(stopVoicePlayback).not.toHaveBeenCalled()
+
+    hook.rerender({ conversationActive: true })
+
+    expect(stopVoicePlayback).toHaveBeenCalledOnce()
+  })
+
+  it("never cuts the conversation's own audio", () => {
+    $autoSpeakReplies.set(true)
+    const hook = renderAutoSpeak(false)
+
+    setVoicePlaybackState({ ...IDLE_STATE, messageId: 'a1', source: 'voice-conversation', status: 'speaking' })
+    hook.rerender({ conversationActive: true })
+
+    expect(stopVoicePlayback).not.toHaveBeenCalled()
   })
 })

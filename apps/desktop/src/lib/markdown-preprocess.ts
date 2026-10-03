@@ -849,6 +849,54 @@ function escapeCjkProseDollars(text: string): string {
   return out + text.slice(copiedThrough)
 }
 
+const HDL_SYSTEM_FUNC_RE = /^[A-Za-z_]\w*\s*\(/
+
+/**
+ * Escape the opening `$` of any same-line single-dollar span whose body begins
+ * with an HDL system-function token (`$bits`, `$signed`, `$clog2`, `$display`,
+ * `$finish`, `$random`, `$readmemh`, `$monitor`, …) followed by `(`, so
+ * remark-math reads it as a literal dollar instead of pairing it with the later
+ * `$` and typesetting the intervening prose as one KaTeX inline formula.
+ *
+ * Verilog/SystemVerilog system functions are the standard source of bare `$`
+ * in RTL prose, and `singleDollarTextMath: true` makes any two `$` on the same
+ * line open an inline math span. In Verilog `<=` is the non-blocking assignment
+ * operator and also a valid KaTeX relation, so `$bits(a) <= $bits(b)` renders
+ * with a literal `≤` glyph and mangled identifiers.
+ *
+ * Escaping only the OPENING `$` is enough: the closing `$` loses its partner
+ * and renders literally. `$$` display runs are skipped by the same `$$`-run
+ * guard the other escapes use.
+ */
+function escapeHdlSystemDollars(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    if (text[cursor] !== '$' || text[cursor - 1] === '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    const closingIndex = findClosingSingleDollar(text, cursor)
+
+    if (closingIndex === -1) {
+      continue
+    }
+
+    const body = text.slice(cursor + 1, closingIndex)
+
+    if (!HDL_SYSTEM_FUNC_RE.test(body)) {
+      cursor = closingIndex
+      continue
+    }
+
+    out += `${text.slice(copiedThrough, cursor)}\\$`
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
+}
+
 /**
  * Moves the `$$` delimiters of a MULTI-LINE display-math block onto their own
  * lines: `$$\begin{aligned}` … `\end{aligned}$$` becomes a `$$`-only line, the
@@ -968,8 +1016,9 @@ function normalizeProseMath(text: string): string {
   // hugging math the model emitted and the hugging math the rewrite produced.
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
   const cjkEscaped = escapeCjkProseDollars(normalized)
+  const hdlEscaped = escapeHdlSystemDollars(cjkEscaped)
 
-  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
+  return escapeCurrencyDollarsPreservingMath(hdlEscaped)
 }
 
 function extend(out: string[], lines: string[]) {

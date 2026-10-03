@@ -882,6 +882,8 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
 
 def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
+    if (fenced := _attachment_execution_error(ctx.rid, session)) is not None:
+        return fenced
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
@@ -1157,6 +1159,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""
     sid = str(params.get("session_id") or "")
+    if (fenced := _attachment_execution_error(rid, session)) is not None:
+        return fenced  # Cold inert records must not masquerade as legacy live/idle snapshots.
     # Only the rebind is atomic with grace expiry; the payload (a DB history read unless
     # ``omit_messages``) must not hold the process-wide resume lock.
     with _session_resume_lock:
@@ -2380,10 +2384,17 @@ def _resume_wake_after_interrupt() -> None:
 # ── interrupt / steer / redirect ─────────────────────────────────────
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
+    # A cold attachment has no turn to interrupt. Refuse before the process-global
+    # TTS cut and wake-resume path so observation cannot affect another session.
+    attached = _sessions.get(str(params.get("session_id") or ""))
+    if attached is not None:
+        if (fenced := _attachment_execution_error(rid, attached)) is not None:
+            return fenced
     _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
     resume_wake = True
     try:
         session, err = _sess_nowait(params, rid)
+        err = err or _attachment_execution_error(rid, session)
         if err:
             return err
         if expected := _str_param(params, "expected_hosted_task_id"):

@@ -669,13 +669,15 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
+    session, err = _sess_nowait(params, rid)
+    if session is not None and (fence := _attachment_execution_error(rid, session)) is not None:
+        return fence
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
     if err:
         return err
     from tools.bot_relay import DeliveryAuthor

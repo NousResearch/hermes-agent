@@ -162,6 +162,8 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+    if session.get("attachment_fence") is not None:
+        return
     try:
         from gateway.warning_notifications import render_notification
         with _session_profile_runtime_scope(session):

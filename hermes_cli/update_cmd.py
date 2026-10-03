@@ -238,6 +238,29 @@ def _record_update_skip(step: str, reason: str) -> None:
         record_skip(step, reason)
 
 
+_UPDATE_DISPATCH_PAUSE_REASON = "hermes update: preventing new work during code swap"
+
+
+def _arm_update_dispatch_pause() -> bool:
+    """Fence cron work before replacing source files, preserving an operator pause."""
+    from agent.estop import engage, is_engaged
+
+    if is_engaged():
+        return False
+    engage(_UPDATE_DISPATCH_PAUSE_REASON)
+    return True
+
+
+def _release_update_dispatch_pause(armed_by_update: bool) -> None:
+    """Release only a pause that this update armed after fleet verification."""
+    if not armed_by_update:
+        return
+    from agent.estop import get_state, sentinel_path
+
+    if (get_state() or {}).get("reason") == _UPDATE_DISPATCH_PAUSE_REASON:
+        sentinel_path().unlink()
+
+
 def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
     """Record the pre-update backup as a skip when it was disabled, else as a step.
 
@@ -732,6 +755,7 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
         "sibling_snapshots": deepcopy(_completion_config._LAST_SIBLING_SNAPSHOTS),
         "plan": plan.to_dict() if plan is not None else None,
         "receipt": deepcopy(current.data), "windows_resume": windows_resume,
+        "dispatch_pause_armed": False,
     }
 
 
@@ -1604,14 +1628,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
             print("→ Updates available (commit count unknown on this shallow checkout)")
 
-        print("→ Pulling updates...")
-        movement_baseline = _pull_updates(
-            git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-            gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
-            rollback_branch=_plan.rollback_branch,
-            sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
-            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+        # Cron checks this pause before claiming a due slot. Arm it before mutating the
+        # checkout so an old gateway cannot account work with newly replaced modules.
+        dispatch_pause_armed = _arm_update_dispatch_pause()
+        completion_request["dispatch_pause_armed"] = dispatch_pause_armed
+        try:
+            print("→ Pulling updates...")
+            movement_baseline = _pull_updates(
+                git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
+                gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
+                keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
+                rollback_branch=_plan.rollback_branch,
+                sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
+                in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+        except BaseException:
+            _release_update_dispatch_pause(dispatch_pause_armed)
+            raise
         _apply_pulled_update(
             git_cmd, branch, movement_baseline, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)

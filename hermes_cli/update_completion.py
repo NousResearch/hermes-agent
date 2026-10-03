@@ -221,12 +221,15 @@ def _complete_selected(request: dict) -> None:
             raise SystemExit(1)
         if not complete:
             raise SystemExit(1)
+        if request.get("dispatch_pause_armed", False):
+            update_cmd._release_update_dispatch_pause(True)
         return
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
     update_cmd._verify_fleet_after_update(
-        restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=complete)
+        restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"],
+        update_complete=complete, dispatch_pause_armed=bool(request.get("dispatch_pause_armed")))
 
 
 class _ForwardedOutput:

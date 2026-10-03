@@ -1917,7 +1917,10 @@ def _live_gateway_pids_from_fleet(fleet_rows: list) -> dict:
     return live
 
 
-def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, update_complete):
+def _verify_fleet_after_update(
+    restart, *, _pre_update_plan, _windows_gateway_resume, update_complete,
+    dispatch_pause_armed: bool = False,
+):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
@@ -2061,6 +2064,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
+    # The pause fenced cron before the checkout changed. A healthy fleet now proves
+    # every gateway uses fresh code, so only the pause created by this update is released.
+    if dispatch_pause_armed:
+        from hermes_cli.update_cmd import _release_update_dispatch_pause
+        _release_update_dispatch_pause(True)
     if not update_complete:
         # Fleet caught up, but the independently checked SQLite runtime is unsafe.
         sys.exit(1)

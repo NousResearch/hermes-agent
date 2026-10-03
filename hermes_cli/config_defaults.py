@@ -2185,6 +2185,13 @@ DEFAULT_CONFIG = {
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.
         "profile_routes": [],
+        # Let this profile's OWN bot carry another profile's cron deliveries (OUTBOUND ONLY,
+        # #128411): [{bot_platform, to_profiles, targets, outbound_only: true}]. `targets` are
+        # exact `platform:chat_id[:thread_id]` tokens, so a grant never widens into a channel
+        # prefix, a thread, or a DM. A grant authorizes a SEND and nothing else: no inbound route,
+        # session routing, tool or secret. Read only by the multiplexing default gateway, from the
+        # PRIMARY profile's config (the profile whose adapters would be borrowed).
+        "delivery_grants": [],
         # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
         # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can

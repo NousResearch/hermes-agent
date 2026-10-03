@@ -862,6 +862,52 @@ they need a separate location-only route. The routed profile does not need its
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 
+### Lending a bot for a satellite's cron alerts (`delivery_grants`)
+
+A route only lends the shared bot for targets that route **inbound** to that
+profile. That is the wrong set for a satellite whose cron jobs report somewhere
+else — the common "one `ops` profile owns the Discord bot, ten worker profiles
+own cron monitors" shape, where every worker's `--failure-deliver` alert is
+undeliverable and silently dropped. Declare an explicit, **outbound-only** grant
+on the bot-owning profile:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  delivery_grants:
+    - name: ops-pages
+      bot_platform: discord
+      to_profiles: [worker-a, worker-b]   # or "*" for every served profile
+      targets: ["discord:1543065293755256852"]   # exact targets only
+      outbound_only: true                 # the only supported mode
+```
+
+`targets` use the same `platform:chat_id[:thread_id]` syntax a job's `deliver`
+value does, and are compared exactly. A grant for one channel does not reach
+another channel, a thread under it, or a DM of the same bot; a job targeting an
+ungranted chat still fails closed. Without a grant the job is also unblocked in
+cron preflight only for the granted target — an ungranted `discord:<chat>` is
+still reported as `delivery platform discord has no gateway credentials
+configured`, which is the correct answer for a profile that holds no token.
+
+What a grant does **not** permit, by construction:
+
+- **No inbound.** A grant creates no `ProfileRoute`; nothing arriving on the
+  grantor's bot is routed to the grantee. Inbound stays
+  `gateway.profile_routes`'s job, and `outbound_only: false` is rejected at load
+  rather than honored.
+- **No session or tool routing.** A grant never keys a session, a runtime
+  profile, or a turn, and the grantee gains no secret, toolset, or `.env` entry.
+- **No prefix or pattern.** Exact `targets` only, never a whole bot.
+- **No credential transfer.** The grantee still holds no token; the grantor is
+  deliberately publishing a channel on its own bot, and the grantee can only
+  write into the container the grantor named.
+
+Grants are read from the **primary** (the gateway's own) profile config, since
+that is the profile whose adapters would be borrowed; a grant written into a
+non-primary profile's `config.yaml` is inert. Every delivery made through a grant
+logs the grant that authorized it.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

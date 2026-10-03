@@ -12,9 +12,10 @@ import errno
 import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from cron.env_settings import cron_env_setting
+from gateway.delivery_grants import grant_for_target
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -135,6 +136,44 @@ def _credential_store_scope_label() -> str:
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
+def _primary_gateway_yaml_for_current_home() -> Optional[dict]:
+    """The primary gateway home's merged YAML layers, or ``None`` when this process's home IS the
+    primary (nothing to consult) or the layers cannot be read.
+
+    One reader for every primary-home lookup, so the route resolver and the delivery-grant
+    resolver cannot drift on WHICH home is authoritative or WHICH files count.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        primary_home = get_default_hermes_root()
+        current_home = _sched.Path(get_hermes_home())
+        if (
+            primary_home.expanduser().resolve(strict=False)
+            == current_home.expanduser().resolve(strict=False)
+        ):
+            return None  # this IS the primary home — nothing to consult
+
+        # Same layers the primary gateway's own loader reads: routes/grants pinned in the managed
+        # scope (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so
+        # preflight false-blocked and routed delivery failed closed on centrally-managed installs.
+        from gateway.config_loader import read_yaml_layers
+        return read_yaml_layers(primary_home.expanduser())
+    except Exception:
+        logger.debug("primary-gateway yaml lookup unavailable", exc_info=True)
+        return None
+
+
+def _primary_layered_value(key: str) -> Any:
+    """``key`` from the primary home's YAML layers, top-level or nested under ``gateway.``."""
+    layered = _primary_gateway_yaml_for_current_home()
+    if not isinstance(layered, dict):
+        return None
+    value = layered.get(key)
+    if value is None and isinstance(layered.get("gateway"), dict):
+        value = layered["gateway"].get(key)
+    return value
+
+
 def _primary_profile_routes_for_current_home() -> list:
     """Primary gateway ``profile_routes`` targeting the profile being served; ``[]`` if this IS the
     primary home. Satellite crons are ticked and delivered by the primary gateway (a satellite
@@ -148,27 +187,10 @@ def _primary_profile_routes_for_current_home() -> list:
     home never holds the platform credentials itself (giving it a token of its own is a
     ``duplicate_credential`` fatal).
     """
+    routes_raw = _primary_layered_value("profile_routes")
+    if not isinstance(routes_raw, list):
+        return []
     try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
-        primary_home = get_default_hermes_root()
-        current_home = _sched.Path(get_hermes_home())
-        if (
-            primary_home.expanduser().resolve(strict=False)
-            == current_home.expanduser().resolve(strict=False)
-        ):
-            return []  # this IS the primary home — nothing to consult
-
-        # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
-        # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
-        # false-blocked and routed delivery failed closed on centrally-managed installs.
-        from gateway.config_loader import read_yaml_layers
-        layered = read_yaml_layers(primary_home.expanduser())
-        routes_raw = layered.get("profile_routes")
-        if routes_raw is None and isinstance(layered.get("gateway"), dict):
-            routes_raw = layered["gateway"].get("profile_routes")
-        if not isinstance(routes_raw, list):
-            return []
-
         from gateway.profile_routing import parse_profile_routes
         from hermes_cli.profiles import profile_matches_home
         return [
@@ -180,16 +202,73 @@ def _primary_profile_routes_for_current_home() -> list:
         return []
 
 
-def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
-    """True when the primary gateway routes this platform to the profile being served.
+def _primary_delivery_grants_for_current_home() -> list:
+    """The primary home's enabled ``gateway.delivery_grants`` that name the profile being served;
+    ``[]`` if this IS the primary home.
 
-    scheduler is currently serving (preflight rescue, #97476).
+    The grantor must be the PRIMARY profile: a grant is honored only where a primary adapter is
+    what would be borrowed (the satellite view and the preflight both reach the primary home's
+    layers), so a grant written into a non-primary profile's ``config.yaml`` is inert by
+    construction rather than half-honored from a home nobody's adapters come from.
+
+    The returned list is ALREADY SCOPED to the grantee (``to_profiles`` matched against this
+    home), so every consumer is outbound-only by construction: it receives grants it may use, not
+    grants it may parse.
     """
+    raw = _primary_layered_value("delivery_grants")
+    if not isinstance(raw, list):
+        return []
+    try:
+        from gateway.delivery_grants import parse_delivery_grants
+        from hermes_cli.profiles import profile_matches_home
+        return [
+            grant for grant in parse_delivery_grants(raw)
+            if grant.enabled and grant.names_profile(profile_matches_home)
+        ]
+    except Exception:
+        logger.debug("primary-gateway delivery-grant lookup unavailable", exc_info=True)
+        return []
+
+
+def _delivery_platform_routed_from_primary_gateway(
+    platform_name: str, target: Optional[str] = None, served_platforms: Optional[set] = None,
+) -> bool:
+    """True when the primary gateway serves a delivery of *platform_name* (to ``target``, when
+    given) on behalf of the profile the scheduler is currently serving (preflight rescue, #97476).
+
+    Two independent ways that is true, and they are different capabilities: an inbound
+    ``profile_routes`` entry names every target routed to this profile on the primary's bot, while
+    a ``delivery_grants`` entry names the exact targets this profile may WRITE to on the primary's
+    bot. The grant is consulted only with a target — a bare platform name is too coarse to
+    authorize a send, and a platform-level answer would wave a whole bot through preflight.
+
+    ``served_platforms`` is the platform set the served profile holds credentials for itself, when
+    the caller knows it. A profile connected on ANY platform keeps its own adapter map and never
+    borrows the primary's (``gateway/authz_mixin.py::_is_shared_bot_satellite``), so the borrowed
+    view that honors a route or a grant is not even built for it — ``tick_adapters_for`` returns
+    the profile's own map (``cron/scheduler_provider.py``), as does ``_run_claimed_job``
+    (``tools/cronjob_tools.py``). Rescuing here would clear a delivery that then finds no adapter
+    and is dropped silently, which for a ``--failure-deliver`` alert is the worst case (#128411).
+    """
+    # Same condition as the view's construction sites: nothing of its own to deliver with.
+    if served_platforms:
+        return False
     platform_key = platform_name.lower()
-    return any(
+    if any(
         str(route.platform).lower() == platform_key
         for route in _primary_profile_routes_for_current_home()
-    )
+    ):
+        return True
+    if not target:
+        return False
+    try:
+        from gateway.delivery_grants import grant_for_deliver_token
+
+        return grant_for_deliver_token(
+            _primary_delivery_grants_for_current_home(), target) is not None
+    except Exception:
+        logger.debug("primary-gateway delivery-grant check unavailable", exc_info=True)
+        return False
 
 
 class SharedRouteAdapters:
@@ -198,15 +277,31 @@ class SharedRouteAdapters:
     the target; anything else (unmatched target, disabled route, other profile, or target-less
     ``get(platform)``) is a miss — fail closed, never the default bot.
 
+    The same view also serves an OUTBOUND-ONLY delivery grant (``gateway/delivery_grants.py``,
+    #128411): the grantor's bot for a target the grantor named in ``to_profiles``'s favour. Both
+    are outbound uses of a borrowed adapter — nothing here grants INBOUND: no route, session key,
+    runtime profile, tool or secret is derived from a grant, and a grant never widens what
+    ``profile_routes`` already admits.
+
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, grants=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        # ponytail: an explicit ``grants`` argument is what a test or a caller with the primary
+        # layers already in hand passes; otherwise the grants are resolved from the primary home
+        # on first use and cached, so the three construction sites (ticker, queue drain, immediate
+        # run) cannot each forget the grant half of the grant.
+        self._grants = list(grants) if grants is not None else None
+
+    def _resolved_grants(self) -> list:
+        if self._grants is None:
+            self._grants = _primary_delivery_grants_for_current_home()
+        return self._grants
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self._primary) and (bool(self._routes) or bool(self._resolved_grants()))
 
     def get(self, platform, target=None, default=None):
         if not target:
@@ -230,6 +325,14 @@ class SharedRouteAdapters:
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
             ):
                 return adapter
+        grant = grant_for_target(self._resolved_grants(), platform_key, chat_id, thread_id)
+        if grant is not None:
+            logger.info(
+                "Cron delivery to %s:%s authorized by outbound delivery grant %r from the "
+                "primary home (outbound only: no inbound route, session or tool access granted)",
+                platform_key, chat_id, grant.name or grant.bot_platform,
+            )
+            return adapter
         return default
 
 
@@ -245,7 +348,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     lane_values = [deliver_value]
     if failure_deliver_value != deliver_value:
         lane_values.append(failure_deliver_value)
-    platform_parts: list[str] = []
+    platform_parts: list = []
     for lane_value in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
@@ -254,12 +357,15 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             # bot-chat targets deliver via a local subprocess; failures land in last_delivery_error.
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
                 continue
-            platform_parts.append(part.split(":", 1)[0].strip())
+            # Keep the whole token, not just its platform: a ``delivery_grants`` entry is
+            # target-exact, so only the full ``platform:chat_id`` can say whether THIS job's target
+            # is granted — a platform-level answer would wave the grantor's whole bot through.
+            platform_parts.append((part.split(":", 1)[0].strip(), part))
     if not platform_parts:
         return None
 
     connected: Optional[set] = None
-    for platform_name in platform_parts:
+    for platform_name, part in platform_parts:
         if not _delivery._is_known_delivery_platform(platform_name):
             return (
                 f"delivery platform '{platform_name}' is not a known cron "
@@ -282,8 +388,13 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             platform_name.lower() not in connected
             # Multiplex escape hatch: a satellite profile whose deliveries are routed by the primary
             # gateway's profile_routes is served by the primary's adapters, so its own unconnected reading
-            # is a false block (#97476).
-            and not _delivery_platform_routed_from_primary_gateway(platform_name)
+            # is a false block (#97476). The same holds for a target the primary's
+            # ``delivery_grants`` names for this profile — the primary bot sends it (#128411). Both
+            # are only true of a profile with NOTHING of its own to deliver with: one connected on
+            # any platform keeps its own adapter map, so the borrowed view is never built and the
+            # rescue would clear a send that is then dropped (#128411 review).
+            and not _delivery_platform_routed_from_primary_gateway(
+                platform_name, part, served_platforms=connected)
         ):
             return (
                 f"delivery platform '{platform_name}' has no gateway "

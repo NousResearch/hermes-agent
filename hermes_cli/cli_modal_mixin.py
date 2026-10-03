@@ -1075,15 +1075,15 @@ class CLIModalMixin:
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
+            choices = self._approval_choices(
+                command, allow_permanent=allow_permanent,
+                allow_session=allow_session, smart_denied=smart_denied)
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": self._approval_choices(
-                    command,
-                    allow_permanent=allow_permanent,
-                    allow_session=allow_session,
-                    smart_denied=smart_denied),
-                "selected": 0,
+                "choices": choices,
+                # An untouched Enter must refuse, regardless of optional choices.
+                "selected": choices.index("deny"),
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)

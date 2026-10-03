@@ -10,8 +10,12 @@ schema carries a ``required`` array, even an empty one. The ``#/definitions/`` â
 
 from __future__ import annotations
 
-import copy
+import logging
 from typing import Any, Dict, List
+
+from tools.schema_sanitizer import _bound_schema_depth
+
+logger = logging.getLogger(__name__)
 
 # Values are maps of name â†’ schema: recurse into the values, but the map itself
 # is not a schema and gets no repairs.
@@ -33,7 +37,10 @@ def _empty_object_schema() -> Dict[str, Any]:
 
 
 def _repair_schema(node: Any) -> Any:
-    """Recursively apply the Moonshot repairs to a schema node."""
+    """Recursively apply the Moonshot repairs to a schema node.
+
+    Callers pass fragments already bounded by ``_bound_schema_depth`` (or equally
+    shallow), so this recursion itself cannot exceed the Python stack."""
     if isinstance(node, list):
         return [_repair_schema(item) for item in node]
     if not isinstance(node, dict):
@@ -134,7 +141,7 @@ def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
     """Deep-copied, Moonshot-compatible object schema; input is not mutated."""
     if not isinstance(parameters, dict):
         return _empty_object_schema()
-    repaired = _repair_schema(copy.deepcopy(parameters))
+    repaired = _repair_schema(_bound_schema_depth(parameters))
     if not isinstance(repaired, dict):
         return _empty_object_schema()
     # Top-level must be an object schema.

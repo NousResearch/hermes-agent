@@ -31,6 +31,10 @@ _GEMINI_STRUCTURAL_KEYS = {
     "object": {"properties", "required", "minProperties", "maxProperties", "propertyOrdering"},
 }
 
+# Tool schemas come from untrusted providers (MCP servers / plugins); past this budget the
+# deeper fragment is replaced by a permissive object schema instead of raising RecursionError.
+_MAX_SCHEMA_DEPTH = 100
+
 
 def _stringify_enum_value(item: Any) -> Any:
     """Gemini-safe string for a scalar enum entry, or None to drop it."""
@@ -41,7 +45,7 @@ def _stringify_enum_value(item: Any) -> Any:
     return item if isinstance(item, str) else None
 
 
-def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> None:
+def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any], depth: int = 0) -> None:
     """Keep union alternatives and their branch-local structural constraints."""
     derived: Dict[str, Any] = {}
     _normalize_type_array(type_array, derived)
@@ -55,7 +59,7 @@ def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> N
             sanitize_gemini_schema({**branch, **constraints, **{
                 key: value for key, value in structural.items()
                 if key in _GEMINI_STRUCTURAL_KEYS.get(branch["type"], ())
-            }}) for branch in derived["anyOf"]
+            }}, depth + 1) for branch in derived["anyOf"]
         ]
     else:
         cleaned["type"] = derived["type"]
@@ -65,31 +69,37 @@ def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> N
         cleaned["nullable"] = True
 
 
-def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
+def sanitize_gemini_schema(schema: Any, depth: int = 0) -> Dict[str, Any]:
     """Gemini-compatible copy of a tool parameter schema: keeps only the documented subset
     (drops e.g. ``$schema`` / ``additionalProperties``) and recursively sanitizes nested
     ``properties`` / ``items`` / ``anyOf``."""
     if not isinstance(schema, dict):
         return {}
+    if depth > _MAX_SCHEMA_DEPTH:
+        logger.warning("gemini_schema: schema nesting exceeds %d levels; replacing the deeper "
+                       "fragment with a permissive object schema", _MAX_SCHEMA_DEPTH)
+        return {"type": "object", "properties": {}}
     cleaned: Dict[str, Any] = {}
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
             continue
         if key == "properties":
             if isinstance(value, dict):
-                cleaned[key] = {name: sanitize_gemini_schema(sub) for name, sub in value.items() if isinstance(name, str)}
+                cleaned[key] = {name: sanitize_gemini_schema(sub, depth + 1)
+                                for name, sub in value.items() if isinstance(name, str)}
         elif key == "items":
-            cleaned[key] = sanitize_gemini_schema(value)
+            cleaned[key] = sanitize_gemini_schema(value, depth + 1)
         elif key == "anyOf":
             if isinstance(value, list):
-                cleaned[key] = [sanitize_gemini_schema(item) for item in value if isinstance(item, dict)]
+                cleaned[key] = [sanitize_gemini_schema(item, depth + 1)
+                                for item in value if isinstance(item, dict)]
         else:
             cleaned[key] = value
 
     type_array = cleaned.get("type")
     if isinstance(type_array, list):
         cleaned.pop("type")
-        _normalize_gemini_type_array(type_array, cleaned)
+        _normalize_gemini_type_array(type_array, cleaned, depth)
 
     # Gemini requires every ``enum`` entry to be a string even for
     # integer/number/boolean types; the declared type stays intact and Gemini

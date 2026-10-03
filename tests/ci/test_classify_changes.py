@@ -175,16 +175,18 @@ CASES = {
     # The Windows desktop-update hand-off is a PowerShell integration surface:
     # its tests spawn the real script and poll its loopback server. They run
     # when the script, the Electron side that launches it, or their own test
-    # files change — not on every hermes_state.py PR.
+    # files change — not on every hermes_state.py PR. The script runs a real
+    # `hermes update`, and the Windows crash cells that kill it mid-run live in
+    # the install + update journey, so it starts e2e_upgrade as well.
     "windows.ps1 → desktop_updater": (
         ["scripts/desktop-update/windows.ps1"],
-        _lanes(python=True, desktop_updater=True, e2e_desktop_update=True),
+        _lanes(python=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     # The shipped updater page is exercised by the desktop Electron suite;
     # a page-only change must run that suite as well as the server tests.
     "updater ui.html → frontend + desktop_updater": (
         ["scripts/desktop-update/ui.html"],
-        _lanes(python=True, frontend=True, desktop_updater=True, e2e_desktop_update=True),
+        _lanes(python=True, frontend=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     "desktop-update test → desktop_updater": (
         ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
@@ -332,6 +334,22 @@ CASES = {
         _lanes(python=True, scan=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     "PM → e2e_upgrade + docker": (["pm/environments.py"], _lanes(python=True, scan=True, e2e_upgrade=True, docker=True)),
+    # The update pipeline lives beyond the update_* family too: the entry
+    # point, launch-time recovery, the gateway restart/pause surface.
+    "cmd_update entry → e2e_upgrade": (["hermes_cli/main.py"], _lanes(python=True, scan=True, e2e_upgrade=True)),
+    "gateway status stamp → e2e_upgrade": (["gateway/status.py"], _lanes(python=True, scan=True, e2e_upgrade=True)),
+    "desktop verify → desktop_updater + both update suites": (
+        ["hermes_cli/desktop_update_verify.py"],
+        _lanes(python=True, scan=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
+    "electron main → desktop update": (
+        ["apps/desktop/electron/main.ts"],
+        _lanes(frontend=True, e2e_desktop_update=True),
+    ),
+    "handoff result reader → desktop_updater + desktop update": (
+        ["apps/desktop/electron/handoff-result.ts"],
+        _lanes(frontend=True, desktop_updater=True, e2e_desktop_update=True),
+    ),
     "desktop backend spawn → desktop core": (
         ["apps/desktop/electron/backend-child.ts"],
         _lanes(frontend=True, e2e_desktop_core=True),
@@ -403,6 +421,71 @@ def test_every_slow_lane_path_matches_a_tracked_file():
         if not any(f.startswith(prefix) for f in files)
     }
     assert dead == set()
+
+
+# Every file the `hermes update` pipeline runs on the update path (the step
+# tables of the updater audit's cli-update and desktop-update code maps). A
+# PR that edits only one of these must start the real-update suite that would
+# catch the regression; before, main.py / _early_recovery.py / relaunch.py /
+# gateway/ / hermes_bootstrap.py skipped both the Linux and Windows journeys.
+_UPDATE_PATH_FILES = (
+    "hermes_cli/main.py",
+    "hermes_cli/main_dashboard.py",
+    "hermes_cli/main_desktop.py",
+    "hermes_cli/_early_recovery.py",
+    "hermes_cli/venv_sync.py",
+    "hermes_cli/update_lock.py",
+    "hermes_cli/update_cmd.py",
+    "hermes_cli/update_completion.py",
+    "hermes_cli/update_cmd_windows.py",
+    "hermes_cli/update_cmd_zip.py",
+    "hermes_cli/_update_takeover.py",
+    "hermes_cli/source_completion.py",
+    "hermes_cli/source_build.py",
+    "hermes_cli/source_releases.py",
+    "hermes_cli/_launchers.py",
+    "hermes_cli/gitlock.py",
+    "hermes_cli/process_identity.py",
+    "hermes_cli/relaunch.py",
+    "hermes_cli/gateway.py",
+    "hermes_cli/gateway_windows.py",
+    "hermes_cli/gateway_migrate.py",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_bootstrap.py",
+    "hermes_constants.py",
+    "gateway/status.py",
+    "gateway/control_socket.py",
+    "gateway/code_skew.py",
+    "scripts/desktop-update/windows.ps1",
+    "scripts/desktop-update/posix.sh",
+)
+_DESKTOP_UPDATE_PATH_FILES = (
+    "apps/desktop/electron/main.ts",
+    "apps/desktop/electron/update-marker.ts",
+    "apps/desktop/electron/update-gate.ts",
+    "apps/desktop/electron/updater-process.ts",
+    "apps/desktop/electron/updater/checkout.ts",
+    "apps/desktop/electron/handoff-result.ts",
+    "apps/desktop/electron/desktop-installation.ts",
+    "apps/desktop/electron/backend-discovery.ts",
+    "apps/desktop/electron/host-backend-attach.ts",
+    "scripts/desktop-update/windows.ps1",
+    "scripts/desktop-update/posix.sh",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/main_desktop.py",
+)
+
+
+@pytest.mark.parametrize("path", _UPDATE_PATH_FILES)
+def test_every_update_path_file_starts_the_real_update_suite(path):
+    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
+    assert classify([path])["e2e_upgrade"], path
+
+
+@pytest.mark.parametrize("path", _DESKTOP_UPDATE_PATH_FILES)
+def test_every_desktop_update_path_file_starts_the_desktop_update_suite(path):
+    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
+    assert classify([path])["e2e_desktop_update"], path
 
 
 _REPO = Path(__file__).resolve().parents[2]

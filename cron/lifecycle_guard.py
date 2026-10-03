@@ -605,9 +605,31 @@ def _split_logical_lines(text: str) -> list[str]:
     return lines
 
 
+# Windows path separators are backslashes, which POSIX shlex reads as escape characters and eats,
+# so `C:\Users\me\bin\python.exe` tokenizes as `C:Usersmebinpython.exe` and the guard resolves a path
+# that does not exist. On Windows the tokenizer therefore re-spells a *drive-letter or UNC* path with
+# forward slashes before handing the line to shlex. The match is anchored to the drive letter (or the
+# leading `\\` of a UNC share), which is what keeps ordinary POSIX escapes intact: a bare `\;`, `\ ` or
+# `\n` carries no drive letter, so shlex still reads it as an escape exactly as before. `\n` is a real
+# line break by the time a line reaches the tokenizer. POSIX is untouched: this never runs there.
+_WINDOWS_PATH_TOKEN = re.compile(r"(?:[A-Za-z]:[\\/]\\\\[^\s;&|()\"']*)|(?:[A-Za-z]:[\\/][^\s;&|()\"']*)")
+
+
+def _restore_windows_path_separators(line: str) -> str:
+    """Re-spell drive-letter/UNC Windows paths with forward slashes so shlex keeps them intact.
+
+    A path with no drive letter and no UNC prefix (``.\\helper.sh``) is deliberately left alone: it is
+    indistinguishable from an escape sequence, and rewriting it would change how a real command
+    tokenizes.
+    """
+    if sys.platform != "win32":
+        return line
+    return _WINDOWS_PATH_TOKEN.sub(lambda match: match.group(0).replace("\\", "/"), line)
+
+
 def _shlex_tokens(line: str) -> list[str]:
     """POSIX-tokenize one shell line, honoring quotes and `#` comments; raises ValueError."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+    lexer = shlex.shlex(_restore_windows_path_separators(line), posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
     lexer.commenters = "#"
     return list(lexer)
@@ -647,10 +669,16 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
 
 
 def _executable_name(token: str) -> str:
-    """Command name of an executable token. ``Path(token).name`` is "" for ``.``, ``..`` and ``/``;
-    the POSIX dot-source builtin is spelled ``.``, so fall back to the raw token or ``.
-    ./helper.sh`` would escape the sourced-script scan."""
-    return Path(token).name or token
+    """Command name of an executable token, normalized so the name comparisons against the
+    executable sets below hold on Windows too: backslashes are path separators, a ``.exe``
+    suffix is decoration, and command names are case-insensitive. Without this, ``bash.exe`` or
+    ``C:\\Program Files\\Git\\usr\\bin\\bash.exe`` never matches ``_SHELL_EXECUTABLES``, so the
+    ``-c`` payload walk and the sourced-script walk silently cover nothing on a Windows host.
+
+    ``Path(token).name`` is "" for ``.``, ``..`` and ``/``; the POSIX dot-source builtin is
+    spelled ``.``, so fall back to the raw token or ``.``./helper.sh`` would escape the
+    sourced-script scan."""
+    return Path(token.replace("\\", "/")).name.removesuffix(".exe").lower() or token
 
 
 def _peel_transparent_prefixes(segment: list[str], index: int) -> int:

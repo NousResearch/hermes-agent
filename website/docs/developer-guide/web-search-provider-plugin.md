@@ -163,6 +163,35 @@ Providers can advertise multiple capabilities from a single class — Firecrawl,
 
 The tool wrapper expects a fixed envelope so it doesn't have to translate between backends.
 
+### Extraction delivery provenance
+
+The `web_extract` tool adds a top-level `provenance` object alongside its projected
+`results`. Providers continue returning their existing result rows; they do not
+need to implement this object.
+
+`requested_backend` identifies the resolved provider selected for the call.
+`served_by` reports the known serving vendor (or a list for mixed vendors), and
+`serving_backend_complete` is false when attribution is missing. Attribution is
+observed by the wrapper or reported by a provider, rather than independently
+verified. The built-in keyless ring records its actual serving vendor; unknown
+third-party rescue vendors remain unknown. A rescued response is not cached
+under the originally selected vendor.
+
+`cache_status` distinguishes `hit`, `miss`, `mixed`, and `bypass`.
+`provider_call_attempted`, `fallback_attempted`, and `fallback_used` describe the
+wrapper's dispatch/rescue path. `retrieved_at` preserves the oldest known
+retrieval timestamp among successful rows, including cache hits; legacy cache
+entries use their recorded fetch/store timestamp. If any successful row has no
+known timestamp, the aggregate is null. `served_at` records delivery by this
+tool call. `fetch_succeeded` requires a successful non-cached row.
+
+The count fields describe requested, returned, successful, and failed rows.
+Empty or failed rows are not evidence of a successful retrieval.
+`evidence_scope` is `extracted_content` and `page_freshness_verified` is always
+false: these timestamps do not establish when the provider crawled the page or
+when the publisher updated it. Internal per-row delivery annotations are
+removed by the existing tool result projection.
+
 **Search success:**
 
 ```python

@@ -72,6 +72,9 @@ class TurnContext:
     AIAgent: Any = None
     resolve_display_setting: Any = None
     result_holder: list = field(default_factory=lambda: [None])
+    # the long-running heartbeat bubble, settled to the turn's outcome when it ends
+    _heartbeat_msg_id: Optional[str] = None
+    _heartbeat_started_at: Optional[float] = None
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])

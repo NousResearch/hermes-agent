@@ -5301,6 +5301,37 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_jobs_callback(self, query: "Any", data: str) -> None:
+        import asyncio
+        import sys
+        if "/opt/hermes/jobs-unified" not in sys.path:
+            sys.path.insert(0, "/opt/hermes/jobs-unified")
+        import jobs_callbacks
+        action, job_id = data.split(":", 1)
+        class QueryAdapter:
+            def __init__(self, callback_data):
+                self.data = callback_data
+            def answer(self, text=""):
+                return None
+        label = {"prefill": "✅ prellenado iniciado", "kit": "📄 kit generado", "discard": "❌ descartada"}[action]
+        try:
+            await asyncio.to_thread(jobs_callbacks.handle_callback, QueryAdapter(data), str(query.message.chat_id), "")
+        except Exception as exc:
+            logger.error("jobs callback %s failed: %s", action, exc)
+            label = f"🟡 {action} con error"
+        finally:
+            try:
+                await query.answer(text=label)
+            except Exception:
+                logger.exception("answerCallbackQuery failed for jobs callback")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+                old = query.message.text or ""
+                stamp = datetime.now().strftime("%H:%M")
+                await query.edit_message_text(text=f"{old}\n\n→ {label} · {stamp}", reply_markup=None)
+            except Exception:
+                logger.exception("failed to edit jobs callback message")
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -5315,6 +5346,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Ofertas IT: callbacks gestionados por jobs_callbacks ---
+        if data.startswith(("prefill:", "kit:", "discard:")):
+            await self._handle_jobs_callback(query, data)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
@@ -5504,6 +5540,32 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Job-employment callbacks (apply:/kit:/skip:/done:/cancel:) — módulo aislado ---
+        if data.startswith(("apply:", "kit:", "skip:", "done:", "cancel:")):
+            try:
+                import importlib.util
+                from pathlib import Path as _Path
+                module_path = _Path("/opt/hermes/jobs-unified/jobs_callbacks.py")
+                spec = importlib.util.spec_from_file_location("jobs_callbacks", module_path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                result = mod.handle_callback(query, str(query_chat_id or ""), "")
+                try:
+                    await query.edit_message_text(
+                        text=query.message.text + f"\nEstado: {result}",
+                        reply_markup=None,
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("[jobs_callbacks] failure in callback: %s", exc, exc_info=True)
+                try:
+                    await query.answer(text="⚠️ Error en callback de empleo — revisa ventana.")
+                except Exception:
+                    pass
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---

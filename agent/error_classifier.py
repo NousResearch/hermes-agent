@@ -521,7 +521,7 @@ _REASONING_FIELD_TOKEN = re.compile(
 # 400 fell through to the generic large-session overflow heuristic and started compression.
 _REASONING_PARAM_REJECTION = re.compile(
     r"""['"]param['"]\s*:\s*['"](?:reasoning(?:[._]effort)?|thinking(?:_config|_budget)?|enable_thinking)['"]"""
-    r"""|invalid_reasoning_effort"""
+    r"""|invalid_reasoning_effort|unexpected reasoning[ _]effort"""
 )
 
 

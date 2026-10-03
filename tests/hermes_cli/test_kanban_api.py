@@ -590,6 +590,15 @@ def test_transcript_streams_worker_session_while_running(
     tail = client.get(url, params={"after_id": rest["next_after_id"]}).json()
     assert tail["messages"] == [] and tail["next_after_id"] == rest["next_after_id"]
 
+    # In-place compaction soft-archives the summarized steps; they stay in the transcript.
+    db = SessionDB(profile_home / "state.db")
+    db.archive_and_compact("sess-1", [{"role": "user", "content": "[summary]"}])
+    db.close()
+    for params in ({"limit": 500}, {"latest": True, "limit": 500}):
+        contents = [m["content"] for m in client.get(url, params=params).json()["messages"]]
+        assert "Привіт! <script>" in contents
+        assert contents[-1] == "[summary]"
+
     assert client.get(url, params={"run_id": 999}).status_code == 404
     assert client.get("/api/plugins/kanban/v1/tasks/missing/transcript").status_code == 404
 

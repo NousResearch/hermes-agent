@@ -727,15 +727,18 @@ def _read_session_messages(
         rows: list[dict[str, Any]] = []
         # ponytail: a compression continuation re-inserts the compacted
         # context, so post-compression transcripts repeat a summary block.
+        # ``include_inactive``: in-place compaction soft-archives the steps it
+        # summarized (``compacted=1``) and those are still the run's history; it is
+        # the only id-cursor read that reaches them. The caller drops rewound rows.
         chain = db.get_compression_chain(session_id)
         if latest:
             for sid in reversed(chain):
-                rows[:0] = db.get_messages(sid, latest=True, limit=limit - len(rows))
+                rows[:0] = db.get_messages(sid, include_inactive=True, latest=True, limit=limit - len(rows))
                 if len(rows) >= limit:
                     break
             return rows
         for sid in chain:
-            rows.extend(db.get_messages(sid, after_id=after_id, limit=limit - len(rows)))
+            rows.extend(db.get_messages(sid, include_inactive=True, after_id=after_id, limit=limit - len(rows)))
             if len(rows) >= limit:
                 break
         return rows
@@ -785,7 +788,12 @@ def task_transcript(
             raise HTTPException(status_code=503, detail="transcript unavailable") from exc
         has_more = len(rows) > limit
         page = rows[-limit:] if latest else rows[:limit]
-        messages = [_transcript_message(row) for row in page if row.get("role") != "system"]
+        # Rewound rows (neither live nor compaction-archived) include the tail that a
+        # compaction re-inserts as fresh rows; showing both would repeat it.
+        messages = [
+            _transcript_message(row) for row in page
+            if row.get("role") != "system" and (row.get("active") or row.get("compacted"))
+        ]
         next_after_id = page[-1]["id"] if page else after_id
     else:
         next_after_id = after_id

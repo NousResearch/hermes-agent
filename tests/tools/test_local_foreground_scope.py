@@ -98,12 +98,24 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
     monkeypatch.setattr(local_env, "_kill_process_group_posix", boom)
     monkeypatch.setattr(process_registry, "_stop_systemd_unit",
                         lambda unit: stopped.append(unit) or True)
+    monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
+    env = local_env.LocalEnvironment()
     proc = _FakeProc(pid=4244)
     proc._hermes_scope_unit = "hermes-fg-4244-1.scope"
 
     with pytest.raises(RuntimeError):
-        local_env.LocalEnvironment()._kill_process(proc)
+        env._kill_process(proc)
     assert stopped == ["hermes-fg-4244-1.scope"]
+
+    # Hard exit (no wait allowed): the scope is SIGKILLed without blocking on systemctl.
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(local_env.os, "killpg", lambda *a: None)
+    monkeypatch.setattr(local_env.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(local_env.shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
+    monkeypatch.setattr(local_env.subprocess, "Popen", lambda args, **kw: spawned.append(list(args)))
+    env._force_kill_process(proc)
+    assert spawned == [["/usr/bin/systemctl", "--user", "--no-block", "kill", "--signal=SIGKILL",
+                        "hermes-fg-4244-1.scope"]]
 
     monkeypatch.setattr(process_registry, "CHECKPOINT_PATH", tmp_path / "processes.json")
     monkeypatch.setattr(process_registry.ProcessRegistry, "_track_started", lambda self, *a, **k: None)

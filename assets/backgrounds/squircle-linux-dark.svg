@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- app-icon background, Linux/BSD tile grid, dark: #0d1117 rounded square (896x896, r=214.375)
+       centered in the 1024 canvas with 64px transparent margins, so the icon matches the size of
+       desktop-theme neighbors (the GNOME HIG draws app icons inside their box, not edge to edge) -->
+  <rect x="64" y="64" width="896" height="896" rx="214.375" fill="#0d1117"/>
+</svg>

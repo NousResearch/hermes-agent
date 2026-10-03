@@ -14,6 +14,8 @@ Sources of truth — two axes, composed per target:
   Backgrounds (per platform surface, light/dark):
                       assets/backgrounds/squircle-light.svg   white rounded
                       assets/backgrounds/squircle-dark.svg    #0d1117 rounded
+                      assets/backgrounds/squircle-linux-light.svg linux tile grid
+                      assets/backgrounds/squircle-linux-dark.svg  linux tile grid
                       assets/backgrounds/squircle-mac-light.svg   mac HIG grid
                       assets/backgrounds/squircle-mac-dark.svg    mac HIG grid
 
@@ -28,7 +30,10 @@ Sources of truth — two axes, composed per target:
   package of canvas-filling layers (girl light/dark, plus a grayscale mono
   layer for Clear and Tinted) that the system masks into its own squircle;
   electron-builder compiles it to Assets.car next to the .icns, which
-  macOS <= 15 keeps showing.
+  macOS <= 15 keeps showing. The Linux launcher/window icons also keep
+  their own grid: the 896x896 (r=214.375) tile with 64px margins so they
+  match desktop-theme neighbors (the GNOME HIG draws app icons inside their
+  box, never edge to edge).
 
 Desktop build identity comes from HERMES_PAYLOAD_TAG / HERMES_BUILD_COMMIT:
 Canary uses yellow/dark-yellow backgrounds. Commit builds use red/dark-red
@@ -55,10 +60,10 @@ Dependencies:
 Outputs (99 files):
   assets/icon-master.svg                              generated light master
   assets/icon-master-dark.svg                         generated dark master
-  apps/desktop/assets/icon.png                        1024x1024 squircle (light)
+  apps/desktop/assets/icon.png                        1024x1024 squircle (light, Linux grid)
   apps/desktop/assets/icon.ico                        16,24,32,48,64,128,256
   apps/desktop/assets/icon.icns                       16..1024 (real ICNS)
-  apps/desktop/assets/icon-dark.png                   1024x1024 squircle (dark)
+  apps/desktop/assets/icon-dark.png                   1024x1024 squircle (dark, Linux grid)
   apps/desktop/assets/icon-dark.ico                   16,24,32,48,64,128,256
   apps/desktop/assets/icon-dark.icns                  16..1024 (real ICNS)
   apps/desktop/packaging/dmg-volume.icns                 16..1024, from assets/dmg-volume.png (DMG volume)
@@ -69,7 +74,7 @@ Outputs (99 files):
   apps/desktop/assets/appx/<Logo>[.scale-N].png       MSIX logos at 100/125/150/200/400% (wide: squircle centered)
   apps/desktop/assets/appx/Square44x44Logo.targetsize-N[_altform-(light)unplated].png
                                                       taskbar/Start bitmaps 16..256; unplated = dark tile
-  apps/desktop/public/apple-touch-icon.png            1024x1024 squircle
+  apps/desktop/public/apple-touch-icon.png            1024x1024 squircle (Linux grid)
   apps/desktop/public/nous-girl.png                   256x256 squircle, black girl (light mark)
   apps/desktop/public/nous-girl-dark.png              256x256 squircle, white girl (dark mark)
   apps/bootstrap-installer/src-tauri/icons/32x32.png       32x32
@@ -131,6 +136,9 @@ BORDER_ENABLED = False
 # Without a ring the girl's lowest nodes are dragged past the tile edge (in
 # 1024ths of the tile) so the outline crops her instead of leaving a gap.
 EDGE_OVERSHOOT = 48 / 1024
+# Per-platform tile grids (key: marker in the background file name), so badges
+# stay inside the tile on surfaces that are inset from the canvas.
+BADGE_TILE_GRIDS = {"-mac-": (100, 824 / 1024), "-linux-": (64, 896 / 1024)}
 
 # Portrait boxes fitted to the reference at equal visible tile width, with
 # uniform scaling about the tile center followed by an up-left translation.
@@ -138,6 +146,11 @@ EDGE_OVERSHOOT = 48 / 1024
 GIRL_BOXES = {
     "squircle-light.svg": (72.149433, 104.703674, 872.767801, 872.767801),
     "squircle-dark.svg": (72.149433, 104.703674, 872.767801, 872.767801),
+    # Linux tile grid: the reference box, scaled uniformly about the canvas
+    # centre by 896/1024 (the tile is centred, so scaling about the tile centre
+    # with an up-left translation lands on the same numbers).
+    "squircle-linux-light.svg": (127.130754, 155.615715, 763.671826, 763.671826),
+    "squircle-linux-dark.svg": (127.130754, 155.615715, 763.671826, 763.671826),
     # Mac: the girl scaled 1.06x about the plate center; the plate stays on the
     # 824 grid, but a white tile with a ring reads small beside full-color peers.
     "squircle-mac-light.svg": (140.19, 164.44, 744.68, 744.68),
@@ -246,10 +259,10 @@ CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
 TARGETS: list[tuple[str, str, object]] = [
     ("assets/icon-master.svg", "svg", None),
     ("assets/icon-master-dark.svg", "svg_dark", None),
-    ("apps/desktop/assets/icon.png", "png", 1024),
+    ("apps/desktop/assets/icon.png", "png_linux", 1024),
     ("apps/desktop/assets/icon.ico", "ico", [16, 24, 32, 48, 64, 128, 256]),
     ("apps/desktop/assets/icon.icns", "icns", None),
-    ("apps/desktop/assets/icon-dark.png", "png_dark", 1024),
+    ("apps/desktop/assets/icon-dark.png", "png_linux_dark", 1024),
     ("apps/desktop/assets/icon-dark.ico", "ico_dark", [16, 24, 32, 48, 64, 128, 256]),
     ("apps/desktop/assets/icon-dark.icns", "icns_dark", None),
     # The DMG volume icon: our own drive artwork with the girl on its face,
@@ -262,7 +275,7 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/desktop/assets/icon.icon/Assets/art-dark.png", "icon_art", "white"),
     ("apps/desktop/assets/icon.icon/Assets/mono.png", "icon_mono", None),
     *APPX_TARGETS,
-    ("apps/desktop/public/apple-touch-icon.png", "png", 1024),
+    ("apps/desktop/public/apple-touch-icon.png", "png_linux", 1024),
     # The dev-run Dock icon (app.dock.setIcon): same mac grid as the icns.
     ("apps/desktop/assets/icon-mac.png", "png_mac", 1024),
     ("apps/desktop/public/nous-girl.png", "girl_light", 256),
@@ -307,6 +320,10 @@ class IconArt:
         self.bboxes: dict[str, tuple[float, float, float, float]] = {}
         self.master = compose_svg(self, "black", "squircle-light.svg")
         self.master_dark = compose_svg(self, "white", "squircle-dark.svg")
+        # Linux launcher and window icons sit on the 896-on-1024 desktop grid,
+        # not the full-bleed squircle the store/web targets share.
+        self.master_linux = compose_svg(self, "black", "squircle-linux-light.svg")
+        self.master_linux_dark = compose_svg(self, "white", "squircle-linux-dark.svg")
         # macOS icons sit on Apple's 824-on-1024 grid, not the full-bleed
         # squircle: same art, mac-grid backgrounds, icns targets only.
         self.master_mac = compose_svg(self, "black", "squircle-mac-light.svg")
@@ -413,8 +430,9 @@ def commit_layer(commit: str, bg: str) -> str:
                 if bits & (1 << (4 - col)):
                     x, y = gx + (index * 6 + col) * 16, gy + row * 16
                     cells.append(f"M{x} {y}h16v16h-16z")
-    # The badge follows the tile's mac HIG inset, never the outer canvas.
-    transform = f' transform="translate(100 100) scale({824 / 1024})"' if "-mac-" in bg else ""
+    # The badge follows the tile inset of the background's grid, never the outer canvas.
+    grid = next((grid for suffix, grid in BADGE_TILE_GRIDS.items() if suffix in bg), None)
+    transform = "" if grid is None else f' transform="translate({grid[0]} {grid[0]}) scale({grid[1]})"'
     bx, by, bw, bh = BADGE_RECT
     return (
         f'<g{transform}><rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="24" fill="#000000"/>'
@@ -807,6 +825,10 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
         save_png(render(art.master_mac, arg), buf)
     elif kind == "png_dark":
         save_png(render(art.master_dark if arg >= BADGE_MIN_SIZE else art.master_dark_small, arg), buf)
+    elif kind == "png_linux":
+        save_png(render(art.master_linux, arg), buf)
+    elif kind == "png_linux_dark":
+        save_png(render(art.master_linux_dark, arg), buf)
     elif kind == "png_white":
         render(art.master, arg, background="#ffffff").convert("RGB").save(buf, "PNG", optimize=True)
     elif kind == "png_dark_white":

@@ -1,6 +1,6 @@
 name: loreconvo
 repo: https://github.com/labyrinth-analytics/loreconvo
-sha: 91c5d17418269a06389a2133739297f7d004c310
+sha: 216633dca40e4959cb10f42f0caa8166b8b15b62
 subdir: integrations/hermes/
 tier: community
 category: memory
@@ -10,8 +10,6 @@ capabilities:
     - loreconvo_search_sessions
     - loreconvo_get_context
     - loreconvo_save_memory
-  hooks:
-    - post_tool_call
   requires_env:
     - LORECONVO_HERMES_PROJECT
 requires_hermes: ">=0.21"

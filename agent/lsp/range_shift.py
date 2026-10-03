@@ -12,6 +12,8 @@ from __future__ import annotations
 import difflib
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.lsp.client import _lsp_splitlines
+
 _Shift = Callable[[int], Optional[int]]
 
 
@@ -21,8 +23,10 @@ def build_line_shift(pre_text: str, post_text: str) -> _Shift:
     ``None`` means the line was deleted.  One ``get_opcodes()`` call up front;
     the closure scans the (small) opcode list per lookup.
     """
-    pre_lines = pre_text.splitlines() if pre_text else []
-    post_lines = post_text.splitlines() if post_text else []
+    # LSP line breaks only, not str.splitlines()'s wider set (form feed etc.) — must match
+    # _end_position's line-counting so diagnostic line numbers line up with document edits.
+    pre_lines = _lsp_splitlines(pre_text)
+    post_lines = _lsp_splitlines(post_text)
     if pre_lines == post_lines:
         return lambda line: line
     # Opcodes are (tag, i1, i2, j1, j2): i-range in pre, j-range in post.

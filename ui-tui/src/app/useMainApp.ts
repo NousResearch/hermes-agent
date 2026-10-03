@@ -905,6 +905,7 @@ export function useMainApp(gw: GatewayClient) {
           colsRef,
           newSession: session.newSession,
           recoverSidRef,
+          resumeInFlightRef: session.resumeInFlightRef,
           resetSession: session.resetSession,
           resumeById: session.resumeById,
           setCatalog

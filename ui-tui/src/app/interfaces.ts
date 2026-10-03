@@ -498,6 +498,8 @@ export interface GatewayEventHandlerContext {
     newSession: (msg?: string, title?: string) => void
     // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
+    /** Semantic claim set synchronously by any in-flight resume. */
+    resumeInFlightRef?: MutableRefObject<number>
     resetSession: () => void
     resumeById: (id: string) => Promise<void>
     setCatalog: StateSetter<null | SlashCatalog>

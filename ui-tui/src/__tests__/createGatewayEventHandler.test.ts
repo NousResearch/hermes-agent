@@ -1163,6 +1163,21 @@ describe('createGatewayEventHandler', () => {
     expect(resumeById).not.toHaveBeenCalled()
   })
 
+  it('does not forge while an explicit localized resume owns startup selection', async () => {
+    const config = Promise.withResolvers<any>()
+    const newSession = vi.fn()
+    const ctx = buildCtx([])
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.session.newSession = newSession
+    ctx.session.resumeInFlightRef = ref(1)
+    patchUiState({ status: '正在恢复…' })
+    ctx.gateway.rpc = vi.fn((method: string) => method === 'config.get' ? config.promise : Promise.resolve(null))
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+    config.resolve({ config: { display: { tui_auto_resume_recent: false } } })
+    await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', {}))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready after a crash, resumes the recovered session once and skips forge', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()

@@ -497,8 +497,15 @@ def _login_xai_oauth(args, pconfig: ProviderConfig, *, force_new_login: bool = F
     # by ``hermes auth remove xai-oauth``. Deliberately NOT inside _save_xai_oauth_tokens — the
     # refresh hot path shares that helper and must never mutate suppression state.
     unsuppress_credential_source("xai-oauth", "device_code")
-    config_path = _update_config_for_provider("xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL))
-    _print_login_success("xai-oauth", config_path, show_auth_state=True)
+    # Route (model.provider/base_url/default) is owned by the model picker's
+    # _activate_provider_model: writing it here would rewrite the user's main route
+    # before any model is chosen, and a cancelled picker would strand the config on a
+    # provider whose model was never selected.
+    print()
+    print("Login successful!")
+    from hermes_constants import display_hermes_home as _dhh
+
+    print(f"  Auth state: {_dhh()}/auth.json")
 
 
 def _xai_oauth_request_device_code(client: httpx.Client, *, scope: str = XAI_OAUTH_SCOPE) -> Dict[str, Any]:

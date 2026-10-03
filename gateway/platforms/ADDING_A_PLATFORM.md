@@ -60,6 +60,14 @@ for the full pattern (Template Buttons postback at 45s, `RequestCache`
 state machine, `interrupt_session_activity` override for `/stop`
 orphans) and the developer-guide page for the prose walkthrough.
 
+**Voice replies.** Two class attributes tell the gateway whether replies
+should be spoken. `supports_voice_replies = False` is for platforms that
+cannot deliver audio (an agent peer, a text-only bridge): replies stay text
+whatever `voice.auto_tts` or `/voice` say. `plugins/platforms/a2a/` sets it.
+`speaks_replies_by_default = True` is for voice-first surfaces (a device with
+a speaker): replies are spoken unless the chat runs `/voice off`, instead of
+following the global `voice.auto_tts` default.
+
 **Sibling adapters that share behavior.** When a single platform has
 two transport modes the user picks between — unofficial vs official
 APIs, polling vs websocket, library A vs library B — the right

@@ -214,3 +214,31 @@ class TestRegister:
         p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is not None
+
+    def test_reregistration_without_secret_keeps_sessions_valid(self, basic, monkeypatch):
+        # Login 200 -> API 401 regression: registering the provider twice in one
+        # process (forced plugin re-discovery / password change / a second per-home
+        # manager) upserts a NEW provider under the same name. With fresh entropy per
+        # construction the replacement signed with a different key, so every session
+        # minted before the re-registration stopped verifying — the reported symptom.
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
+        monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", raising=False)
+
+        ctx1 = MagicMock()
+        basic.register(ctx1)
+        p1 = ctx1.register_dashboard_auth_provider.call_args.args[0]
+        session = p1.complete_password_login(username="admin", password="hunter2")
+
+        # The upsert: a fresh provider replaces the live one under the same name.
+        ctx2 = MagicMock()
+        basic.register(ctx2)
+        p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
+        assert p2 is not p1
+        assert p2._secret == p1._secret, (
+            "a re-registration minted a different fallback signing key, so every "
+            "session issued before it 401s on the next request"
+        )
+        verified = p2.verify_session(access_token=session.access_token)
+        assert verified is not None and verified.user_id == "admin"

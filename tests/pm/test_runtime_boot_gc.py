@@ -17,7 +17,10 @@ def test_bootstrap_lease_survives_selection_change(tmp_path, monkeypatch):
         venv = state / "environments" / name / "venv"
         venv.mkdir(parents=True)
         # pyvenv.cfg first: the layout keys its site-packages path off the recorded version.
-        (venv / "pyvenv.cfg").write_text("version = 3.11")
+        # Declare the running interpreter: the child boots on it, and a foreign
+        # tree is refused by activate_dependencies (#122555).
+        (venv / "pyvenv.cfg").write_text(
+            f"version = {sys.version_info.major}.{sys.version_info.minor}")
         site_packages(venv).mkdir(parents=True)
         (venv.parent / ".lease-managed").touch()
     legacy = state / "environments" / "old-unleased"

@@ -25,6 +25,19 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_parent_agent_reaches_registry_dispatch(self):
+        """The plugin contract documents ``parent_agent`` as an injectable handler
+        kwarg (registry.dispatch filters it by signature), so the model-driven
+        path has to forward it instead of dropping it."""
+        agent = object()
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch:
+            handle_function_call("web_search", {"q": "test"}, task_id="t1", parent_agent=agent)
+            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        with_agent, without_agent = (c.kwargs for c in mock_dispatch.call_args_list)
+        assert with_agent["parent_agent"] is agent
+        assert "parent_agent" not in without_agent
+
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

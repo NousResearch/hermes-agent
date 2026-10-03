@@ -657,7 +657,7 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     hostMock.profileRoutes = undefined
   })
 
-  it("asks the keyed connection by route, not an ambient socket that sits on another machine", async () => {
+  it('asks the keyed connection by route, not an ambient socket that sits on another machine', async () => {
     hostMock.state.connectionId.get.mockReturnValue('vps')
     hostMock.agents.mockRejectedValue(new Error('no union roster on this build'))
     hostMock.profileRoutes = vi.fn(async () => routes)

@@ -305,9 +305,13 @@ async function relayAgentsOn(
   labels: Map<string, string>
 ): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
-      include_sessions: false
-    })
+    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(
+      connection.route,
+      'profiles.list',
+      {
+        include_sessions: false
+      }
+    )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     const label = labels.get(connection.id) || connection.id

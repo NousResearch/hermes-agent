@@ -582,6 +582,9 @@ _OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra"})
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go", "opencode-zen", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
+    # Subscription tier with no /models route on its endpoint: models.dev is the
+    # only live catalog source for the plan roster (tracked upstream, community-updated).
+    "volcengine-agent-plan",
 })
 
 

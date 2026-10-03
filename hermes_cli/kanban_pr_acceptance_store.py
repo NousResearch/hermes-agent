@@ -35,6 +35,38 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     return snapshot, collect_acceptance(contract, published_pr, assignee=assignee)
 
 
+def acceptance_failure_detail(receipt):
+    """Human-facing stamp; classification authority remains the stored receipt."""
+    return f"PR acceptance {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
+
+
+def pending_acceptance_failure(conn, task_id, failure_error):
+    """Return the current typed failure, not an older superseded receipt.
+
+    Match the producer's exact stamp only to establish ownership of the task's
+    current failure. Never infer a classification from diagnostic wording.
+    Clearing/replacing the stamp makes old acceptance events inapplicable.
+    """
+    from hermes_cli.kanban_db import _json_dict
+
+    if not failure_error:
+        return None
+    event = conn.execute(
+        "SELECT payload, created_at FROM task_events "
+        "WHERE task_id=? AND kind='pr_acceptance' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if event is None:
+        return None
+    receipt = _json_dict(event["payload"])
+    if (receipt.get("ok") is not False
+            or receipt.get("classification") not in ("auth", "retry", "policy", "infra")
+            or "recovery" not in receipt
+            or acceptance_failure_detail(receipt) != failure_error):
+        return None
+    return receipt["classification"], int(event["created_at"])
+
+
 def record_acceptance(conn, task_id, acceptance):
     """Called under complete_task's write_txn, before its terminal UPDATE."""
     from hermes_cli.kanban_db import _append_event
@@ -43,6 +75,6 @@ def record_acceptance(conn, task_id, acceptance):
         return False
     _append_event(conn, task_id, "pr_acceptance", receipt, run_id=snapshot[0])
     if not receipt["ok"]:
-        detail = f"PR acceptance {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
+        detail = acceptance_failure_detail(receipt)
         conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (detail, task_id))
     return receipt["ok"]

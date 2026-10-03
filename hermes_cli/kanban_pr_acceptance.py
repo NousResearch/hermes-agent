@@ -28,8 +28,60 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
+class _GateAuthError(RuntimeError):
+    """The selected identity cannot resolve the profile or repository/access."""
+
+
+class _GatePolicyError(RuntimeError):
+    """Required-check policy is unavailable; completion must remain blocked."""
+
+
+class _GateRetryError(RuntimeError):
+    """GitHub rate limiting requires waiting, not changing identity."""
+
+
+_REFUSALS = {
+    ("repository", "401"): _GateAuthError,
+    ("repository", "403"): _GateAuthError,
+    ("repository", "404"): _GateAuthError,
+    ("policy", "401"): _GatePolicyError,
+    ("policy", "403"): _GatePolicyError,
+    ("policy", "404"): _GatePolicyError,
+    ("evidence", "401"): _GateAuthError,
+    ("evidence", "403"): _GateAuthError,
+}
+
+
+def _graphql_refusal(payload: dict, name: str) -> None:
+    """Reject incomplete evidence using positive, sanitized refusal signals.
+
+    Throttling recognizes the exact ``RATE_LIMITED`` type or a case-insensitive
+    ``API rate limit exceeded`` message. Secondary-limit wording alone and
+    differently cased types remain generic infrastructure refusals; they still
+    block completion, but do not receive the retry diagnosis.
+    """
+    data = payload.get("data")
+    errors = payload.get("errors") or []
+    if not isinstance(errors, list) or any(not isinstance(e, dict) for e in errors):
+        raise ValueError("Malformed GraphQL errors")
+    unresolved = isinstance(data, dict) and "repository" in data and data["repository"] is None
+    visibility_error = any(e.get("type") in {"NOT_FOUND", "FORBIDDEN"}
+                           and e.get("path", [])[:1] == ["repository"] for e in errors)
+    if unresolved and (not errors or visibility_error):
+        raise _GateAuthError(f"repository unresolved on {name}")
+    # GraphQL throttling is an error body even with HTTP 200 (or zero gh exit).
+    # Inspect only positive throttle signals, and never retain provider messages.
+    if any(e.get("type") == "RATE_LIMITED" or
+           (isinstance(e.get("message"), str) and
+            "api rate limit exceeded" in e["message"].lower()) for e in errors):
+        raise _GateRetryError(f"rate-limited on {name}")
+    if errors:
+        raise ValueError("GitHub returned incomplete GraphQL evidence")
+
+
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         profile_home: str | None = None, label: str | None = None):
+    name = label or endpoint.split("?")[0]
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
@@ -40,25 +92,32 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
     except subprocess.CalledProcessError as exc:
-        # 401/403/404 = the login cannot see this repository (wrong profile identity
-        # or missing grant), not a transient API failure. Persist only the status
-        # code + endpoint, never gh's stderr (credentials/host details).
-        denied = re.search(r"HTTP (40[134])", exc.stderr or "")
-        if denied:
-            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
-        if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
-            raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
-        raise
-    value = json.loads(result.stdout)
-    if isinstance(value, dict) and value.get("errors"):
-        raise ValueError("GitHub returned incomplete GraphQL evidence")
+        failure, stdout = exc, exc.stdout
+    else:
+        failure, stdout = None, result.stdout
+    try:
+        value = json.loads(stdout)
+    except (ValueError, TypeError):
+        value = None
+    # gh preserves GraphQL bodies on nonzero exit; inspect them before stderr.
+    if query is not None and isinstance(value, dict):
+        _graphql_refusal(value, name)
+    if failure is not None:
+        if failure.returncode == 4:
+            raise _GateAuthError(f"gh has no login for {name}") from None
+        stderr = failure.stderr or ""
+        if re.search(r"rate limit", stderr, re.I):
+            raise _GateRetryError(f"rate-limited on {name}") from None
+        status = re.search(r"HTTP (\d{3})", stderr)
+        operation = ("repository" if query is not None else
+                     "policy" if "/rules/branches/" in endpoint else "evidence")
+        gate = _REFUSALS.get((operation, status[1] if status else ""))
+        if gate is not None:
+            raise gate(f"HTTP {status[1]} on {name}") from None
+        raise failure
+    if value is None:
+        raise ValueError("GitHub returned invalid JSON evidence")
     return value
-
-
-class _GateAuthError(RuntimeError):
-    """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
-    this profile's login cannot see the repo — an identity problem to fix, not
-    an infrastructure blip to retry."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -124,7 +183,8 @@ def collect_acceptance(contract: str, published_pr: str | None,
         query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
-        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+        repository = _api("graphql", query=query, profile_home=profile_home,
+                          label=f"graphql {repo}")["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")
@@ -184,11 +244,21 @@ def collect_acceptance(contract: str, published_pr: str | None,
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"
         receipt.update(classification="auth",
                        detail=f"GitHub refused the acceptance read ({exc}) as {login}; "
-                              "fix that profile's GitHub credentials/access to the repository, then retry completion.")
+                              "verify that profile's GitHub credentials/access and the repository name, then retry completion.")
+        return receipt
+    except _GatePolicyError as exc:
+        receipt.update(classification="policy",
+                       detail=f"Required-check policy read refused ({exc}) after the repository resolved; "
+                              "this is NOT evidence that no checks are required. "
+                              "Restore policy-read capability, then retry completion.")
+        return receipt
+    except _GateRetryError as exc:
+        receipt.update(classification="retry",
+                       detail=f"GitHub API rate limit ({exc}); wait for the window to reset, then retry completion.")
         return receipt
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
-        receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
+        receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check API availability and response completeness, then retry.")
         return receipt
 
 

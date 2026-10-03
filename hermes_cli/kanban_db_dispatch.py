@@ -1558,6 +1558,19 @@ def check_respawn_guard(
     #    condition is not the card's, so it retries forever, spaced, and never
     #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    from hermes_cli.kanban_pr_acceptance_store import pending_acceptance_failure
+
+    acceptance = pending_acceptance_failure(conn, task_id, row["last_failure_error"])
+    if acceptance is not None:
+        classification, recorded_at = acceptance
+        if classification == "auth":
+            return "blocker_auth"
+        # Acceptance can fail before any task run exists. Its durable receipt,
+        # not worker error prose, owns recovery and the cooldown start time.
+        if rl_cooldown > 0 and now - recorded_at < rl_cooldown:
+            return {"retry": "rate_limit_cooldown", "policy": "acceptance_policy_cooldown"}.get(
+                classification, "infrastructure_cooldown")
+
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
@@ -1588,7 +1601,7 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if acceptance is None and err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

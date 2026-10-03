@@ -48,6 +48,8 @@ _LOADED_DOTENV_KEYS: set[str] = set()
 _MANAGED_DOTENV_KEYS: set[str] = set()
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+# Per-home ownership lets a failed source retain only its last-good values while successful sources refresh.
+_SECRET_SOURCE_NAMES_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
 _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: what the process-global path WROTE into ``os.environ`` for an external source — name →
@@ -179,16 +181,14 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
 
-    # A retry must not keep serving a partial result after the source is removed, disabled, or can no
-    # longer be evaluated. Publish only the snapshot established by this attempt.
-    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
-    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
-
     try:
         cfg = _load_secrets_config(home)
     except Exception:  # noqa: BLE001 — external sources must not block routing
         return {}
     if not cfg:
+        _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_NAMES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
         return {}
 
     try:
@@ -222,13 +222,21 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # or skipped because the private mapping already had it — is a source-owned name the routed-child scrub
     # must know about, or a sibling still inherits the launch value for it (review on f5f88d5058).
     _record_supplied_names(report)
-    values: dict[str, str] = {}
+    values = dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
+    source_names = dict(_SECRET_SOURCE_NAMES_BY_HOME.get(home_key, {}))
+    failed_sources = {src.name for src in report.sources if not src.result.ok}
+    for name, source in list(source_names.items()):
+        if source not in failed_sources:
+            values.pop(name, None)
+            source_names.pop(name, None)
     for name, applied in report.provenance.items():
         value = local_env.get(name)
         if value is None:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
+        source_names[name] = applied.source
+    _SECRET_SOURCE_NAMES_BY_HOME[home_key] = source_names
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     return dict(values)
 
@@ -245,12 +253,14 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _SECRET_SOURCES.clear()
         _SOURCE_SUPPLIED_NAMES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        _SECRET_SOURCE_NAMES_BY_HOME.clear()
         _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         _SECRET_SOURCE_WRITES_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_NAMES_BY_HOME.pop(home_key, None)
     _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
 

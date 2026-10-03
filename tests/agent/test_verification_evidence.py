@@ -90,6 +90,26 @@ def test_shell_wrappers_match_but_echo_does_not(tmp_path, monkeypatch):
     assert echoed is None
 
 
+def test_bash_quality_gate_is_verification_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "AGENTS.md").write_text("# workspace\n")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "quality-gate.sh").write_text("#!/bin/sh\necho QUALITY_GATE_OK\n")
+
+    evidence = classify_verification_command(
+        "bash scripts/quality-gate.sh",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="QUALITY_GATE_OK warsongs",
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "scripts/quality-gate.sh"
+    assert evidence.status == "passed"
+
+
 @pytest.mark.parametrize(
     "command",
     [

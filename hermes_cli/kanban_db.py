@@ -2214,10 +2214,16 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
+
+    A promotion is also reported when the card names a real task in prose that
+    it never linked -- see :func:`unlinked_prose_task_ids`. That is advisory
+    only: the card still promotes, because the undeclared dependency is the
+    operator's to declare, not this loop's to infer.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
+    prose_advisories: list[tuple[str, list[str]]] = []
     with write_txn(conn):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
@@ -2262,6 +2268,19 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                     {"status": resume_status} if resume_status != "ready" else None,
                 )
                 promoted += 1
+                # Collected, not logged: a txn that rolls back below must not
+                # leave a warning about a promotion that never happened.
+                unlinked = unlinked_prose_task_ids(conn, task_id)
+                if unlinked:
+                    prose_advisories.append((task_id, unlinked))
+    for promoted_id, unlinked in prose_advisories:
+        _log.warning(
+            "kanban promoted %s: it names task id(s) %s in its title/body but has no "
+            "task_links row for them, so no parent gated this promotion. Declare the "
+            "dependency with `hermes kanban link <parent_id> %s` (or --parent at create "
+            "time) if that card was meant to block this one.",
+            promoted_id, ", ".join(unlinked), promoted_id,
+        )
     return promoted
 
 
@@ -2739,6 +2758,37 @@ def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str
     if not text:
         return []
     return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+
+
+def unlinked_prose_task_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Real task ids this card names in its title/body that it does NOT link.
+
+    The mirror of :func:`_scan_prose_for_phantom_ids`: those references resolve
+    nowhere, these resolve to a real card yet carry no ``task_links`` row, so
+    nothing gates on them. Readiness reads edges only -- prose was never a
+    dependency and must not silently become one -- which leaves a hand-written
+    or agent-written card that names its blocker in a sentence indistinguishable
+    from one that has no dependency at all (#126699).
+
+    ponytail: only ``recompute_ready`` asks. The other promotion paths
+    (``promote_task`` for an operator, ``claim_task``'s parent re-gate) report a
+    refusal or a demotion already, so a second reporter there would double-log
+    the same card without naming anything new.
+    """
+    row = conn.execute(
+        "SELECT title, body FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return []
+    text = "\n".join((_row_get(row, "title") or "", _row_get(row, "body") or ""))
+    if not _TASK_ID_PROSE_RE.search(text):
+        return []
+    linked = set(parent_ids(conn, task_id))
+    candidates = [
+        tid for tid in dict.fromkeys(_TASK_ID_PROSE_RE.findall(text))
+        if tid != task_id and tid not in linked
+    ]
+    return [tid for tid in candidates if not _missing_task_ids(conn, (tid,))]
 
 
 class HallucinatedCardsError(ValueError):

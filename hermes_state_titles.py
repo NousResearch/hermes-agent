@@ -112,8 +112,8 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ? AND message_count > 0",
-                    (title, session_id),
+                    f"SELECT id, archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
+                    "FROM sessions WHERE title = ? AND id != ?", (title, session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
@@ -125,8 +125,12 @@ class SessionTitlesMixin:
                     # entry, not a live identity. Retire its name in the same title
                     # transaction so a replacement can become the sole canonical row;
                     # the old session remains archived and otherwise untouched.
+                    # An ended, empty, visible ghost (abandoned new chat that listings filter
+                    # out, so the user cannot find it to free the name) yields too (#81888).
+                    # The full index stays: a ``message_count > 0`` partial index would make
+                    # the ghost's first append_message fail with IntegrityError.
                     elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])):
+                          and bool(conflict["hidden"])) or (conflict["ghost"] and not conflict["hidden"]):
                         conn.execute(
                             "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
                             (conflict_id,),

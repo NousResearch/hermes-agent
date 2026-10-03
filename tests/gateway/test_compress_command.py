@@ -520,23 +520,35 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
     )
 
 
-def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile", ["main", "fitness"])
+def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monkeypatch, profile):
     """A rotated /compress must NOT rewrite the atomically-published child.
 
     publish_compression_child() writes handoff + cloned foreign tail in one transaction;
     the second rewrite_transcript(active_only=False) would DELETE the cloned tail (it is not
     in the in-memory handoff) and its failure surfaced as a false "failed to persist
-    compressed transcript" even though the compression had already committed.
+    compressed transcript" even though the compression had already committed. The
+    ``fitness`` row is a multiplexed named profile: its child is published in
+    ``profiles/fitness/state.db`` before the routing index knows the child id.
     """
     import hermes_state
     from gateway.slash_commands_session import GatewaySessionCommandsMixin
     from gateway.session import AsyncSessionStore, SessionStore
-    from gateway.config import GatewayConfig
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
-    db = store._db
+    root = tmp_path / "hermes"
+    (root / "profiles" / "fitness").mkdir(parents=True)
+    (root / "profiles" / "fitness" / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
     parent, child = "parent", "child"
+    entry = SessionEntry(
+        session_key=f"agent:{profile}:discord:thread:123:123", session_id=parent,
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.DISCORD, chat_type="thread",
+    )
+    store._entries[entry.session_key] = entry
+    db = store._db_for_key(entry.session_key)
     db.create_session(parent, "discord")
     db.append_message(parent, "assistant", "old turn")
     watermark = db.get_active_message_watermark(parent)
@@ -553,11 +565,6 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
         raise AssertionError("published child must not be rewritten")
     store.rewrite_transcript = _destructive_rewrite
 
-    entry = SessionEntry(
-        session_key="agent:main:discord:thread:123:123", session_id=parent,
-        created_at=datetime.now(), updated_at=datetime.now(),
-        platform=Platform.DISCORD, chat_type="thread",
-    )
     runner = SimpleNamespace(
         async_session_store=AsyncSessionStore(store),
         _sync_telegram_topic_binding=MagicMock(),

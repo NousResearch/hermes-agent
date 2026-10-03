@@ -526,7 +526,8 @@ class SessionTranscriptMixin:
         callers fall back to the rewrite guard exactly as before."""
         if not parent_session_id or not child_session_id:
             return False
-        db = self._db_for_session_id(child_session_id)
+        # The child id is not routed yet; the parent is, and it was ended in the same publish transaction.
+        db = self._db_for_session_id(parent_session_id)
         if db is None:
             return False
         try:

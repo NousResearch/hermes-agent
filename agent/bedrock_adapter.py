@@ -153,6 +153,11 @@ def reset_client_cache():
     _inference_profile_model_cache.clear()
 
 
+def invalidate_bedrock_openai_sessions():
+    """Drop cached Mantle SigV4 sessions after the AWS credential environment changes."""
+    _bedrock_openai_session_cache.clear()
+
+
 def invalidate_runtime_client(region: str) -> bool:
     """Evict one region's cached ``bedrock-runtime`` client (stale HTTP pool); True if evicted."""
     from hermes_constants import get_hermes_home_override, hermes_home_key

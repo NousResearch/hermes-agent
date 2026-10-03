@@ -174,7 +174,11 @@ class TestScopedAwsSessionKwargs:
 
     def test_sigv4_auth_reuses_session_for_multiple_requests(self, monkeypatch):
         from agent import bedrock_adapter
-        from agent.bedrock_adapter import BedrockOpenAISigV4Auth, reset_client_cache
+        from agent.bedrock_adapter import (
+            BedrockOpenAISigV4Auth,
+            invalidate_bedrock_openai_sessions,
+            reset_client_cache,
+        )
 
         class Credentials:
             def get_frozen_credentials(self):
@@ -218,7 +222,11 @@ class TestScopedAwsSessionKwargs:
                 request = MagicMock(method="POST", url="https://bedrock-mantle.us-east-1.api.aws/v1/responses", content=b"{}")
                 request.headers.items.return_value = []
                 list(BedrockOpenAISigV4Auth("us-east-1").auth_flow(request))
-        assert Session.instances == 1
+            invalidate_bedrock_openai_sessions()
+            request = MagicMock(method="POST", url="https://bedrock-mantle.us-east-1.api.aws/v1/responses", content=b"{}")
+            request.headers.items.return_value = []
+            list(BedrockOpenAISigV4Auth("us-east-1").auth_flow(request))
+        assert Session.instances == 2
 
 
 class TestResolveBedrocRegion:

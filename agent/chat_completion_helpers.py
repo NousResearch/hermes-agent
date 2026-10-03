@@ -1964,9 +1964,14 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
     if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        # WARNING, not debug: this is the only trace a bypassed chain entry leaves once its
+        # unavailability was memoized earlier in the session — a multi-hop chain silently
+        # reordering itself must be debuggable from agent.log alone (#87815). Fires at most once
+        # per entry per fallback-activation cycle (the walk is forward-only), so it cannot spam.
+        logger.warning("Fallback skip: %s previously marked unavailable", fb_key)
         return True
     if not fb_provider or not fb_model:
+        logger.warning("Fallback skip: chain entry is malformed (missing provider or model): %s", fb)
         return True
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):

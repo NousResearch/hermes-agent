@@ -24,7 +24,9 @@ logger = logging.getLogger("hermes_cli.auth")
 # ``refresh_token_reused``.
 # Profiles must never receive a copy: ONE grant lives at the global root and named profiles read
 # it through the ``read_credential_pool`` root fallback.
-SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth", "nous"})
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset(
+    {"anthropic", "minimax-oauth", "openai-codex", "xai-oauth", "nous"}
+)
 
 # Singleton credential files holding the same single-use grants outside ``auth.json``. Copying one
 # into a profile re-seeds a forked pool row on the profile's next ``load_pool()``.
@@ -33,7 +35,12 @@ SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
 # Providers whose device-code grants live under ``providers.<id>`` (not only the pool).
 # Only a block carrying a refresh token is a forkable grant: an agent_key-only ``nous`` block is
 # not single-use and must survive.
-_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth", "nous")
+_DEVICE_CODE_BLOCK_PROVIDERS = (
+    "minimax-oauth",
+    "openai-codex",
+    "xai-oauth",
+    "nous",
+)
 
 
 def _block_tokens(block: Dict[str, Any]) -> Dict[str, Any]:

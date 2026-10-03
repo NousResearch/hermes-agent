@@ -966,13 +966,22 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
 # providers are refreshable when their profile ships ``refresh_credential`` (see
 # ``hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
 # unchanged by that path, so callers must not report a refresh for them.
-REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+REFRESHABLE_OAUTH_PROVIDERS = frozenset(
+    {"anthropic", "minimax-oauth", "nous", *_TOKENS_SINGLETON_PROVIDERS}
+)
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
 # ``nous`` is deliberately absent even though it is in SINGLE_USE_REFRESH_POOL_PROVIDERS:
 # its refresh path serializes on its own auth-store lock (``_refresh_entry_impl`` nous branch).
-_SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
+_SINGLE_USE_REFRESH_PROVIDERS = (
+    "openai-codex",
+    "xai-oauth",
+    "anthropic",
+    "minimax-oauth",
+)
+
+MINIMAX_OAUTH_REFRESH_TIMEOUT_SECONDS = 15.0
 
 # Lock-free window between consecutive auth-store holds in a deferred refresh sweep
 # (_refresh_pending_entries): a waiter with a shorter timeout (Desktop assistant start,
@@ -989,6 +998,7 @@ _REFRESH_TIMEOUT_ENV_VARS = {
 # re-auth another process wrote to the provider's store.
 _RESYNC_SOURCE = {
     "anthropic": "claude_code",
+    "minimax-oauth": "oauth",
     "nous": "device_code",
     "openai-codex": "device_code",
     "xai-oauth": "device_code",
@@ -1531,6 +1541,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if force:
                 self._mark_exhausted(entry, None)
             return None
+        if self.provider == "minimax-oauth":
+            if entry.source != "oauth":
+                return None
+            from agent.credential_pool_minimax import refresh_entry
+
+            return refresh_entry(self, entry, force=force)
         # Plugin providers with a ``refresh_credential`` hook are treated as single-use by default:
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
         # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
@@ -1993,6 +2009,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
+        if self.provider == "minimax-oauth":
+            if entry.source != "oauth":
+                return False
+            from agent.credential_pool_minimax import entry_needs_refresh
+
+            return entry_needs_refresh(entry)
         # Nous refresh can require network access and happens when runtime
         # credentials are actually resolved, not on enumeration/selection.
         return False
@@ -2067,6 +2089,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return self._sync_anthropic_entry_from_credentials_file(entry)
         if self.provider == "nous":
             return self._sync_nous_entry_from_auth_store(entry)
+        if self.provider == "minimax-oauth":
+            from agent.credential_pool_minimax import sync_entry_from_auth_store
+
+            return sync_entry_from_auth_store(self, entry)
         return self._sync_entry_from_auth_store(entry)
 
     def _available_entries(
@@ -2135,7 +2161,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
-                if self.provider in _TOKENS_SINGLETON_PROVIDERS:
+                if self.provider in _TOKENS_SINGLETON_PROVIDERS or self.provider == "minimax-oauth":
                     pending_refresh.append(entry)
                     continue
                 refreshed = self._refresh_entry(entry, force=False)
@@ -2775,27 +2801,31 @@ def _seed_qwen_singleton(seed: _Seeder) -> None:
 
 
 def _seed_minimax_singleton(seed: _Seeder) -> None:
-    # Read the raw auth.json state rather than resolve_minimax_oauth_runtime_credentials,
-    # which always refreshes on expiry (surprise network calls during discovery).
+    # Read raw source state; resolving runtime credentials can make a network
+    # call and must never happen during provider discovery.
     try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("minimax-oauth")
+        state = _load_provider_state(_load_auth_store(), "minimax-oauth")
         if not (state and state.get("access_token")):
             return
+        raw_expires = state.get("expires_at")
         expires_at_ms = None
-        try:
-            raw = state.get("expires_at", "")
-            if raw:
-                expires_at_ms = int(datetime.fromisoformat(raw).timestamp() * 1000)
-        except Exception:
-            expires_at_ms = None
+        if raw_expires:
+            try:
+                expires_at_ms = int(datetime.fromisoformat(raw_expires).timestamp() * 1000)
+            except Exception:
+                pass
         seed.upsert("oauth", {
             "auth_type": AUTH_TYPE_OAUTH,
             "access_token": state["access_token"],
             "refresh_token": state.get("refresh_token"),
+            "expires_at": raw_expires,
             "expires_at_ms": expires_at_ms,
             "base_url": str(state.get("inference_base_url", "") or "").rstrip("/"),
             "label": state.get("label", "") or label_from_token(state.get("access_token", ""), "oauth"),
+            "client_id": state.get("client_id"),
+            "portal_base_url": state.get("portal_base_url"),
+            "obtained_at": state.get("obtained_at"),
+            "expires_in": state.get("expires_in"),
         })
     except Exception as exc:
         logger.debug("MiniMax OAuth token seed failed: %s", exc)
@@ -3005,6 +3035,11 @@ def _prune_stale_seeded_entries(
         # requested (an `hermes auth` command that confirmed the source is gone).
         if entry.source.startswith("env:"):
             return prune_env_sources
+        if entry.provider == "minimax-oauth" and entry.source == "oauth":
+            # MiniMax's row is backed by providers.minimax-oauth in auth.json;
+            # once that authoritative block is gone, retaining the sanitized
+            # row would leave a selectable reference to a removed grant.
+            return True
         # File-backed singletons and Hermes PKCE disappear when their backing file is gone.
         return is_borrowed_credential_source(entry.source, entry.provider) or entry.source == "hermes_pkce"
 
@@ -3107,19 +3142,39 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= singleton_changed or env_changed
         # ``load_pool()`` is a non-destructive read for env-seeded entries
         # (#9331); file-backed singletons still prune when their file is gone.
-        if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
+        if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and (
+            disk_ids or (provider == "minimax-oauth" and entries)
+        ):
             owns_provider = _profile_owns_pool_provider(provider)
         if owns_provider is False:
-            # Rows read through the global-root fallback are seeded from the
-            # ROOT's singleton files, which this profile cannot see; pruning
-            # them would hide (and, via write-through, delete) the shared
-            # grant. The root's own load_pool() prunes.
-            borrowed = [e for e in entries if e.id in disk_ids]
-            others = [e for e in entries if e.id not in disk_ids]
-            changed |= _prune_stale_seeded_entries(
-                others, singleton_sources | env_sources, prune_env_sources=False,
-            )
-            entries[:] = borrowed + others
+            if provider == "minimax-oauth" and "oauth" not in singleton_sources:
+                before_ids = {entry.id for entry in entries}
+                changed |= _prune_stale_seeded_entries(
+                    entries, singleton_sources | env_sources, prune_env_sources=False,
+                )
+                removed_borrowed_ids = before_ids - {entry.id for entry in entries}
+                if removed_borrowed_ids:
+                    try:
+                        from agent.credential_pool_minimax import (
+                            prune_removed_borrowed_source,
+                        )
+
+                        prune_removed_borrowed_source(removed_borrowed_ids)
+                    except Exception:
+                        logger.warning(
+                            "MiniMax OAuth: stale borrowed rows could not be removed from root",
+                            exc_info=True,
+                        )
+            else:
+                # Rows read through the global-root fallback may be seeded from
+                # singleton files this profile cannot see. The root owner prunes
+                # those rows; a borrower must leave them alone.
+                borrowed = [e for e in entries if e.id in disk_ids]
+                others = [e for e in entries if e.id not in disk_ids]
+                changed |= _prune_stale_seeded_entries(
+                    others, singleton_sources | env_sources, prune_env_sources=False,
+                )
+                entries[:] = borrowed + others
         else:
             changed |= _prune_stale_seeded_entries(
                 entries, singleton_sources | env_sources, prune_env_sources=False,
@@ -3130,15 +3185,22 @@ def load_pool(provider: str) -> CredentialPool:
     pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
     if changed:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
-    # Remember the root's borrowed rows so a later ``add_entry`` in this
-    # profile leaves them out of the profile's own store (#100339).
-    # No disk rows -> nothing borrowed; the ``set()`` default already applies.
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
+    # Remember borrowed root rows so a later profile-local add does not copy
+    # the shared single-use grant into the profile store. MiniMax can be seeded
+    # directly from the root providers block before a root pool row exists.
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and (
+        disk_ids or (provider == "minimax-oauth" and entries)
+    ):
         # Reuse the pre-persist ownership answer unless _persist() just rewrote
         # the store (it can give the profile its own rows); nothing else between
         # the two checks touches auth.json.
         if changed:
             owns_provider = _profile_owns_pool_provider(provider)
         if not owns_provider:
-            pool._borrowed_root_ids = set(disk_ids)
+            if provider == "minimax-oauth":
+                pool._borrowed_root_ids = {
+                    str(entry.id) for entry in entries if entry.id
+                }
+            else:
+                pool._borrowed_root_ids = set(disk_ids)
     return pool

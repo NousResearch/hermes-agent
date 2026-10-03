@@ -63,11 +63,12 @@ from hermes_cli.auth_nous import (  # noqa: F401  re-exported
     get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
     resolve_nous_runtime_credentials, step_up_nous_billing_scope)
 from hermes_cli.auth_minimax import (  # noqa: F401  re-exported
-    _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
-    _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
+    _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _is_terminal_minimax_oauth_refresh_error,
+    _login_minimax_oauth, _minimax_oauth_login, _minimax_oauth_quarantine_on_terminal_refresh,
+    _minimax_pkce_pair, _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
     _minimax_resolve_token_expiry_unix, _minimax_response_error_text, _minimax_save_auth_state,
     _refresh_minimax_oauth_state, build_minimax_oauth_token_provider,
-    resolve_minimax_oauth_runtime_credentials)
+    refresh_minimax_oauth_pure, resolve_minimax_oauth_runtime_credentials)
 from hermes_cli.auth_xai import (  # noqa: F401  re-exported
     _login_xai_oauth, _read_xai_oauth_tokens, _refresh_xai_oauth_tokens, _save_xai_oauth_tokens,
     _write_through_xai_oauth_to_global_root, _xai_access_token_is_expiring,

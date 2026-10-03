@@ -13,16 +13,30 @@ New-Item -ItemType Directory -Path $Output -Force | Out-Null
 function Pass([string]$msg) { Write-Host "PASS: $msg" }
 function Fail([string]$msg) { Write-Host "FAIL: $msg" -ForegroundColor Red; Remove-Item -Recurse -Force $Output -ErrorAction SilentlyContinue; exit 1 }
 
-function Run([string[]]$Args) {
+function Run([string[]]$CmdArgs) {
+    # NOTE: use native `&` invocation instead of Start-Process -ArgumentList.
+    # Start-Process joins the arg array into a string and re-parses it, which
+    # corrupts ast-grep patterns containing $ / $$$ (PowerShell expands them
+    # during the join). Native invocation preserves every argument verbatim.
     $stdoutFile = Join-Path $Output ("out-" + [guid]::NewGuid().ToString('N').Substring(0,8) + ".txt")
-    $proc = Start-Process -FilePath $Python -ArgumentList (@($Helper) + $Args) -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutFile -RedirectStandardError "$stdoutFile.err"
-    $stdout = if (Test-Path $stdoutFile) { Get-Content $stdoutFile -Raw } else { '' }
-    $stderr = if (Test-Path "$stdoutFile.err") { Get-Content "$stdoutFile.err" -Raw } else { '' }
+    $stderrFile = "$stdoutFile.err"
+    # Native commands that write to stderr raise a NativeCommandError under
+    # $ErrorActionPreference='Stop'; suppress it so we can capture stderr text.
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $stdout = & $Python $Helper @CmdArgs 2> $stderrFile
+    } finally {
+        $ErrorActionPreference = $oldEAP
+    }
+    $stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }
+    $exit = $LASTEXITCODE
+    if ($null -eq $exit) { $exit = 0 }
     return [pscustomobject]@{
-        ExitCode = $proc.ExitCode
-        Stdout = $stdout
+        ExitCode = $exit
+        Stdout = ($stdout -join "`n")
         Stderr = $stderr
-        Combined = "$stdout`n$stderr"
+        Combined = "$(($stdout -join "`n"))`n$stderr"
     }
 }
 

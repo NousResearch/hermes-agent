@@ -161,7 +161,9 @@ _BEDROCK_URL = "https://aws.amazon.com/bedrock/pricing/"
 _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
+_OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
+_SONNET_5 = ("2.00", "10.00", "0.20", "2.50")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -185,15 +187,17 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
         "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
     }),
-    # Claude Sonnet 5: introductory $2/$10 through 2026-08-31, then $3/$15
-    # (matching Sonnet 4.6). Update this entry when the intro window closes.
+    # Claude Sonnet 5: the launch rate is now the standard rate (the scheduled
+    # 2026-09-01 increase to Sonnet 4.6's rate was cancelled); no update due.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
-        "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
+        "claude-sonnet-5": _SONNET_5,
     }),
-    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
+    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x). _OPUS_5_5
+    # is shared with the Bedrock row below so the two cannot drift (#104126
+    # re-review gap: Bedrock Opus 5.5 resolved to ``unknown``).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
         "claude-opus-5": _OPUS,
-        "claude-opus-5-5": ("4.00", "20.00", "0.20", "5.00"),
+        "claude-opus-5-5": _OPUS_5_5,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -224,7 +228,22 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
         ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
     }),
-    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
+    # Claude 5 rows read from the AWS pricing page on 2026-09-06 (global
+    # cross-region endpoint). Sonnet 5 shares _SONNET_5 with the first-party
+    # row, not _SONNET: the scheduled 2026-09-01 increase to Sonnet 4.6's rate
+    # was cancelled and the launch rate is standard. Only the global rate is
+    # encoded: _normalize_bedrock_model_name folds us./eu./global. spellings
+    # into the bare id, so every regional spelling resolves here at the global
+    # rate. The snapshot page's in-region/geo premium (10% above global) is
+    # deliberately NOT modeled per region —
+    # test_bedrock_current_gen_claude_rows_resolve pins that equality, so a
+    # future per-region split must add explicit rows AND revisit that test.
+    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-09", {
+        "anthropic.claude-opus-5": _OPUS,
+        "anthropic.claude-sonnet-5": _SONNET_5,
+        "anthropic.claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+        "anthropic.claude-opus-5-5": _OPUS_5_5,
+    }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
         ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,
         "anthropic.claude-haiku-4-5": ("0.80", "4.00", "0.08", "1.00"),
@@ -330,7 +349,7 @@ _ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
     )
     for _model in _models
 }
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _SONNET_5
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
 # rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex

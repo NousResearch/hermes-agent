@@ -93,3 +93,23 @@ def test_default_home_unmarked_tmpdir_is_relocated_before_pytest_uses_it(tmp_pat
         env=env, capture_output=True, text=True, check=True,
     )
     assert not result.stdout.strip().startswith(str(operator_home / ".hermes"))
+
+
+def test_guarded_popen_survives_missing_getpgid(monkeypatch):
+    """``os.getpgid`` is POSIX-only and the guard must not reference it unguarded.
+
+    On Windows the attribute is absent, and ``AttributeError`` is not an
+    ``OSError`` subclass — the pre-fix ``except (OSError, ProcessLookupError)``
+    let it escape ``_GuardedPopen.__init__`` after ``super().__init__`` had
+    already started the child, so every ``Popen`` in the suite died AND leaked
+    its child. Mirrors the ``delattr`` probe pattern of
+    ``tests/tools/test_browser_process_tree.py``.
+    """
+    monkeypatch.delattr(os, "getpgid")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "print('guarded-ok')"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    out, _ = proc.communicate(timeout=60)
+    assert proc.returncode == 0
+    assert out.strip() == "guarded-ok"

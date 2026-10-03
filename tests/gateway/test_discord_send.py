@@ -46,6 +46,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from tests.gateway._discord_sdk_fixtures import make_forum  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -109,10 +110,12 @@ def _native_voice_payload(request):
 
 
 @pytest.mark.asyncio
-async def test_send_retries_without_reference_when_reply_target_is_deleted():
+async def test_send_retries_without_reference_when_reply_target_is_deleted(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 
-    reference_obj = object()
+    reference_obj = _discord_mod.MessageReference(
+        message_id=99, channel_id=555, guild_id=None, fail_if_not_exists=False)
+    monkeypatch.setattr(_discord_mod, "MessageReference", MagicMock(return_value=reference_obj))
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
     sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
     send_calls = []
@@ -126,6 +129,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
         return sent_msgs[len(send_calls) - 2]
 
     channel = SimpleNamespace(
+        id=555,
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -145,7 +149,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert channel.send.await_count == 3
     # the reference is constructed from ids, not fetched + to_reference()
     _discord_mod.MessageReference.assert_any_call(
-        message_id=99, channel_id=None, guild_id=None,
+        message_id=99, channel_id=555, guild_id=None,
         fail_if_not_exists=False)
     assert send_calls[0]["reference"] is _discord_mod.MessageReference.return_value
     assert send_calls[1]["reference"] is None
@@ -180,7 +184,7 @@ async def test_forum_post_file_creates_thread_with_attachment():
         ),
         thread=thread_ch,
     )
-    forum_channel = _discord_mod.ForumChannel()
+    forum_channel = make_forum(channel_id=999)
     forum_channel.id = 999
     forum_channel.name = "ideas"
     forum_channel.create_thread = AsyncMock(return_value=thread)
@@ -214,7 +218,7 @@ async def test_forum_post_file_fails_when_starter_has_no_attachments():
         message=SimpleNamespace(id=8, attachments=[]),
         thread=SimpleNamespace(id=7, send=AsyncMock()),
     )
-    forum_channel = _discord_mod.ForumChannel()
+    forum_channel = make_forum(channel_id=999)
     forum_channel.id = 999
     forum_channel.create_thread = AsyncMock(return_value=thread)
 

@@ -242,7 +242,12 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
         target = current_target()
         staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
         if staged is not None and staged.is_file():
-            tools = staged, Path(sys.executable)
+            # The app interpreter is not necessarily compatible with pm/uv.lock.
+            # Resolve the managed Python even when the read-only probe missed it
+            # because its recorded facts use a different lock version.
+            realized = _toolchain(explicit=True)
+            assert realized is not None  # realize=True returns a pair or raises.
+            tools = staged, realized[1]
         else:
             # Non-shell bootstrap callers (CI) already have a host interpreter.
             tools = _toolchain(explicit=True)

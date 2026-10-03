@@ -43,7 +43,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/retry` | 重试最后一条消息（重新发送给 agent） |
 | `/undo` | 移除最后一轮用户/助手对话 |
 | `/title` | 为当前会话设置标题（用法：/title My Session Name） |
-| `/compress [focus topic]` | 手动压缩对话上下文（刷新记忆 + 摘要）。可选的焦点主题可缩小摘要保留的范围。 |
+| `/compress [here [N] \| focus topic]` | 手动压缩对话上下文（刷新记忆 + 摘要）。`/compress here [N]` 会对最近 N 轮对话（默认 2 轮）之外的全部内容生成摘要，这 N 轮则原样保留——压缩边界由你自己决定。焦点主题可缩小完整摘要保留的范围。 |
 | `/rollback` | 列出或恢复文件系统检查点（用法：/rollback [number]） |
 | `/snapshot [create\|restore <id>\|prune]`（别名：`/snap`） | 创建或恢复 Hermes 配置/状态的快照。`create [label]` 保存快照，`restore <id>` 回滚到该快照，`prune [N]` 删除旧快照，不带参数则列出所有快照。 |
 | `/stop` | 终止所有正在运行的后台进程 |
@@ -211,7 +211,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/retry` | 重试最后一条消息。 |
 | `/undo` | 移除最后一轮对话。 |
 | `/sethome`（别名：`/set-home`） | 将当前聊天标记为该平台的 home 频道，用于消息投递。 |
-| `/compress [focus topic]` | 手动压缩对话上下文。可选的焦点主题可缩小摘要保留的范围。 |
+| `/compress [here [N] \| focus topic]` | 手动压缩对话上下文。`/compress here [N]` 会原样保留最近 N 轮对话（默认 2 轮），并对其余内容生成摘要。焦点主题可缩小完整摘要保留的范围。 |
 | `/topic [off\|help\|session-id]` | **仅限 Telegram DM。** 管理用户自主的多会话话题模式。`/topic` 启用或显示状态；`/topic off` 禁用并清除绑定；`/topic help` 显示用法；在话题中执行 `/topic <session-id>` 可恢复之前的会话。见 [多会话 DM 模式](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic)。 |
 | `/title [name]` | 设置或显示会话标题。 |
 | `/resume [name]` | 恢复之前命名的会话。 |

@@ -1537,7 +1537,9 @@ class TestSanePathIncludesHomebrew:
         path_entries = result["PATH"].split(os.pathsep)
         assert path_entries[0] == "/some/custom/bin"
         if sys.platform == "win32":
-            assert result["PATH"] == "/some/custom/bin"
+            # Windows appends the system tooling dirs (_augment_windows_system_path); the
+            # caller's entries keep their order and precedence.
+            assert result["PATH"].split(os.pathsep)[0] == "/some/custom/bin"
         else:
             for entry in _SANE_PATH.split(os.pathsep):
                 assert entry in path_entries
@@ -1579,5 +1581,5 @@ class TestSanePathIncludesHomebrew:
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         with patch.object(local_mod.os, "environ", windows_env):
             result = _make_run_env({})
-        assert result["Path"] == windows_env["Path"]
+        assert result["Path"].startswith(windows_env["Path"])
         assert "PATH" not in result

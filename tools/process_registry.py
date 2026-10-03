@@ -2459,7 +2459,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         session = self.get(session_id)
         msg = "EOF sent" if session is not None and session._pty else "stdin closed"
         return self._stdin_op(
-            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg})
+            session_id, lambda pty: pty.write("\x1a\r\n") if _IS_WINDOWS else pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg})
 
     def count_running(self) -> int:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""

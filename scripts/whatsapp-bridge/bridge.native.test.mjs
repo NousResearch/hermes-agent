@@ -20,9 +20,19 @@ import {
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
+  normalizePresenceState,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- explicit presence states --------------------------------------------
+{
+  assert.equal(normalizePresenceState('composing'), 'composing');
+  assert.equal(normalizePresenceState(' PAUSED '), 'paused');
+  assert.equal(normalizePresenceState('recording'), null);
+  assert.equal(normalizePresenceState(), null);
+  console.log('  ✓ presence endpoint accepts only composing and paused states');
+}
 
 // -- inbound read receipts ------------------------------------------------
 {

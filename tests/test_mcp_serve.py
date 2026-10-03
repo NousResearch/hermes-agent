@@ -1271,3 +1271,34 @@ class TestEventBridgePollE2E:
         assert len(events) == 1
         assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
         assert events[0]["content"] == "hello after baseline"
+class TestReadJsonBomTolerance:
+    """Windows editors (Notepad) save JSON with a UTF-8 BOM; the MCP
+    sessions index and channel directory must still load."""
+
+    def test_sessions_json_with_bom_loads(self, tmp_path, monkeypatch):
+        import mcp_serve
+
+        home = tmp_path / "home"
+        sessions_dir = home / "sessions"
+        sessions_dir.mkdir(parents=True)
+        payload = {"agent:main:telegram:dm:1": {"session_key": "agent:main:telegram:dm:1"}}
+        (sessions_dir / "sessions.json").write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8")
+        )
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: home)
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: None)
+
+        assert mcp_serve._load_sessions_index_from_json() == payload
+
+    def test_channel_directory_with_bom_loads(self, tmp_path, monkeypatch):
+        import mcp_serve
+
+        home = tmp_path / "home"
+        home.mkdir(parents=True)
+        payload = {"channels": [{"name": "general"}]}
+        (home / "channel_directory.json").write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8")
+        )
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: home)
+
+        assert mcp_serve._load_channel_directory() == payload

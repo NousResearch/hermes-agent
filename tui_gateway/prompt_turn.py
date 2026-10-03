@@ -460,7 +460,7 @@ def _run_post_turn_followups(
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
         from tools.process_registry import process_registry
-        # _post_turn_housekeeping has released the worker's runtime scope. Queue ownership,
+        # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
         with _session_profile_runtime_scope(session):
             drained = process_registry.drain_notifications(

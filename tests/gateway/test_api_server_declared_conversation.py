@@ -373,6 +373,10 @@ class TestRunsHandlerPrecedence:
                 headers=_headers(KEY),
             )
             assert resp.status in (200, 202)
+            for _ in range(250):
+                if seen:
+                    break
+                await asyncio.sleep(0.02)
 
         assert seen and seen[0]["session_id"] == "sess-live"
 
@@ -391,6 +395,10 @@ class TestRunsHandlerPrecedence:
                 headers=_headers(KEY),
             )
             assert resp.status in (200, 202)
+            for _ in range(250):
+                if seen:
+                    break
+                await asyncio.sleep(0.02)
 
         assert seen and seen[0]["session_id"] == "explicit-session"
         # KEY still resolves to its own conversation, never the explicit one.

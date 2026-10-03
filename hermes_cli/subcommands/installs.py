@@ -24,5 +24,8 @@ def build_installs_parser(subparsers, *, cmd_installs: Callable) -> None:
     add_yes_flag(remove_parser, "Skip the confirmation question")
     remove_parser.add_argument(
         "--dry-run", action="store_true", help="Show what this removes. Change nothing.")
+    remove_parser.add_argument(
+        "--all-users", action="store_true",
+        help="Remove a Windows package for every user. Needs a terminal that runs as administrator.")
     actions.add_parser("dismiss", help="Hide the launch notice until the set of other installs changes")
     installs_parser.set_defaults(func=cmd_installs)

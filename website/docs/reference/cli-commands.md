@@ -2038,7 +2038,7 @@ Additional behavior:
 | Command | Description |
 |---------|-------------|
 | `hermes installs [list] [--json]` | List every Hermes install on this machine and the `hermes` launchers on PATH, in the order a new terminal finds them. `--json` also reports the launch notice: `notice.count` (other installs), `notice.dismissed`, and `notice.partial` (true on Windows, where the count leaves out Store packages). |
-| `hermes installs remove <id> [--dry-run] [--yes]` | Remove one other install: its folder, and the launchers and shortcuts that point into it. On Linux and macOS, the launchers are the `hermes`, `hermes-acp`, and `hermes-agent` commands in `~/.local/bin`, `<home>/bin`, and `/usr/local/bin` that belong to the removed folder. Your data, User PATH, User environment variables, and the gateway stay as they are. The running install and sealed installs are refused. A Windows package install is removed with `Remove-AppxPackage`. |
+| `hermes installs remove <id> [--dry-run] [--yes] [--all-users]` | Remove one other install: its folder, and the launchers and shortcuts that point into it. On Linux and macOS, the launchers are the `hermes`, `hermes-acp`, and `hermes-agent` commands in `~/.local/bin`, `<home>/bin`, and `/usr/local/bin` that belong to the removed folder. Your data, User PATH, User environment variables, and the gateway stay as they are. The running install and sealed installs are refused. A Windows package install is removed with `Remove-AppxPackage` for the current user. `--all-users` removes the package for every user. It needs a terminal that runs as administrator, and Hermes does not raise its own rights. |
 | `hermes installs dismiss` | Hide the launch notice until the set of other installs changes. |
 
 ## See also

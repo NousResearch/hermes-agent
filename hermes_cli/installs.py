@@ -466,9 +466,21 @@ def _work_at_risk(install: Install, found: Sequence[Install], run: Runner | None
         if probe.stdout.strip():
             return reason
     return None
+def _is_elevated(windows: bool | None = None) -> bool:
+    """True when this process runs as an administrator on Windows."""
+    if not _windows(windows):
+        return False
+    import ctypes
+
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
 def classify_removal(
     install: Install, *, current: Path, hermes_home: Path, default_root: Path, windows: bool | None = None,
-    found: Sequence[Install] = (), run: Runner | None = None,
+    all_users: bool = False, elevated: bool = False, found: Sequence[Install] = (), run: Runner | None = None,
 ) -> tuple[str, str | None]:
     """``(action, refusal)`` for removing ``install``. The action is ``tree``, ``appx``, or ``refuse``.
 
@@ -486,6 +498,10 @@ def classify_removal(
     if install.steward == STEWARD_DESKTOP and install.package_full_name and _windows(windows):
         if not _PACKAGE_FULL_NAME.fullmatch(install.package_full_name):
             return "refuse", f"not removed: unsafe package name {install.package_full_name!r}"
+        if all_users and not elevated:
+            return "refuse", (
+                "not removed: removing a package for all users needs an elevated terminal. "
+                "Open PowerShell as Administrator and run this command again.")
         return "appx", None
 
     return "refuse", steward_uninstall_message(install.steward)
@@ -541,18 +557,25 @@ def plan_removal(
     default_root: Path,
     windows: bool | None = None,
     run: Runner = subprocess.run,
+    all_users: bool = False,
+    elevated: bool | None = None,
     found: Sequence[Install] = (),
 ) -> RemovalPlan:
     win = _windows(windows)
+    if elevated is None:
+        elevated = all_users and _is_elevated(win)
     action, refusal = classify_removal(
-        install, current=current, hermes_home=hermes_home, default_root=default_root, windows=win, found=found, run=run)
+        install, current=current, hermes_home=hermes_home, default_root=default_root, windows=win,
+        all_users=all_users, elevated=elevated, found=found, run=run)
     if action == "refuse":
         return RemovalPlan(install, "refuse", refusal=refusal)
     if action == "appx":
-        command = (*_POWERSHELL, f"Remove-AppxPackage -Package {install.package_full_name}")
+        command = (*_POWERSHELL, f"Remove-AppxPackage -Package {install.package_full_name}"
+                   + (" -AllUsers" if all_users else ""))
+        scope = "all users" if all_users else "the current user"
         return RemovalPlan(
             install, "appx", command=command,
-            steps=(f"Remove the package {install.package_full_name} for the current user",
+            steps=(f"Remove the package {install.package_full_name} for {scope}",
                    "Close the Hermes app first: removal stops it"))
     launchers = _owned_launchers(install.root, default_root, win)
     shortcuts = _shortcuts_into(install.root, run) if win else ()
@@ -703,10 +726,14 @@ def _cmd_remove(args, found: list[Install], current: Path, default_root: Path, r
         print(f"No single install matches {wanted!r}. Run `hermes installs` to see the ids.", file=sys.stderr)
         return 1
     plan = plan_removal(
-        matches[0], current=current, hermes_home=Path(get_hermes_home()), default_root=default_root, run=run, found=found)
+        matches[0], current=current, hermes_home=Path(get_hermes_home()), default_root=default_root, run=run,
+        all_users=bool(getattr(args, "all_users", False)), found=found)
     print(f"Install {plan.install.id}  {plan.install.root}")
     if plan.action == "refuse":
         print(plan.refusal, file=sys.stderr)
+        return 1
+    if getattr(args, "all_users", False) and plan.action != "appx":
+        print("--all-users applies only to Windows package installs.", file=sys.stderr)
         return 1
     print("Will do:")
     for step in plan.steps:

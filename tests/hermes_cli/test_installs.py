@@ -294,10 +294,10 @@ class TestRemovalPlan:
             id=installs.install_id(root), root=root.resolve(), steward=steward,
             sources=("test",), current=False, package_full_name=package)
 
-    def _plan(self, install, home, current, *, windows=False, run=None, found=()):
+    def _plan(self, install, home, current, *, windows=False, run=None, **options):
         return installs.plan_removal(
             install, current=current, hermes_home=home, default_root=home, windows=windows,
-            run=run or (lambda *a, **k: _ok("")), found=found)
+            run=run or (lambda *a, **k: _ok("")), **options)
 
     def test_checkout_with_uncommitted_changes_is_refused_and_left_alone(self, home, running, tmp_path):
         dev = _checkout(tmp_path / "dev" / "hermes-agent")
@@ -416,6 +416,49 @@ class TestRemovalPlan:
         assert on_windows.command[-1] == "Remove-AppxPackage -Package Nous.Hermes_1_arm64__abc"
         assert elsewhere.action == "refuse"
 
+    def test_all_users_package_removal_needs_an_elevated_terminal(self, home, running, tmp_path):
+        bundle = _sealed(tmp_path / "pkg" / "hermes-agent")
+        install = self._install(bundle, steward="desktop-app", package="Nous.Hermes_1_arm64__abc")
+
+        plan = self._plan(install, home, running.resolve(), windows=True, all_users=True, elevated=False)
+
+        assert plan.action == "refuse"
+        assert plan.command is None
+        assert "elevated" in plan.refusal
+
+    def test_all_users_package_removal_adds_the_flag_when_elevated(self, home, running, tmp_path):
+        bundle = _sealed(tmp_path / "pkg" / "hermes-agent")
+        install = self._install(bundle, steward="desktop-app", package="Nous.Hermes_1_arm64__abc")
+
+        plan = self._plan(install, home, running.resolve(), windows=True, all_users=True, elevated=True)
+
+        assert plan.action == "appx"
+        assert plan.command[-1] == "Remove-AppxPackage -Package Nous.Hermes_1_arm64__abc -AllUsers"
+        assert any("all users" in step for step in plan.steps)
+
+    @pytest.mark.parametrize(("is_admin", "action"), [(False, "refuse"), (True, "appx")])
+    def test_all_users_removal_asks_the_system_whether_the_terminal_is_elevated(
+            self, home, running, tmp_path, monkeypatch, is_admin, action):
+        bundle = _sealed(tmp_path / "pkg" / "hermes-agent")
+        install = self._install(bundle, steward="desktop-app", package="Nous.Hermes_1_arm64__abc")
+        monkeypatch.setattr(installs, "_is_elevated", lambda windows=None: is_admin)
+
+        plan = self._plan(install, home, running.resolve(), windows=True, all_users=True)
+
+        assert plan.action == action
+
+    def test_running_package_install_is_refused_even_for_all_users(self, home, tmp_path):
+        bundle = _sealed(tmp_path / "pkg" / "hermes-agent")
+        install = self._install(bundle, steward="desktop-app", package="Nous.Hermes_1_arm64__abc")
+
+        plan = self._plan(install, home, bundle.resolve(), windows=True, all_users=True, elevated=True)
+
+        assert plan.action == "refuse"
+        assert plan.command is None
+
+    def test_elevation_is_never_reported_off_windows(self):
+        assert installs._is_elevated(windows=False) is False
+
     def test_unsafe_package_name_is_refused(self, home, running, tmp_path):
         bundle = _sealed(tmp_path / "pkg" / "hermes-agent")
         install = self._install(bundle, steward="desktop-app", package="x; Remove-Item C:\\ -Recurse")
@@ -528,7 +571,8 @@ class TestRemovalPlan:
 
 class TestCli:
     def _args(self, **fields):
-        base = {"installs_command": "list", "json": False, "install_id": None, "yes": False, "dry_run": False}
+        base = {"installs_command": "list", "json": False, "install_id": None, "yes": False, "dry_run": False,
+                "all_users": False}
         return SimpleNamespace(**{**base, **fields})
 
     def test_list_json_carries_installs_and_launchers(self, home, running, capsys):
@@ -593,6 +637,17 @@ class TestCli:
 
         assert rc == 1
         assert "nope" in capsys.readouterr().err
+
+    def test_all_users_applies_only_to_package_installs(self, home, running, capsys):
+        managed = _checkout(home / "hermes-agent")
+
+        rc = installs.run_cli(self._args(
+            installs_command="remove", install_id=installs.install_id(managed), yes=True, all_users=True),
+            run=_quiet)
+
+        assert rc == 1
+        assert managed.exists()
+        assert "--all-users" in capsys.readouterr().err
 
 
 def test_powershell_calls_read_utf8_output(tmp_path):

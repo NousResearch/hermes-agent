@@ -151,7 +151,7 @@ repair is session rotation, not another row.
 
 ### Forking
 
-`fork_session()` deep-copies message history into a new live session, preserving conversation state while giving the fork its own session ID and cwd.
+`fork_session()` deep-copies message history into a new live session, preserving conversation state while giving the fork its own session ID and cwd. The fork's agent runs on the source session's model, provider, base URL and API mode, so a session switched away from the configured default provider forks onto the same route.
 
 ## Provider/auth behavior
 

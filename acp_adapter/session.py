@@ -108,6 +108,16 @@ def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
     return list(dict.fromkeys(names))
 
 
+def _agent_route(agent: Any) -> Dict[str, str]:
+    """The live provider/base_url/api_mode an agent runs on (string values only)."""
+    route = {}
+    for key in ("provider", "base_url", "api_mode"):
+        value = getattr(agent, key, None)
+        if isinstance(value, str) and value.strip():
+            route[key] = value.strip()
+    return route
+
+
 def _parse_model_config(mc: Any) -> dict:
     """Decode a persisted model_config JSON blob; ``{}`` when absent/invalid/non-dict."""
     try:
@@ -201,7 +211,12 @@ class SessionManager:
         if original is None:
             return None
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
+        # The fork continues the source conversation, so it keeps the source's route: the model
+        # alone would be re-resolved against the config default provider.
+        route = _agent_route(original.agent)
+        agent = self._make_agent(
+            session_id=new_id, cwd=cwd, model=original.model or None, requested_provider=route.get("provider"),
+            base_url=route.get("base_url"), api_mode=route.get("api_mode"))
         model = getattr(agent, "model", original.model) or original.model
         state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
@@ -347,11 +362,7 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
-        for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
-            if isinstance(value, str) and value.strip():
-                session_meta[key] = value.strip()
+        session_meta = {"cwd": state.cwd, **_agent_route(state.agent)}
 
         try:
             if db.get_session(state.session_id) is None:

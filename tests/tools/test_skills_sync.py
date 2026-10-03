@@ -787,6 +787,64 @@ class TestNoBundledSkillsOptOut:
         assert "new-skill" in seeded["copied"]
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
+    def _essential_patches(self, tmp_path, bundled, skills_dir, manifest_file, hermes_home):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("tools.skills_sync.HERMES_HOME", hermes_home))
+        return stack
+
+    def _essential_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        skill = bundled / "autonomous-ai-agents" / "hermes-agent"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: hermes-agent\n---\nbody\n")
+        (bundled / "autonomous-ai-agents" / "DESCRIPTION.md").write_text("category\n")
+        return bundled
+
+    def test_opted_out_seeds_essential_skill_but_no_category_desc(self, tmp_path):
+        """Regression for #122534: opted-out homes get zero bundled
+        category writes — the essential skill body seeds, its category
+        DESCRIPTION.md does not."""
+        bundled = self._essential_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        (hermes_home / ".no-bundled-skills").write_text("opted out\n")
+
+        with self._essential_patches(tmp_path, bundled, skills_dir, manifest_file, hermes_home):
+            result = sync_skills(quiet=True)
+
+        assert result["skipped_opt_out"] is True
+        assert (skills_dir / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
+        assert not (skills_dir / "autonomous-ai-agents" / "DESCRIPTION.md").exists()
+
+    def test_opted_out_deleted_category_desc_stays_deleted(self, tmp_path):
+        """A user-deleted category dir must not resurrect on the next opted-out sync."""
+        bundled = self._essential_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        patches = lambda: self._essential_patches(tmp_path, bundled, skills_dir, manifest_file, hermes_home)
+
+        with patches():
+            sync_skills(quiet=True)
+        assert (skills_dir / "autonomous-ai-agents" / "DESCRIPTION.md").exists()
+
+        (hermes_home / ".no-bundled-skills").write_text("opted out\n")
+        (skills_dir / "autonomous-ai-agents" / "DESCRIPTION.md").unlink()
+        with patches():
+            result = sync_skills(quiet=True)
+
+        assert result["skipped_opt_out"] is True
+        assert not (skills_dir / "autonomous-ai-agents" / "DESCRIPTION.md").exists()
+        assert (skills_dir / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
+
 
 class TestOptOutToggleAndRemove:
     """`hermes skills opt-out/opt-in` core: marker toggle + safe removal."""

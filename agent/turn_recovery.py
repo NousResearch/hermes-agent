@@ -1682,14 +1682,18 @@ _LONG_CONTEXT_TIER_CAP = 200000
 
 def _cap_long_context_tier(agent: Any) -> int:
     """Cap the compressor's context window at the long-context tier limit; returns the
-    previous ``context_length``."""
+    previous ``context_length``.
+
+    Session-scoped: the tier gate lifts on its own, so this lowers the window WITHOUT
+    recording it as the model's declared capability — ``/new`` and ``/reset`` put the declared
+    window back (ContextCompressor._restore_declared_context_window).
+    """
     compressor = agent.context_compressor
     old_ctx = compressor.context_length
+    # ContextEngine provides reduce_context_window_temporarily(); every engine, plugin included,
+    # lowers its window for this session only rather than adopting the tier limit as its window.
+    compressor.reduce_context_window_temporarily(_LONG_CONTEXT_TIER_CAP)
     if old_ctx > _LONG_CONTEXT_TIER_CAP:
-        compressor.update_model(
-            model=agent.model, context_length=_LONG_CONTEXT_TIER_CAP, base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
-        )
         # Context probing flags exist only on the built-in compressor (plugin engines
         # manage their own). Don't persist — a tier limit, not a model capability;
         # 1M should return if extra usage is enabled.
@@ -1698,7 +1702,7 @@ def _cap_long_context_tier(agent: Any) -> int:
             compressor._context_probe_persistable = False
         agent._buffer_vprint(
             f"⚠️  Anthropic long-context tier "
-            f"requires extra usage — reducing context: "
+            f"requires extra usage — reducing context for this session: "
             f"{old_ctx:,} → {_LONG_CONTEXT_TIER_CAP:,} tokens"
         )
     return old_ctx

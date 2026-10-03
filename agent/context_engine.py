@@ -200,6 +200,18 @@ class ContextEngine(ABC):
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
         self.compression_count = 0
+        # Undo a session-scoped window reduction (reduce_context_window_temporarily) so a
+        # fresh conversation starts from the window the model declares. An engine that owns
+        # its own boundary (the built-in compressor) never sets _session_window_restore and
+        # restores via its override; a plugin engine inheriting these base methods gets the
+        # same "this session only" contract here.
+        restore = getattr(self, "_session_window_restore", None)
+        self._session_window_restore = None
+        if restore is not None and restore != self.context_length:
+            self.update_model(
+                self.model, restore, getattr(self, "base_url", ""), getattr(self, "api_key", ""),
+                getattr(self, "provider", ""), getattr(self, "api_mode", ""),
+            )
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Tool schemas this engine exposes to the agent (default: none)."""
@@ -229,6 +241,28 @@ class ContextEngine(ABC):
         Override when the engine holds uncopyable state (locks, DB connections): return a fresh
         engine sharing the durable backend and copying only mutable budget state."""
         return copy.deepcopy(self)
+
+    def reduce_context_window_temporarily(self, cap: int) -> int:
+        """Lower the window for this session only (a provider gate that lifts, e.g. an
+        Anthropic long-context-tier 429), returning the window it replaced.
+
+        The reduction is session-scoped for every engine: the declared window is remembered
+        here and put back by ``on_session_reset()`` (``/new``, ``/reset``). An engine that
+        owns its own session boundary (the built-in compressor) overrides both methods; the
+        base implementations keep a plugin engine that inherits them from permanently
+        adopting the cap as its window.
+        """
+        previous = self.context_length
+        if previous > cap:
+            # Keep the FIRST recorded window: a second cap in the same session must not
+            # overwrite the declared base with an already-reduced window.
+            if getattr(self, "_session_window_restore", None) is None:
+                self._session_window_restore = previous
+            self.update_model(
+                self.model, cap, getattr(self, "base_url", ""), getattr(self, "api_key", ""),
+                getattr(self, "provider", ""), getattr(self, "api_mode", ""),
+            )
+        return previous
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",

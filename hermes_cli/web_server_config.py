@@ -15,7 +15,6 @@ from hermes_cli.config import (
     read_raw_config,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
-from tools.wake_word import _PROVIDER_PREFERENCE
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -55,6 +54,17 @@ def _timezone_options() -> List[str]:
         return sorted(zoneinfo.available_timezones()) or ["UTC"]
     except Exception:  # pragma: no cover
         return ["UTC"]
+
+
+def _wake_word_providers() -> Tuple[str, ...]:
+    """The wake engines ``tools.wake_word`` prefers, imported lazily: a distribution that does not
+    package wake word (``voice.mode_enabled: false``) still loads the config schema, offering only
+    ``auto``."""
+    try:
+        from tools.wake_word import _PROVIDER_PREFERENCE
+    except ImportError:
+        return ()
+    return tuple(_PROVIDER_PREFERENCE)
 
 
 def _select(description: str, *options: str, **extra: Any) -> Dict[str, Any]:
@@ -117,7 +127,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "wake_word.provider": _select(
         "Wake engine. Auto selects a platform-supported engine; Porcupine requires PORCUPINE_ACCESS_KEY.",
-        "auto", *_PROVIDER_PREFERENCE,
+        "auto", *_wake_word_providers(),
     ),
     "tts.provider": _select(
         "Text-to-speech provider",

@@ -44,6 +44,14 @@ def _voice_mode_enabled() -> bool:
     return os.environ.get("HERMES_VOICE", "").strip() == "1"
 
 
+def _voice_mode_available() -> bool:
+    """Config ``voice.mode_enabled`` (default on): does this Hermes offer its own mic/speaker voice
+    mode and wake word at all? Off where a host owns the microphone (an embedded desktop host)."""
+    from hermes_cli.config import config_switch
+
+    return config_switch("voice", "mode_enabled")
+
+
 def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
@@ -468,6 +476,8 @@ def _(rid, params: dict) -> dict:
 
     def refused(reason, **extra):
         return _ok(rid, {"started": False, "reason": reason, **extra})
+    if not _voice_mode_available():
+        return refused("voice_mode_unavailable")
     try:
         from tools.wake_word import (
             WakeWordInUse, detector_frame_info, load_wake_word_config, owns_listener,
@@ -637,6 +647,8 @@ def _voice_toggle_status(rid, params: dict) -> dict:
 
 def _voice_toggle_mode(rid, params: dict) -> dict:
     enabled = params.get("action") == "on"
+    if enabled and not _voice_mode_available():
+        return _err(rid, 4015, "voice mode is not available in this Hermes (voice.mode_enabled: false)")
     os.environ["HERMES_VOICE"] = "1" if enabled else "0"
     stop_hint = ""
     if enabled:

@@ -19,6 +19,15 @@ _WARM_WORKERS = 8
 _NEG_TTL = 30.0  # "not a git repo" TTL: a fresh `git init` shows within seconds
 
 
+def git_probe_enabled() -> bool:
+    """Config ``sessions.git_probe`` (default on): may the gateway spawn ``git`` to probe session
+    cwds? Off in a distribution that may start no subprocess (one that ships no git); the session's
+    branch and repo root are then simply unknown. An unreadable config keeps today's behaviour."""
+    from hermes_cli.config import config_switch
+
+    return config_switch("sessions", "git_probe", default=True)
+
+
 def run_git(cwd: str, *args: str) -> str:
     """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure. ``bounded_git_probe``
     bounds post-kill cleanup on Windows (a killed git's suspended descendant held the pipes).
@@ -29,7 +38,7 @@ def run_git(cwd: str, *args: str) -> str:
     """
     # A missing dir can only fail at the price of a fork; deleted worktrees dominate a long
     # session history's cwds, so the stat pays off.
-    if not cwd or not os.path.isdir(cwd):
+    if not cwd or not os.path.isdir(cwd) or not git_probe_enabled():
         return ""
     return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 

@@ -40,6 +40,17 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def platform_adapters_allowed() -> bool:
+    """Config ``gateway.platform_adapters`` (default on): may the messaging gateway start platform
+    adapters (Telegram, Discord, Slack, ...)? A distribution without messaging (an embedded desktop
+    host) turns it off. An unreadable config keeps today's behaviour (on)."""
+    from hermes_cli.config import config_switch
+
+    return config_switch("gateway", "platform_adapters")
+
+
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
 
 
@@ -1842,7 +1853,12 @@ class GatewayAdapterLifecycleMixin:
 
     def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Create an adapter bound to this runner (every lifecycle path goes through here so
-        adapters can resolve inbound profile routes before handlers or connect())."""
+        adapters can resolve inbound profile routes before handlers or connect()). None while
+        config ``gateway.platform_adapters`` is false: no platform starts, configured or not."""
+        if not platform_adapters_allowed():
+            logger.warning("Platform '%s' not started: platform adapters are switched off "
+                           "(gateway.platform_adapters: false)", platform.value)
+            return None
         adapter = self._instantiate_adapter(platform, config)
         if adapter is not None:
             adapter.gateway_runner = self

@@ -235,6 +235,15 @@ _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singul
                  "ssh": _build_ssh_env}
 
 
+def external_backends_allowed() -> bool:
+    """Config ``terminal.external_backends`` (default on): may a terminal run anywhere but ``local``
+    (Docker, SSH, Modal, Daytona, Singularity, Vercel, plugin backends)? An unreadable config keeps
+    today's behaviour (on)."""
+    from hermes_cli.config import config_switch
+
+    return config_switch("terminal", "external_backends")
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None, task_id: str = "default",
@@ -242,7 +251,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
-    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
+    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends.
+    Every backend but ``local`` is refused while config ``terminal.external_backends`` is false."""
+    if env_type != "local" and not external_backends_allowed():
+        raise ValueError(
+            f"Execution backend '{env_type}' is switched off (terminal.external_backends: false); "
+            f"only the 'local' backend is available")
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
                   ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)

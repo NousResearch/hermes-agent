@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -46,6 +48,92 @@ def captured_upload(monkeypatch, tmp_path):
 
 def _envelope(blob: bytes) -> dict:
     return json.loads(gzip.decompress(blob).decode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    "secondary_params",
+    ({"profile": "work"}, {"session_id": "work"}),
+    ids=("explicit-profile", "session-profile"),
+)
+def test_share_nous_collects_inside_the_selected_profile_scope_a_b_a(
+    monkeypatch, tmp_path, secondary_params,
+):
+    """Collection and upload stay in one full runtime scope: home, secrets and terminal policy."""
+    from agent import secret_scope
+    from agent.secret_scope import get_secret
+    from hermes_constants import get_hermes_home, get_hermes_home_override
+    from tools import terminal_tool
+    from tools.terminal_scope import get_terminal_scope
+    from tui_gateway import launch_profile_policy
+
+    launch = tmp_path / ".hermes"
+    work = launch / "profiles" / "work"
+    for home, marker, backend in (
+        (launch, "launch-profile-A", "local"),
+        (work, "worker-profile-B", "docker"),
+    ):
+        (home / "logs").mkdir(parents=True)
+        (home / ".env").write_text(f"DIAGNOSTIC_SCOPE_MARKER={marker}\n", encoding="utf-8")
+        (home / "config.yaml").write_text(
+            f"terminal:\n  backend: {backend}\n  docker_image: ${{DIAGNOSTIC_SCOPE_MARKER}}\n",
+            encoding="utf-8",
+        )
+        (home / "logs" / "agent.log").write_text(f"diagnostic marker: {marker}\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("DIAGNOSTIC_SCOPE_MARKER", "launch-profile-A")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr(server, "_sessions", {
+        "launch": {"profile_home": None},
+        "work": {"profile_home": str(work)},
+    })
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    # Mirror serve startup: bridge the launch profile once, then freeze it before any routed call.
+    # The RPC itself must use ContextVars and leave this process-wide mapping byte-for-byte alone.
+    from hermes_cli.env_loader import load_hermes_dotenv
+    load_hermes_dotenv(hermes_home=launch, project_env=tmp_path / "no-project-env")
+    launch_profile_policy.activate_multi_profile_hosting()
+
+    uploads = []
+
+    def _fake_share(blob: bytes) -> dict:
+        uploads.append({
+            "home": str(get_hermes_home()),
+            "secret": get_secret("DIAGNOSTIC_SCOPE_MARKER"),
+            "terminal_bound": get_terminal_scope() is not None,
+            "backend": terminal_tool._get_env_config()["env_type"],
+            "envelope": _envelope(blob),
+        })
+        return {"viewUrl": "https://nas.example/view/scoped", "id": "scoped"}
+
+    import hermes_cli.diagnostics_upload as du
+
+    monkeypatch.setattr(du, "share_to_nous", _fake_share)
+    environ_before = dict(os.environ)
+    for index, params in enumerate(({"session_id": "launch"}, secondary_params, {"session_id": "launch"})):
+        response = getattr(server, "handle_request")({
+            "id": f"rid-scope-{index}", "method": "diagnostics.share_nous", "params": params,
+        })
+        assert response["result"]["ok"] is True, response
+
+    assert [(row["home"], row["secret"], row["backend"]) for row in uploads] == [
+        (str(launch), "launch-profile-A", "local"),
+        (str(work), "worker-profile-B", "docker"),
+        (str(launch), "launch-profile-A", "local"),
+    ]
+    assert all(row["terminal_bound"] for row in uploads)
+    content = [json.dumps(row["envelope"], sort_keys=True) for row in uploads]
+    assert "launch-profile-A" in content[0] and "worker-profile-B" not in content[0]
+    assert "worker-profile-B" in content[1] and "launch-profile-A" not in content[1]
+    assert "launch-profile-A" in content[2] and "worker-profile-B" not in content[2]
+    assert dict(os.environ) == environ_before
+    assert get_hermes_home_override() is None
+    assert get_terminal_scope() is None
 
 
 def test_share_nous_uploads_redacted_bundle(captured_upload):

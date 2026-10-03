@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -351,14 +352,46 @@ def _capture_default_log_snapshots(
         for name in _REPORT_LOGS}
 
 
+# ``redirect_stdout`` rebinds the process-wide ``sys.stdout``, so two concurrent dumps (one gateway
+# serving several profiles, or overlapping dashboard debug-share calls) would write into each
+# other's buffers. Captures are serialized, and each one only keeps its own thread's writes.
+_DUMP_CAPTURE_LOCK = threading.Lock()
+
+
+class _ThreadStdoutCapture(io.TextIOBase):
+    """``sys.stdout`` stand-in that buffers writes from the capturing thread only and passes every
+    other thread's output through to the stream it replaced."""
+
+    def __init__(self, passthrough):
+        self._owner = threading.get_ident()
+        self._buffer = io.StringIO()
+        self._passthrough = passthrough
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        if threading.get_ident() == self._owner:
+            return self._buffer.write(text)
+        return self._passthrough.write(text)
+
+    def flush(self) -> None:
+        if threading.get_ident() != self._owner:
+            self._passthrough.flush()
+
+    def getvalue(self) -> str:
+        return self._buffer.getvalue()
+
+
 def _capture_dump(redact: bool = True) -> str:
     """Run ``hermes dump`` and return its stdout, force-redacted unless *redact* is False: the dump
     is upload-bound and quotes config values (e.g. ``fallback_providers``), so URL credentials are
-    redacted too, as in the uploaded logs."""
+    redacted too, as in the uploaded logs. Safe to call from concurrent threads."""
     from hermes_cli.dump import run_dump
-    capture = io.StringIO()
-    with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
-        run_dump(SimpleNamespace(show_keys=False))
+    with _DUMP_CAPTURE_LOCK:
+        capture = _ThreadStdoutCapture(sys.stdout)
+        with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
+            run_dump(SimpleNamespace(show_keys=False))
     text = capture.getvalue()
     return _redact_log_text(text, redact_url_credentials=True) if redact else text
 

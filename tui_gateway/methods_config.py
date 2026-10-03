@@ -490,6 +490,7 @@ def _safe_client_label(label: str) -> str:
 
 
 @method("diagnostics.share_nous")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Upload a redacted debug bundle to Nous-internal diagnostics storage — same collection +
     force-redaction pipeline as ``hermes debug share --nous``; redaction is NOT client-controllable

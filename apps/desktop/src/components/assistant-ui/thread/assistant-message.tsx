@@ -859,7 +859,10 @@ const ErrorRecoveryActions: FC = () => {
   // the user needs to see to free space after a disk-full failure). Resolved
   // for the profile that OWNS this session (a tile / Bot chat names it in its
   // composer scope), not the pooled backend's launch profile (#119080).
-  const ownerProfile = useComposerScope().profile || gatewayProfile
+  const composerScope = useComposerScope()
+  const ownerProfile = composerScope.profile || gatewayProfile
+  // The failing session's runtime id: the diagnostics upload is scoped to it.
+  const runtimeSessionId = useStore(useSessionView().$runtimeId)
 
   const openLocalDir = useCallback(
     async (resolve: (logsRoot: string) => string, failedMessage: string) => {
@@ -984,7 +987,17 @@ const ErrorRecoveryActions: FC = () => {
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
-      <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
+      <button
+        className="aui-error-action"
+        onClick={() =>
+          requestSendDiagnostics(diagnosticsText(), {
+            connectionId: composerScope.connectionId,
+            profile: ownerProfile,
+            sessionId: runtimeSessionId
+          })
+        }
+        type="button"
+      >
         <Upload className="size-3" />
         {copy.errorSendDiagnostics}
       </button>

@@ -12,9 +12,15 @@
 // the backend bundles ITS OWN logs (the runtime that owns the failure); the
 // local desktop.log is attached as a client-side extra so support sees both
 // halves in one bundle.
+//
+// The upload is routed like any other profile-scoped RPC: to the profile the
+// dialog was opened for (the failing session's owner, else the focused
+// profile), with that session's runtime id. A multiplexed backend serves
+// several profiles on one socket, and an unscoped call there would bundle the
+// LAUNCH profile's logs instead of the ones the user agreed to share.
 import { atom } from 'nanostores'
 
-import { $gateway } from '@/store/gateway'
+import { activeGatewayProfileKey, requestGatewayForAgent } from '@/store/gateway'
 
 export interface SendDiagnosticsResult {
   expiresAt?: string
@@ -22,13 +28,26 @@ export interface SendDiagnosticsResult {
   viewUrl?: string
 }
 
+/** Who owns the failure: the session's owner route and runtime id. */
+export interface SendDiagnosticsOwner {
+  connectionId?: null | string
+  profile?: null | string
+  sessionId?: null | string
+}
+
 export interface SendDiagnosticsState {
+  /** Registry connection of the owning session (cross-connection Bot chats). */
+  connectionId?: string
   /** Short text describing the failure that prompted the report (attached
    *  to the bundle as error-context.txt, redacted server-side). */
   errorContext?: string
   error?: string
   phase: 'consent' | 'done' | 'error' | 'uploading'
+  /** Profile whose logs are bundled, fixed when the consent dialog opens. */
+  profile: string
   result?: SendDiagnosticsResult
+  /** Runtime session the failure came from; the backend scopes to its profile. */
+  sessionId?: string
 }
 
 export const $sendDiagnostics = atom<SendDiagnosticsState | null>(null)
@@ -41,10 +60,21 @@ export const $sendDiagnostics = atom<SendDiagnosticsState | null>(null)
 // server-side; we just ignore the result).
 let generation = 0
 
-/** Open the consent modal. No network I/O happens until the user confirms. */
-export function requestSendDiagnostics(errorContext?: string): void {
+/** Open the consent modal. No network I/O happens until the user confirms.
+ *  The target profile is fixed here, so switching profiles while the dialog is
+ *  open cannot redirect an upload the user consented to for another one. */
+export function requestSendDiagnostics(errorContext?: string, owner: SendDiagnosticsOwner = {}): void {
+  const connectionId = owner.connectionId?.trim()
+  const sessionId = owner.sessionId?.trim()
+
   generation += 1
-  $sendDiagnostics.set({ errorContext, phase: 'consent' })
+  $sendDiagnostics.set({
+    errorContext,
+    phase: 'consent',
+    profile: owner.profile?.trim() || activeGatewayProfileKey(),
+    ...(connectionId ? { connectionId } : {}),
+    ...(sessionId ? { sessionId } : {})
+  })
 }
 
 export function dismissSendDiagnostics(): void {
@@ -94,23 +124,23 @@ export async function confirmSendDiagnostics(): Promise<void> {
   $sendDiagnostics.set({ ...current, phase: 'uploading' })
 
   try {
-    const gateway = $gateway.get()
-
-    if (!gateway) {
-      throw new Error('Hermes gateway unavailable')
-    }
-
     const extraFiles = await collectLocalExtras()
 
     if (!stillCurrent()) {
       return
     }
 
-    const response = await gateway.request<ShareNousResponse>(
+    // requestGatewayForAgent picks the socket that serves this (connection,
+    // profile) and adds `profile` when that socket is a shared multi-profile
+    // backend; `session_id` lets the backend scope to the session's owner.
+    const response = await requestGatewayForAgent<ShareNousResponse>(
+      current.connectionId ?? null,
+      current.profile,
       'diagnostics.share_nous',
       {
         ...(current.errorContext ? { error_context: current.errorContext } : {}),
-        ...(Object.keys(extraFiles).length ? { extra_files: extraFiles } : {})
+        ...(Object.keys(extraFiles).length ? { extra_files: extraFiles } : {}),
+        ...(current.sessionId ? { session_id: current.sessionId } : {})
       },
       SHARE_TIMEOUT_MS
     )

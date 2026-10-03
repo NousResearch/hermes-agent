@@ -895,6 +895,66 @@ class TestCollectShareBundle:
 
 
 
+class TestConcurrentDumpCapture:
+    """``redirect_stdout`` is process-global: overlapping captures must not cross."""
+
+    def test_overlapping_share_bundles_keep_their_own_dump(self, hermes_home):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        from hermes_cli.debug import collect_share_bundle
+
+        a_inside, b_started = threading.Event(), threading.Event()
+        b_entered, a_finished = threading.Event(), threading.Event()
+        who = threading.local()
+
+        def fake_dump(_args):
+            print(f"DUMP-{who.name}-1")
+            if who.name == "A":
+                a_inside.set()
+                assert b_started.wait(5)
+                # Unserialized, B installs its buffer meanwhile and captures A's second line.
+                b_entered.wait(0.5)
+                print("DUMP-A-2")
+                a_finished.set()
+            else:
+                b_entered.set()
+                assert a_finished.wait(5)  # stay inside the capture until A has written again
+                print("DUMP-B-2")
+
+        def collect(name):
+            who.name = name
+            if name == "B":
+                assert a_inside.wait(5)
+                b_started.set()
+            return collect_share_bundle(log_lines=10, redact=False)["report"]
+
+        with patch("hermes_cli.dump.run_dump", side_effect=fake_dump), \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            fut_a, fut_b = pool.submit(collect, "A"), pool.submit(collect, "B")
+            report_a, report_b = fut_a.result(timeout=10), fut_b.result(timeout=10)
+
+        assert "DUMP-A-1\nDUMP-A-2" in report_a and "DUMP-B" not in report_a
+        assert "DUMP-B-1\nDUMP-B-2" in report_b and "DUMP-A" not in report_b
+
+    def test_other_threads_output_is_not_captured(self, hermes_home, capsys):
+        import threading
+
+        from hermes_cli.debug import _capture_dump
+
+        def fake_dump(_args):
+            print("OWN-LINE")
+            noise = threading.Thread(target=lambda: print("OTHER-THREAD-NOISE"))
+            noise.start()
+            noise.join(5)
+
+        with patch("hermes_cli.dump.run_dump", side_effect=fake_dump):
+            captured = _capture_dump(redact=False)
+
+        assert captured == "OWN-LINE\n"
+        assert "OTHER-THREAD-NOISE" in capsys.readouterr().out
+
+
 class TestBuildNousBundle:
     def test_envelope_shape_and_gzip(self, hermes_home):
         import gzip

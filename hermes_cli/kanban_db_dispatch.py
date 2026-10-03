@@ -145,6 +145,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    dead_lettered: list[str] = field(default_factory=list)
+    """Task ids this tick pinned an idempotent ``dead_letter`` event on:
+    ``gave_up``/``blocked`` cards stuck past ``kanban.dead_letter_after_hours``
+    (0 disables). Visibility-only — no status change, no requeue, no
+    notification; the event only surfaces the corpse to the operator."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1877,6 +1882,24 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def configured_dead_letter_after_hours() -> int:
+    """Read ``kanban.dead_letter_after_hours`` (int hours) from config.
+
+    ``>= 1`` enables the dead-letter lane; ``0``, unset, unparsable, negative
+    or a config-read failure all disable it (fail-open to disabled — zero
+    sweep queries, no tick behavior change). Never raises: a broken config
+    value must not break the dispatch tick.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get(
+            "dead_letter_after_hours"
+        )
+    except Exception:
+        return 0
+    return _positive_int(raw, 0)
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1964,6 +1987,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    dead_letter_after_hours: Optional[int] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1987,6 +2011,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            dead_letter_after_hours=dead_letter_after_hours,
         )
 
     try:
@@ -2180,6 +2205,109 @@ def _apply_default_assignee(
     return True
 
 
+def _dead_letter_anchor(
+    conn: sqlite3.Connection, task_id: str, task_created_at: Any,
+) -> tuple[int, int, Optional[str], dict]:
+    """``(anchor_event_id, anchor_epoch, kind, payload)`` for one card's current
+    status episode: the newest boundary event (``blocked``/``unblocked``/
+    ``gave_up``/``status``) opens the episode, so its ``created_at`` — not the
+    card's birth — is what ages. A card with no boundary event at all anchors
+    at ``tasks.created_at`` with ``anchor_id=0``."""
+    row = conn.execute(
+        "SELECT id, kind, payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up', 'status') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return 0, int(task_created_at), None, {}
+    return (
+        int(row["id"]), int(row["created_at"]), row["kind"],
+        _kb._json_dict(row["payload"]),
+    )
+
+
+def _has_newer_dead_letter(
+    conn: sqlite3.Connection, task_id: str, anchor_id: int,
+) -> bool:
+    """Idempotency predicate: a ``dead_letter`` event AFTER the anchor means the
+    current status episode is already marked. Comparing autoincrement ids (not
+    timestamps) keeps this robust against backdated events."""
+    return conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'dead_letter' AND id > ? LIMIT 1",
+        (task_id, anchor_id),
+    ).fetchone() is not None
+
+
+def _dead_letter_reason(
+    anchor_kind: Optional[str], anchor_payload: dict, last_failure_error: Optional[str],
+) -> Optional[str]:
+    """Why the card died, first line capped at 200 chars: the block reason for
+    ``blocked`` episodes, the error for ``gave_up`` ones, else the task's last
+    failure error; all-empty -> ``None``."""
+    if anchor_kind == "blocked":
+        raw = anchor_payload.get("reason")
+    elif anchor_kind == "gave_up":
+        raw = anchor_payload.get("error")
+    else:
+        raw = last_failure_error
+    return _kb._first_line(raw if isinstance(raw, str) else None, 200) or None
+
+
+def _dead_letter_sweep(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    *,
+    after_hours: int,
+    dry_run: bool = False,
+) -> None:
+    """Pin an idempotent ``dead_letter`` event on every ``gave_up``/``blocked``
+    card stuck for ``after_hours`` hours (age = the card's current status
+    episode, see :func:`_dead_letter_anchor`). Visibility only: no terminal
+    state change, no requeue, no notification. ``after_hours <= 0`` disables
+    the lane with zero SQL. The scan is read-only; each mark opens its own
+    write txn and re-verifies the idempotency predicate inside it (a worker or
+    sibling dispatcher may mark between the scan and the write).
+    ``dry_run`` computes and records :attr:`DispatchResult.dead_lettered`
+    without writing anything."""
+    if after_hours <= 0:
+        return
+    now = time.time()
+    for row in conn.execute(
+        "SELECT id, status, block_kind, last_failure_error, created_at FROM tasks "
+        "WHERE status IN ('gave_up', 'blocked')"
+    ).fetchall():
+        task_id = row["id"]
+        anchor_id, anchor_time, anchor_kind, anchor_payload = _dead_letter_anchor(
+            conn, task_id, row["created_at"],
+        )
+        age_seconds = now - anchor_time
+        # Only corpses at or past the threshold are marked (equality marks).
+        if age_seconds < after_hours * 3600:
+            continue
+        if _has_newer_dead_letter(conn, task_id, anchor_id):
+            continue
+        result.dead_lettered.append(task_id)
+        if dry_run:
+            continue
+        payload = {
+            "age_hours": round(age_seconds / 3600, 1),
+            "status": row["status"],
+            "block_kind": row["block_kind"],
+            "reason": _dead_letter_reason(
+                anchor_kind, anchor_payload, row["last_failure_error"],
+            ),
+        }
+        with _kb.write_txn(conn):
+            if not _has_newer_dead_letter(conn, task_id, anchor_id):
+                _kb._append_event(conn, task_id, "dead_letter", payload)
+                _kb._log.info(
+                    "kanban dispatch: dead-lettered %s (%s, %.1fh stuck)",
+                    task_id, row["status"], age_seconds / 3600,
+                )
+
+
 def _run_reclaim_phase(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2188,6 +2316,8 @@ def _run_reclaim_phase(
     failure_limit: int,
     reconcile_orphans: bool,
     board: Optional[str] = None,
+    dead_letter_after_hours: int = 0,
+    dry_run: bool = False,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -2203,6 +2333,12 @@ def _run_reclaim_phase(
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    # AFTER promotion: a non-sticky blocked card just resurrected to ready by
+    # ``recompute_ready`` is not a corpse — only cards still ``gave_up``/
+    # ``blocked`` now get their idempotent ``dead_letter`` mark.
+    _dead_letter_sweep(
+        conn, result, after_hours=dead_letter_after_hours, dry_run=dry_run,
+    )
 
 
 def _tick_spawn_budget(
@@ -2339,6 +2475,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    dead_letter_after_hours: Optional[int] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2346,9 +2483,12 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    if dead_letter_after_hours is None:
+        dead_letter_after_hours = configured_dead_letter_after_hours()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
+        dead_letter_after_hours=dead_letter_after_hours, dry_run=dry_run,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

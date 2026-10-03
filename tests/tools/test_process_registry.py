@@ -859,10 +859,12 @@ class TestFinishedHandleRelease:
         registry._finished[session.id] = session
 
         with registry._lock:
-            registry._prune_if_needed()
+            pruned = registry._prune_if_needed()
+            assert not pty_closed["closed"], "pruning must not close handles under the registry lock"
+        registry._release_pruned(pruned)
 
         assert session.id not in registry._finished
-        assert pty_closed["closed"], "pruned session must release its PTY handle"
+        assert pty_closed["closed"], "pruned session must release its PTY handle after unlocking"
 
 
 

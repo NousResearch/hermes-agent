@@ -39,6 +39,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { launchMarkerNeedsReprobe } from './launch-build-identity'
+
 export const WINDOWS_SANDBOX_MARKER_FILENAME = 'windows-sandbox-fallback.json'
 
 /**
@@ -69,6 +71,10 @@ export interface SandboxMarker {
   reason?: SandboxFallbackReason
   /** App version that entered fallback — a version change triggers a re-probe. */
   version?: string
+  /** Build identity that entered fallback (see launch-build-identity.ts). A
+   *  source install reports 0.0.0 on every build, so this is what actually
+   *  changes there and lets the ladder clear a promoted marker. */
+  build?: string
   /** Consecutive aborted boots observed so far (state === 'booting'). */
   bootAborts?: number
   /** This boot is a sandbox re-probe after an app update; an abort returns
@@ -125,6 +131,10 @@ export function parseSandboxMarker(raw: unknown): SandboxMarker | null {
 
   if (typeof record.version === 'string' && record.version) {
     marker.version = record.version
+  }
+
+  if (typeof record.build === 'string' && record.build) {
+    marker.build = record.build
   }
 
   const aborts = Number(record.bootAborts)
@@ -200,9 +210,14 @@ export function decideWindowsSandboxLaunch(
     env?: NodeJS.ProcessEnv
     marker?: SandboxMarker | null
     appVersion?: string
+    buildIdentity?: string
+    /** Linux: the host runs a user-namespace sandbox, where dropping the
+     *  Chromium sandbox is not a recovery but the crash itself. */
+    userNamespaceSandbox?: boolean
   } = {}
 ): SandboxLaunchDecision {
   const appVersion = String(options.appVersion || '')
+  const buildIdentity = String(options.buildIdentity || '')
 
   // The two-strike boot-abort ladder is platform-neutral (both win32 #38216
   // and linux #121954); the platform-specific helpers gate themselves below.
@@ -225,8 +240,10 @@ export function decideWindowsSandboxLaunch(
   }
 
   if (marker?.state === 'fallback') {
-    if (marker.version && appVersion && marker.version !== appVersion) {
-      // App updated since the fallback engaged — re-probe the sandbox once.
+    if (launchMarkerNeedsReprobe(marker, { appVersion, buildIdentity })) {
+      // This build differs from the one that entered fallback — re-probe the
+      // sandbox once. On a source install the version never moves, so the
+      // build identity is the signal that finally clears the marker.
       return {
         enable: false,
         reason: null,
@@ -237,7 +254,11 @@ export function decideWindowsSandboxLaunch(
     return {
       enable: true,
       reason: 'sticky-fallback',
-      nextMarker: { ...marker, version: marker.version || appVersion || undefined }
+      nextMarker: {
+        ...marker,
+        version: marker.version || appVersion || undefined,
+        build: marker.build || (buildIdentity === appVersion ? undefined : buildIdentity) || undefined
+      }
     }
   }
 
@@ -249,15 +270,29 @@ export function decideWindowsSandboxLaunch(
       return {
         enable: true,
         reason: 'reprobe-failed',
-        nextMarker: fallbackMarker('boot-loop', appVersion)
+        nextMarker: fallbackMarker('boot-loop', appVersion, buildIdentity)
       }
     }
 
     if (abortsObserved >= BOOT_ABORTS_BEFORE_FALLBACK) {
+      if (launchPlatform === 'linux' && options.userNamespaceSandbox) {
+        // A userns-sandboxed Linux host renders with the Chromium sandbox, so
+        // the zygote can create /dev/shm. `--no-sandbox` skips the broker and
+        // the chroot, and the renderer then dies in a SIGILL loop that no
+        // relaunch recovers from — worse than the state we came from, and it
+        // is sticky. Stay sandboxed and keep no marker: the boot that failed
+        // is recorded by whatever actually witnesses it (GPU-child signature).
+        return {
+          enable: false,
+          reason: null,
+          nextMarker: { state: 'ok' }
+        }
+      }
+
       return {
         enable: true,
         reason: 'boot-loop',
-        nextMarker: fallbackMarker('boot-loop', appVersion)
+        nextMarker: fallbackMarker('boot-loop', appVersion, buildIdentity)
       }
     }
 
@@ -272,11 +307,19 @@ export function decideWindowsSandboxLaunch(
   return { enable: false, reason: null, nextMarker: { state: 'booting' } }
 }
 
-export function fallbackMarker(reason: SandboxFallbackReason, appVersion?: string): SandboxMarker {
+export function fallbackMarker(
+  reason: SandboxFallbackReason,
+  appVersion?: string,
+  buildIdentity?: string
+): SandboxMarker {
   const marker: SandboxMarker = { state: 'fallback', reason }
 
   if (appVersion) {
     marker.version = appVersion
+  }
+
+  if (buildIdentity && buildIdentity !== appVersion) {
+    marker.build = buildIdentity
   }
 
   return marker
@@ -291,12 +334,13 @@ export function markerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   reason?: SandboxFallbackReason
   appVersion?: string
+  buildIdentity?: string
 }): SandboxMarker {
   if (!options.fallbackActive) {
     return { state: 'ok' }
   }
 
-  return fallbackMarker(options.reason ?? 'boot-loop', options.appVersion)
+  return fallbackMarker(options.reason ?? 'boot-loop', options.appVersion, options.buildIdentity)
 }
 
 /**

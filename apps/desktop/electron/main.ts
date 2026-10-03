@@ -329,6 +329,8 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { launchBuildIdentity } from './launch-build-identity'
+import { createLaunchMarkerWriter } from './launch-marker-writer'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -354,6 +356,7 @@ import {
   shouldRelaunchForNvidiaGpuDeath,
   writeNvidiaEglMarker
 } from './linux-nvidia-egl-fallback'
+import { detectUserNamespaceSandbox } from './linux-user-namespace'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
@@ -722,6 +725,15 @@ const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
+// Recovery markers are queued until the single-instance lock below resolves:
+// a second launch loses that lock and exits without ever starting a GPU or
+// sandbox child, so a `booting` write from it reads as an aborted boot on the
+// next launch and can promote the marker to `fallback/boot-loop`. The ladder
+// decisions themselves cannot wait — Chromium only reads its command line
+// pre-launch — so only the persistence is deferred. Flushed (or dropped) next
+// to the lock.
+const launchMarkerWriter = createLaunchMarkerWriter()
+
 // Device-local preference: block F12 from opening DevTools.
 // Set dynamically via IPC from the renderer Settings → Advanced.
 let f12Blocked = false
@@ -784,11 +796,7 @@ if (IS_WINDOWS) {
   windowsGpuStackCookieFallbackActive = gpuStackCookieDecision.enable
   windowsGpuStackCookieFallbackSticky = gpuStackCookieDecision.nextMarker.state === 'fallback'
 
-  try {
-    writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
-  } catch {
-    void 0
-  }
+  launchMarkerWriter.queue(() => writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker))
 
   if (gpuStackCookieDecision.enable && !REMOTE_DISPLAY_REASON) {
     app.disableHardwareAcceleration()
@@ -864,11 +872,21 @@ const NVIDIA_DRIVER_VERSION = parseNvidiaDriverVersion(NVIDIA_PROC_VERSION)
 let nvidiaEglFallbackActive = false
 let nvidiaEglRelaunchAttempted = false
 
+// Recovery ladders below run before `app ready` (Chromium only reads its
+// command line pre-launch), which is also before the single-instance lock.
+// Launch-wide facts they need, computed once here — the build identity in
+// particular, which the NVIDIA EGL ladder below also keys on.
+const LAUNCH_BUILD_IDENTITY = launchBuildIdentity({
+  appVersion: app.getVersion(),
+  installStamp: INSTALL_STAMP
+})
+
 const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
   driverMajor: NVIDIA_DRIVER_MAJOR,
   driverVersion: NVIDIA_DRIVER_VERSION,
   marker: readNvidiaEglMarker(app.getPath('userData')),
   appVersion: app.getVersion(),
+  buildIdentity: LAUNCH_BUILD_IDENTITY,
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
@@ -881,12 +899,12 @@ nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
 // left behind by a launch that never reached first paint is itself evidence
 // of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
 // against our relaunch handler), and the next launch engages from it.
+// Queued like the other ladders — a launch that exits at the single-instance
+// lock never started a GPU child, so its marker must not land (#131055).
 if (NVIDIA_DRIVER_MAJOR !== null) {
-  try {
+  launchMarkerWriter.queue(() =>
     writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
-  } catch {
-    void 0
-  }
+  )
 }
 
 if (NVIDIA_EGL_FALLBACK.enable) {
@@ -920,7 +938,11 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
     try {
       writeNvidiaEglMarker(
         app.getPath('userData'),
-        nvidiaEglFallbackMarker(app.getVersion(), NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR))
+        nvidiaEglFallbackMarker(
+          app.getVersion(),
+          NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR),
+          LAUNCH_BUILD_IDENTITY
+        )
       )
     } catch {
       void 0
@@ -941,6 +963,11 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
     }
   })
 }
+
+// #131055: on Linux the launcher's preferred sandbox is the user-namespace
+// one, where `--no-sandbox` turns a recoverable boot into a renderer SIGILL
+// loop. The ladder must know before it decides to escalate.
+const LINUX_USER_NAMESPACE_SANDBOX = detectUserNamespaceSandbox()
 
 // #124843: on Mesa/Wayland the Chromium GPU child can fail init
 // (error_code=1002) and retry inside a sub-zygote forever — ~350% CPU, no
@@ -964,6 +991,7 @@ if (process.platform === 'linux') {
     env: process.env,
     marker: readLinuxGpuMarker(linuxGpuUserData),
     appVersion: app.getVersion(),
+    buildIdentity: LAUNCH_BUILD_IDENTITY,
     remoteDisplayReason: REMOTE_DISPLAY_REASON,
     nvidiaFallbackActive: NVIDIA_EGL_FALLBACK.enable
   })
@@ -971,11 +999,7 @@ if (process.platform === 'linux') {
   linuxGpuFallbackActive = linuxGpuDecision.enable
   linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
 
-  try {
-    writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
-  } catch {
-    void 0
-  }
+  launchMarkerWriter.queue(() => writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker))
 
   if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
     app.disableHardwareAcceleration()
@@ -1055,7 +1079,9 @@ if (IS_WINDOWS || process.platform === 'linux') {
     argv: process.argv,
     env: process.env,
     marker: priorMarker,
-    appVersion: app.getVersion()
+    appVersion: app.getVersion(),
+    buildIdentity: LAUNCH_BUILD_IDENTITY,
+    userNamespaceSandbox: LINUX_USER_NAMESPACE_SANDBOX
   })
 
   windowsSandboxFallbackActive = sandboxDecision.enable
@@ -1073,7 +1099,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
     )
   }
 
-  writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+  launchMarkerWriter.queue(() => writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker))
 
   // One coalesced Linux GPU-child recovery (#86073, #124843, #121954): the
   // sandbox signature is tried first (that host's matrix shows --disable-gpu
@@ -1098,7 +1124,10 @@ if (IS_WINDOWS || process.platform === 'linux') {
       windowsSandboxFallbackReason = 'gpu-breakpoint'
 
       try {
-        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+        writeSandboxMarker(
+          app.getPath('userData'),
+          fallbackMarker('gpu-breakpoint', app.getVersion(), LAUNCH_BUILD_IDENTITY)
+        )
       } catch {
         void 0
       }
@@ -1135,7 +1164,10 @@ if (IS_WINDOWS || process.platform === 'linux') {
       windowsSandboxFallbackReason = 'gpu-breakpoint'
 
       try {
-        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+        writeSandboxMarker(
+          app.getPath('userData'),
+          fallbackMarker('gpu-breakpoint', app.getVersion(), LAUNCH_BUILD_IDENTITY)
+        )
       } catch {
         void 0
       }
@@ -1163,7 +1195,10 @@ if (IS_WINDOWS || process.platform === 'linux') {
         String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
 
       try {
-        writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
+        writeLinuxGpuMarker(
+          app.getPath('userData'),
+          linuxGpuFallbackMarker(reason, app.getVersion(), LAUNCH_BUILD_IDENTITY)
+        )
       } catch {
         void 0
       }
@@ -1247,7 +1282,15 @@ const isPrimaryInstance: boolean = acquireSingleInstanceLock()
 
 if (!isPrimaryInstance) {
   console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
+
+  // #131055: this launch never started a GPU or sandbox child, so its queued
+  // marker writes must not land — a `booting` write from a launch that exits
+  // at the lock is what the next launch reads as an aborted boot.
+  launchMarkerWriter.flush(false)
+
   app.exit(0)
+} else {
+  launchMarkerWriter.flush(true)
 }
 
 // `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
@@ -15211,7 +15254,8 @@ function createWindow() {
             nvidiaEglMarkerAfterSuccessfulBoot({
               fallbackActive: nvidiaEglFallbackActive,
               appVersion: app.getVersion(),
-              driverVersion: NVIDIA_DRIVER_VERSION
+              driverVersion: NVIDIA_DRIVER_VERSION,
+              buildIdentity: LAUNCH_BUILD_IDENTITY
             })
           )
         } catch {
@@ -15231,7 +15275,8 @@ function createWindow() {
             markerAfterSuccessfulBoot({
               fallbackActive: windowsSandboxFallbackSticky,
               reason: windowsSandboxFallbackReason,
-              appVersion: app.getVersion()
+              appVersion: app.getVersion(),
+              buildIdentity: LAUNCH_BUILD_IDENTITY
             })
           )
         } catch (error) {
@@ -15260,7 +15305,8 @@ function createWindow() {
             app.getPath('userData'),
             linuxGpuMarkerAfterSuccessfulBoot({
               fallbackActive: linuxGpuFallbackSticky,
-              appVersion: app.getVersion()
+              appVersion: app.getVersion(),
+              buildIdentity: LAUNCH_BUILD_IDENTITY
             })
           )
         } catch (error) {

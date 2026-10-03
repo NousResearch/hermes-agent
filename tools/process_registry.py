@@ -327,7 +327,8 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
-def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[str]:
+def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str, *,
+                              prefix: str = "hermes-worker") -> list[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
     memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
 
@@ -340,7 +341,7 @@ def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[s
     if binary is None:
         # Caller should have probed availability; never pass None into Popen anyway.
         return shell_argv
-    return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
+    return _systemd_scope_argv(binary, f"{prefix}-{unit_suffix}", *shell_argv)
 
 
 _scope_degraded_warned = False
@@ -1268,6 +1269,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
+        # Carry the transient scope the foreground spawn used (#70716): without it a later
+        # `process kill` / checkpoint recovery has no unit to stop and a double-forked
+        # descendant of the adopted command survives inside its own cgroup.
+        session.systemd_unit = getattr(proc, "_hermes_scope_unit", "") or ""
         session.notify_on_complete = notify_on_complete
         if output_so_far:
             session.append_output(output_so_far)

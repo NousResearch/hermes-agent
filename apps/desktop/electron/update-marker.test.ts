@@ -10,7 +10,7 @@
 
 import fs from 'fs'
 import assert from 'node:assert/strict'
-import { type ChildProcess, spawn } from 'node:child_process'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import os from 'os'
 import path from 'path'
 
@@ -165,6 +165,30 @@ test('a v2 owner whose creation time is UNREADABLE is live only inside the 20-mi
   fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(25)}\nct:1700000000.000\n`)
   assert.equal(await readLiveUpdateMarker(home, { createTime: accessDenied }), null, 'past the ceiling it is dead')
   assert.ok(!fs.existsSync(markerPath(home)), 'and compare-deleted, so boot is never parked forever')
+})
+
+// A1 on a real Windows host: csrss.exe is a SYSTEM (protected) process whose
+// Get-Process .StartTime is access-denied. CIM still answers, so a marker
+// whose pid was reused by such a process is judged by creation time — DEAD —
+// instead of "unknown, live forever".
+test.runIf(process.platform === 'win32')('Windows reads a SYSTEM process creation time; a reused pid is dead (A1)', async () => {
+  const home = tmpHome('win-system')
+
+  const pid = Number(
+    execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', "(Get-CimInstance Win32_Process -Filter \"Name='csrss.exe'\" | Select-Object -First 1).ProcessId"],
+      { encoding: 'utf8' }
+    ).trim()
+  )
+
+  assert.ok(pid > 0, 'csrss.exe runs on every Windows session')
+  const ct = await processCreateTime(pid)
+  assert.ok(ct !== null && ct > 1e9 && ct <= Date.now() / 1000, `creation time of SYSTEM pid ${pid}: ${ct}`)
+
+  fs.writeFileSync(markerPath(home), `${pid}\n${minutesAgo(1)}\nct:${formatCreateTime(ct! - 3600)}\n`)
+  assert.equal(await readLiveUpdateMarker(home), null)
+  assert.ok(!fs.existsSync(markerPath(home)))
 })
 
 test('a gate wait probes each pid creation time ONCE (A1: no powershell spawn per poll)', async () => {

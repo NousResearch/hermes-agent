@@ -61,7 +61,7 @@ def test_none_board_falls_back_to_kanban_board_env(monkeypatch, tmp_path):
     kanban_home = tmp_path / "hermes_test"
     boards_dir = kanban_home / "kanban" / "boards" / "jarvis-os"
     boards_dir.mkdir(parents=True, exist_ok=True)
-    (boards_dir / "board.json").write_text('{"name": "Jarvis OS"}')
+    (boards_dir / "board.json").write_text('{"name": "Jarvis OS"}', encoding="utf-8")
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(kanban_home))
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "jarvis-os")
     path = kb.kanban_db_path(board=None)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+
 import hashlib
 import os
 import re
@@ -79,10 +80,16 @@ def history_unreadable() -> str:
     return t("gateway.shared.history_unreadable")
 
 
-def _configured_provider() -> str:
+_PROFILE_ROUTE_REJECTED = object()
+
+
+def _configured_provider(*, config_path=None) -> str:
     """``model.provider`` from the gateway config ("" when unset)."""
     from gateway.run import _load_gateway_config
-    user_config = _load_gateway_config()
+    user_config = (
+        _load_gateway_config() if config_path is None
+        else _load_gateway_config(config_path=config_path)
+    )
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
 
@@ -96,7 +103,8 @@ def _quiet_sync(call, default=None):
 
 
 def _status_model_route(
-    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry,
+    *, config_path=None,
 ):
     """``(model, provider, context_used, context_total, route)`` for /status.
 
@@ -129,8 +137,8 @@ def _status_model_route(
     model_name, provider_name, route = next((r for r in routes if r[0] and r[1]), row_route)
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
-    if not model_name or not provider_name:
-        user_config = _quiet_sync(_load_gateway_config, {})
+    if (not model_name or not provider_name) and config_path is not _PROFILE_ROUTE_REJECTED:
+        user_config = _quiet_sync(lambda: _load_gateway_config(config_path=config_path), {})
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
     model_name = model_name or _resolve_gateway_model(user_config)
@@ -239,6 +247,25 @@ def _capped_rows(items: list, render) -> list[str]:
 class GatewayStatusCommandsMixin:
     """Read-only gateway introspection commands: /status, /context, /usage, /agents, /insights, /topup."""
 
+    def _status_config_path_for_source(self, source):
+        """Return the config file for the profile serving *source*.
+
+        Telegram and other adapters can be hosted by one gateway while serving a named
+        profile; falling back to the process launch home makes /status report the host's
+        model instead of the routed profile's model when the session has no persisted route.
+        """
+        from gateway.profile_routing import ProfileRouteRejected
+        from gateway.run import _hermes_home
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            try:
+                return self._resolve_profile_home_for_source(source) / "config.yaml"
+            except ProfileRouteRejected:
+                # A rejected route must not silently read the gateway launch profile.  Let
+                # callers fail open to no configured model/provider instead.
+                logger.warning("Profile route rejected while resolving status config path", exc_info=True)
+                return _PROFILE_ROUTE_REJECTED
+        return _hermes_home / "config.yaml"
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -262,7 +289,8 @@ class GatewayStatusCommandsMixin:
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
         model_name, provider_name, context_used, context_total, route = _status_model_route(
-            status_agent, active_override, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry,
+            config_path=self._status_config_path_for_source(source),
         )
         if not context_total and model_name:
             # Same resolver /context uses (off-loop: it can probe /models). A window the resolver only
@@ -587,7 +615,15 @@ class GatewayStatusCommandsMixin:
             # Fresh or evicted session with no persisted route (e.g. /usage right after login):
             # fall back to the configured provider, as /status does, so account limits such as
             # Codex subscription windows still render from on-disk credentials (#15167).
-            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
+            config_path = (
+                self._status_config_path_for_source(source)
+                if getattr(getattr(self, "config", None), "multiplex_profiles", False)
+                else None
+            )
+            if config_path is not _PROFILE_ROUTE_REJECTED:
+                provider = await _quiet(
+                    lambda: asyncio.to_thread(_configured_provider, config_path=config_path)
+                ) or None
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")

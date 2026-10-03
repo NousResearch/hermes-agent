@@ -222,9 +222,19 @@ def _handle_spotify_search(args: dict, **kw) -> str:
 _playlist_path = lambda args, suffix="": f"/playlists/{normalize_spotify_id(str(args.get('playlist_id') or ''), 'playlist')}{suffix}"  # noqa: E731
 
 
+def _playlist_get(client: SpotifyClient, args: dict, action: str) -> dict:
+    """Return playlist metadata with a page of items when pagination is requested."""
+    path = _playlist_path(args)
+    metadata = client.request("GET", path, params={"market": args.get("market")})
+    if "limit" not in args and not _offset(args):
+        return metadata
+    page = client.request("GET", path + "/items", params=_page_params(args))
+    return {**metadata, "tracks": page}
+
+
 _handle_spotify_playlists = _dispatcher("spotify_playlists", "list", {
     "list": lambda c, a, act: tool_result(c.request("GET", "/me/playlists", params={"limit": _limit(a), "offset": _offset(a)})),
-    "get": lambda c, a, act: tool_result(c.request("GET", _playlist_path(a), params={"market": a.get("market")})),
+    "get": lambda c, a, act: tool_result(_playlist_get(c, a, act)),
     "create": lambda c, a, act: tool_result(c.request("POST", "/me/playlists", json_body={
         "name": _nonblank(a.get("name"), "name is required for action='create'"), "public": _coerce_bool(a.get("public")),
         "collaborative": _coerce_bool(a.get("collaborative")), "description": a.get("description")})),

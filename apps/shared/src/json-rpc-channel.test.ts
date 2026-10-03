@@ -172,6 +172,58 @@ describe('JsonRpcRequestChannel', () => {
     }
   })
 
+  // A process that was suspended — OS sleep, a browser or Android WebView freezing a backgrounded page or
+  // app, a hidden tab's intensive timer throttling — cannot have heard the peer while it was not running.
+  // The first tick after it runs again used to count that whole gap as peer silence and drop a healthy
+  // socket (on a phone: every return to the foreground after ~45 s in the background).
+  it('does not count time the process was suspended as peer silence, and still fails a peer that stays silent', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const failures: string[] = []
+
+      const channel = new JsonRpcRequestChannel({
+        heartbeatDeadlineMs: 300,
+        heartbeatIntervalMs: 100,
+        heartbeatLiveness: 'any-inbound',
+        onHeartbeatFailure: e => void failures.push(e.message)
+      })
+
+      const { sent, transport } = spyTransport()
+      const pings = () => sent.filter(f => f.includes('gateway.ping')).length
+      const inbound = () => channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'status.update' } }))
+
+      channel.attach(transport)
+      channel.startHeartbeat()
+      await vi.advanceTimersByTimeAsync(100)
+      inbound()
+
+      // Suspended for 10 deadlines: the wall clock moves, no timer runs.
+      vi.setSystemTime(Date.now() + 3_000)
+      const before = pings()
+      await vi.advanceTimersByTimeAsync(100)
+
+      expect(failures).toEqual([])
+      expect(pings()).toBe(before + 1) // probes at once instead of declaring the transport dead
+
+      // The peer answers after the wake: the socket lives on.
+      inbound()
+      await vi.advanceTimersByTimeAsync(200)
+      inbound()
+      await vi.advanceTimersByTimeAsync(200)
+      expect(failures).toEqual([])
+
+      // A peer that really is gone still fails one deadline after the last thing it sent.
+      vi.setSystemTime(Date.now() + 3_000)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(failures).toEqual([])
+      await vi.advanceTimersByTimeAsync(300)
+      expect(failures).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // Server→client requests (tui_gateway/server_requests.py): the backend asks,
   // the client answers with a RESPONSE frame carrying the same id.
   it('advertises server-request support once per gateway.ready and shrugs off an older backend', () => {

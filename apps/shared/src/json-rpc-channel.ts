@@ -154,6 +154,12 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 export const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 const MAX_OUTSTANDING_PINGS = 8
+// A heartbeat tick this many intervals late means the process itself was not running (OS sleep, a
+// browser/WebView freezing a background page or app, intensive timer throttling of a hidden tab), not that
+// the peer went quiet: the peer cannot have been heard while nothing here could read. The deadline restarts
+// from that tick and a ping goes out at once; a transport that is really dead fails one deadline later (the
+// wake paths that need a faster verdict already probe with their own short `ping`).
+const SUSPENDED_TICK_INTERVALS = 2
 
 // Hoisted decoder: attach mode can drive high-frequency binary frames (tool
 // deltas, reasoning streams) and a fresh TextDecoder per message is avoidable
@@ -533,12 +539,22 @@ export class JsonRpcRequestChannel {
       return
     }
 
+    let lastTickAt = Date.now()
+
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
         return
       }
 
-      if (Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+      const now = Date.now()
+
+      if (now - lastTickAt >= this.options.heartbeatIntervalMs * SUSPENDED_TICK_INTERVALS) {
+        this.lastLivenessAt = now
+      }
+
+      lastTickAt = now
+
+      if (now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
         this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
         return

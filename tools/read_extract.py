@@ -527,7 +527,9 @@ def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
     root = ET.fromstring(xml_bytes)
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
-    for row in itertools.islice(root.iter(f"{s}row"), _MAX_XLSX_ROWS_PER_SHEET):
+    source_rows = root.iter(f"{s}row")
+    columns_omitted = False
+    for row in itertools.islice(source_rows, _MAX_XLSX_ROWS_PER_SHEET):
         cells: dict[int, str] = {}
         max_col = -1
         for cell in row.iter(f"{s}c"):
@@ -535,9 +537,19 @@ def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
             if col < _MAX_XLSX_COLS:
                 cells[col] = _cell_value(cell, shared, s)
                 max_col = max(max_col, col)
+            else:
+                columns_omitted = True
         rows.append([cells.get(i, "") for i in range(max_col + 1)])
     while rows and not any(value.strip() for value in rows[-1]):
         rows.pop()
+    omissions = []
+    if next(source_rows, None) is not None:
+        omissions.append(f"rows beyond {_MAX_XLSX_ROWS_PER_SHEET}")
+    if columns_omitted:
+        omissions.append(f"columns beyond {_MAX_XLSX_COLS}")
+    if omissions:
+        rows.insert(0, [f"[XLSX extraction truncated: {' and '.join(omissions)} omitted. "
+                        "Use terminal or spreadsheet tools to inspect the omitted cells.]"])
     return rows
 
 

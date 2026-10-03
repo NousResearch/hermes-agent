@@ -236,6 +236,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
         self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
+        _inf = cfg.get("sync_infer", True)
+        self._sync_infer = _inf.lower() in ("true", "1", "yes") if isinstance(_inf, str) else bool(_inf)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -310,7 +312,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": _truncate_for_sync(user_content, self._sync_max_chars)},
                     {"role": "assistant", "content": _truncate_for_sync(assistant_content, self._sync_max_chars)},
                 ]
-                self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
+                self._try(lambda: self._add(messages, infer=self._sync_infer), logger.warning, "Mem0 sync failed: %s")
 
         with self._sync_lock:
             prev = self._sync_thread

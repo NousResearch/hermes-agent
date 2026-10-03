@@ -417,9 +417,8 @@ class GatewayNotificationsMixin:
         """Deliver a queued response using the normal text+attachment split.
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
-        send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
-        ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
-        stays unledgered.
+        send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the stale
+        turn-origin ``event_message_id``). Without a key the send stays unledgered.
 
         Returns whether the caller may treat this turn's final as delivered. True: the stream had
         already delivered it, the reconcile edit landed, the send succeeded, or there was nothing
@@ -466,8 +465,7 @@ class GatewayNotificationsMixin:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
                     _sent = await self._send_queued_final_text(
-                        adapter, source, text_content, metadata, event_message_id, session_key,
-                        inbound_message_id)
+                        adapter, source, text_content, metadata, session_key, inbound_message_id)
                     if not getattr(_sent, "success", False):
                         # The text never landed. Report it undelivered and skip the attachments too:
                         # the caller's normal completion send replays the whole response (text and
@@ -485,21 +483,20 @@ class GatewayNotificationsMixin:
 
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
-        event_message_id: Optional[str], session_key: Optional[str],
-        inbound_message_id: Optional[str] = None,
+        session_key: Optional[str], inbound_message_id: Optional[str] = None,
     ):
         """Send a queued-lane final through the same ledger bracket as the normal final
         (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
         result, so a final refused here (flood control, a transport that had just died) left no
         ledger row and was gone for good. The ledger identity is the raw inbound message id;
-        ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
-        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
-        inbound id the ledger falls back to the event's own (empty) message id. Adapters without
-        the base contract and sends without a session key keep the plain send."""
+        the queued-lane send deliberately drops the visible reply anchor because the turn-origin
+        anchor can point at a long-ago human message while this lane drains a later internal wake.
+        With no inbound id the ledger falls back to the event's own (empty) message id. Adapters
+        without the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
             result, _ = await adapter.send_final_ledgered(
                 MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
-                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+                session_key, text_content, _mark_notify_metadata(metadata), reply_to=None)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

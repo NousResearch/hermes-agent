@@ -109,12 +109,12 @@ def test_bundled_still_wins_over_project(tmp_path, monkeypatch):
     PluginManager's later-wins order. A provider is activated by name, so a
     directory dropped into the working tree must not be able to shadow a
     shipped one and silently redirect the agent's memory."""
-    _write_provider_dir(tmp_path / ".hermes" / "plugins", "honcho")
+    _write_provider_dir(tmp_path / ".hermes" / "plugins", "holographic")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
 
-    resolved = memory_plugins.find_provider_dir("honcho")
-    assert resolved == Path(memory_plugins.__file__).parent / "honcho"
+    resolved = memory_plugins.find_provider_dir("holographic")
+    assert resolved == Path(memory_plugins.__file__).parent / "holographic"
 
 
 # ---------------------------------------------------------------------------

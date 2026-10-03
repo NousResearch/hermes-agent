@@ -32,7 +32,7 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
-import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { classifyOwnerGroupMessageGate, classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
   buildPollPayload,
@@ -555,16 +555,47 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        if (chatId.includes('status')) {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: 'from_me_status',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
         }
 
-        if (WHATSAPP_MODE === 'bot') {
+        if (isGroup) {
+          // Owner-typed message in a group. Inbound group traffic already
+          // passes the group policy gate below; owner-typed group messages
+          // used to be dropped unconditionally, so an allowlisted Hermes
+          // notification group could receive from Hermes but never talk
+          // back. Opt-in only (bot mode + WHATSAPP_FORWARD_OWNER_MESSAGES)
+          // and the group must pass the same inbound group gate. Echoes of
+          // our own /send are still dropped downstream by the agent_echo
+          // check (recentlySentIds).
+          const decision = classifyOwnerGroupMessageGate({
+            botMode: WHATSAPP_MODE === 'bot',
+            forwardOwnerEnabled: FORWARD_OWNER_MESSAGES,
+            groupPolicyMatches: matchesInboundWhatsAppGroup({
+              chatId,
+              groupPolicy: WHATSAPP_GROUP_POLICY,
+              groupAllowedUsers: GROUP_ALLOWED_USERS,
+              sessionDir: SESSION_DIR,
+            }),
+          });
+          if (decision.action !== 'forward_owner') {
+            emitDebugEvent({
+              stage: 'ignored',
+              reason:
+                decision.action === 'drop_policy'
+                  ? 'group_policy_rejected_owner'
+                  : 'from_me_group',
+              chatId: redactWhatsAppId(chatId),
+            });
+            continue;
+          }
+          fromOwner = true;
+        } else if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate bot number. fromMe inbound is either
           //   (a) an echo of our own /send (recentlySentIds will catch it), or
           //   (b) a message the owner typed from their own phone using the

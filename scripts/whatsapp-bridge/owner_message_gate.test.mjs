@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { classifyOwnerGroupMessageGate, classifyOwnerMessageGate } from './owner_message_gate.js';
 
 function makeRecentlySent(ids = []) {
   const set = new Set(ids);
@@ -123,4 +123,40 @@ test('disabled flag fires before allowlist check', () => {
     chatId: '111600547700784@lid',
   });
   assert.deepEqual(decision, { action: 'drop_disabled' });
+});
+
+test('group: not bot mode drops even when forwarding is opted in', () => {
+  const decision = classifyOwnerGroupMessageGate({
+    botMode: false,
+    forwardOwnerEnabled: true,
+    groupPolicyMatches: true,
+  });
+  assert.deepEqual(decision, { action: 'drop_disabled' });
+});
+
+test('group: forwarding not opted in drops (no behavior change by default)', () => {
+  const decision = classifyOwnerGroupMessageGate({
+    botMode: true,
+    forwardOwnerEnabled: false,
+    groupPolicyMatches: true,
+  });
+  assert.deepEqual(decision, { action: 'drop_disabled' });
+});
+
+test('group: opted in but the group fails the policy gate', () => {
+  const decision = classifyOwnerGroupMessageGate({
+    botMode: true,
+    forwardOwnerEnabled: true,
+    groupPolicyMatches: false,
+  });
+  assert.deepEqual(decision, { action: 'drop_policy' });
+});
+
+test('group: opted in and allowlisted group forwards with fromOwner', () => {
+  const decision = classifyOwnerGroupMessageGate({
+    botMode: true,
+    forwardOwnerEnabled: true,
+    groupPolicyMatches: true,
+  });
+  assert.deepEqual(decision, { action: 'forward_owner' });
 });

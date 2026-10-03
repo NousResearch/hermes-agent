@@ -153,9 +153,9 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-def _is_skill_disabled(name: str, platform: str = None) -> bool:
-    """Disabled in config? Platform precedence: explicit arg, ``HERMES_PLATFORM``, session
-    ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
+def _is_skill_disabled(*names: str, platform: str = None) -> bool:
+    """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
+    ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
     (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
     try:
         from hermes_cli.config import load_config
@@ -168,8 +168,8 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         platform_disabled = None
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
-        in_platform = platform_disabled is not None and name in platform_disabled
-        return in_platform or name in skills_cfg.get("disabled", [])
+        disabled = skills_cfg.get("disabled", [])
+        return any((platform_disabled is not None and n in platform_disabled) or n in disabled for n in names)
     except Exception:
         return False
 
@@ -610,7 +610,7 @@ def skill_view(
         # Disabled by declared name, or by the exact path that IS this copy's load name (a same-tier
         # duplicate's row) — whatever alias reached it; an unrelated copy at that path elsewhere is not.
         rel = _owned_relative(skill_dir, skill_md, all_dirs)
-        if _is_skill_disabled(resolved_name) or (_is_skill_disabled(rel) and any(
+        if _is_skill_disabled(resolved_name, rel) and (_is_skill_disabled(resolved_name) or any(
                 e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True))):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:

@@ -13133,6 +13133,84 @@ def test_session_redirect_queues_during_agent_build_window(monkeypatch):
     assert session["queued_prompt"]["text"] == "wait, use SQLite"
 
 
+def test_session_redirect_interrupts_compute_host_under_isolation(monkeypatch):
+    """#82603: under turn isolation the parent's `agent` is None for the WHOLE
+    turn (the live agent lives in the compute-host child), so the build-window
+    queue branch matched every mid-turn redirect — the live turn kept running
+    and the user's correction only drained after it finished on its own. Queue
+    AND hard-interrupt the host (the same recover path prompt.submit's busy
+    handler takes) so the correction lands on the child's settle.
+    """
+    interrupted = []
+
+    class _Supervisor:
+        def interrupt(self, sid, *, request_id=None):
+            interrupted.append(sid)
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_thread_options):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    session = _session(agent_ready=threading.Event(), running=True)
+    session["agent"] = None  # _session() substitutes a namespace for None
+    session["_compute_host_active"] = True
+    server._sessions["iso-redirect"] = session
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "iso-redirect", "text": "stop, use SQLite"},
+            }
+        )
+    finally:
+        server._sessions.pop("iso-redirect", None)
+
+    assert resp["result"] == {"status": "queued", "text": "stop, use SQLite"}
+    assert session["queued_prompt"]["text"] == "stop, use SQLite"
+    assert interrupted == ["iso-redirect"]
+
+
+def test_session_redirect_build_window_without_isolation_stays_queue_only(monkeypatch):
+    """The non-isolated build window must NOT dial a compute host: the agent is
+    being built in-process and `_turn_cancel_requested` is what stops the turn.
+    """
+    dialed = []
+
+    class _Supervisor:
+        def interrupt(self, sid, *, request_id=None):  # pragma: no cover - must not run
+            dialed.append(sid)
+            raise AssertionError("redirect in the plain build window must not dial the host")
+
+    session = _session(running=True)
+    session["agent"] = None
+    server._sessions["plain-build"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "plain-build", "text": "wait"},
+            }
+        )
+    finally:
+        server._sessions.pop("plain-build", None)
+
+    assert resp["result"] == {"status": "queued", "text": "wait"}
+    assert dialed == []
+    assert session["queued_prompt"]["text"] == "wait"
+
+
 def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
     # No live turn and no agent: nothing to redirect, and we must not queue a
     # phantom turn — keep the explicit unsupported rejection.

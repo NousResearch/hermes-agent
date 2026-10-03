@@ -23,8 +23,7 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none,
-    _tool_call_uids_json)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -716,8 +715,8 @@ class SessionMessagesMixin:
         the original's display identity (see _display_dedupe_key). Idempotent; never overwrites a timestamp the
         dict already carries; rows with no match keep their caller-supplied/now_ts value.
 
-        Content identity per _display_dedupe_key minus the timestamp: (role, encoded content, tool_call_id,
-        encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
+        Content identity = _display_dedupe_key's content key minus the timestamp (role, encoded content,
+        tool_call_id, encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
         order so two identical-content turns cannot both grab the same parent row. Best-effort: on any error
         the insert falls back to today's behavior (publish-time stamp) and never breaks publish.
         """
@@ -1275,7 +1274,8 @@ class SessionMessagesMixin:
         dedupe_content = row["content"]
         if row["role"] == "user":
             handoff, live_view = split_user_originated_turn({
-                "role": "user", "content": self._decode_content(row["content"]), "display_kind": row["display_kind"],
+                "role": "user", "content": self._decode_content(row["content"]),
+                "display_kind": row["display_kind"],
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))

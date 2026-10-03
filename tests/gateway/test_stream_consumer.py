@@ -933,6 +933,24 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("nk>hidden</think>shown")
         assert c._accumulated == "shown"
 
+    def test_midline_open_split_close_hidden(self):
+        """A mid-line open whose close splits across deltas is held by the pending latch and
+        hidden when the close completes (#128294); the prose before the open still streams."""
+        c = _make_consumer()
+        c._filter_and_accumulate("Let me check: <think>SECRET")
+        assert c._accumulated == "Let me check: "
+        c._filter_and_accumulate(" STUFF</think> ok")
+        assert "SECRET" not in c._accumulated and "STUFF" not in c._accumulated
+        assert c._accumulated == "Let me check:  ok"
+
+    def test_midline_open_mention_released_at_flush(self):
+        """No close ever arrives: flush releases the tag literal and held text verbatim."""
+        c = _make_consumer()
+        c._filter_and_accumulate("mentions <think> inline")
+        c._filter_and_accumulate(" for reasoning")
+        c._flush_think_buffer()
+        assert c._accumulated == "mentions <think> inline for reasoning"
+
 
     def test_multiple_think_blocks_with_text_between(self):
         """Think tag after non-whitespace is NOT a boundary (prose safety)."""
@@ -966,10 +984,14 @@ class TestFilterAndAccumulate:
         assert c._accumulated == "visible"
 
     def test_prose_mention_not_stripped(self):
-        """<think> mentioned mid-line in prose should NOT trigger filtering."""
+        """<think> mentioned mid-line in prose should NOT trigger filtering. The pending
+        latch (#128294) holds the tail until end-of-stream, whose flush releases the
+        tag literal and the text verbatim."""
         c = _make_consumer()
         c._filter_and_accumulate("The <think> tag is used for reasoning")
+        c._flush_think_buffer()
         assert "<think>" in c._accumulated
+        assert c._accumulated == "The <think> tag is used for reasoning"
         assert "used for reasoning" in c._accumulated
 
 

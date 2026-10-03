@@ -203,3 +203,67 @@ class TestChineseReasoningTags:
         from cli import _strip_reasoning_tags
 
         assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"
+
+
+class TestMidLineOpenSplitClose:
+    """A mid-line open tag whose CLOSE tag splits across deltas leaks the reasoning today
+    (#128294): the pair only strips when complete within one buffer, and the boundary gate
+    (prose-mention guard) never latches a mid-line open. A pending latch closes the hole
+    without touching the mention semantics."""
+
+    def test_midline_open_split_close_hidden(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Let me check: <think>SECRET", " STUFF</think> ok"])
+        assert "SECRET" not in out and "STUFF" not in out, out
+        assert out == "Let me check:  ok"
+
+    def test_midline_open_split_close_reasoning_in_last_hidden(self) -> None:
+        s = StreamingThinkScrubber()
+        _drive(s, ["Let me check: <think>SECRET", " STUFF</think> ok"])
+        assert "SECRET" in s.last_hidden
+
+    def test_thinking_variant_split_close_hidden(self) -> None:
+        """A second known tag name rides the same latch (mm:think and other namespaces are
+        #124761's face; this branch fixes the split-close mechanism for the known set)."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["hi <thinking>SECRET</think", "ing> ok"])
+        assert "SECRET" not in out, out
+
+    def test_mention_without_close_released_verbatim_at_flush(self) -> None:
+        """The prose-mention case is preserved byte-for-byte: the pending latch holds the
+        tail, and flush() (no close ever) re-releases the tag literal and the text."""
+        text = "mentions <think> inline for reasoning"
+        s = StreamingThinkScrubber()
+        out = _drive(s, [text[:24], text[24:]])
+        assert out == text
+
+    def test_cap_exceeded_releases_and_streams_normally(self) -> None:
+        """Beyond the retain cap the latch gives up and passes through (never worse than
+        today's leak-tolerant behavior for prose); a later pair still strips via the pair
+        branch."""
+        import agent.think_scrubber as ts
+
+        big = "x" * (ts.PENDING_RETAIN_CAP + 100)
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["hi <think>" + big, " tail"])
+        assert out == "hi <think>" + big + " tail"
+
+    def test_boundary_open_keeps_hard_discard_semantics(self) -> None:
+        """A boundary open still latches the hard block: unterminated reasoning at stream end
+        is discarded, not released (flush docstring invariant)."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["<think>SECRET", " more reasoning"])
+        assert out == ""
+
+    def test_pending_close_with_matching_name_only(self) -> None:
+        """A close tag for a DIFFERENT known name must not confirm the pending block: it stays
+        pending (and is released verbatim at flush if no matching close ever arrives)."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["x <think> a </thinking> b"])
+        assert out == "x <think> a b"
+
+    def test_reset_clears_pending(self) -> None:
+        s = StreamingThinkScrubber()
+        s.feed("mid <think> held")
+        s.reset()
+        assert _drive(s, ["visible"]) == "visible"

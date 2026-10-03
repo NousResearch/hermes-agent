@@ -314,8 +314,11 @@ class TestBrowserVaultTools:
 
         meta = self._manager_meta()
 
+        from agent.vault_backends.base import LoginBackend
+
         class _ManagerBackend:
             name, display_name, needs_unlock = "onepassword", "1Password", False
+            matches_origin = LoginBackend.matches_origin
 
             def is_unlocked(self):
                 return True
@@ -359,8 +362,11 @@ class TestBrowserVaultTools:
 
         meta = self._manager_meta()
 
+        from agent.vault_backends.base import LoginBackend
+
         class _ManagerBackend:
             name, display_name, needs_unlock = "onepassword", "1Password", False
+            matches_origin = LoginBackend.matches_origin
 
             def is_unlocked(self):
                 return True

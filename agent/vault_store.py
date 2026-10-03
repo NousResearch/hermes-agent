@@ -145,6 +145,9 @@ def normalize_origin(url_or_origin: str) -> str:
         port = parts.port
     except ValueError as exc:
         raise VaultError(f"invalid port in origin {value!r}") from exc
+    # urlsplit().hostname strips the brackets required for an IPv6 authority.
+    if ":" in host:
+        host = f"[{host}]"
     if port is None or port == _DEFAULT_PORTS.get(scheme):
         return f"{scheme}://{host}"
     return f"{scheme}://{host}:{port}"
@@ -168,8 +171,8 @@ class VaultItemMeta:
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
     # Every origin the password manager bound to this item (manager backends only;
-    # ``origin`` is the first/primary one). Fill matching stays exact-origin against
-    # this list — no wildcard or subdomain inference is ever derived from it.
+    # ``origin`` is the first/primary one). Login backends default to exact matching
+    # and may override matches_origin with their documented website policy.
     allowed_origins: tuple = ()
 
     def to_dict(self) -> Dict[str, Any]:

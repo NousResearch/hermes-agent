@@ -460,7 +460,11 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     cap = _get_oneshot_max_children()
     if cap <= 0:
         return None
-    spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
+    spent_raw = getattr(parent_agent, "_oneshot_children_spawned", 0)
+    # Mock parent agents may synthesize attributes as MagicMock instances; treat
+    # any unset or otherwise non-numeric counter as a fresh one-shot budget.
+    spent = spent_raw if isinstance(spent_raw, int) and not isinstance(spent_raw, bool) else 0
+    spent = max(spent, 0)
     if spent + requested > cap:
         return (
             f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "

@@ -128,6 +128,27 @@ def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     assert not _git(install, "ls-files", "--unmerged")
 
 
+def test_intent_to_add_entry_is_cleared_then_stashed(tmp_path):
+    """A `git add -N` entry (an editor showing a new file in diffs is a routine cause) is never
+    "uptodate", so `git stash push` refuses the whole stash with "Entry '<path>' not uptodate.
+    Cannot merge." — it must be promoted to a real staged add before the autostash, the same way
+    an unmerged index entry is cleared above."""
+    origin = _origin(tmp_path / "origin")
+    assert _stage(tmp_path, origin).returncode == 0
+    install = tmp_path / "install"
+    (install / "new_file.py").write_text("n")
+    _git(install, "add", "-N", "new_file.py")
+    (install / "README").write_text("local edit")
+    assert " A new_file.py" in _git(install, "status", "--porcelain")
+    _commit(origin, "two")
+    result = _stage(tmp_path, origin)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "README").read_text() == "two"
+    stashed = _git(install, "stash", "show", "-p", "stash@{0}")
+    assert "local edit" in stashed
+    assert "new_file.py" in stashed
+
+
 def test_rerun_follows_an_explicit_repo_url(tmp_path):
     first = _origin(tmp_path / "first")
     assert _stage(tmp_path, first).returncode == 0

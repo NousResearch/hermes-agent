@@ -283,17 +283,93 @@ a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
 
+### When a group's host goes offline
+
+Every computer with a Bot in a Group Chat keeps a full backup copy of the group, unless its
+operator opts out. The host and the always-on computers that may continue the group (no battery,
+or `group_chat.always_on: true` in their config) also vote on moving it by itself:
+
+- **Three or more voters:** if the host goes offline, the group moves to the next always-on
+  computer within about a minute. A host that can't reach most of them pauses to stay safe until it
+  can, so the group never runs in two places by itself; only an owner who chooses **Continue
+  anyway**, or continues by hand while most voters can't be reached, can override that.
+- **Two voters:** the group moves after about 3 minutes of silence in both directions. If the two
+  computers were only cut off from each other, it may run on both until they reconnect; it then keeps
+  running on the computer it moved to, and you choose which messages to keep.
+- **Fewer, or when the owner turns off "Move automatically if a computer goes offline":** the group
+  pauses and nothing new runs until its owner continues it. Recent messages that only the host held
+  are lost if it never comes back; Hermes Desktop shows how many.
+
+`hermes groups status` shows which applies. When a group pauses, its owner continues it on another
+computer:
+
+- one of the owner's own computers, or
+- a member's computer the owner designated, whose own operator allowed it.
+
+**Continue on…** in Hermes Desktop lists those computers, best placed first. From a terminal on
+that computer, run:
+
+```bash
+hermes groups status "Weekend plans"      # is the host reachable? which computers keep a copy?
+hermes groups continue "Weekend plans"    # continue the group on this computer (asks to confirm)
+```
+
+`continue` shows what moving means before it acts:
+
+- the old host's Bots stay unavailable until the group moves back to it;
+- work in progress is finished, still running elsewhere, or unknown, and unknown work never runs
+  again by itself;
+- how many recent messages only the old host had: they're missing here until it comes back.
+
+The other computers stop accepting work from the old host as soon as you continue. When the old
+host comes back, it keeps a copy again. Anything it did while it was cut off is shown separately,
+never mixed in. Once it's online, you can move the group back to it (**Move back** in Hermes
+Desktop, or `hermes groups move` on the new host), and its Bots take part again.
+
+A restart through Hermes (`hermes gateway restart`, or `/restart` in a chat) is announced, so no move
+is offered while it lasts. Restarting the service from outside Hermes (for example `systemctl
+restart`, `docker restart`, `launchctl kickstart -k`, or a new gateway started with `--replace`)
+stops the gateway first, so its groups are handed over like on any stop.
+
+If two computers both continued the group while they couldn't reach each other, the group keeps
+running on one of them when they reconnect, and the other's messages are kept separately until you
+choose. Keep the one it runs on to settle it, or the other one to switch:
+
+```bash
+hermes groups keep "Weekend plans" "Home VPS"
+```
+
+To move a group on purpose, for example before switching its host off, run on the host:
+
+```bash
+hermes groups move "Weekend plans" "Home VPS"
+```
+
+If Bots are still replying, the move waits for those replies to finish, for at most 15 minutes. Add
+`--now` to move at once: replies still in progress show as unknown on the new host and won't rerun
+by themselves, and you can retry them there.
+
+Stopping a gateway (not restarting it) hands its groups over the same way after a short wait, and
+Hermes Desktop asks for the same before the computer sleeps. The old host keeps a copy, so you can
+move the group back to it later.
+
+`hermes groups backups` lists the computers keeping a copy:
+
+- `backups allow` / `backups disallow` set whether a computer may continue the group;
+- `backups add` keeps a copy on another computer you reach with `hermes peer`.
+
+How it works: [Group Chat host loss](../developer-guide/group-chat-host-loss.md).
+
 ### Transferring hosted room authority
 
 :::caution Kept, but disabled
-`groups.replicate`, `groups.promote` and `groups.demote` stay in the protocol but are disabled
-until Hermes has exclusive-authority recovery. A takeover is only safe when exactly one gateway
-can hold a room's authority, and Hermes cannot guarantee that yet: two gateways could both promote
-a copy, and a demoted gateway cannot be proven to have stopped writing. A page handed to
-`groups.replicate` is no proof of what the authority wrote either. Until then each call is refused
-before it touches the room, and `groups.capabilities` leaves `log_replication` and
-`authority_takeover` out of `features`. `groups.replica_state` still reports any copy this
-gateway already holds.
+`groups.replicate`, `groups.promote` and `groups.demote` stay in the protocol but stay disabled: a
+group changes host only through the verified `groups.succession.*` calls (see
+[When a group's host goes offline](#when-a-groups-host-goes-offline)). With these legacy methods two
+gateways could both promote a copy, a demoted gateway cannot be proven to have stopped writing, and a
+page handed to `groups.replicate` is no proof of what the authority wrote. Each call is refused before
+it touches the room, and `groups.capabilities` leaves `log_replication` and `authority_takeover` out of
+`features`. `groups.replica_state` still reports any copy this gateway already holds.
 
 | Method | Error code | `error.data.reason` |
 | --- | --- | --- |
@@ -305,8 +381,7 @@ gateway already holds.
 {"jsonrpc":"2.0","id":1,"error":{"code":4118,"message":"Group Chat takeover is disabled until Hermes can select one globally exclusive authority.","data":{"reason":"authority_takeover_disabled"}}}
 ```
 
-The procedure below describes how the methods work once exclusive-authority recovery enables
-them.
+The legacy procedure below is kept for reference only: these methods stay disabled.
 :::
 
 A Group Chat whose history already records a promotion or demotion (made before these methods were
@@ -318,9 +393,9 @@ reason `room_authority_quarantined`. A stored copy whose history fails validatio
 reported as `safety_status: "quarantined"` by `groups.replica_state`. Quarantined history is never
 pruned.
 
-An authority change is accepted only together with its proof. When exclusive-authority recovery
-verifies a change of authority, it records a **verified-transition mark** in the same database
-transaction as the change. The proof is `attested` when the room owner (or the owner of a successor
+An authority change is accepted only together with its proof. When the succession calls verify a
+change of authority, they record a **verified-transition mark** in the same database transaction as
+the change. The proof is `attested` when the room owner (or the owner of a successor
 the room owner designated and that consented) explicitly continued the group on that machine, or,
 after a split, when the rule's choice is signed by the host it keeps (`decided_by: "rule"`);
 `certified` when a majority of the group's voting computers (its host and its always-on successors)
@@ -333,7 +408,7 @@ the step from epoch
 `N` to a later epoch, the successor gateway and the digest of the proof, and it is spent by that one change:
 it can't be reused for a later change, applied to another room, or saved without the change it
 verifies. A promotion or demotion without its own mark, including any made through `groups.promote`
-or `groups.demote` once the gate opens, still leaves the room read-only as described above, with
+or `groups.demote`, still leaves the room read-only as described above, with
 `safety_reason` `unsafe_replica_promotion`, `unsafe_authority_demotion` or
 `unverified_authority_transition`.
 
@@ -354,10 +429,11 @@ room here: it leaves the room lists, its id is never reused, and its history sta
 quarantine, stop or start work, change the room's recorded authority, or contact other gateways: peer
 routes aren't revoked, and grants other gateways issued for the room simply expire.
 
-Authority takeover is an **operator recovery procedure**, not an atomic handover.
-Use the existing JSON-RPC methods `groups.promote` and `groups.demote` on the
-appropriate gateway. There are no `groups.peer.promote` or `groups.peer.demote`
-methods; `groups.capabilities` lists the methods your gateway supports.
+**For reference only.** `groups.promote` and `groups.demote` stay disabled; a group changes host
+only through the verified `groups.succession.*` calls. The legacy takeover below was an **operator
+recovery procedure**, not an atomic handover, run with those JSON-RPC methods on the appropriate
+gateway. There are no `groups.peer.promote` or `groups.peer.demote` methods; `groups.capabilities`
+lists the methods your gateway supports.
 
 :::warning Fence the old writer before promotion
 Before sending `confirm: true`, establish that the previous authority **cannot

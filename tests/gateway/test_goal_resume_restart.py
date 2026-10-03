@@ -172,6 +172,18 @@ def _resume_event() -> MessageEvent:
 
 
 class TestGatewayResumeRestartsWork:
+    def test_goal_kickoff_keeps_current_prompt_identity(self):
+        runner, adapter = _make_runner()
+        event = _resume_event()
+        event.channel_prompt = "Channel hint."
+
+        runner._enqueue_goal_turn(event, "kickoff", label="test kickoff", kickoff=True)
+
+        pending = adapter._pending_messages[_GW_KEY]
+        assert pending.message_id == event.message_id
+        assert pending.channel_prompt == "Channel hint."
+        assert pending.preserve_prompt_pins is False
+
     @pytest.mark.asyncio
     async def test_resume_after_budget_exhaustion_enqueues_continuation(
         self, hermes_home
@@ -188,6 +200,9 @@ class TestGatewayResumeRestartsWork:
             "— otherwise the goal sits idle until the next real user message"
         )
         assert pending.text.startswith("[Continuing toward your standing goal]")
+        assert pending.internal is False
+        assert pending.channel_prompt is None
+        assert getattr(pending, "preserve_prompt_pins", False) is True
         # The pause/clear stale-work guard must recognize the queued turn as
         # a synthetic goal continuation so it can be cleaned up on /goal pause.
         assert GatewayRunner._is_goal_continuation_event(pending)

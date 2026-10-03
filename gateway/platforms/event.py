@@ -101,6 +101,9 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Synthetic continuations can remain ordinary authorized/activity-touching turns while carrying
+    # no fresh system-prompt identity. Appended here to preserve MessageEvent positional arguments.
+    preserve_prompt_pins: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

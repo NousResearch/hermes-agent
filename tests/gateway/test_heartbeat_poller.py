@@ -78,6 +78,7 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
             await runner._heartbeat_poll_once(watch)
         assert len(received) == 1
         assert not received[0].internal  # authorization and emergency-stop still apply
+        assert getattr(received[0], "preserve_prompt_pins", False) is True
         # Gateway-stamped provenance: the turn may end silently (#113031) and is not a reply to
         # the message that registered the watch (#112149).
         assert display_kind_for_event(received[0]) == INTERNAL_NOTIFICATION_DISPLAY_KIND

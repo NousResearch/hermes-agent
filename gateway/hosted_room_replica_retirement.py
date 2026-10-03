@@ -585,14 +585,26 @@ def copy_retired_locked(conn: sqlite3.Connection, room_id: str) -> bool:
 
 def copy_scope_matches_locked(
     conn: sqlite3.Connection, *, room_id: str, authority_gateway_id: str, authority_epoch: int, members_json: str,
+    verified_head: tuple[str, int] | None = None,
 ) -> bool:
-    """An enrollment fences what a sender may write into this copy, from the first page on."""
+    """An enrollment fences what a sender may write into this copy, from the first page on.
+
+    Its authority is in scope, and so is a later one the copy follows through verified transitions
+    from it. ``verified_head`` is the copy's authority after the page, moved only by transitions
+    its verifier accepted: a later sender is in scope once that head is past the enrolled epoch, or
+    while its page still relays the enrolled authority's own history.
+    """
     row = conn.execute(f"SELECT * FROM {ENROLLMENT_TABLE} WHERE room_id=? AND is_current=1", (room_id,)).fetchone() \
         if table_exists(conn, ENROLLMENT_TABLE) else None
     if row is None:
         return True
-    return (row["authority_gateway_id"], row["authority_epoch"], row["roster_sha256"]) == (
-        authority_gateway_id, authority_epoch, hashlib.sha256(members_json.encode("utf-8")).hexdigest())
+    if row["roster_sha256"] != hashlib.sha256(members_json.encode("utf-8")).hexdigest():
+        return False
+    enrolled = (row["authority_gateway_id"], int(row["authority_epoch"]))
+    if (authority_gateway_id, authority_epoch) == enrolled:
+        return True
+    return (verified_head is not None and authority_epoch > enrolled[1]
+            and (tuple(verified_head) == enrolled or verified_head[1] > enrolled[1]))
 
 
 def _retired_response(row) -> dict[str, Any]:

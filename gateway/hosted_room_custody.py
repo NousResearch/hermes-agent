@@ -602,13 +602,8 @@ def set_local_consent(db_path: DbPath, *, room_id: str, allowed: bool, now: floa
             "confirmed": host is not None and bool(host) == allowed}
 
 
-def after_ingest_locked(
-    conn: sqlite3.Connection, room_id: str, events: list[Mapping[str, Any]], *, report: Any = None,
-) -> dict[str, Any]:
-    """Pin the custodians a newly stored configuration names, keep the authority's report, return the watermark.
-
-    Runs inside the copy's writer, so an acknowledgment never names history that is not durable.
-    """
+def pin_configured_locked(conn: sqlite3.Connection, room_id: str, events: list[Mapping[str, Any]]) -> None:
+    """Pin the keys of the custodians each stored ``custody.configured`` among ``events`` names."""
     initialize_locked(conn)
     for event in events:
         if event["kind"] != CONFIGURED:
@@ -616,6 +611,16 @@ def after_ingest_locked(
         for custodian in parse_configuration(json.loads(event["payload_json"]))["custodians"]:
             identity.pin_locked(conn, room_id=room_id, install_id=custodian["install_id"],
                                 public_key=custodian["public_key"], source="configuration")
+
+
+def after_ingest_locked(
+    conn: sqlite3.Connection, room_id: str, events: list[Mapping[str, Any]], *, report: Any = None,
+) -> dict[str, Any]:
+    """Pin the custodians a newly stored configuration names, keep the authority's report, return the watermark.
+
+    Runs inside the copy's writer, so an acknowledgment never names history that is not durable.
+    """
+    pin_configured_locked(conn, room_id, events)
     if report is not None:
         at_risk_after = report.get("at_risk_after_seq") if isinstance(report, Mapping) else None
         if type(at_risk_after) is not int or at_risk_after < 0:
@@ -704,6 +709,35 @@ def wait_protected(db_path: DbPath, room_id: str, seq: int, timeout: float, *, p
         if time.monotonic() >= deadline:
             return False
         time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+
+
+# -- the history held here -------------------------------------------------------------------
+
+
+def read_copy_page(conn: sqlite3.Connection, room_id: str, *, after_seq: int, limit: int) -> dict[str, Any]:
+    """One bounded page of the history held here, the room itself or a copy of it.
+
+    Returns ``{room_name, members, page}``. The page has ``read_events``' shape and bounds, and its
+    authority is this store's own: the room's, or the authority the copy verified.
+    """
+    from gateway.hosted_rooms import _bounded_page, _event_from_row, _page_rows
+    table = events_table_locked(conn, room_id)
+    if table is None:
+        raise rooms.RoomNotFoundError("no history of this Group Chat is held here")
+    head = conn.execute(
+        "SELECT name, members_json, authority_gateway_id, authority_epoch, next_seq - 1 AS latest "
+        "FROM hosted_rooms WHERE room_id=?" if table == "hosted_room_events" else
+        "SELECT name, members_json, authority_gateway_id, authority_epoch, last_seq AS latest "
+        "FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
+    latest = int(head["latest"])
+    if type(after_seq) is not int or not 0 <= after_seq <= latest:
+        raise CustodyError("the history held here does not reach that sequence")
+    if type(limit) is not int or not 1 <= limit <= rooms.MAX_LOG_LIMIT:
+        raise CustodyError("page limit is invalid")
+    authority = {"gateway_id": str(head["authority_gateway_id"]), "epoch": int(head["authority_epoch"])}
+    events = [_event_from_row(row) for row in _page_rows(conn, table, room_id, after_seq, limit)]
+    return {"room_name": head["name"], "members": json.loads(head["members_json"]),
+            "page": _bounded_page(events, after_seq, latest, authority)}
 
 
 # -- admissions --------------------------------------------------------------------------------

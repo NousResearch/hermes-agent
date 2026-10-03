@@ -878,3 +878,35 @@ class TestHomeDefaultDenyIntegration:
             assert env.execute(f"cat {deny_home}/sibling/data.txt")["output"].strip() == VISIBLE
         finally:
             env.cleanup()
+
+    def test_read_write_bind_below_an_allowed_entry_is_writable(self, sandbox_root, deny_home):
+        zz = deny_home / ".cache" / "zz"
+        zz.mkdir()
+        _write(deny_home / ".cache" / "other" / "keep", VISIBLE)
+        config = BubblewrapConfig(binds=(BindMount(src=str(zz), dest=str(zz), readonly=False),))
+        env = self._env(deny_home / "proj", config=config)
+        try:
+            result = env.execute(f"printf ok > {zz}/from-sandbox")
+            assert result["returncode"] == 0, result["output"]
+            result = env.execute(f"printf no > {deny_home}/.cache/other/from-sandbox")
+            assert result["returncode"] != 0
+            assert "Read-only file system" in result["output"]
+        finally:
+            env.cleanup()
+        assert (zz / "from-sandbox").read_text() == "ok"
+        assert not (deny_home / ".cache" / "other" / "from-sandbox").exists()
+
+    def test_read_write_bind_of_a_default_deny_directory_stays_writable(self, sandbox_root, deny_home):
+        config_dir = deny_home / ".config"
+        for rel in SENSITIVE_HOME_PATHS:
+            if rel.startswith(".config/") and not (deny_home / rel).exists():
+                (deny_home / rel).mkdir(parents=True)
+        config = BubblewrapConfig(binds=(BindMount(src=str(config_dir), dest=str(config_dir), readonly=False),))
+        env = self._env(deny_home / "proj", config=config)
+        try:
+            result = env.execute(f"printf ok > {config_dir}/zz-new")
+            assert result["returncode"] == 0, result["output"]
+            assert MARKER not in env.execute(f"cat {config_dir}/gh/hosts.yml 2>&1")["output"]
+        finally:
+            env.cleanup()
+        assert (config_dir / "zz-new").read_text() == "ok"

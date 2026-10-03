@@ -1095,6 +1095,89 @@ class TestMaskedInside:
 
 
 @needs_bwrap
+class TestAbsentDeniedPathGuard:
+    """A credential path that does not exist cannot be hidden by a mount, so a
+    bind that would let a command create it is refused at construction."""
+
+    @pytest.fixture
+    def fake_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "homes" / "home"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    @staticmethod
+    def _rw(path):
+        return BubblewrapConfig(binds=(BindMount(src=str(path), dest=str(path), readonly=False),))
+
+    def test_refusal_names_the_path_and_the_bind(self, sandbox_root, work_dir, fake_home):
+        config_dir = fake_home / ".config"
+        for rel in bubblewrap.SENSITIVE_HOME_PATHS:
+            if rel.startswith(".config/") and rel != ".config/gh":
+                (fake_home / rel).mkdir(parents=True)
+        with _no_session(), pytest.raises(ValueError) as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=self._rw(config_dir))
+        assert str(config_dir / "gh") in str(exc.value)
+        assert "terminal.bubblewrap_binds" in str(exc.value)
+        assert str(config_dir) in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    def test_bind_starts_when_every_denied_path_under_it_exists(self, sandbox_root, work_dir, fake_home):
+        config_dir = fake_home / ".config"
+        for rel in bubblewrap.SENSITIVE_HOME_PATHS:
+            if rel.startswith(".config/"):
+                (fake_home / rel).mkdir(parents=True)
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=self._rw(config_dir))
+        try:
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            i_bind = mounts.index(("--bind", str(config_dir), str(config_dir)))
+            assert i_bind < mounts.index(("--tmpfs", str(config_dir / "gh")))
+        finally:
+            env.cleanup()
+
+    def test_read_only_bind_is_not_refused(self, sandbox_root, work_dir, fake_home):
+        config_dir = fake_home / ".config"
+        config_dir.mkdir()
+        config = BubblewrapConfig(binds=(BindMount(src=str(config_dir), dest=str(config_dir), readonly=True),))
+        with _no_session():
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
+
+    def test_bind_of_a_whole_cache_is_refused_for_the_absent_token_path(self, sandbox_root, work_dir, fake_home):
+        cache = fake_home / ".cache"
+        cache.mkdir()
+        with _no_session(), pytest.raises(ValueError, match="huggingface"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=self._rw(cache))
+
+    def test_bind_of_one_cache_directory_starts(self, sandbox_root, work_dir, fake_home):
+        pip_cache = fake_home / ".cache" / "pip"
+        pip_cache.mkdir(parents=True)
+        with _no_session():
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=self._rw(pip_cache)).cleanup()
+
+    @pytest.mark.parametrize("which", ["home", "parent-of-home"])
+    def test_cwd_at_or_above_home_with_no_ssh_starts(self, sandbox_root, fake_home, which):
+        # The read-only layer at the top of HOME already blocks the name.
+        cwd = fake_home if which == "home" else fake_home.parent
+        assert not (fake_home / ".ssh").exists()
+        with _no_session():
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10).cleanup()
+
+    def test_writable_cwd_that_holds_an_absent_denied_path_is_refused(self, sandbox_root, fake_home):
+        cargo = fake_home / ".cargo"
+        cargo.mkdir()
+        with _no_session(), pytest.raises(ValueError) as exc:
+            BubblewrapEnvironment(cwd=str(cargo), timeout=10)
+        assert "terminal.cwd" in str(exc.value)
+        assert str(cargo / "credentials") in str(exc.value)
+
+    def test_read_only_profile_cwd_is_not_refused(self, sandbox_root, fake_home):
+        cargo = fake_home / ".cargo"
+        cargo.mkdir()
+        with _no_session():
+            BubblewrapEnvironment(cwd=str(cargo), timeout=10, config=BubblewrapConfig(profile="restricted")).cleanup()
+
+
 class TestMaskedCwdRecovery:
     """A tracked cwd that exists on the host but not inside the sandbox
     (masked by an overlay tmpfs or by the fresh /tmp) is reset to the

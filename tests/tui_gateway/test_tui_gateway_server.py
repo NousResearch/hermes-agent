@@ -11764,6 +11764,72 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     assert captured["prompt"] == "expanded prompt"
 
 
+def test_prompt_submit_expands_staged_attachment_refs(tmp_path, monkeypatch):
+    """file.attach stages uploads into the profile home's attachments/ dir,
+    outside the session workspace, and returns absolute @file: refs. The
+    submit-path expansion must allowlist that staging dir so the gateway's own
+    refs inline instead of being refused (#98634) — while the workspace
+    boundary itself keeps refusing unrelated outside paths.
+    """
+    captured = {}
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None, **_extra):
+            self._target, self._args, self._kwargs = target, args, kwargs or {}
+
+        def start(self):
+            assert self._target is not None
+            self._target(*self._args, **self._kwargs)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_home = tmp_path / "home"
+    attachments = profile_home / "attachments"
+    attachments.mkdir(parents=True)
+    (attachments / "probe.txt").write_text("STAGED-ATTACHMENT-BODY\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("OUTSIDE-BODY\n", encoding="utf-8")
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(), cwd=str(workspace), profile_home=str(profile_home)
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": f"see @file:{attachments / 'probe.txt'} and @file:{outside}",
+                },
+            }
+        )
+
+        # The staged attachment inlines; the unrelated outside path does not.
+        assert "STAGED-ATTACHMENT-BODY" in captured["prompt"]
+        assert "OUTSIDE-BODY" not in captured["prompt"]
+        assert "outside the allowed workspace" in captured["prompt"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_image_attach_appends_local_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}

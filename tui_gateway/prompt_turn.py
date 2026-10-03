@@ -710,8 +710,23 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             api_key=getattr(agent, "api_key", "") or "",
             provider=getattr(agent, "provider", "") or "",
             config_context_length=getattr(agent, "_config_context_length", None))
+        # Allowlist the workspace plus the session's attachment staging dir:
+        # file.attach stages uploads into the session profile's ``attachments/``
+        # dir — deliberately OUTSIDE the workspace so container bind mounts can
+        # see them (#76577) — and hands back absolute @file: refs. Without the
+        # staging dir in the allowed roots, this expansion would refuse the
+        # gateway's own refs and staged uploads would never inline (#98634).
+        # That dir holds only files uploaded through the authenticated
+        # file.attach RPC; the credential deny-list in
+        # _ensure_reference_path_allowed still applies on top of it.
+        allowed_roots: list[str | Path] = [cwd]
+        try:
+            allowed_roots.append(_session_home_dir(session, "attachments"))
+        except Exception:
+            # Staging-dir resolution must never break the submit itself.
+            pass
         ctx = preprocess_context_references(
-            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
+            prompt, cwd=cwd, allowed_root=allowed_roots, context_length=ctx_len)
         if ctx.blocked:
             _emit(
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})

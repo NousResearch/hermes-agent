@@ -13,7 +13,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
@@ -178,7 +178,7 @@ def parse_context_references(message: str) -> list[ContextReference]:
 
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | Sequence[str | Path] | None = None,
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
@@ -198,21 +198,24 @@ def preprocess_context_references(
 
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | Sequence[str | Path] | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
     cwd_path = Path(cwd).expanduser().resolve()
-    # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
-    allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    # Default root = cwd so @ references cannot escape the workspace unless a caller
+    # widens it. A sequence widens the boundary to several roots at once (e.g. the
+    # session's workspace plus its attachment staging dir, #98634); a resolved path
+    # under ANY root passes.
+    allowed_roots = _normalize_allowed_roots(allowed_root) or (cwd_path,)
     # Expand concurrently (each ref is independent; several @url: refs would otherwise
     # serialize web_extract round-trips). gather preserves order, so warnings/blocks
     # are assembled in ref order; the token-budget check runs once afterwards.
     hard_limit = max(1, int(context_length * 0.50))
     soft_limit = max(1, int(context_length * 0.25))
     tasks = (
-        _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
+        _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_roots,
                           max_inline_tokens=hard_limit)
         for ref in refs[:_MAX_EXPANDED_REFERENCES]
     )
@@ -257,7 +260,8 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 
 async def _expand_reference(
-    ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
+    ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None,
+    allowed_root: tuple[Path, ...] | None = None,
     max_inline_tokens: int | None = None,
 ) -> Expansion:
     try:
@@ -284,7 +288,7 @@ async def _expand_reference(
     return f"{ref.raw}: unsupported reference type", None
 
 
-def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
+def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: tuple[Path, ...] | None = None,
                            max_inline_tokens: int | None = None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
@@ -295,7 +299,9 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if not (path.is_dir() if is_folder else path.is_file()):
         return f"{ref.raw}: path is not a {ref.kind}", None
     if is_folder:
-        listing = _build_folder_listing(path, cwd, display_base=allowed_root)
+        listing = _build_folder_listing(
+            path, cwd,
+            display_base=next((root for root in (allowed_root or ()) if _is_under(path, root)), None))
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
     try:
         # Keep admission through every sniff, stat and text read (a connection can start
@@ -505,14 +511,29 @@ def _agent_staged_path(path: Path) -> bool:
         return False
 
 
-def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+def _normalize_allowed_roots(
+    allowed_root: str | Path | Sequence[str | Path] | None,
+) -> tuple[Path, ...] | None:
+    """Coerce a single allowed root or a sequence of them into resolved paths.
+
+    A sequence never *narrows* the boundary — each entry widens it, and a
+    resolved path under ANY root passes (see ``_resolve_path``).
+    """
+    if allowed_root is None:
+        return None
+    if isinstance(allowed_root, (str, Path)):
+        allowed_root = (allowed_root,)
+    return tuple(Path(root).expanduser().resolve() for root in allowed_root)
+
+
+def _resolve_path(cwd: Path, target: str, *, allowed_root: tuple[Path, ...] | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
     if (
         allowed_root is not None
-        and not _is_under(resolved, allowed_root)
+        and not any(_is_under(resolved, root) for root in allowed_root)
         and not any(_is_under(resolved, root) for root in _composer_paste_roots())
         and not _agent_staged_path(resolved)
     ):

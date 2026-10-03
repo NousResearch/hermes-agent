@@ -89,11 +89,15 @@ def update_plugin(
     catalog_entry=None,
     interactive: bool = False,
     carry_user_files: Callable[[Path], list[str]] | None = None,
+    force: bool = False,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
     the dashboard and the gateway's auto-apply pass False and get a refusal instead.
+    *force*: accept a ``caution`` scan verdict on the staged revision, mirroring
+    ``install --force`` (a ``dangerous`` verdict still blocks); catalog re-pins accept
+    caution via ``reviewed_pin`` and ignore this (#125928).
     *carry_user_files(staged)* may merge user-owned state into the staged tree before
     manifest validation, example-file generation, dependency preparation and publication; it
     returns the carried paths so a scan block can attribute findings to them."""
@@ -182,7 +186,7 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            pc._scan_merged_tree(staged, source, merged, force=False)
+            pc._scan_merged_tree(staged, source, merged, force=force)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

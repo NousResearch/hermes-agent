@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tests.hermes_cli.test_plugin_update_transaction import installed, _version  # noqa: F401
+from tests.hermes_cli.test_plugin_update_transaction import installed, _version, _head  # noqa: F401
 from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
 
 
@@ -31,6 +31,34 @@ def test_cli_update_scan_refusal_keeps_the_installed_tree(installed, monkeypatch
     assert len(scans) == 1
     assert (target / "__init__.py").read_bytes() == old
     assert (home / "config.yaml").read_bytes() == before
+
+
+@pytest.mark.parametrize("installed", ["custom"], indirect=True)
+def test_cli_update_force_accepts_a_caution_verdict(installed, monkeypatch):
+    """#125928: a caution-verdict git plugin was un-updatable — `update` had no `--force`,
+    the scan hard-coded ``force=False``. With `--force`, the same caution the user accepted at
+    install time is accepted at update time; without it the update is still blocked."""
+    from hermes_cli import plugins_cmd as pc
+
+    _, _home, repo, target, state = installed
+    state["sha"] = _version(repo, "2.0.0")
+    seen = []
+
+    def scan(plugin_dir, identifier, *, force=False, **kwargs):
+        seen.append(force)
+        if not force:  # caution policy: blocks unless the caller forces
+            raise pc.PluginScanBlocked("caution fixture")
+        return None
+
+    monkeypatch.setattr(pc, "_scan_plugin_tree", scan)
+    # No --force: the caution verdict blocks and the tree stays at the installed revision.
+    with pytest.raises(SystemExit):
+        pc.cmd_update("transactional", interactive=False)
+    assert _head(target) != state["sha"]
+    # --force: the same caution is accepted and the update lands.
+    pc.cmd_update("transactional", interactive=False, force=True)
+    assert seen == [False, True]
+    assert _head(target) == state["sha"]
 
 
 @pytest.mark.parametrize("installed", ["catalog", "custom"], indirect=True)

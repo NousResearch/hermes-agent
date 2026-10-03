@@ -10,7 +10,6 @@ This watchdog polls the lock and, once a VALID lock names another ``spawnNonce``
 polls and the retirement fence proves the backend idle (closing admission so no turn can start
 mid-teardown), exits cleanly. A missing, unreadable or skewed lock keeps the process up: those are
 the windows between a cleanup and the replacement's write, or another Desktop build's file.
-Design from the #132034 report by @VexterZ; lock-ownership watchdog idea first drafted in #89452.
 """
 
 from __future__ import annotations

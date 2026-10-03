@@ -2075,7 +2075,7 @@ def _omitted_config_paths(
 
 def _write_config_state(
     config_path: Path, data: Dict[str, Any], *, allow_omissions: bool,
-    extra_content_on_create: Optional[str] = None,
+    extra_content_on_create: Optional[str] = None, document_text: Optional[str] = None,
 ) -> None:
     """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
     from utils import atomic_roundtrip_yaml_save
@@ -2096,7 +2096,8 @@ def _write_config_state(
                 "Pass the complete current config, or use atomic_config_replace() only when "
                 "deletion by omission is deliberate.",
             ) from exc
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    atomic_roundtrip_yaml_save(
+        config_path, data, extra_content_on_create=extra_content_on_create, document_text=document_text)
 
 
 def atomic_config_write(
@@ -2114,10 +2115,14 @@ def atomic_config_write(
 
 def atomic_config_replace(
     config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+    document_text: Optional[str] = None,
 ) -> None:
-    """Persist the complete desired config state; omitted mapping keys are deliberately deleted."""
+    """Persist the complete desired config state; omitted mapping keys are deliberately deleted.
+    ``document_text`` is the whole new file as its author typed it (the dashboard YAML editor):
+    the state lands on that document, so its comments and key order are the ones kept."""
     _write_config_state(
-        config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create)
+        config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create,
+        document_text=document_text)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2508,12 +2513,15 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    document_text: Optional[str] = None):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted. ``document_text`` is
+    the whole file as the user wrote it, *config* its parse (the dashboard's YAML editor): every
+    setting it names is user-set, and its comments and key order are kept."""
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -2542,10 +2550,12 @@ def save_config(
 
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+            user_written = config if document_text is not None else _raw_for_paths
+            effective_preserve_keys = _explicit_config_paths(user_written) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized),
+                              document_text=document_text)
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

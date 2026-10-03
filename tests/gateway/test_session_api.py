@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,6 +53,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
+
 
 
 @pytest.mark.asyncio
@@ -377,7 +379,7 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
 async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
     adapter, session_db
 ):
-    """Disconnects must interrupt the live run without dropping its control refs early."""
+    """Disconnect DETACHES the live run (no interrupt) without dropping control refs early."""
     session_id = session_db.create_session("disconnect-stream-session", "api_server")
     run_started = threading.Event()
     interrupt_called = threading.Event()
@@ -446,21 +448,27 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
         assert run_started.is_set()
         run_id = next(iter(adapter._run_statuses))
 
+        # Detach-on-disconnect: the dead socket must NOT interrupt the agent —
+        # the run stays live server-side, still stoppable/steerable, and the
+        # SSE loop exits without cancelling the turn.
         for _ in range(40):
-            if interrupt_called.is_set():
+            if not handler_task.done():
                 break
             await asyncio.sleep(0.05)
+        await asyncio.wait_for(handler_task, timeout=5)
 
-        assert interrupt_called.is_set()
+        assert not interrupt_called.is_set()
         assert run_id in adapter._active_run_agents
         # Not in _active_run_tasks: session-stream turns are counted via
         # _inflight_agent_runs; a task entry would double-count them in the
         # shutdown drain (active_agent_work_count).
         assert run_id not in adapter._active_run_tasks
-        assert not handler_task.done()
 
         allow_finish.set()
-        await handler_task
+        for _ in range(60):
+            if run_id not in adapter._active_run_agents:
+                break
+            await asyncio.sleep(0.05)
 
     assert run_id not in adapter._active_run_agents
 
@@ -1305,7 +1313,14 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
         allow_finish.set()
         await handler_task
 
+    # With detach-on-disconnect the handler may return while the detached
+    # agent is still unwinding; wait for the run to reach a terminal status.
     record = adapter._run_statuses[run_id]
+    for _ in range(60):
+        record = adapter._run_statuses[run_id]
+        if record["status"] in ("completed", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.05)
     assert record["status"] == "completed"
     # The whole point: the text survived the dead socket.
     assert record.get("output") == "the answer worth keeping"
@@ -1383,3 +1398,1225 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+# ---------------------------------------------------------------------------
+# Durable active-run control (PR #96507 P1): the session stream mints a
+# recoverable run whose identity is persisted on the session row and exposed
+# independently of the SSE body.
+# ---------------------------------------------------------------------------
+
+
+class _FailFirstWriteStreamResponse:
+    """StreamResponse double whose very first write raises ConnectionResetError."""
+
+    async def prepare(self, request):
+        del request
+
+    async def write(self, payload):
+        del payload
+        raise ConnectionResetError("simulated first-write failure")
+
+
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_disconnect_detaches_without_interrupt(
+    adapter, session_db
+):
+    """A client disconnect detaches the turn instead of interrupting it.
+
+    The session endpoint always persists to state.db, so a dropped SSE
+    connection is only a dead transport (ref #15026). The agent keeps running
+    server-side and its run stays registered for /v1/runs/{run_id}/stop until
+    the executor-backed turn actually finishes.
+    """
+    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    run_started = threading.Event()
+    interrupt_called = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    with patch.object(
+        adapter,
+        "_get_existing_session_or_404",
+        return_value=({"id": session_id}, None),
+    ), patch.object(
+        adapter,
+        "_read_json_body",
+        return_value=({"message": "stream please"}, None),
+    ), patch.object(
+        adapter,
+        "_create_agent",
+        side_effect=_create_agent,
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # The disconnect makes the handler detach and return promptly, but must
+        # NOT interrupt the agent.
+        await asyncio.wait_for(handler_task, timeout=5)
+        assert not interrupt_called.is_set()
+
+        # The run stays registered while the agent is still running, so
+        # /v1/runs/{run_id}/stop can still halt it.
+        assert run_id in adapter._active_run_agents
+        # Not in _active_run_tasks: session-stream turns are counted via
+        # _inflight_agent_runs; a task entry would double-count them in the
+        # shutdown drain (active_agent_work_count).
+        assert run_id not in adapter._active_run_tasks
+
+        # Let the detached turn finish and confirm the control ref is released.
+        allow_finish.set()
+        for _ in range(60):
+            if run_id not in adapter._active_run_agents:
+                break
+            await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_first_write_fails_rediscover_and_stop(adapter, session_db):
+    """Regression 1: a first-SSE-write failure must not stop the agent.
+
+    The agent keeps running server-side, the same authenticated client can
+    rediscover the run via ``GET /api/sessions/{id}`` (``active_run_id``), and
+    can then stop it via ``POST /v1/runs/{run_id}/stop``.
+    """
+    session_id = session_db.create_session("first-write-fail-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    interrupt_called = threading.Event()
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    run_id = None
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "stream please"}, None)), \
+            patch.object(adapter, "_create_agent", side_effect=_create_agent), \
+            patch("gateway.platforms.api_server.web.StreamResponse", return_value=_FailFirstWriteStreamResponse()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # The first-write failure makes the handler detach and return promptly,
+        # but must NOT interrupt the agent.
+        await asyncio.wait_for(handler_task, timeout=5)
+        assert not interrupt_called.is_set()
+
+    # Rediscovery: the session resource exposes the live run id (real session
+    # row, unpatched, now carries the durable active_run_id).
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["session"]["active_run_id"] == run_id
+    assert payload["session"]["active_run_status"] == "running"
+    assert run_id in adapter._active_run_agents
+
+    # Stop: the rediscovered run id is addressable via /v1/runs/{run_id}/stop.
+    stop_request = MagicMock()
+    stop_request.match_info = {"run_id": run_id}
+    stop_resp = await adapter._handle_stop_run(stop_request)
+    assert stop_resp.status == 200
+    assert interrupt_called.is_set()
+
+    # Let the interrupted turn unwind and release its control refs.
+    allow_finish.set()
+    for _ in range(60):
+        if run_id not in adapter._active_run_agents:
+            break
+        await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_retry_conflicts_while_active(adapter, session_db):
+    """Regression 2: disconnect + retry of the same session/message yields exactly
+    one execution — the retry gets a deterministic ``run_already_active`` conflict
+    instead of starting a second agent."""
+    session_id = session_db.create_session("retry-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    agents_created = {"count": 0}
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    def _create_agent(**kwargs):
+        agents_created["count"] += 1
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    request1 = MagicMock()
+    request1.headers = {}
+    request1.match_info = {"session_id": session_id}
+
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "stream please"}, None)), \
+            patch.object(adapter, "_create_agent", side_effect=_create_agent), \
+            patch("gateway.platforms.api_server.web.StreamResponse", return_value=DisconnectingStreamResponse()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request1))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # Detach on disconnect; the run stays live.
+        await asyncio.wait_for(handler_task, timeout=5)
+        assert run_id in adapter._active_run_agents
+
+        # Retry the same session/message: deterministic conflict, no second agent.
+        request2 = MagicMock()
+        request2.headers = {}
+        request2.match_info = {"session_id": session_id}
+        with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+                patch.object(adapter, "_read_json_body", return_value=({"message": "stream please"}, None)):
+            retry_resp = await adapter._handle_session_chat_stream(request2)
+
+        assert retry_resp.status == 409
+        retry_payload = json.loads(retry_resp.text)
+        assert retry_payload["error"]["code"] == "run_already_active"
+        assert retry_payload["run_id"] == run_id
+        assert agents_created["count"] == 1
+
+        allow_finish.set()
+        for _ in range(60):
+            if run_id not in adapter._active_run_agents:
+                break
+            await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_detached_approval_stays_discoverable(adapter, session_db):
+    """Regression 3: a detached run held in approval stays discoverable via the
+    session resource and addressable via /v1/runs/{run_id} after its original
+    subscriber is gone."""
+    session_id = session_db.create_session("detached-approval-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            # Simulate a long-lived approval wait: the agent parks here until
+            # the test releases it.
+            allow_finish.wait(timeout=5)
+            return {"final_response": "approved and done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    run_id = None
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "needs approval"}, None)), \
+            patch.object(adapter, "_create_agent", side_effect=_create_agent), \
+            patch("gateway.platforms.api_server.web.StreamResponse", return_value=DisconnectingStreamResponse()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # Detach on disconnect; mark the run as parked in approval.
+        await asyncio.wait_for(handler_task, timeout=5)
+        adapter._set_run_status(run_id, "running", last_event="approval.pending")
+
+    # Discoverable after the subscriber is gone (real session row, unpatched).
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert resp.status == 200
+        payload = await resp.json()
+    assert payload["session"]["active_run_id"] == run_id
+
+    # Addressable via the run resource.
+    get_run_request = MagicMock()
+    get_run_request.match_info = {"run_id": run_id}
+    get_run_resp = await adapter._handle_get_run(get_run_request)
+    assert get_run_resp.status == 200
+    assert json.loads(get_run_resp.text)["run_id"] == run_id
+
+    # Still registered for stop/steer/approval until the turn exits.
+    assert run_id in adapter._active_run_agents
+
+    allow_finish.set()
+    for _ in range(60):
+        if run_id not in adapter._active_run_agents:
+            break
+        await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_completion_clears_active_run(adapter, session_db):
+    """A normally-completed stream releases the durable active-run slot, so a
+    later request on the same session starts fresh instead of conflicting."""
+    session_id = session_db.create_session("completed-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("done")
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hi"})
+            assert resp.status == 200
+            await resp.text()
+
+            get_resp = await cli.get(f"/api/sessions/{session_id}")
+            assert get_resp.status == 200
+            payload = await get_resp.json()
+
+    assert payload["session"].get("active_run_id") is None
+    assert payload["session"].get("active_run_status") is None
+# ---------------------------------------------------------------------------
+# Review follow-ups on the rebased head: (a) full-stream monotonic seq (the
+# rebase briefly emitted 1,2,1,3,... from two sequencers); (b) an explicit
+# Idempotency-Key run that COMPLETES must replay on same-key retry instead of
+# executing twice (the session-row slot only guards live runs); (c) same key
+# with a changed body is a conflict; (d) a real approval round-trip (actual
+# waiting_for_approval transition, approve releases the wait).
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid
+
+_KEY1 = f"k-receipt-{_uuid.uuid4().hex[:8]}"
+_KEY2 = f"k-conflict-{_uuid.uuid4().hex[:8]}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_seq_monotonic_across_lifecycle_and_callbacks(adapter, session_db):
+    """seq must be monotonic over the WHOLE stream: lifecycle events and agent
+    callbacks (deltas/tool progress) share one sequencer."""
+    session_id = session_db.create_session("seq-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("part one ")
+        kwargs["tool_progress_callback"]("tool.started", tool_name="terminal")
+        kwargs["stream_delta_callback"]("part two")
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "go"})
+            assert resp.status == 200
+            body = await resp.text()
+
+    seqs = []
+    for block in body.split("\n\n"):
+        for ln in block.splitlines():
+            if ln.startswith("data: "):
+                try:
+                    payload = json.loads(ln[6:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and "seq" in payload:
+                    seqs.append(payload["seq"])
+    assert seqs, "no seq-bearing events captured"
+    assert seqs == sorted(seqs), f"seq not monotonic: {seqs}"
+    assert len(set(seqs)) == len(seqs), f"duplicate seq values: {seqs}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_completed_run_same_key_replays_not_reexecutes(adapter, session_db):
+    """Reviewer scenario: first SSE write fails -> detached turn completes ->
+    SAME-key retry -> exactly one execution (202 replay), and the replayed
+    status points at the ORIGINAL run."""
+    session_id = session_db.create_session("receipt-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    agents_created = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "receipt answer", "session_id": session_id}
+
+    class _FailFirstWriteStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            raise ConnectionResetError("simulated first-write failure")
+
+    def _create_agent(**kwargs):
+        agents_created["count"] += 1
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    from contextlib import ExitStack
+
+    async def _start(headers, stack):
+        request = MagicMock()
+        request.headers = headers
+        request.match_info = {"session_id": session_id}
+        stack.enter_context(patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)))
+        stack.enter_context(patch.object(adapter, "_read_json_body", return_value=({"message": "with key"}, None)))
+        stack.enter_context(patch.object(adapter, "_create_agent", side_effect=_create_agent))
+        stack.enter_context(patch("gateway.platforms.api_server.web.StreamResponse", return_value=_FailFirstWriteStreamResponse()))
+        task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+        await asyncio.wait_for(task, timeout=5)
+
+    with ExitStack() as stack:
+        await _start({"Idempotency-Key": _KEY1}, stack)
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+
+        # Let the detached turn finish and clear the live slot.
+        allow_finish.set()
+        for _ in range(60):
+            if not any(s.get("status") in ("queued", "running") for s in adapter._run_statuses.values()):
+                break
+            await asyncio.sleep(0.05)
+
+    # Let the detached turn finish and clear the live slot.
+    allow_finish.set()
+    for _ in range(60):
+        if not any(s.get("status") in ("queued", "running") for s in adapter._run_statuses.values()):
+            break
+        await asyncio.sleep(0.05)
+
+    # Same key + same body AFTER completion: replay, not a second execution.
+    retry = MagicMock()
+    retry.headers = {"Idempotency-Key": _KEY1}
+    retry.match_info = {"session_id": session_id}
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "with key"}, None)):
+        resp = await adapter._handle_session_chat_stream(retry)
+    assert resp.status == 202
+    payload = json.loads(resp.text)
+    assert payload["replayed"] is True
+    assert agents_created["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_session_stream_same_key_changed_body_conflicts(adapter, session_db):
+    session_id = session_db.create_session("conflict-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class _FailFirstWriteStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            raise ConnectionResetError("simulated first-write failure")
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": _KEY2}
+        request.match_info = {"session_id": session_id}
+        stack.enter_context(patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)))
+        stack.enter_context(patch.object(adapter, "_read_json_body", return_value=({"message": "original body"}, None)))
+        stack.enter_context(patch.object(adapter, "_create_agent", side_effect=_create_agent))
+        stack.enter_context(patch("gateway.platforms.api_server.web.StreamResponse", return_value=_FailFirstWriteStreamResponse()))
+        await asyncio.wait_for(adapter._handle_session_chat_stream(request), timeout=5)
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+        allow_finish.set()
+        for _ in range(60):
+            if not any(s.get("status") in ("queued", "running") for s in adapter._run_statuses.values()):
+                break
+            await asyncio.sleep(0.05)
+
+    # Same key, DIFFERENT body: typed conflict, no execution.
+    retry = MagicMock()
+    retry.headers = {"Idempotency-Key": _KEY2}
+    retry.match_info = {"session_id": session_id}
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "changed body"}, None)):
+        resp = await adapter._handle_session_chat_stream(retry)
+    assert resp.status == 409
+    payload = json.loads(resp.text)
+    assert payload["error"]["code"] == "idempotency_key_conflict"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_real_approval_round_trip_releases_wait(adapter, session_db):
+    """Real approval round-trip: the agent thread hits an approval gate, the
+    run flips to waiting_for_approval, the approval.request event reaches the
+    SSE stream, and POST /v1/runs/{run_id}/approval actually releases the
+    waiting turn (no faked status writes)."""
+    session_id = session_db.create_session("approval-session", "api_server")
+    run_started = threading.Event()
+    turn_finished = threading.Event()
+
+    async def _approval_gate(**kwargs):
+        # REAL gate: _await_gateway_decision enqueues the entry, fires the
+        # registered notify (which flips the run to waiting_for_approval and
+        # streams approval.request), then blocks the agent thread until
+        # resolve_gateway_approval (POST /v1/runs/{run_id}/approval) sets it.
+        # The turn must NOT complete until the approval resolves. The blocking
+        # wait runs in the executor (to_thread) so the event loop stays free
+        # to serve the approval endpoint and the test's polling.
+        from tools.approval_gateway_wait import _await_gateway_decision
+
+        notify = kwargs.get("approval_notify_callback")
+        approval_session_key = kwargs.get("approval_session_key")
+        run_started.set()
+        decision = await asyncio.to_thread(
+            _await_gateway_decision, approval_session_key, notify,
+            {"command": "rm -rf /tmp/x", "description": "dangerous test"})
+        assert decision.get("resolved") and decision.get("choice") == "once", decision
+        turn_finished.set()
+        return {"final_response": "approved and done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    with patch.object(adapter, "_run_agent", side_effect=_approval_gate):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "needs approval"})
+            assert resp.status == 200
+            body_task = asyncio.create_task(resp.text())
+
+            for _ in range(400):
+                statuses = [s.get("status") for s in adapter._run_statuses.values()]
+                if "waiting_for_approval" in statuses:
+                    break
+                await asyncio.sleep(0.05)
+            assert "waiting_for_approval" in [s.get("status") for s in adapter._run_statuses.values()]
+
+            run_id = next(iter(adapter._run_statuses))
+            approve = await cli.post(f"/v1/runs/{run_id}/approval", json={"choice": "once"})
+            assert approve.status == 200
+
+            body = await asyncio.wait_for(body_task, timeout=10)
+
+    assert "approval.request" in body
+    assert turn_finished.is_set()
+    final = [s for s in adapter._run_statuses.values()][0]
+    assert final["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (andrexibiza, head 2438e7e930b2) — three findings, each with
+# the sequence the reviewer specified.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_stream_busy_rejection_releases_receipt(adapter, session_db):
+    """Reviewer P1: a busy-session 409 must not leave a durable "queued" receipt.
+
+    A (no key) is live; B1 (key-B) is reserved by the store, then rejected by
+    the busy session claim; A terminates; B2 retries (key-B, same body). The
+    released receipt must NOT make B2 a 202 replay of the never-launched B1 —
+    B2 re-enters admission and, the slot now free, executes.
+    """
+    session_id = session_db.create_session("busy-receipt-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    agents_created = {"count": 0}
+
+    async def fake_run(**kwargs):
+        del kwargs
+        agents_created["count"] += 1
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "A done", "session_id": session_id}, {"total_tokens": 1}
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            # A live (no key); its SSE body is read concurrently.
+            a_task = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "A"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+
+            # B1: fresh key-B -> reserved by the store, then busy-rejected.
+            resp_b1 = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "B"}, headers={"Idempotency-Key": "key-B"})
+            assert resp_b1.status == 409
+            assert json.loads(await resp_b1.text())["error"]["code"] == "run_already_active"
+
+            # A terminal.
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            a_task.cancel()
+            with suppress(Exception):
+                await a_task
+
+# B2: same key-B + same body. With the release, B2 is NOT a replay of
+                # the never-launched B1 — it is admitted and a new SSE stream
+                # begins (200 + run.started), not a 202 replay ack.
+                run_started.clear()
+                resp_b2 = await cli.post(
+                    f"/api/sessions/{session_id}/chat/stream",
+                    json={"message": "B"}, headers={"Idempotency-Key": "key-B"})
+                assert resp_b2.status == 200, (
+                    f"B2 should execute as a stream, got {resp_b2.status}")
+                body_b2 = await resp_b2.text()
+                assert "replayed" not in body_b2
+                assert "run.started" in body_b2
+                for _ in range(80):
+                    if run_started.is_set():
+                        break
+                    await asyncio.sleep(0.05)
+            assert run_started.is_set(), "B2 should execute, not replay a phantom run"
+            allow_finish.set()
+
+
+@pytest.mark.asyncio
+async def test_session_stream_same_key_changed_model_conflicts(adapter, session_db):
+    """Reviewer P2: the fingerprint binds the full canonical execution request.
+
+    Same key + same message but a different model is a 409 idempotency_key_conflict,
+    never a silent replay of a run executed with a different model.
+    """
+    session_id = session_db.create_session("model-conflict-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+
+    async def fake_run(**kwargs):
+        del kwargs
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            first = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model": "model-x"},
+                headers={"Idempotency-Key": "key-model"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            first.cancel()
+            with suppress(Exception):
+                await first
+
+            # Same key, same message, DIFFERENT model -> conflict, not replay.
+            second = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model": "model-y"},
+                headers={"Idempotency-Key": "key-model"})
+            assert second.status == 409
+            assert json.loads(await second.text())["error"]["code"] == "idempotency_key_conflict"
+
+
+def test_session_stream_reserve_race_conflict_not_replay(adapter):
+    """Reviewer P2: a fingerprint conflict AFTER reserve() classifies as
+    conflict, not replay — mirrors the lookup() branch."""
+    store = adapter._run_idempotency_store
+    scope = "test-scope"
+    outcome, _ = store.reserve(scope, "race-key", "fp-A", "run-A", {"status": "queued"})
+    assert outcome == "created"
+    outcome, record = store.reserve(scope, "race-key", "fp-B", "run-B", {"status": "queued"})
+    assert outcome == "conflict", "post-reserve race must classify as conflict, not replay"
+    assert record["run_id"] == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_disconnect_during_approval_then_stop(
+    adapter, session_db, monkeypatch):
+    """Combined witness (review round 2 evidence gap): the client disconnects
+    while the turn waits for approval. The run stays alive server-side in
+    ``waiting_for_approval``, is rediscoverable via GET /api/sessions/{id}
+    (durable active_run_id), and is terminable via POST /v1/runs/{id}/stop."""
+    # Cap the approval timeout: the poll thread must ALWAYS self-unwind well
+    # before asyncio's executor shutdown joins it (that join is what hangs an
+    # unbounded 300s wait at loop close). approval_gateway_wait reads
+    # tools.approval_context._get_approval_timeout() through its `_ctx` alias,
+    # so patch the function on that module.
+    import tools.approval_context as _approval_context
+    monkeypatch.setattr(_approval_context, "_get_approval_timeout", lambda: 3)
+
+    session_id = session_db.create_session("approval-disconnect", "api_server")
+    run_started = threading.Event()
+    turn_done = threading.Event()
+    decision_box = {}
+    gate_thread_idents = []
+    def _gate_thread_ident():
+        assert gate_thread_idents, "poll thread never recorded its ident"
+        return gate_thread_idents[-1]
+
+
+    async def _approval_gate(**kwargs):
+        from tools.approval_gateway_wait import _await_gateway_decision
+        notify = kwargs.get("approval_notify_callback")
+        approval_session_key = kwargs.get("approval_session_key")
+        run_started.set()
+
+        def _notifying(data):
+            # notify fires synchronously inside _await_gateway_decision right
+            # before the poll loop — THIS thread must receive the thread-scoped
+            # interrupt (asyncio.to_thread hops frames across executor workers,
+            # so the gate entry thread is the wrong target).
+            gate_thread_idents.append(threading.get_ident())
+            return notify(data)
+
+        decision = await asyncio.to_thread(
+            _await_gateway_decision, approval_session_key, _notifying,
+            {"command": "rm -rf /tmp/x", "description": "dangerous test"})
+        decision_box["decision"] = decision
+        turn_done.set()
+        # A real agent marks the turn interrupted when its approval wait was
+        # cancelled (stop requested) — mirror that so the terminal mapping is
+        # exercised the same way.
+        if decision.get("cancelled"):
+            return ({"final_response": "", "session_id": session_id,
+                     "interrupted": True}, {"total_tokens": 1})
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    class DisconnectOnFirstWrite:
+        """SSE response that drops the connection on the first write."""
+
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            raise ConnectionResetError("client dropped during approval wait")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "dangerous!"}, None)), \
+            patch.object(adapter, "_run_agent", side_effect=_approval_gate), \
+            patch("gateway.platforms.api_server_openai_routes.web.StreamResponse",
+                  return_value=DisconnectOnFirstWrite()), \
+            patch("gateway.platforms.api_server.web.StreamResponse",
+                  return_value=DisconnectOnFirstWrite()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+        for _ in range(80):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+
+        for _ in range(80):
+            statuses = [s.get("status") for s in adapter._run_statuses.values()]
+            if "waiting_for_approval" in statuses:
+                break
+            await asyncio.sleep(0.05)
+        assert "waiting_for_approval" in [
+            s.get("status") for s in adapter._run_statuses.values()]
+        run_id = next(iter(adapter._run_statuses))
+
+        # The first write fails -> handler detaches (does NOT cancel the turn).
+        await asyncio.wait_for(handler_task, timeout=5)
+
+    # The detached run is STILL waiting for approval, not cancelled.
+    assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
+
+    # Rediscover via the session resource (durable active_run_id).
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert resp.status == 200
+        payload = await resp.json()
+    assert payload["session"]["active_run_id"] == run_id
+    # The durable coarse status records the turn as still executing (it is —
+    # approval is a wait INSIDE the running turn); the fine-grained
+    # waiting_for_approval lives on the run status.
+    assert payload["session"]["active_run_status"] in ("running", "waiting_for_approval")
+
+    # Stop the rediscovered run; the approval wait must unwind as interrupted.
+    # A stub agent is registered under the run id (what _run_agent does when the
+    # turn starts); its hard_interrupt trips tools.interrupt for the worker
+    # thread sitting in _await_gateway_decision's poll loop.
+    import tools.interrupt as _interrupt_mod
+
+    class StubAgent:
+        def __init__(self, worker_tid):
+            self._worker_tid = worker_tid
+            self.interrupted = False
+
+        def hard_interrupt(self, message=None, *, tool_reason=None):
+            self.interrupted = True
+            _interrupt_mod.set_interrupt(True, self._worker_tid,
+                                         reason="stop requested via API")
+
+        def interrupt(self, message=None):
+            self.hard_interrupt(message)
+
+    stub = StubAgent(_gate_thread_ident())
+    adapter._active_run_agents[run_id] = stub
+    stop_request = MagicMock()
+    stop_request.match_info = {"run_id": run_id}
+    stop_resp = await adapter._handle_stop_run(stop_request)
+    assert stop_resp.status == 200
+    assert stub.interrupted
+
+    for _ in range(100):
+        if turn_done.is_set():
+            break
+        await asyncio.sleep(0.1)
+    assert turn_done.is_set(), (
+        "stop during approval wait must release the turn; statuses=%r"
+        % [s.get("status") for s in adapter._run_statuses.values()])
+    decision = decision_box.get("decision") or {}
+    # The wait ended because of OUR stop, fail-closed: the command was denied
+    # (never executed) and the cancel cause names the stop.
+    assert decision.get("choice") == "deny", decision
+    assert "stop" in str(decision.get("cancelled")), decision
+    assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Review round 3 (andrexibiza, head 97a00f18cb5e) — F1: an unsuccessful
+# pre-launch claim must compensate its receipt (reconciled, never blind);
+# F2: the fingerprint must be the RESOLVED execution identity.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_failure_releases_reserved_receipt(
+    adapter, session_db,
+):
+    """F1: an exception at the claim seam must not leave a replayable receipt.
+
+    The receipt is reserved, then the session claim RAISES before accepting the
+    run (reviewer's injected OSError). No execution task exists, so the queued
+    receipt is a false acceptance record: the durable session row proves this
+    run was never admitted, so admission compensates it. A later healthy retry
+    with the same key must EXECUTE — not 202-replay a run that never launched.
+    """
+    session_id = session_db.create_session("claim-fail-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    executed = {"count": 0}
+
+    async def fake_run(**kwargs):
+        del kwargs
+        executed["count"] += 1
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    real_claim = adapter._claim_session_active_run_async
+    state = {"fail": True}
+
+    async def flaky_claim(*args, **kwargs):
+        if state["fail"]:
+            state["fail"] = False
+            raise OSError("injected claim-seam failure")
+        return await real_claim(*args, **kwargs)
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run), \
+            patch.object(adapter, "_claim_session_active_run_async",
+                         side_effect=flaky_claim), \
+            suppress(Exception):
+        async with TestClient(TestServer(app)) as cli:
+            failed = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "F"}, headers={"Idempotency-Key": "key-claimfail"})
+            assert failed.status == 500, failed.status
+            assert executed["count"] == 0, "no execution may start on a failed claim"
+
+            # Same key + same body, healthy claim: must EXECUTE, not replay.
+            retry = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "F"}, headers={"Idempotency-Key": "key-claimfail"})
+            assert retry.status == 200, (
+                f"retry must execute after a failed claim, got {retry.status}")
+            body = await retry.text()
+            assert "replayed" not in body
+            assert "run.started" in body
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+    assert run_started.is_set(), "the healthy retry must launch a real execution"
+    allow_finish.set()
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_failure_after_claim_keeps_receipt(
+    adapter, session_db,
+):
+    """F1 (control): when the claim LANDED before the failure, the receipt is
+    ambiguous and must NOT be blindly deleted.
+
+    The claim is taken durably, then the seam raises. The session row names
+    this run, so admission reconciles instead of compensating: a later same-key
+    retry replays the recorded run and never starts a second execution.
+    """
+    session_id = session_db.create_session("claim-landed-session", "api_server")
+    executed = {"count": 0}
+
+    async def fake_run(**kwargs):
+        del kwargs
+        executed["count"] += 1
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    real_claim = adapter._claim_session_active_run_async
+    state = {"fail": True}
+
+    async def claim_then_fail(*args, **kwargs):
+        if state["fail"]:
+            state["fail"] = False
+            await real_claim(*args, **kwargs)   # the durable claim LANDS first
+            raise OSError("injected failure AFTER the claim landed")
+        return await real_claim(*args, **kwargs)
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run), \
+            patch.object(adapter, "_claim_session_active_run_async",
+                         side_effect=claim_then_fail), \
+            suppress(Exception):
+        async with TestClient(TestServer(app)) as cli:
+            failed = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "G"}, headers={"Idempotency-Key": "key-claimlanded"})
+            assert failed.status == 500, failed.status
+
+            retry = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "G"}, headers={"Idempotency-Key": "key-claimlanded"})
+            assert retry.status == 202, (
+                f"an admitted (ambiguous) receipt must survive, got {retry.status}")
+            payload = json.loads(await retry.text())
+    assert payload.get("replayed") is True
+    assert executed["count"] == 0, "a replay must never start a second execution"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_cancellation_releases_reserved_receipt(
+    adapter, session_db,
+):
+    """F1 (cancellation): a cancelled pre-launch claim compensates too.
+
+    Cancellation is the same ambiguous exit as a raise, so the receipt goes
+    only because the durable row proves the run was never admitted — and the
+    cancellation still propagates to the caller.
+    """
+    from gateway.platforms import api_server_session_stream as _sess_stream
+
+    session_id = session_db.create_session("claim-cancel-session", "api_server")
+    request = MagicMock()
+    request.headers = {"Idempotency-Key": "key-claimcancel"}
+    ctx = {"body": {"message": "C"}, "runtime_request": None, "lock_active": False}
+    run_id = "run_cancel_test"
+    adapter._set_run_status(run_id, "queued", session_id=session_id)
+
+    async def cancelled_claim(*args, **kwargs):
+        del args, kwargs
+        raise asyncio.CancelledError
+
+    with patch.object(adapter, "_claim_session_active_run_async",
+                      side_effect=cancelled_claim):
+        with pytest.raises(asyncio.CancelledError):
+            await _sess_stream.admit_session_stream_run(
+                adapter, request, ctx, session_id, "C", run_id)
+
+    # Reconciliation said "not admitted" -> the reservation is gone.
+    scope = adapter._run_idempotency_scope(request)
+    run_key = _sess_stream.session_run_key(
+        session_id=session_id, user_message="C", system_prompt=None,
+        idempotency_header="key-claimcancel")
+    fingerprint = _sess_stream.session_request_fingerprint(
+        session_id=session_id, user_message="C", system_prompt=None,
+        runtime_request=None, lock_active=False)
+    outcome, _record = adapter._run_idempotency_store.lookup(
+        scope, run_key, fingerprint)
+    assert outcome == "missing", f"reservation must be compensated, got {outcome}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_resolved_identity_binds_alias_and_options(
+    adapter, session_db,
+):
+    """F2: the fingerprint is the resolved execution identity.
+
+    A changed ``model_id`` alias selects a different runtime request and must
+    conflict under the same key; equivalent ``model_options`` in a different
+    key order (including nested) resolve to the same execution and must replay.
+    """
+    session_id = session_db.create_session("resolved-identity-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+
+    async def fake_run(**kwargs):
+        del kwargs
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run), \
+            suppress(Exception):
+        async with TestClient(TestServer(app)) as cli:
+            # --- changed alias model => conflict (was an identical fingerprint)
+            first = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model_id": "model-a"},
+                headers={"Idempotency-Key": "key-alias"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            first.cancel()
+            with suppress(Exception):
+                await first
+
+            changed_alias = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model_id": "model-b"},
+                headers={"Idempotency-Key": "key-alias"})
+            assert changed_alias.status == 409, (
+                f"changed alias must conflict, got {changed_alias.status}")
+            assert json.loads(await changed_alias.text())["error"]["code"] == \
+                "idempotency_key_conflict"
+
+            # --- equivalent reordered options => replay (was a false conflict)
+            run_started.clear()
+            options_a = {"service_tier": "priority",
+                         "reasoning": {"enabled": True, "effort": "high"}}
+            options_b = {"reasoning": {"effort": "high", "enabled": True},
+                         "service_tier": "priority"}
+            second = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "o", "model_options": options_a},
+                headers={"Idempotency-Key": "key-options"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            second.cancel()
+            with suppress(Exception):
+                await second
+
+            reordered = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "o", "model_options": options_b},
+                headers={"Idempotency-Key": "key-options"})
+            assert reordered.status == 202, (
+                f"equivalent reordered options must replay, got {reordered.status}")
+            assert json.loads(await reordered.text()).get("replayed") is True

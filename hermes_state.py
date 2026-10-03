@@ -1109,6 +1109,96 @@ class SessionDB(
                         self._halt_db_corrupt(exc)
                 raise
 
+    def claim_session_active_run(
+        self,
+        session_id: str,
+        run_id: str,
+        run_key: Optional[str] = None,
+        status: str = "queued",
+    ) -> Optional[str]:
+        """Atomically claim the session's active-run slot for ``run_id``.
+
+        Returns the existing ``active_run_id`` (str) when another run already
+        holds the slot, or None when this run successfully claimed it. The
+        claim is a conditional write under ``_execute_write`` (BEGIN IMMEDIATE),
+        so two concurrent session-stream requests serialize here and exactly
+        one wins — the loser observes the winner's run id and surfaces a
+        deterministic ``run_already_active`` conflict instead of starting a
+        second execution (PR #96507 P1). The persisted ``active_run_key`` is
+        the immutable request fingerprint used to recognize an admitted retry.
+        """
+        def _do(conn):
+            existing = conn.execute(
+                "SELECT active_run_id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if existing is None:
+                return None
+            current = (
+                existing["active_run_id"]
+                if isinstance(existing, sqlite3.Row)
+                else existing[0]
+            )
+            if current:
+                return current
+            conn.execute(
+                "UPDATE sessions SET active_run_id = ?, active_run_key = ?, "
+                "active_run_status = ? WHERE id = ?",
+                (run_id, run_key, status, session_id),
+            )
+            return None
+        return self._execute_write(_do)
+
+    def set_session_active_run_status(
+        self, session_id: str, run_id: str, status: str
+    ) -> bool:
+        """Update the active run's coarse status, guarded by ``run_id``.
+
+        A run id guard keeps a late status write from a superseded run from
+        overwriting the status of a newer run that has since claimed the slot.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET active_run_status = ? "
+                "WHERE id = ? AND active_run_id = ?",
+                (status, session_id, run_id),
+            )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+        return self._execute_write(_do) > 0
+
+    def clear_session_active_run(
+        self, session_id: str, expected_run_id: Optional[str] = None
+    ) -> bool:
+        """Clear the session's active-run slot on terminal.
+
+        When ``expected_run_id`` is supplied the clear is conditional, so a
+        finished run never clobbers the marker of a newer run that already
+        claimed the slot (a newer run can only appear once the old one's slot
+        was cleared, but the guard keeps the invariant under reordering).
+        """
+        def _do(conn):
+            if expected_run_id is None:
+                cursor = conn.execute(
+                    "UPDATE sessions SET active_run_id = NULL, "
+                    "active_run_key = NULL, active_run_status = NULL "
+                    "WHERE id = ?",
+                    (session_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE sessions SET active_run_id = NULL, "
+                    "active_run_key = NULL, active_run_status = NULL "
+                    "WHERE id = ? AND active_run_id = ?",
+                    (session_id, expected_run_id),
+                )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+        return self._execute_write(_do) > 0
+
     def _write_sql(
         self, sql: str, params: Any = (), *, many: bool = False, patience_s: Optional[float] = None,
     ) -> None:

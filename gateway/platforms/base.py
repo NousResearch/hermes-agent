@@ -420,7 +420,6 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return _should_bypass_proxy(hostname, no_proxy_value=no_proxy_value)
 
 
-import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union

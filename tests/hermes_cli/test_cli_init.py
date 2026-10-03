@@ -168,22 +168,33 @@ class TestBusyInputMode:
         cli.process_command("/queue move 1 9")
         assert cli._pending_input_items() == ["only item"]
 
-    def test_queue_rm_without_index_prints_usage_instead_of_raising(self):
-        """``/queue rm`` with no index reaches _queue_remove with rest="" and used to
-        raise ValueError out of the prompt_toolkit key handler, killing the TUI."""
+    @pytest.mark.parametrize("command, usage_key", [
+        ("/queue rm", "cli.queue.usage_remove"),
+        ("/queue rm 1 extra", "cli.queue.usage_remove"),
+        ("/queue rm \u2461", "cli.queue.usage_remove"),         # ② : isdigit() but not int()
+        ("/queue rm " + "9" * 5000, "cli.queue.usage_remove"),  # past int()'s digit limit
+        ("/queue edit \u00b2 new text", "cli.queue.usage_edit"),  # ²
+        ("/queue move \u2466 1", "cli.queue.usage_move"),       # ⑦
+        ("/queue move 1 \u2466", "cli.queue.usage_move"),
+    ], ids=["rm-bare", "rm-trailing-words", "rm-circled-digit", "rm-over-int-limit",
+            "edit-superscript", "move-src-circled", "move-dst-circled"])
+    def test_queue_malformed_index_prints_usage_instead_of_raising(self, command, usage_key):
+        """A bad index used to raise ValueError out of the slash handler, which
+        escapes the prompt_toolkit key handler and kills the TUI."""
+        cli = _make_cli()
+        import cli as _cli_mod
+        printed = []
+        with patch.object(_cli_mod, "_cprint", side_effect=lambda s, *a, **k: printed.append(s)):
+            cli.process_command("/queue first prompt")
+            cli.process_command(command)
+        assert cli._pending_input_items() == ["first prompt"]
+        assert printed[-1].strip() == t(usage_key)
+
+    def test_queue_edit_accepts_tab_after_index(self):
         cli = _make_cli()
         cli.process_command("/queue first prompt")
-        cli.process_command("/queue rm")
-        assert cli._pending_input_items() == ["first prompt"]
-
-    def test_queue_rm_with_trailing_words_prints_usage_instead_of_raising(self):
-        """``rest`` is only known to start with a digit, so "2 extra" reached int()."""
-        cli = _make_cli()
-        cli.process_command("/queue first prompt")
-        cli.process_command("/queue rm 1 extra")
-        assert cli._pending_input_items() == ["first prompt"]
-
-
+        cli.process_command("/queue edit 1\treplacement")
+        assert cli._pending_input_items() == ["replacement"]
 
 
     def test_interrupt_mode_routes_busy_enter_to_interrupt(self):

@@ -26,8 +26,25 @@ def _queue_usage() -> str:
     return t("cli.queue.usage")
 
 
+def _parse_queue_index(token: str) -> int | None:
+    """1-based queue index from one whitespace-free token, or None when it isn't one.
+
+    ``str.isdigit()`` alone is not enough: it accepts characters ``int()`` rejects
+    (``²``, ``②``), and ``int()`` also refuses digit strings past Python's
+    conversion limit. A ValueError here would escape the slash handler and take
+    down the prompt_toolkit app, so every queue index goes through this.
+    """
+    if not token.isdigit():
+        return None
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+
 # management verb -> (handler, takes a leading item index). Verbs without an index are
-# only management when they stand alone; index verbs only when a number follows.
+# only management when they stand alone; index verbs when a number follows or when the
+# verb stands alone (the handler then prints its usage line).
 _QUEUE_VERBS: dict[str, tuple[str, bool]] = {
     "list": ("_queue_list", False), "ls": ("_queue_list", False), "show": ("_queue_list", False),
     "clear": ("_queue_clear", False),
@@ -349,16 +366,11 @@ class CLILoopsMixin:
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
-        # ``_cmd_queue`` routes a bare ``/queue rm`` here as management (its
-        # ``not rest`` fallback), and an index verb with trailing words
-        # (``rm 2 extra``) as management too, so ``rest`` is not always a bare
-        # integer. Parse the leading token instead of trusting the whole string,
-        # or int() raises out of the slash handler and kills the TUI.
         bits = rest.split()
-        if len(bits) != 1 or not bits[0].isdigit():
+        idx = _parse_queue_index(bits[0]) if len(bits) == 1 else None
+        if idx is None:
             _cprint(f"  {t('cli.queue.usage_remove')}")
             return
-        idx = int(bits[0])
         removed: list = []
         before, _ = self._mutate_pending_input(
             lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
@@ -369,11 +381,14 @@ class CLILoopsMixin:
 
     def _queue_edit(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
-        idx_text, _, new_prompt = rest.partition(" ")
-        if not new_prompt.strip():
+        # Split on any whitespace, like ``_cmd_queue``'s routing check, so
+        # ``edit 1<TAB>text`` doesn't leave "1\ttext" as the index token.
+        bits = rest.split(None, 1)
+        idx = _parse_queue_index(bits[0]) if len(bits) == 2 else None
+        if idx is None:
             _cprint(f"  {t('cli.queue.usage_edit')}")
             return
-        idx = int(idx_text)
+        new_prompt = bits[1]
         new_text = self._expand_paste_references(new_prompt.strip())
 
         def _edit(items: list) -> list:
@@ -393,10 +408,10 @@ class CLILoopsMixin:
     def _queue_move(self, rest: str) -> None:
         from cli import _cprint
         bits = rest.split()
-        if len(bits) != 2 or not bits[1].isdigit():
+        src, dst = (_parse_queue_index(b) for b in bits) if len(bits) == 2 else (None, None)
+        if src is None or dst is None:
             _cprint(f"  {t('cli.queue.usage_move')}")
             return
-        src, dst = int(bits[0]), int(bits[1])
 
         def _move(items: list) -> list:
             if 1 <= src <= len(items) and 1 <= dst <= len(items):

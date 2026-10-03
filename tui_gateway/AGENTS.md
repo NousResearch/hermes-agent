@@ -73,6 +73,11 @@ _profile_scoped`. Probe with two on-disk homes and a `.env` name present only in
 call the method for that session and assert the secondary's value resolves and the launch
 profile's does not, and that `os.environ` is unchanged afterwards.
 
+Desktop/TUI/dashboard prompt turns also dispatch the directory `agent:start` / `agent:end`
+hooks through `turn_hooks.py`, reusing `gateway.hooks.ProfileHookRegistries`. Both dispatches
+run inside the turn's home + secret + terminal scope; end follows committed history and uses
+the live durable compression tip so memory extractors read the completed turn.
+
 ## Key surfaces
 
 | Surface | Ink component | Gateway method / event |

@@ -502,6 +502,7 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    hook_context: dict | None = None
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -795,6 +796,8 @@ def _invoke_agent(
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
         "session.title", sid, {"session_id": _k, "title": t})
+    from tui_gateway.turn_hooks import start_turn
+    st.hook_context = start_turn(sid, session, agent, prompt)
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
@@ -1029,6 +1032,10 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
 
 def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     """Finally-path of the turn: release everything, then the "tui turn finished" bookend."""
+    if st.hook_context is not None:
+        from tui_gateway.turn_hooks import end_turn
+        end_turn(st.hook_context, session, st.agent, st.result)
+        st.hook_context = None
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
     history, run_kwargs = st.history, st.run_kwargs

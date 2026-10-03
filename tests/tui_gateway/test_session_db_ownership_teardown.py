@@ -25,6 +25,7 @@ handle is never closed, and a handle that WAS transferred is not closed twice.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import types
 
@@ -47,6 +48,18 @@ class _RecordingDB:
         pass
 
 
+class _RecordingContextEngine:
+    def __init__(self):
+        self.session_end_count = 0
+        self.shutdown_count = 0
+
+    def on_session_end(self, *_args):
+        self.session_end_count += 1
+
+    def shutdown(self):
+        self.shutdown_count += 1
+
+
 # ---------------------------------------------------------------------------
 # 1. AIAgent.close() — the teardown owner
 # ---------------------------------------------------------------------------
@@ -63,6 +76,7 @@ def _bare_agent(**attrs):
     agent.session_id = "sid"
     agent._active_children = []
     agent._active_children_lock = threading.Lock()
+    agent._memory_manager = None
     agent.client = None
     for key, value in attrs.items():
         setattr(agent, key, value)
@@ -140,6 +154,116 @@ def test_raising_close_is_swallowed_and_not_retried():
 
     assert attempts == [1]
     assert getattr(agent, "_owns_session_db") is False
+
+
+def test_shutdown_memory_provider_shuts_down_context_engine_once_without_close(tmp_path):
+    """The CLI cleanup shape must release engine resources without ``close()``."""
+    context_path = tmp_path / "context.db"
+
+    class _SQLiteContextEngine(_RecordingContextEngine):
+        def __init__(self):
+            super().__init__()
+            self.connection = sqlite3.connect(context_path)
+
+        def shutdown(self):
+            super().shutdown()
+            self.connection.close()
+
+    engine = _SQLiteContextEngine()
+    agent = _bare_agent(context_compressor=engine)
+
+    agent.shutdown_memory_provider()
+    agent.shutdown_memory_provider()
+
+    assert engine.shutdown_count == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        engine.connection.execute("SELECT 1")
+
+
+def test_commit_memory_session_does_not_shut_down_context_engine():
+    engine = _RecordingContextEngine()
+    agent = _bare_agent(context_compressor=engine)
+
+    agent.commit_memory_session()
+
+    assert engine.session_end_count == 1
+    assert engine.shutdown_count == 0
+
+
+def test_shutdown_then_close_shuts_down_context_engine_once():
+    """The gateway cleanup shape must not double-release engine resources."""
+    engine = _RecordingContextEngine()
+    agent = _bare_agent(context_compressor=engine)
+
+    agent.shutdown_memory_provider()
+    agent.close()
+
+    assert engine.session_end_count == 1
+    assert engine.shutdown_count == 1
+
+
+def test_replacing_context_engine_rearms_shutdown_latch():
+    from agent.agent_init import _replace_context_engine
+
+    first_engine = _RecordingContextEngine()
+    second_engine = _RecordingContextEngine()
+    agent = _bare_agent(context_compressor=first_engine)
+    agent._context_engine_shutdown_lock = threading.Lock()
+    agent._context_engine_shutdown = False
+
+    agent.shutdown_memory_provider()
+    _replace_context_engine(agent, second_engine)
+    agent.shutdown_memory_provider()
+
+    assert first_engine.shutdown_count == 1
+    assert second_engine.shutdown_count == 1
+
+
+def test_concurrent_shutdown_selects_context_engine_once():
+    """Concurrent teardown must not double-close or hold the lock in plugins."""
+    shutdown_started = threading.Event()
+    release_shutdown = threading.Event()
+
+    class _BlockingContextEngine:
+        shutdown_count = 0
+
+        def shutdown(self):
+            self.shutdown_count += 1
+            shutdown_started.set()
+            assert release_shutdown.wait(timeout=2)
+
+    engine = _BlockingContextEngine()
+    agent = _bare_agent(context_compressor=engine)
+    agent._context_engine_shutdown_lock = threading.Lock()
+    agent._context_engine_shutdown = False
+    first = threading.Thread(target=agent.shutdown_memory_provider)
+    second = threading.Thread(target=agent.shutdown_memory_provider)
+
+    first.start()
+    assert shutdown_started.wait(timeout=2)
+    second.start()
+    second.join(timeout=2)
+    release_shutdown.set()
+    first.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert engine.shutdown_count == 1
+
+
+def test_real_agent_wires_context_engine_shutdown_lock():
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        model="test/model", provider="openrouter", api_key="sk-dummy",
+        base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+        skip_context_files=True, skip_memory=True,
+    )
+    try:
+        assert isinstance(agent._context_engine_shutdown_lock, type(threading.Lock()))
+        assert agent._context_engine_shutdown is False
+    finally:
+        agent.close()
 
 
 def test_close_still_ends_the_session_row_before_closing():

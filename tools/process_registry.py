@@ -25,7 +25,9 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env,
+    _strip_store_python_dirs_from_env)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
@@ -1277,8 +1279,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
     @staticmethod
     def _spawn_env(env_vars: dict) -> dict:
         """Sanitized child env; PYTHONUNBUFFERED so tqdm/datasets-style buffering
-        doesn't hide progress from process(action="poll")."""
-        env = _sanitize_subprocess_env(os.environ, env_vars)
+        doesn't hide progress from process(action="poll"). The store-python bin
+        dirs are stripped so background workers run the machine's Python, like
+        foreground terminal commands (#129097)."""
+        env = _strip_store_python_dirs_from_env(
+            _sanitize_subprocess_env(os.environ, env_vars))
         env["PYTHONUNBUFFERED"] = "1"
         return env
 

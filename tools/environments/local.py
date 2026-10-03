@@ -674,6 +674,51 @@ def _user_local_bin_entries() -> list[str]:
         return []
 
 
+def _store_python_path_dirs() -> list[str]:
+    """Bin dirs of the PM store Python that must never reach a terminal child
+    (#129097). ``pm.env_for("python")`` composes only already-installed
+    packages — it never installs — so this is safe on the per-command path;
+    ``[]`` on any failure or when the store python is not installed."""
+    try:
+        import pm
+
+        env = pm.env_for("python", base_env={"PATH": ""})
+    except Exception:
+        return []
+    raw = env.get("PATH", "") or next(
+        (v for k, v in env.items() if k.upper() == "PATH"), "")
+    if isinstance(raw, list):
+        return [str(d) for d in raw if d]
+    return [d for d in str(raw).split(os.pathsep) if d]
+
+
+def _strip_store_python_dirs(path: str) -> str:
+    """Drop store-python bin dirs from a PATH string, keeping entry order.
+
+    The resolved hermes bin dir is exempt: bare ``hermes`` must keep working
+    for children of service-launched gateways even if it ever lived under a
+    store-python dir. No-op when the store python is not installed."""
+    dirs = _store_python_path_dirs()
+    if not dirs:
+        return path
+    keep = _resolve_hermes_bin_dir()
+    folded = {os.path.normcase(d) for d in dirs}
+    kept = os.path.normcase(keep) if keep else None
+    return os.pathsep.join(
+        e for e in path.split(os.pathsep)
+        if not e or os.path.normcase(e) not in folded
+        or (kept is not None and os.path.normcase(e) == kept))
+
+
+def _strip_store_python_dirs_from_env(env: dict) -> dict:
+    """Drop store-python bin dirs from *env*'s PATH key in place (background
+    terminal spawns; foreground goes through ``_make_run_env``)."""
+    key = _path_env_key(env)
+    if key is not None and env.get(key):
+        env[key] = _strip_store_python_dirs(env[key])
+    return env
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Normalised POSIX PATH with missing sane entries appended: empty entries
     dropped (shells read them as cwd), duplicates collapsed (first wins), then
@@ -721,7 +766,8 @@ def _make_run_env(env: dict) -> dict:
     run_env = _scrubbed_env(
         [(dict(strip_launch_profile_env(os.environ.copy()) | env), True)],
         frozenset(),
-        lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
+        lambda p: _prepend_git_bash_dirs(
+            _append_missing_sane_path_entries(_strip_store_python_dirs(p))),
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not

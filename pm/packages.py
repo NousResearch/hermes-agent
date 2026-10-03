@@ -217,6 +217,45 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+_EXTERNALLY_MANAGED_MESSAGE = (
+    "[externally-managed]\n"
+    "Error=This Python interpreter is managed by Hermes (PM package 'python') "
+    "and must not be modified with pip. Use your own Python — a venv, pipx, "
+    "or conda environment — for project packages.\n"
+)
+
+
+def _write_externally_managed_markers(staged: Path) -> None:
+    """PEP 668 markers beside every staged stdlib, found via ``os.py``.
+
+    Layout-agnostic across the install_only trees (``lib/pythonX.Y``),
+    Windows (``Lib``) and the Termux deb (``$PREFIX/lib/pythonX.Y``): pip
+    then refuses installs into the store interpreter, so user packages can no
+    longer silently land in hash-verified state that the next repair deletes
+    (#129097). Written in ``stage()``, before publication, so the recorded
+    digest covers the marker. Trees without a stdlib (test fixtures) are left
+    alone. Never raises.
+    """
+    try:
+        candidates = list(staged.rglob("os.py"))
+    except OSError:
+        return
+    for os_py in candidates:
+        try:
+            if not os_py.is_file():
+                continue
+        except OSError:
+            continue
+        parent = os_py.parent
+        if parent.name != "Lib" and not parent.name.startswith("python3"):
+            continue
+        try:
+            (parent / "EXTERNALLY-MANAGED").write_text(
+                _EXTERNALLY_MANAGED_MESSAGE, encoding="utf-8")
+        except OSError:
+            continue
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -258,6 +297,14 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+        # PEP 668: pip must refuse the store interpreter itself, so packages
+        # the model installs never land in hash-verified state that the next
+        # repair deletes (#129097). Before publish, so the digest covers it.
+        # Existing entries gain the marker when they are next reinstalled; a
+        # missing marker is not treated as outdated (no forced reinstall).
+        # PM itself never runs pip against this interpreter (uv with explicit
+        # venv targets), so the marker cannot break installs.
+        _write_externally_managed_markers(staged)
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":

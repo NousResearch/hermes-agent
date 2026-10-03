@@ -325,7 +325,22 @@ class XAIImageGenProvider(StaticImageGenProvider):
             if err:
                 return err
 
-        extra: Dict[str, Any] = {"storage_enabled": bool(storage_cfg["enabled"])}
+        response_model = result.get("model")
+        response_model = response_model.strip() if isinstance(response_model, str) else None
+        response_model = response_model or None
+        extra: Dict[str, Any] = {
+            "storage_enabled": bool(storage_cfg["enabled"]),
+            # The legacy model field is the request selection, not proof of execution.
+            "requested_model": model_id,
+            "response_model": response_model,
+            "model_mismatch": response_model is not None and response_model != model_id,
+            "output_branch": "file_output" if public_url else ("b64_json" if first.get("b64_json") else "url"),
+        }
+        if extra["model_mismatch"]:
+            extra["warning"] = "xAI returned a different model identifier than requested; image content is not verified."
+        revised_prompt = first.get("revised_prompt")
+        if isinstance(revised_prompt, str) and revised_prompt.strip():
+            extra["revised_prompt"] = revised_prompt
         if not is_edit:
             extra["resolution"] = xai_res
         if storage_notice:

@@ -8,7 +8,7 @@ import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-
 import { ArrowUp, AudioLines, ChevronDown, Mail, Pencil, Square } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
-import { overlayWindowSize, type PetOverlayHeard, type PetOverlayTurn } from '@/store/pet-overlay'
+import { overlayWindowSize, type PetOverlayHeard, type PetOverlayNotice, type PetOverlayTurn } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
 // Fallbacks mirror pet-sprite's defaults; the gateway normally sends real values.
@@ -109,6 +109,10 @@ export function PetOverlayApp() {
   const [writing, setWriting] = useState(false)
   const [working, setWorking] = useState(false)
   const [thread, setThread] = useState<PetOverlayTurn[]>([])
+  // A reminder / "needs your attention" notice: unfolds the balloon on arrival
+  // (without taking the keyboard) and stays until dismissed.
+  const [notice, setNotice] = useState<PetOverlayNotice | null>(null)
+  const lastNoticeIdRef = useRef<string | null>(null)
   // Turns hidden by "New chat": the balloon starts clean even if the app
   // keeps the old session around.
   const [clearedIds, setClearedIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -147,6 +151,15 @@ export function PetOverlayApp() {
       setAwaitingResponse(Boolean(payload.awaiting))
       setUnread(Boolean(payload.unread))
       setThread(payload.thread ?? [])
+
+      const incoming = payload.notice ?? null
+
+      if (incoming && incoming.id !== lastNoticeIdRef.current) {
+        lastNoticeIdRef.current = incoming.id
+        setNotice(incoming)
+        setComposerOpen(true)
+      }
+
       setHeard(prev => {
         const next = payload.heard ?? null
 
@@ -758,7 +771,7 @@ export function PetOverlayApp() {
           </div>
         )}
 
-        {composerOpen && (visibleThread.length > 0 || recording || heard) && (
+        {composerOpen && (visibleThread.length > 0 || recording || heard || notice) && (
           <div
             style={{
               ...GLASS,
@@ -777,6 +790,37 @@ export function PetOverlayApp() {
               width: 340
             }}
           >
+            {notice && (
+              <div
+                style={{
+                  background: 'rgba(255, 214, 102, 0.18)',
+                  border: '1px solid rgba(255, 214, 102, 0.45)',
+                  borderRadius: 14,
+                  display: 'flex',
+                  gap: 8,
+                  padding: '7px 8px 8px 10px'
+                }}
+              >
+                <div style={{ flex: 1 }}>{notice.text}</div>
+                <button
+                  aria-label="Dismiss notice"
+                  onClick={() => setNotice(null)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                    flex: 'none',
+                    opacity: 0.7,
+                    padding: 0
+                  }}
+                  title="Dismiss"
+                  type="button"
+                >
+                  ×
+                </button>
+              </div>
+            )}
             {visibleThread.map(turn => (
               <div
                 key={turn.id}

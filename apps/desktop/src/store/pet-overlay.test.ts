@@ -113,3 +113,12 @@ describe('pet overlay companion controls', () => {
     expect(submit).not.toHaveBeenCalled()
   })
 })
+
+describe('pet overlay notices', () => {
+  it('surfaces a notice from the main process and lights the unread icon', () => {
+    sendControl?.({ id: '42', text: 'Two emails need a reply', type: 'notice' })
+
+    expect(lastPayload().notice).toEqual({ id: '42', text: 'Two emails need a reply' })
+    expect(lastPayload().unread).toBe(true)
+  })
+})

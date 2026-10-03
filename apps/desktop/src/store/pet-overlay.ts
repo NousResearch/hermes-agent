@@ -3,7 +3,15 @@ import { atom } from 'nanostores'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { chatMessageText } from '@/lib/chat-messages/parts'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
+import {
+  $petActivity,
+  $petInfo,
+  $petUnread,
+  clearPetUnread,
+  markPetUnread,
+  type PetActivity,
+  type PetInfo
+} from '@/store/pet'
 
 /**
  * Controller for the pop-out pet overlay (main-renderer side).
@@ -52,6 +60,9 @@ export interface PetOverlayStatePayload {
   /** Recent visible turns of the primary session, oldest first, so the
    *  companion card reads as a continuing conversation. */
   thread: PetOverlayTurn[]
+  /** Latest notice for the user (a reminder or "things need your attention"),
+   *  written to ~/.hermes/pet-notices.json by a cron job or script. */
+  notice: PetOverlayNotice | null
   /** What dictation heard (or why it failed) — echoed into the balloon. */
   heard: PetOverlayHeard | null
 }
@@ -59,6 +70,11 @@ export interface PetOverlayStatePayload {
 export interface PetOverlayTurn {
   id: string
   role: 'user' | 'assistant'
+  text: string
+}
+
+export interface PetOverlayNotice {
+  id: string
   text: string
 }
 
@@ -75,6 +91,7 @@ export type PetOverlayControl =
   | { type: 'dictate'; dataUrl: string; mime: string }
   | { type: 'new-chat' }
   | { type: 'mark-read' }
+  | { type: 'notice'; id: string; text: string }
   | { type: 'bounds'; bounds: PetOverlayBounds }
   | { type: 'open-app' }
   | { type: 'toggle-app' }
@@ -163,6 +180,7 @@ let scaleHandler: ((scale: number) => void) | null = null
 let dictateHandler: ((audio: Blob) => Promise<string>) | null = null
 let newChatHandler: (() => void) | null = null
 let lastHeard: PetOverlayHeard | null = null
+let lastNotice: PetOverlayNotice | null = null
 
 
 const THREAD_MAX_TURNS = 12
@@ -218,7 +236,8 @@ function currentPayload(): PetOverlayStatePayload {
     unread: $petUnread.get(),
     reaction: $petReaction.get(),
     thread: recentThread(),
-    heard: lastHeard
+    heard: lastHeard,
+    notice: lastNotice
   }
 }
 
@@ -396,6 +415,11 @@ export function initPetOverlayBridge(): () => void {
       pushNow()
     } else if (payload?.type === 'submit' && typeof payload.text === 'string') {
       submitHandler?.(payload.text)
+    } else if (payload?.type === 'notice' && typeof payload.text === 'string') {
+      // Sent by the main process when ~/.hermes/pet-notices.json changes.
+      lastNotice = { id: String(payload.id), text: payload.text }
+      markPetUnread()
+      pushNow()
     } else if (payload?.type === 'mark-read') {
       // Envelope opened in the companion balloon instead of the app.
       clearPetUnread()

@@ -143,6 +143,65 @@ class TestResolveProviderClientNamedCustom:
         assert client.api_key == "sk-real-b-ai-pool-key-12345"
 
 
+    def test_main_and_auxiliary_prefer_declared_env_key_over_pool(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RELAY_API_KEY", "declared-env-key")
+        _write_config(tmp_path, {
+            "model": {"provider": "custom:relay", "default": "relay-model"},
+            "providers": {
+                "relay": {
+                    "base_url": "https://relay.example/v1",
+                    "key_env": "RELAY_API_KEY",
+                    "default_model": "relay-model",
+                },
+            },
+        })
+
+        entry = MagicMock(runtime_api_key="pool-key", access_token="")
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.select.return_value = entry
+        with patch("hermes_cli.runtime_provider.load_pool", return_value=pool):
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            from agent.auxiliary_client import resolve_provider_client
+
+            main = resolve_runtime_provider(requested="custom:relay")
+            auxiliary, _model = resolve_provider_client("custom:relay", "relay-model")
+
+        assert main["api_key"] == "declared-env-key"
+        assert auxiliary.api_key == "declared-env-key"
+
+    def test_missing_declared_key_fails_closed_but_loopback_stays_keyless(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("RELAY_API_KEY", raising=False)
+        config = {
+            "model": {"provider": "custom:relay", "default": "relay-model"},
+            "providers": {
+                "relay": {
+                    "base_url": "https://relay.example/v1",
+                    "key_env": "RELAY_API_KEY",
+                    "default_model": "relay-model",
+                },
+            },
+        }
+        _write_config(tmp_path, config)
+
+        from hermes_cli.auth import AuthError
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from agent.auxiliary_client import resolve_provider_client
+
+        with pytest.raises(AuthError, match="Set RELAY_API_KEY"):
+            resolve_runtime_provider(requested="custom:relay")
+        with pytest.raises(AuthError, match="Set RELAY_API_KEY"):
+            resolve_provider_client("custom:relay", "relay-model")
+
+        config["providers"]["relay"]["base_url"] = "http://127.0.0.1:8080/v1"
+        _write_config(tmp_path, config)
+        main = resolve_runtime_provider(requested="custom:relay")
+        auxiliary, _model = resolve_provider_client("custom:relay", "relay-model")
+
+        assert main["api_key"] == "no-key-required"
+        assert auxiliary.api_key == "no-key-required"
+
+
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""
 

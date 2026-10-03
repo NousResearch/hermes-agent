@@ -1,39 +1,48 @@
 type TerminalName = string | null
 
-function detectTerminal(): TerminalName {
-  if (process.env.CURSOR_TRACE_ID) {
+export function detectTerminal(env: NodeJS.ProcessEnv = process.env): TerminalName {
+  if (env.CURSOR_TRACE_ID) {
     return 'cursor'
   }
 
-  if (process.env.TERM === 'xterm-ghostty') {
-    return 'ghostty'
-  }
-
-  if (process.env.TERM?.includes('kitty')) {
-    return 'kitty'
-  }
-
-  if (process.env.TERM_PROGRAM) {
-    return process.env.TERM_PROGRAM
-  }
-
-  if (process.env.TMUX) {
+  // Herdr is a terminal multiplexer with Kitty keyboard protocol support.
+  // Its panes intentionally expose a generic TERM, so waiting for TERM or
+  // TERM_PROGRAM detection prevents the TUI from requesting modified-key
+  // reporting and collapses Shift+Enter to plain Enter. Treat a Herdr pane
+  // like tmux for capability negotiation.
+  if (env.HERDR_ENV === '1') {
     return 'tmux'
   }
 
-  if (process.env.STY) {
-    return 'screen'
+  if (env.TERM === 'xterm-ghostty') {
+    return 'ghostty'
   }
 
-  if (process.env.KITTY_WINDOW_ID) {
+  if (env.TERM?.includes('kitty')) {
     return 'kitty'
   }
 
-  if (process.env.WT_SESSION) {
+  if (env.TERM_PROGRAM) {
+    return env.TERM_PROGRAM
+  }
+
+  if (env.TMUX) {
+    return 'tmux'
+  }
+
+  if (env.STY) {
+    return 'screen'
+  }
+
+  if (env.KITTY_WINDOW_ID) {
+    return 'kitty'
+  }
+
+  if (env.WT_SESSION) {
     return 'windows-terminal'
   }
 
-  return process.env.TERM ?? null
+  return env.TERM ?? null
 }
 
 export const env = {

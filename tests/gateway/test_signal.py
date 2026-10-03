@@ -24,14 +24,26 @@ def _reset_signal_scheduler():
 # ---------------------------------------------------------------------------
 
 def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
-    """Create a SignalAdapter with sensible test defaults."""
+    """Create a SignalAdapter with sensible test defaults.
+
+    ``group_allowed`` / ``dm_allowed`` / ``dm_policy`` / ``group_policy`` set the adapter's env
+    surface; ``extra_overrides`` maps straight onto ``PlatformConfig.extra`` (the config layer that
+    must win over env).
+    """
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", extra.pop("dm_allowed", "*"))
+    monkeypatch.setenv("SIGNAL_DM_POLICY", extra.pop("dm_policy", ""))
+    monkeypatch.setenv("SIGNAL_GROUP_POLICY", extra.pop("group_policy", ""))
+    allow_all = extra.pop("allow_all", None)
+    if allow_all is not None:
+        monkeypatch.setenv("SIGNAL_ALLOW_ALL_USERS", allow_all)
     from gateway.platforms.signal import SignalAdapter
     config = PlatformConfig()
     config.enabled = True
     config.extra = {
         "http_url": "http://localhost:8080",
         "account": account,
+        **extra.pop("extra_overrides", {}),
         **extra,
     }
     return SignalAdapter(config)
@@ -1383,3 +1395,140 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# Access policy (OwnAccessPolicyMixin)
+# ---------------------------------------------------------------------------
+
+def _make_group_envelope(sender: str, group_id: str, text: str = "hello") -> dict:
+    """Build a minimal signal-cli group envelope from *sender* in *group_id*."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Group Member",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000002",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "groupInfo": {"groupId": group_id, "groupName": "Test Group"},
+            },
+        }
+    }
+
+
+class TestSignalAccessPolicy:
+    """Signal gates DM/group intake through the shared ``OwnAccessPolicyMixin`` surface.
+
+    Weixin, WeCom, QQBot, WhatsApp and Yuanbao already own their access policy that way; Signal's
+    ``dm_policy`` must use the same vocabulary and the same predicate (one rule, not a sixth copy),
+    with ``SIGNAL_ALLOWED_USERS`` still listing group members while DMs are narrowed separately.
+    """
+
+    def test_adapter_declares_own_access_policy(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="alice")
+        assert adapter.enforces_own_access_policy is True
+
+    def test_dm_allow_from_narrows_dms_without_touching_group_members(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="alice", group_allowed="room-1")
+        assert adapter._dm_policy == "allowlist"
+        assert adapter.dm_allow_from == {"alice"}
+        assert adapter._is_dm_allowed("alice") is True
+        assert adapter._is_dm_allowed("bob") is False
+        assert adapter._is_dm_intake_allowed("alice") is True
+        assert adapter._is_dm_intake_allowed("bob") is False
+
+    def test_blank_principal_is_never_admitted(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="alice", dm_policy="pairing")
+        assert adapter._is_dm_intake_allowed("") is False
+        assert adapter._is_dm_intake_allowed("   ") is False
+
+    def test_disabled_drops_every_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="alice", dm_policy="disabled")
+        assert adapter._is_dm_intake_allowed("alice") is False
+
+    def test_pairing_admits_unknown_sender_to_intake_only(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="alice", dm_policy="pairing")
+        assert adapter._is_dm_intake_allowed("bob") is True   # the pairing handshake may run
+        assert adapter._is_dm_allowed("bob") is False         # ... but pairing is not access
+
+    def test_open_policy_needs_the_allow_all_opt_in(self, monkeypatch):
+        monkeypatch.delenv("SIGNAL_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="", dm_policy="open")
+        assert adapter._is_dm_allowed("bob") is False
+
+    def test_open_policy_with_opt_in_admits_strangers(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, dm_allowed="", dm_policy="open", allow_all="true")
+        assert adapter._is_dm_allowed("bob") is True
+
+    def test_config_extra_beats_env(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch, dm_allowed="alice", dm_policy="allowlist",
+            extra_overrides={"allow_from": ["carol"], "dm_policy": "pairing"})
+        assert adapter.dm_allow_from == {"carol"}
+        assert adapter._dm_policy == "pairing"
+
+    def test_unknown_policy_fails_closed(self, monkeypatch, caplog):
+        with caplog.at_level("WARNING", logger="gateway.platforms.signal"):
+            adapter = _make_signal_adapter(monkeypatch, dm_allowed="alice", dm_policy="alowlist")
+        assert adapter._dm_policy == "disabled"
+        assert adapter._is_dm_intake_allowed("alice") is False
+        assert "unknown dm_policy" in caplog.text
+
+    def test_group_policy_defaults_follow_the_group_allowlist(self, monkeypatch):
+        assert _make_signal_adapter(monkeypatch, group_allowed="")._group_policy == "disabled"
+        assert _make_signal_adapter(monkeypatch, group_allowed="room-1,room-2")._group_policy == "allowlist"
+        assert _make_signal_adapter(monkeypatch, group_allowed="*")._group_policy == "open"
+
+    def test_group_intake_obeys_group_policy(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="room-1")
+        assert adapter._group_allowed("room-1") is True
+        assert adapter._group_allowed("room-2") is False
+        assert _make_signal_adapter(monkeypatch, group_allowed="*")._group_allowed("room-9") is True
+        assert _make_signal_adapter(monkeypatch, group_allowed="")._group_allowed("room-1") is False
+
+    def test_group_ids_match_with_or_without_the_chat_prefix(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="group:room-1")
+        assert adapter._is_group_allowed("group:room-1") is True
+        assert adapter._is_group_allowed("room-1") is True
+        assert adapter._group_allowed("room-1") is True
+
+    def test_dm_policy_does_not_gate_groups(self, monkeypatch):
+        """A DM-disabled (group-only) install keeps the allowlisted group working."""
+        adapter = _make_signal_adapter(monkeypatch, dm_policy="disabled", group_allowed="room-1")
+        assert adapter._is_dm_intake_allowed("alice") is False
+        assert adapter._group_allowed("room-1") is True
+
+    @staticmethod
+    async def _dispatch(monkeypatch, envelope, **kwargs):
+        adapter = _make_signal_adapter(monkeypatch, **kwargs)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _capture(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _capture
+        await adapter._handle_envelope(envelope)
+        return dispatched
+
+    @pytest.mark.asyncio
+    async def test_dm_from_a_non_allowlisted_sender_never_reaches_the_gateway(self, monkeypatch):
+        envelope = _make_dm_envelope(sender="bob", attachments=[], text="hi")
+        assert await self._dispatch(monkeypatch, envelope, dm_allowed="alice") == []
+        dispatched = await self._dispatch(monkeypatch, envelope, dm_allowed="bob")
+        assert len(dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_only_install_dispatches_in_the_group_but_not_in_dms(self, monkeypatch):
+        group_env = _make_group_envelope(sender="bob", group_id="room-1")
+        assert len(await self._dispatch(monkeypatch, group_env, dm_policy="disabled",
+                                        group_allowed="room-1")) == 1
+        dm_env = _make_dm_envelope(sender="bob", attachments=[], text="hi")
+        assert await self._dispatch(monkeypatch, dm_env, dm_policy="disabled",
+                                    group_allowed="room-1") == []
+        stranger_group = _make_group_envelope(sender="bob", group_id="room-9")
+        assert await self._dispatch(monkeypatch, stranger_group, dm_policy="disabled",
+                                    group_allowed="room-1") == []

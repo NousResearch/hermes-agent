@@ -756,3 +756,67 @@ class TestOneshotPassesAliasCredential:
 
         assert captured["explicit_base_url"] == ALIAS_HOST
         assert captured["explicit_api_key"] == "sk-theta-ALIAS"
+
+
+class TestPersistedAliasPickKeepsItsCredential:
+    """``/model <alias> --global`` (and the dashboard's main-slot pick) persists the alias's route;
+    the next launch must authenticate against the alias host the way the session did, not with no
+    key at all — and the alias's secret must never be persisted against any other host."""
+
+    ALIAS_SECRET = "sk-theta-FROM-ENV"
+    OTHER_HOST = "https://other.example.test/v1"
+
+    def _persist_alias_pick(self, monkeypatch, credential: str, surface: str = "cli", alias_url: str = ALIAS_HOST):
+        from hermes_cli.config import get_config_path, load_config, save_config
+        import hermes_cli.model_switch as ms
+
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        url_line = f"    base_url: {alias_url}\n" if alias_url else ""
+        path.write_text(
+            f"model:\n  default: other-1\n  provider: custom\n  base_url: {self.OTHER_HOST}\n"
+            "  api_key: sk-other-ENDPOINT\n"
+            f"model_aliases:\n  theta:\n    model: theta-1\n{url_line}    {credential}\n",
+            encoding="utf-8")
+        monkeypatch.setenv("THETA_API_KEY", self.ALIAS_SECRET)
+        monkeypatch.setattr(
+            "hermes_cli.models_validate.validate_requested_model",
+            lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": ""})
+        result = ms.switch_model(
+            raw_input="theta", current_provider="custom", current_model="other-1",
+            current_base_url=self.OTHER_HOST, current_api_key="sk-other-ENDPOINT", is_global=True)
+        assert result.success, result.error_message
+        assert result.api_key == (self.ALIAS_SECRET if alias_url else "sk-other-ENDPOINT")
+        if surface == "cli":
+            ms.persist_model_selection(result)
+        else:  # POST /api/model/set: an env-expanded document saved whole
+            from hermes_cli.web_server_config import _apply_main_model_assignment
+            cfg = load_config()
+            cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
+            save_config(cfg)
+        return path
+
+    @pytest.mark.parametrize("surface", ["cli", "dashboard"])
+    @pytest.mark.parametrize("credential", ["key_env: THETA_API_KEY", "api_key: ${THETA_API_KEY}"])
+    def test_next_launch_resolves_the_alias_credential(self, monkeypatch, credential, surface):
+        self._persist_alias_pick(monkeypatch, credential, surface)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider()
+        assert runtime["base_url"] == ALIAS_HOST
+        assert runtime["api_key"] == self.ALIAS_SECRET
+
+    @pytest.mark.parametrize("surface", ["cli", "dashboard"])
+    @pytest.mark.parametrize("alias_url, persisted", [
+        (ALIAS_HOST, {"api_key": "${THETA_API_KEY}"}),
+        # No base_url: the session stays on OTHER_HOST, whose own key must stay the persisted one.
+        ("", {"api_key": "sk-other-ENDPOINT"}),
+    ])
+    def test_alias_secret_is_persisted_only_as_its_own_endpoints_reference(
+            self, monkeypatch, surface, alias_url, persisted):
+        from hermes_cli.config import read_user_config_raw
+
+        path = self._persist_alias_pick(monkeypatch, "api_key: ${THETA_API_KEY}", surface, alias_url)
+        assert self.ALIAS_SECRET not in path.read_text(encoding="utf-8")
+        model = read_user_config_raw(path)["model"]
+        assert {k: model[k] for k in ("api_key", "key_env") if k in model} == persisted

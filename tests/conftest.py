@@ -433,6 +433,14 @@ def _reset_foreground_exit_fence():
 
 
 @pytest.fixture(autouse=True)
+def _reset_shared_rate_limit_windows():
+    """A rate-limit wait one test arms must not stretch another test's retry that reuses its key."""
+    yield
+    if (retry_utils := sys.modules.get("agent.retry_utils")) is not None:
+        retry_utils._reset_shared_rate_limit_windows()
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_kanban_memory_guard(request, monkeypatch):
     """Pin the kanban dispatcher's memory guard to "no data" for every test.
 

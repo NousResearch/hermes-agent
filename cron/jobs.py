@@ -1036,7 +1036,8 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
         first = it.get_next(datetime)
         gap = (it.get_next(datetime) - first).total_seconds()
         result = gap if gap > 0 else None
-    except Exception:
+    except Exception as exc:
+        logger.warning("Could not compute cadence for cron expr %r: %s", expr, exc)
         result = None
     # Hard bound so deleted/edited exprs can't grow the cache unboundedly in a long-lived gateway.
     if len(_cron_cadence_cache) >= 256:

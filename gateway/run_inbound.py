@@ -1137,6 +1137,9 @@ class GatewayInboundMixin:
                             result = await self._run_in_executor_with_context(plugin_handler, user_args)
                             if asyncio.iscoroutine(result):
                                 result = await result
+                    from hermes_cli.plugins import RetryLastUser
+                    if isinstance(result, RetryLastUser):
+                        return True, await self._handle_retry_command(event), command
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

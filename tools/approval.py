@@ -156,10 +156,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
                 return 0
             queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            # Some external approval sources require a card-specific decision.
+            # Bulk approval/denial cannot stand in for an exact request response.
+            targets = [entry for entry in queue if entry.data.get("requires_request_id") is not True]
+            queue[:] = [entry for entry in queue if entry not in targets]
         else:
-            targets = [queue.pop(0)]
+            entry = next((entry for entry in queue
+                          if entry.data.get("requires_request_id") is not True), None)
+            if entry is None:
+                return 0
+            queue.remove(entry)
+            targets = [entry]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's

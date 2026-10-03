@@ -79,6 +79,29 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_exact_bound_button_resolves_its_own_request(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        request_id = "5e837e55-b15f-4e92-a39c-73445032d989"
+        await adapter.send_exec_approval(
+            chat_id="12345", command="external action", session_key="chat:key",
+            metadata={"approval_request_id": request_id},
+            allow_session=False, allow_permanent=False)
+        approval_id = next(iter(adapter._approval_state))
+        assert adapter._approval_state[approval_id] == ("chat:key", request_id)
+
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.from_user.first_name = "Tester"
+        adapter._claim_callback_state = AsyncMock(
+            return_value=adapter._approval_state[approval_id])
+        adapter._edit_md_quiet = AsyncMock()
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+            await adapter._handle_exec_approval_callback(
+                query, f"ea:once:{approval_id}", {"chat_id": "12345"})
+        resolve.assert_called_once_with("chat:key", "once", request_id=request_id)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("smart_denied", [False, True])
     async def test_oversized_escaped_approval_text_keeps_inline_keyboard(self, smart_denied):
         """The rendered HTML card (escaped command + reason + framing) must fit Telegram's
@@ -355,4 +378,3 @@ class TestTelegramApprovalCallback:
         assert runner.last_source is not None
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
-

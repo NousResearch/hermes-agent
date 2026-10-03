@@ -851,7 +851,7 @@ Runs FTS5, dedupes hits by session lineage, and returns the top N sessions. Disc
 
 Each result carries:
 
-- `session_id`, `title`, `when`, `source`
+- `session_id`, `title`, `when`, `started_at`, `source`
 - `snippet` — FTS5-highlighted match excerpt
 - `detail` — `full` or `compact`
 - `bookend_start` / `bookend_end` — first/last 3 user+assistant messages for full results; empty lists for compact results

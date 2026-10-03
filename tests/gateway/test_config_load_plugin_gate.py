@@ -202,6 +202,102 @@ class TestEnablementSkip:
         assert loads, "a YAML-derived config row must still materialize the platform"
 
 
+class TestAuthPoolMetadata:
+    """``auth_pools`` manifest metadata: the auth.json credential-pool keys an enablement
+    path may read. Presence of a pool record is a credential signal — skipping a platform
+    that has one is the silent-drop bug PR review found (photon installs whose ``hermes
+    photon setup`` wrote auth.json but whose .env write failed or was cleared)."""
+
+    @pytest.fixture
+    def registry(self):
+        return PlatformRegistry()
+
+    def test_declare_and_lookup_roundtrip(self):
+        reg = PlatformRegistry()
+        reg.register_deferred("plat", lambda: None)
+        reg.declare_auth_pools("plat", ["some_pool"])
+        assert reg.auth_pools("plat") == frozenset({"some_pool"})
+
+    def test_undeclared_platform_yields_empty_pools(self):
+        reg = PlatformRegistry()
+        assert reg.auth_pools("nope") == frozenset()
+
+    def test_manifest_auth_pools_parsed_from_plugin_yaml(self, tmp_path):
+        from hermes_cli.plugins_manifest import parse_manifest_file
+
+        plugin_dir = tmp_path / "z-platform"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: z-platform\nkind: platform\nrequires_env:\n  - name: Z_TOKEN\n"
+            "auth_pools:\n  - z_project\n  - ' spaced-pool '\n"
+        )
+        manifest = parse_manifest_file(plugin_dir / "plugin.yaml", plugin_dir, "bundled", "")
+        assert manifest is not None
+        assert manifest.auth_pools == ["z_project", "spaced-pool"]
+
+    def test_declared_pool_without_record_still_skips(self, registry, monkeypatch, tmp_path):
+        """Counter-case: declared pools but no auth.json record (and no env, no row) must
+        keep the skip — the perf win survives the auth-pool extension."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # empty home: no auth.json
+
+        loads = []
+        entry = _entry("plat", is_connected=lambda cfg: True, required_env=["PLAT_TOKEN"])
+        registry.register_deferred("plat", lambda: loads.append(1) or registry.register(entry))
+        registry.declare_env_keys("plat", ["PLAT_TOKEN"])
+        registry.declare_auth_pools("plat", ["z_project"])
+
+        from gateway.config import GatewayConfig
+
+        config = GatewayConfig()
+
+        import gateway.platform_registry as pr
+
+        saved = pr.platform_registry
+        pr.platform_registry = registry
+        try:
+            from gateway.config_env import _plugin_could_be_enabled
+
+            assert _plugin_could_be_enabled("plat", registry, config) is False, \
+                "declared pools with no record, no env, no row must stay skipped"
+        finally:
+            pr.platform_registry = saved
+        assert loads == []
+
+    def test_auth_pool_record_forces_import(self, registry, monkeypatch, tmp_path):
+        """The regression: declared pools + a real auth.json record must materialize the
+        platform even when every declared env var is unset."""
+        import json as _json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "auth.json").write_text(_json.dumps(
+            {"credential_pool": {"z_project": [{"spectrum_project_id": "x", "project_secret": "y"}]}}
+        ))
+
+        loads = []
+        entry = _entry("plat", is_connected=lambda cfg: True, required_env=["PLAT_TOKEN"])
+        registry.register_deferred("plat", lambda: loads.append(1) or registry.register(entry))
+        registry.declare_env_keys("plat", ["PLAT_TOKEN"])
+        registry.declare_auth_pools("plat", ["z_project"])
+
+        from gateway.config import GatewayConfig
+
+        config = GatewayConfig()
+
+        import gateway.platform_registry as pr
+
+        saved = pr.platform_registry
+        pr.platform_registry = registry
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        try:
+            from gateway.config_env import _plugin_could_be_enabled
+
+            assert _plugin_could_be_enabled("plat", registry, config) is True, \
+                "a declared auth-pool record must defeat the skip"
+        finally:
+            pr.platform_registry = saved
+        assert loads == [], "pre-check must stay import-free"
+
+
 class TestSectionedHookGate:
     def test_hook_fires_only_for_sectioned_platform(self):
         from gateway.config_loader import apply_plugin_yaml_hooks

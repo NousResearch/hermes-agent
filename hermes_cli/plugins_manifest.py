@@ -35,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime", "provides_locales",
+    "requires_hermes", "python_runtime", "provides_locales", "auth_pools",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -347,6 +347,11 @@ class PluginManifest:
     author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     optional_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
+    # ``auth.json`` ``credential_pool`` keys this platform's enablement path may read
+    # (e.g. photon's ``photon_project`` pool written by ``hermes photon setup``). Lets the
+    # config enablement pre-check treat "a pool record exists" as a credential presence
+    # signal, import-free (auth.json is pure data).
+    auth_pools: List[str] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "bundled", "user", "project", or "entrypoint"
@@ -546,6 +551,7 @@ def parse_manifest_file(
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             optional_env=data.get("optional_env", []),
+            auth_pools=[str(k).strip() for k in (data.get("auth_pools") or []) if str(k).strip()],
             provides_tools=data.get("provides_tools", []),
             # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
             # must keep declaring the same thing (#108371).

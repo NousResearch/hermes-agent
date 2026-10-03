@@ -306,6 +306,11 @@ class PluginLoaderMixin:
                 # load, and a failed lookup here simply means one extra import later.
                 platform_registry.declare_env_keys(
                     platform_name, _manifest_env_keys(manifest), scope=scope)
+                # Manifest-declared auth.json credential-pool keys (see
+                # ``platform_registry.declare_auth_pools``): same skip-exactness treatment for
+                # platforms whose enablement reads a credential store instead of env vars.
+                platform_registry.declare_auth_pools(
+                    platform_name, getattr(manifest, "auth_pools", ()) or (), scope=scope)
             current = platform_registry.snapshot_registration(platform_name, scope=scope)
             if current[0] is None and current[1] is _loader:
                 self._plugin_platform_names.add(platform_name)

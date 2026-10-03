@@ -437,18 +437,48 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
             )
 
 
+def _auth_pool_has_record(pools) -> bool:
+    """True when any declared ``auth.json`` ``credential_pool`` key holds a record.
+
+    Import-free presence signal: ``auth.json`` is pure data (the shape ``hermes <x> setup``
+    CLIs write), so the enablement pre-check can consult it without importing the platform.
+    Any read/parse failure fails OPEN (treated as "record may exist") — the cost of a wrong
+    fail-open is one extra import, never a silently dropped platform.
+    """
+    if not pools:
+        return False
+    try:
+        from hermes_cli.config import get_hermes_home
+        path = get_hermes_home() / "auth.json"
+        if not path.exists():
+            return False
+        import json as _json
+        auth = _json.loads(path.read_text(encoding="utf-8")) or {}
+        pool = auth.get("credential_pool") or {}
+        for key in pools:
+            entries = pool.get(key) or []
+            if isinstance(entries, list) and entries:
+                return True
+    except Exception as e:
+        logger.debug("auth-pool pre-check raised: %s", e)
+        return True
+    return False
+
+
 def _plugin_could_be_enabled(name: str, registry, config: GatewayConfig) -> bool:
     """Pre-import skip for the plugin enablement pass: True when the platform *cannot* be
-    credential-gated on (no declared env var set, no config row) — see ``declare_env_keys``.
+    credential-gated off (no declared env var set, no auth-pool record, no config row) — see
+    ``declare_env_keys`` / ``declare_auth_pools``.
 
     Exactness contract: a bundled platform's enablement path (``env_enablement_fn`` /
     ``is_connected``) consults only the env vars its manifest declares (``requires_env`` /
-    ``optional_env``) plus YAML-derived ``extra``/``token`` — the same list ``hermes setup``
-    prompts from. When the manifest declares none, the skip is off (legacy behavior). Scope-aware
+    ``optional_env``), the ``auth.json`` credential-pool keys it declares (``auth_pools``),
+    plus YAML-derived ``extra``/``token`` — the same lists ``hermes setup`` prompts from.
+    When the manifest declares none, the skip is off (legacy behavior). Scope-aware
     ``get_env_value`` mirrors what ``is_connected`` itself reads under multiplexing.
     """
     try:
-        from hermes_cli.gateway import get_env_value
+        from hermes_cli.config import get_env_value
         keys = registry.env_keys(name)
         if not keys:
             return True
@@ -456,6 +486,12 @@ def _plugin_could_be_enabled(name: str, registry, config: GatewayConfig) -> bool
             return True
     except Exception as e:
         logger.debug("enablement pre-check for %s raised: %s", name, e)
+        return True
+    try:
+        if _auth_pool_has_record(registry.auth_pools(name)):
+            return True
+    except Exception as e:
+        logger.debug("auth-pool pre-check for %s raised: %s", name, e)
         return True
     # No declared credential present: still import when a YAML section may have created a config
     # row (extra/token/YAML enablement) or the platform is already enabled.

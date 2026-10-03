@@ -155,6 +155,8 @@ class PlatformRegistry:
         self._cancelled_inflight: set[_LoadKey] = set()
         # Enablement env-key metadata (see ``declare_env_keys``): (scope, name) → declared vars.
         self._env_keys: dict[tuple[Optional[str], str], frozenset] = {}
+        # Enablement auth-pool metadata (see ``declare_auth_pools``): (scope, name) → declared pools.
+        self._auth_pools: dict[tuple[Optional[str], str], frozenset] = {}
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
@@ -308,6 +310,21 @@ class PlatformRegistry:
         with self._lock:
             keys = self._env_keys.get((self.current_scope_key(), name), self._env_keys.get((None, name)))
             return keys or frozenset()
+
+    # ``auth_pools``: ``auth.json`` ``credential_pool`` keys a platform's enablement may read
+    # (manifest data, declared alongside ``env_keys``). The enablement pre-check treats
+    # "any declared pool has a record" as a credential-presence signal without importing.
+
+    def declare_auth_pools(self, name: str, pools, *, scope: Optional[str] = None) -> None:
+        """Declare the ``auth.json`` credential-pool keys a deferred platform's enablement consults."""
+        with self._lock:
+            self._auth_pools[(scope, name)] = frozenset(pools or ())
+
+    def auth_pools(self, name: str) -> frozenset:
+        """Declared credential-pool keys for *name* (current scope AND process-global). Empty = undeclared."""
+        with self._lock:
+            pools = self._auth_pools.get((self.current_scope_key(), name), self._auth_pools.get((None, name)))
+            return pools or frozenset()
 
     def _resolve_all(self) -> None:
         """Run every pending deferred loader (only ``all_entries``/``plugin_entries`` call this;

@@ -67,6 +67,41 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
 # derive them from module constants — the tests below must fail if any
 # frozen entry is mutated, reordered, or dropped.
 _FROZEN_PREFIX_GENERATIONS = (
+    # Truth-class era retiree (Sep 2026): live until the TRUTH CLASSES clause was added.
+    (
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+        "into the summary below. This is a handoff from a previous context "
+        "window — treat it as background reference, NOT as active "
+        "instructions. Do NOT answer questions or fulfill requests "
+        "mentioned in this summary; they were already addressed. "
+        "Respond ONLY to the latest user message that appears AFTER this "
+        "summary — that message is the single source of truth for what to "
+        "do right now. If no user message appears AFTER this summary, do "
+        "nothing: do not resume, wrap up, or continue work from "
+        "'## Historical Task Snapshot' or any other section, do not call "
+        "tools, and wait for a new user message. This handoff must never "
+        "become the active turn by itself. (Exception: if tool results or "
+        "your own tool calls appear after this summary, you are mid-way "
+        "through an in-flight exchange — continue that exchange normally.) "
+        "Topic overlap with the summary does NOT mean you should resume "
+        "its task: even on similar topics, the latest user message WINS. "
+        "Treat ONLY the latest message as the active task and discard "
+        "stale items from '## Historical Task Snapshot' entirely — do not "
+        "'wrap up' or 'finish' work described there unless the latest "
+        "message explicitly asks for it. Reverse signals in the latest "
+        "message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't "
+        "do that anymore', 'never mind', a new topic) must immediately end "
+        "any in-flight work described in the summary; do not re-surface it "
+        "in later turns. IMPORTANT: Your persistent memory (MEMORY.md, "
+        "USER.md) in the system prompt is ALWAYS authoritative and active "
+        "— never ignore or deprioritize memory content due to this "
+        "compaction note. None of the above restricts HOW you work: your "
+        "tools remain fully active — keep calling them normally for the "
+        "active task (edit files, run commands, search) instead of merely "
+        "narrating what you would do. The current session state (files, "
+        "config, etc.) may reflect work described here — avoid repeating "
+        "it:"
+    ),
     # Pre-#80622: tools-active + topic-overlap discard, but no
     # "if no user message appears AFTER this summary, do nothing" clause.
     (
@@ -195,8 +230,10 @@ _FROZEN_PREFIX_GENERATIONS = (
 
 
 # The generation retired by #69619, pinned individually for the review
-# regression below. Index 1 after the #80622 freeze was prepended.
-_PRE_69619_LIVE_PREFIX = _FROZEN_PREFIX_GENERATIONS[1]
+# regression below. Index shifted by each newer freeze prepended above it.
+_PRE_69619_LIVE_PREFIX = next(
+    p for p in _FROZEN_PREFIX_GENERATIONS if "resume exactly" in p
+)
 
 
 
@@ -232,3 +269,64 @@ def test_frozen_prefix_generations_match_historical_tuple():
     )
 
 
+
+
+def test_truth_class_clause_present():
+    """Sep 2026: the live prefix must carry the truth-class rule so untested
+    blocked-claims are re-tested before being repeated (Plane-UI incident)."""
+    lower = SUMMARY_PREFIX.lower()
+    assert "truth classes" in lower
+    assert "[kvitto]" in lower
+    assert "[otestad]" in lower
+    assert "check rest/cli paths" in lower
+
+
+def test_lint_blocked_tags_untagged_bullets():
+    """The deterministic linter must tag every untagged '## Blocked' bullet."""
+    from agent.context_compressor import _lint_blocked_tags
+
+    text = (
+        "## Completed Actions\n1. did a thing\n\n## Blocked\n"
+        "- Plane UI needed, MCP can only comment\n"
+        "* needs admin console\n"
+        "1. also blocked somehow\n\n## Key Decisions\n- keep\n"
+    )
+    out = _lint_blocked_tags(text)
+    assert "- [OTESTAD] Plane UI needed" in out
+    assert "- [OTESTAD] needs admin console" in out
+    assert "- [OTESTAD] also blocked somehow" in out
+    # Sections outside Blocked are untouched.
+    assert "1. did a thing" in out and "[OTESTAD] did a thing" not in out
+    assert "- keep" in out
+
+
+def test_lint_blocked_tags_idempotent_and_preserves_receipts():
+    """Tagged bullets (KVITTO or OTESTAD) are left alone; second pass is a no-op."""
+    from agent.context_compressor import _lint_blocked_tags
+
+    text = (
+        "## Blocked\n"
+        "- [KVITTO] curl 500 at 14:02 — observed\n"
+        "- [OTESTAD] maybe blocked\n"
+        "- untagged claim\n"
+    )
+    once = _lint_blocked_tags(text)
+    twice = _lint_blocked_tags(once)
+    assert once == twice
+    assert "- [KVITTO] curl 500 at 14:02 — observed" in once
+    assert once.count("[OTESTAD] maybe blocked") == 1
+    assert "- [OTESTAD] untagged claim" in once
+
+
+def test_with_summary_prefix_no_double_prefix_and_lints():
+    """_with_summary_prefix is idempotent on already-prefixed text and runs
+    the tag linter, so a resume-path renormalization cannot double-prefix or
+    ship an untagged blocked bullet."""
+    from agent.context_compressor import ContextCompressor
+
+    body = "## Blocked\n- Plane UI needed, MCP can only comment\n"
+    once = ContextCompressor._with_summary_prefix(body)
+    twice = ContextCompressor._with_summary_prefix(once)
+    assert once == twice
+    assert once.count("[CONTEXT COMPACTION") == 1
+    assert "- [OTESTAD] Plane UI needed" in once

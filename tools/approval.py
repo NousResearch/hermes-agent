@@ -1209,7 +1209,13 @@ def check_all_command_guards(command: str, env_type: str,
     if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
+        # Tirith rule IDs describe the finding class, not the command being
+        # approved.  Session-caching that ID alone lets approval of one
+        # package install suppress the same finding for every later install.
+        # Bind the session key to the exact scanned command so approvals do not
+        # cross package or command boundaries.
+        package_rules = {"analysis_incomplete", "threat_malicious_package"}
+        tirith_key = f"tirith:{rule_id}:{command}" if rule_id in package_rules else f"tirith:{rule_id}"
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
     if is_dangerous and not is_approved(session_key, pattern_key):

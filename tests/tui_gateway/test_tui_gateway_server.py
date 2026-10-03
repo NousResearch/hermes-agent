@@ -16907,8 +16907,9 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             raise RuntimeError("transcript write failed")
 
-        def delete_session(self, session_id):
+        def delete_session(self, session_id, **kwargs):
             seen["deleted"] = session_id
+            seen["delete_kwargs"] = kwargs
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -16942,6 +16943,8 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
     # The half-written child was rolled back — no durable empty row left to
     # shadow the lazy seed path.
     assert seen.get("deleted") == key
+    # A rollback, not a user delete: resume may still recreate the key (#96793).
+    assert seen.get("delete_kwargs") == {"record_deleted": False}
     # pending_title survived: it still lands via the lazy post-turn apply.
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["pending_title"] == "My Branch"

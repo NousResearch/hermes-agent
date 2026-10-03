@@ -1597,13 +1597,14 @@ class SessionSessionsMixin:
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
         expected_display_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-        exclude_active_write_guards: bool = False,
+        exclude_active_write_guards: bool = False, record_deleted: bool = True,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
-        is protected by an active turn lease or compression lock."""
+        is protected by an active turn lease or compression lock. ``record_deleted`` remembers the id
+        (see :meth:`was_deleted`); internal rollbacks of a row they just wrote pass False."""
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
@@ -1632,12 +1633,27 @@ class SessionSessionsMixin:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
+            if record_deleted:
+                self._record_deleted(conn, [session_id])
             removed_ids.append(session_id)
             return True
         deleted = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
+
+    # A deleted row leaves nothing behind, so a stored id (a Desktop tile, the last-session key, /resume)
+    # would look like a key that was minted but never persisted, and session.resume recreates those.
+    _DELETED_SESSION_META_PREFIX = "deleted_session:"
+
+    def _record_deleted(self, conn, session_ids) -> None:
+        stamp = str(time.time())
+        for sid in session_ids:
+            self.set_meta(f"{self._DELETED_SESSION_META_PREFIX}{sid}", stamp, cursor=conn)
+
+    def was_deleted(self, session_id: str) -> bool:
+        """True if *session_id* was removed by :meth:`delete_session` / :meth:`delete_sessions`."""
+        return bool(session_id) and self.get_meta(f"{self._DELETED_SESSION_META_PREFIX}{session_id}") is not None
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
@@ -1708,6 +1724,7 @@ class SessionSessionsMixin:
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
+            self._record_deleted(conn, existing)
             removed_ids.extend(existing)
             return len(existing)
         count = self._execute_write(_do)

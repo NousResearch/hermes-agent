@@ -58,7 +58,7 @@ import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
-import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
+import { buildSettingsPageSearch, resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
@@ -111,33 +111,10 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const openSettingsPage = useCallback(
     (view: SettingsViewId, page?: string) => {
-      const next = new URLSearchParams(search)
-
-      for (const key of [
-        'page',
-        'field',
-        'setting',
-        'key',
-        'aux',
-        'session',
-        'kind',
-        'label',
-        'origin',
-        'pview',
-        'kview',
-        'bview'
-      ]) {
-        next.delete(key)
-      }
-
-      next.set('tab', view)
-      const destination = page ?? settingsSubpages(view)[0]?.id
-
-      if (destination) {
-        next.set('page', destination)
-      }
-
-      navigate({ hash, pathname, search: `?${next}` }, { replace: true })
+      navigate(
+        { hash, pathname, search: buildSettingsPageSearch(search, view, page) },
+        { replace: true }
+      )
     },
     [hash, navigate, pathname, search]
   )

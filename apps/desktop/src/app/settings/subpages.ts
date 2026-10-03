@@ -135,5 +135,43 @@ export function resolveSettingsSubpage(view: SettingsView, params: URLSearchPara
   const pages = settingsSubpages(view)
   const requested = settingsSubpageForLegacyLink(view, params) ?? params.get('page')
 
+  if (requested == null) {
+    return undefined
+  }
+
   return pages.find(page => page.id === requested)?.id ?? pages[0]?.id
+}
+
+/**
+ * Search string for `openSettingsPage` (index.tsx): a parent nav row passes no
+ * `page`, so it lands on the view's top-level page; a child row passes its
+ * `page.id` explicitly and keeps deep-linking with `?page=`.
+ */
+export function buildSettingsPageSearch(currentSearch: string, view: SettingsView, page?: string): string {
+  const next = new URLSearchParams(currentSearch)
+
+  for (const key of [
+    'page',
+    'field',
+    'setting',
+    'key',
+    'aux',
+    'session',
+    'kind',
+    'label',
+    'origin',
+    'pview',
+    'kview',
+    'bview'
+  ]) {
+    next.delete(key)
+  }
+
+  next.set('tab', view)
+
+  if (page) {
+    next.set('page', page)
+  }
+
+  return `?${next}`
 }

@@ -127,6 +127,9 @@ function isContributedPath(pathname: string): boolean {
 
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
 
+/** Permanent contribution rendered in the Sessions sidebar header action row. */
+export const SIDEBAR_SESSIONS_HEADER_AREA = 'sidebar.sessions.header'
+
 /** Payload of a `sidebar.nav` data contribution. */
 export interface SidebarNavContribution {
   /** Codicon name, e.g. `'project'`. */

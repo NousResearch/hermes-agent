@@ -27,7 +27,7 @@ describe('settings subpage routing', () => {
     for (const view of views) {
       const pages = settingsSubpages(view)
       expect(pages.length).toBeGreaterThan(0)
-      expect(resolveSettingsSubpage(view, new URLSearchParams())).toBe(pages[0].id)
+      expect(resolveSettingsSubpage(view, new URLSearchParams())).toBeUndefined()
       expect(resolveSettingsSubpage(view, new URLSearchParams({ page: 'missing' }))).toBe(pages[0].id)
 
       if (pages.some(page => page.id === 'general')) {
@@ -42,6 +42,15 @@ describe('settings subpage routing', () => {
         }
       }
     }
+  })
+
+  it('resolves the top-level page when nothing was requested', () => {
+    expect(resolveSettingsSubpage('config:appearance', new URLSearchParams())).toBeUndefined()
+    expect(resolveSettingsSubpage('config:appearance', new URLSearchParams({ page: 'general' }))).toBe('general')
+    expect(resolveSettingsSubpage('config:appearance', new URLSearchParams({ page: 'nope' }))).toBe(
+      settingsSubpages('config:appearance')[0]?.id
+    )
+    expect(resolveSettingsSubpage('config:model', new URLSearchParams({ aux: '1' }))).toBe('auxiliary')
   })
 
   it('gives every settings group its own nav label in every locale', () => {

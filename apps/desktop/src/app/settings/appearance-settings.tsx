@@ -76,7 +76,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
-import { AppearanceExtraSlot } from './appearance-contrib'
+import { AppearanceChatDisplaySlot, AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
@@ -1084,6 +1084,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               title={a.embedsTitle}
             />
           )}
+
+          {show('chat-display') && <AppearanceChatDisplaySlot />}
         </div>
       </div>
 

@@ -459,15 +459,15 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
-        if route_name in {"session.save", "session.compress"}:
-            params = {"session_id": sid}
+        if route_name in {"session.save", "session.compress", "tools.configure"}:
+            params = {**(frame.get("params") or {}), "session_id": sid}
             if route_name == "session.compress":
                 focus_topic = command.removeprefix("/compress").strip()
                 if focus_topic:
                     params["focus_topic"] = focus_topic
             response = server._methods[route_name](frame.get("request_id"), params)
             if "error" in response:
-                failure = _CONTROL_FAILURES[route_name]
+                failure = _CONTROL_FAILURES.get(route_name, "tools configuration failed")
                 return {"error": str(response["error"].get("message") or failure)}
             ack = {"result": response.get("result") or {}}
             if route_name == "session.save":

@@ -1,10 +1,13 @@
-"""Trajectory saving + scratchpad helpers (``_convert_to_trajectory_format`` stays an AIAgent method — batch_runner.py calls it)."""
+"""Trajectory saving + replayable exploration-tree helpers."""
 
 import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from agent.exploration_policy import ExplorationTree, build_exploration_tree
 
 logger = logging.getLogger(__name__)
 
@@ -34,23 +37,59 @@ def _lock_append_handle(f, acquire: bool) -> None:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX if acquire else fcntl.LOCK_UN)
 
 
-def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):
-    """Append a ShareGPT-format entry to a JSONL file (default trajectory_samples.jsonl / failed_trajectories.jsonl by ``completed``)."""
+def _append_jsonl(entry: Dict[str, Any], filename: str) -> None:
+    """Append one serialized entry while holding the same cross-process lock as trajectories."""
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    with open(filename, "a", encoding="utf-8") as f:
+        _lock_append_handle(f, True)
+        try:
+            f.write(line)
+            f.flush()
+        finally:
+            _lock_append_handle(f, False)
+
+
+def _exploration_filename(filename: Optional[str], completed: bool) -> str:
+    if filename is None:
+        return "exploration_trees.jsonl" if completed else "failed_exploration_trees.jsonl"
+    path = Path(filename)
+    return str(path.with_name(f"{path.stem}.exploration.jsonl"))
+
+
+def save_exploration_tree(tree: ExplorationTree, filename: str) -> None:
+    """Append one versioned exploration tree without copying conversation contents."""
+    try:
+        _append_jsonl(tree.to_dict(), filename)
+        logger.info("Exploration tree saved to %s", filename)
+    except Exception as exc:
+        # Exploration capture is secondary telemetry and must never turn a completed agent run into
+        # a failed run when a secondary artifact cannot be written.
+        logger.warning("Failed to save exploration tree: %s", exc)
+
+
+def save_trajectory(
+    trajectory: List[Dict[str, Any]],
+    model: str,
+    completed: bool,
+    filename: str = None,
+    exploration_filename: str = None,
+):
+    """Append a ShareGPT entry and its secret-free exploration tree to JSONL files."""
     if filename is None:
         filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
-    entry = {"conversations": trajectory, "timestamp": datetime.now().isoformat(), "model": model, "completed": completed}
+    entry = {
+        "conversations": trajectory,
+        "timestamp": datetime.now().isoformat(),
+        "model": model,
+        "completed": completed,
+    }
     try:
-        line = json.dumps(entry, ensure_ascii=False) + "\n"  # serialize before taking the lock
-        with open(filename, "a", encoding="utf-8") as f:
-            # Gateway sessions and batch workers append to the SAME default file; without an
-            # exclusive lock around write+flush, entries larger than one write() interleave and the
-            # JSONL stops parsing (#12684).
-            _lock_append_handle(f, True)
-            try:
-                f.write(line)
-                f.flush()
-            finally:
-                _lock_append_handle(f, False)
+        _append_jsonl(entry, filename)
         logger.info("Trajectory saved to %s", filename)
-    except Exception as e:
-        logger.warning("Failed to save trajectory: %s", e)
+    except Exception as exc:
+        logger.warning("Failed to save trajectory: %s", exc)
+        return
+
+    tree = build_exploration_tree(trajectory, completed=completed)
+    save_exploration_tree(tree, exploration_filename or _exploration_filename(filename, completed))
+

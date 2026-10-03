@@ -249,8 +249,6 @@ def prune_pre_checkpoint_items(
       ``input_text`` parts, preserving part metadata). An oversized unsupported/mixed-content
       boundary stops older user retention rather than substituting an older ask. A recognized
       image-only user message is retained whole at one-token cost.
-      Head truncation can still omit a trailing internal provenance footer; no footer recovery
-      or semantic classification is attempted.
     - Summaries are retained whole within ``retained_summary_token_budget``, never sliced
       (framing would corrupt) and never duplicated.
     - ``item_sources`` (parallel to ``items``) is the raw chat message each item came from.

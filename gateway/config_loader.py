@@ -115,14 +115,15 @@ def _bridge_lookup(yaml_cfg: dict, gateway_section: Any, gw_data: dict, key: str
         return False, None
     if mode == "nested":
         return (True, gateway_section[key]) if nested and key in gateway_section else (False, None)
-    value = yaml_cfg.get(key)
+    # An explicitly present top-level key takes precedence even when null or
+    # malformed; only absence permits the nested gateway.* fallback.
+    if key in yaml_cfg:
+        value = yaml_cfg[key]
+    else:
+        value = gateway_section.get(key) if nested else None
     if mode == "none":
-        if value is None and nested:
-            value = gateway_section.get(key)
         return value is not None, value
     # "dict"
-    if not isinstance(value, dict) and nested:
-        value = gateway_section.get(key)
     return isinstance(value, dict), value
 
 

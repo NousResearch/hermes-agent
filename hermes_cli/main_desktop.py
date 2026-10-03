@@ -260,7 +260,11 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             # wait for it — only the update hand-offs do). Either way a renderer alive
             # past the rename below keeps fetching its old hashed chunks from disk and
             # dies on the next lazy import, so stop it on every platform (#109643).
-            stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
+            # On POSIX, renaming a running app is safe and stopping an app
+            # started outside this process tree can destroy an active session.
+            # Keep the termination step for Windows, where the executable
+            # lock prevents promotion.
+            stopped = _stop_desktop_processes_locking_build(desktop_dir)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             _rename_riding_out_file_lock(live_root, previous)

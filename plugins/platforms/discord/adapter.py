@@ -1096,6 +1096,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # existing text batcher during this short, sender-scoped window.
         self._bot_tag_debounce_until: Dict[str, float] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
+        self._voice_play_locks: Dict[int, asyncio.Lock] = {}  # shared with runner commentary
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
@@ -3393,9 +3394,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
                 logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
-                success = await self.play_in_voice_channel(gid, audio_path)
+                # Voice-input finals use this adapter path, not the runner's final-reply path.
+                async with self.voice_play_lock(gid):
+                    success = await self.play_in_voice_channel(gid, audio_path)
                 return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    def voice_play_lock(self, guild_id: int) -> asyncio.Lock:
+        """Share one per-guild lock with runner commentary and final-clip playback."""
+        locks = self._voice_play_locks
+        if guild_id not in locks:
+            locks[guild_id] = asyncio.Lock()
+        return locks[guild_id]
 
 
     # --- Voice channel methods (join / leave / play) ---

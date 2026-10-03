@@ -3,30 +3,36 @@
 The authority gateway owns a room's ordered log in ``gateway/hosted_rooms.py``. Every OTHER participant
 gateway can keep a durable local copy: ``ingest_page()`` persists ``groups.log`` replay pages idempotently
 and refuses gaps, conflicting overlap, forged authority changes and resurrection after a terminal disband.
-``promote_replica()`` continues a copied room locally at ``epoch + 1`` with a lineage-proving
-``authority.claimed`` event; ``demote_room()`` records ``authority.lost`` when a returning stale authority
-is shown a newer epoch. Storage primitives only: ``require_takeover()`` is the one gate that decides whether
-the RPCs may reach them, and it stays closed until Hermes can select one globally exclusive authority.
-Until then the room store quarantines every takeover lineage it records (``gateway/hosted_room_safety.py``).
+``promote_replica()`` continues a copied room locally at a later epoch; ``demote_room()`` records
+``authority.lost`` when a returning stale authority is shown a newer epoch. Storage primitives only:
+``require_takeover()`` is the one gate that decides whether the RPCs may reach them, and it stays closed
+until Hermes can select one globally exclusive authority. The room store quarantines every takeover
+lineage it records (``gateway/hosted_room_safety.py``) unless the caller passes a ``transition`` it
+verified, which these primitives mark in the same transaction.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from contextlib import contextmanager
 from functools import partial
 from typing import Any, Callable, Iterator
 
 from gateway.hosted_rooms import (
-    MAX_ACTOR_ID_CHARS, MAX_EVENT_ID_CHARS, MAX_GATEWAY_EVENT_BYTES, MAX_LOG_LIMIT, MAX_LOG_PAGE_BYTES,
+    MAX_ACTOR_ID_CHARS, MAX_ACTOR_LABEL_CHARS, MAX_EVENT_ID_CHARS, MAX_GATEWAY_EVENT_BYTES, MAX_LOG_LIMIT, MAX_LOG_PAGE_BYTES,
     MAX_MEMBERS_JSON_BYTES, MAX_ROOM_NAME_CHARS,
     MAX_ROOM_ID_CHARS, HostedRoomError, RoomConflictError, _actor_json, _canonical_json, _payload_json,
     _prune_disbanded_rooms_locked, _room_id, _transaction, _validate_actor, _validate_event_kind,
     _validate_identifier, _validate_members, _validate_room_name, local_authority_gateway_id)
-from gateway.hosted_room_safety import _prune_disbanded_replicas_locked, _raise_if_quarantined
-from gateway.hosted_rooms_common import DbPath, bounded_int, clock, table_columns, utf8_len
+from gateway.hosted_room_safety import (
+    EVIDENCE_STATEMENT_FIELDS, HANDOVER_STATEMENT_FIELDS, PROOF_KINDS, _prune_disbanded_replicas_locked,
+    _raise_if_quarantined, mark_verified_transition, transition_proof_digest)
+from gateway.hosted_rooms_common import DbPath, bounded_int, clock, exact_fields, table_columns, utf8_len
+from gateway.hosted_rooms_common import display_label
+from gateway.hosted_rooms_common import text as bounded_text
 
 MAX_REPLICA_ROOMS = 256
 # Replica payload shares the gateway's event budget: both live in the same bounded store.
@@ -89,13 +95,15 @@ def takeover_enabled() -> bool:
     Closed. Takeover is only safe once Hermes can select one globally exclusive authority for a
     room: today two gateways can both promote a copy, a demoted gateway cannot be proven to have
     stopped writing, and a page handed to ``groups.replicate`` is no proof of what the authority
-    wrote. Exclusive-authority recovery opens this gate; it is the only switch.
+    wrote. These legacy RPCs carry no such proof, so the gate stays closed for them.
 
-    Opening it is not enough on its own. The triggers in ``gateway/hosted_room_safety.py`` treat
-    every ``authority.claimed`` promoted from a copy, and every ``authority.lost``, as an unproven
-    takeover and quarantine the room. Recovery must also mark the takeovers it verifies, and teach
-    those triggers to accept that mark; until then a takeover through an open gate still leaves the
-    room read-only (``test_open_gate_promotion_still_ends_quarantined`` pins this).
+    Opening it is not enough on its own either. The triggers in ``gateway/hosted_room_safety.py``
+    accept an authority change only together with a verified-transition mark written in the same
+    transaction: ``promote_replica()`` and ``demote_room()`` write one when their caller passes a
+    ``transition`` it verified (an owner's attested decision, a certificate or the old host's handover). Without
+    one, as from these RPCs,
+    a takeover through an open gate still leaves the room read-only
+    (``test_open_gate_quarantines_an_unmarked_promotion_but_not_a_marked_one`` pins both).
     """
     return False
 
@@ -320,6 +328,131 @@ def _append_control_event(
 ) -> None:
     event_id, kind, actor_json, payload_json = event
     conn.execute(_INSERT_ROOM_EVENT, (room_id, seq, event_id, kind, actor_json, epoch, payload_json, now))
+
+
+def _verified_transition(value: Any) -> dict[str, Any]:
+    """The caller's verified ``transition``: ``{proof_kind, proof_digest, proof}``.
+
+    The caller checked the proof itself: ``attested``, the owner explicitly continued the group here
+    (or, after a split, the rule's choice signed by the host it keeps, ``decided_by: "rule"``);
+    ``certified``, a majority of the room's voters promised; ``handover``, the old authority signed
+    the handover statement; ``evidence``, the successor signed what it observed of the old
+    authority's silence (a statement's signature and ``last_hash`` are checked against the signer's
+    room identity key and the room's history). Here its digest must bind the proof the lineage event
+    records, and a signed statement must have its exact shape.
+    """
+    if not isinstance(value, dict) or set(value) != {"proof_kind", "proof_digest", "proof"}:
+        raise ReplicaError("transition must carry exactly proof_kind, proof_digest and proof")
+    if value["proof_kind"] not in PROOF_KINDS:
+        raise ReplicaError("transition proof_kind must be 'attested', 'certified', 'evidence' or 'handover'")
+    if not isinstance(value["proof"], dict):
+        raise ReplicaError("transition proof must be an object")
+    if value["proof_kind"] in _STATEMENT_FIELDS:
+        _signed_statement(value["proof_kind"], value["proof"])
+    try:
+        digest = transition_proof_digest(value["proof"])
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ReplicaError("transition proof must be JSON-serializable") from exc
+    if value["proof_digest"] != digest:
+        raise ReplicaError("transition proof_digest does not match its proof")
+    return dict(value)
+
+
+_SIGNATURE_RE = re.compile(r"ed25519-v1\.[A-Za-z0-9_-]{86}")
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+# Proof kinds that are one signed statement ``{statement, signature}``, with their statement fields.
+_STATEMENT_FIELDS = {"handover": HANDOVER_STATEMENT_FIELDS, "evidence": EVIDENCE_STATEMENT_FIELDS}
+
+
+def _signed_statement(kind: str, proof: dict[str, Any]) -> dict[str, Any]:
+    """The statement of a ``handover`` or ``evidence`` proof ``{statement, signature}``, in its exact shape."""
+    exact_fields(proof, label=f"{kind} proof", required={"statement", "signature"}, error=ReplicaError)
+    statement = exact_fields(proof["statement"], label=f"{kind} statement", required=_STATEMENT_FIELDS[kind],
+                             error=ReplicaError)
+    if not isinstance(proof["signature"], str) or _SIGNATURE_RE.fullmatch(proof["signature"]) is None:
+        raise ReplicaError(f"{kind} signature must be an ed25519-v1 signature")
+    for field in ("room_id", "successor"):
+        if not isinstance(statement[field], str) or not statement[field]:
+            raise ReplicaError(f"{kind} statement {field} must be a string")
+    for field, low in (("from_epoch", 1), ("to_epoch", 1), ("last_seq", 0)):
+        bounded_int(statement[field], error=ReplicaError, low=low, high=2**63 - 1,
+                    message=f"{kind} statement {field} must be an integer of at least {low}")
+    if not isinstance(statement["last_hash"], str) or _SHA256_HEX_RE.fullmatch(statement["last_hash"]) is None:
+        raise ReplicaError(f"{kind} statement last_hash must be a lowercase sha256 hex digest")
+    for field in ("silent_since", "silent_for_s") if kind == "evidence" else ():
+        value = statement[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ReplicaError(f"{kind} statement {field} must be a non-negative number of seconds")
+    return dict(statement)
+
+
+def _transition_text(text: Any, verified: dict[str, Any] | None) -> dict[str, str]:
+    """An optional notice for people reading the room: never part of the proof or its verification."""
+    if text is None:
+        return {}
+    if verified is None:
+        raise ReplicaError("text accompanies a verified transition")
+    from gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES
+    return {"text": bounded_text(text, error=ReplicaError, label="text", max_bytes=MAX_USER_TEXT_BYTES)}
+
+
+_DISPLAY_FIELDS = frozenset({"from_name", "to_name", "offline_since", "reason", "at_risk"})
+_DISPLAY_REASONS = frozenset({"automatic", "handover", "manual"})
+
+
+def _transition_display(display: Any, verified: dict[str, Any] | None) -> dict[str, Any]:
+    """Names, the time the old host went offline, why it moved and what was at risk; never verified.
+
+    ``from_name`` and ``to_name`` are clean display labels, ``offline_since`` a unix time, ``reason``
+    one of ``automatic``, ``handover`` or ``manual``, and ``at_risk`` the number of events that no
+    successor was known to hold when the room moved.
+    """
+    if display is None:
+        return {}
+    if verified is None:
+        raise ReplicaError("display accompanies a verified transition")
+    if not isinstance(display, dict) or not set(display) <= _DISPLAY_FIELDS:
+        raise ReplicaError("display carries only from_name, to_name, offline_since, reason and at_risk")
+    shown: dict[str, Any] = {}
+    for field in ("from_name", "to_name"):
+        value = display.get(field)
+        if value is not None and display_label(value, max_chars=MAX_ACTOR_LABEL_CHARS) != value:
+            raise ReplicaError(f"display {field} must be a clean label")
+        shown[field] = value
+    since = display.get("offline_since")
+    if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))
+                              or not math.isfinite(since) or since < 0):
+        raise ReplicaError("display offline_since must be a unix time")
+    shown["offline_since"] = since
+    reason = display.get("reason")
+    if reason is not None and reason not in _DISPLAY_REASONS:
+        raise ReplicaError("display reason must be automatic, handover or manual")
+    shown["reason"] = reason
+    at_risk = display.get("at_risk")
+    if at_risk is not None:
+        bounded_int(at_risk, error=ReplicaError, message="display at_risk must be a non-negative integer")
+    shown["at_risk"] = at_risk
+    return shown
+
+
+def _require_transition_scope(verified: dict[str, Any], *, last_seq: int, **scope: Any) -> None:
+    """A proof that names its room, epochs or successor must name this transition's.
+
+    A handover or evidence statement names all of them, and ``last_seq`` is the event this
+    transition directly follows: exactly this history moves, no more and no less.
+    """
+    kind = verified["proof_kind"]
+    if kind in _STATEMENT_FIELDS:
+        statement = verified["proof"]["statement"]
+        named = {"room_id": statement["room_id"], "from_epoch": statement["from_epoch"],
+                 "to_epoch": statement["to_epoch"], "successor_gateway_id": statement["successor"]}
+        if any(named[key] != value for key, value in scope.items()):
+            raise ReplicaError(f"{kind} statement names another room, epoch or successor")
+        if statement["last_seq"] != last_seq:
+            raise ReplicaError(f"{kind} statement names another last event")
+        return
+    if any(key in verified["proof"] and verified["proof"][key] != value for key, value in scope.items()):
+        raise ReplicaError("transition proof names another room or epoch")
 
 
 def _validate_page(page: Any) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
@@ -560,18 +693,31 @@ def _replica_result(row: sqlite3.Row | None, reservation: sqlite3.Row | None) ->
 
 
 def promote_replica(
-    db_path: DbPath, *, room_id: Any, reason: Any = "authority-unreachable", now: float | None = None
+    db_path: DbPath, *, room_id: Any, reason: Any = "authority-unreachable", now: float | None = None,
+    transition: Any = None, to_epoch: Any = None, text: Any = None, display: Any = None,
 ) -> dict[str, Any]:
-    """Continue a replicated room on THIS gateway at ``epoch + 1``.
+    """Continue a replicated room on THIS gateway at ``epoch + 1``, or the verified ``to_epoch``.
 
-    Copies the replica log into the authoritative store and appends a lineage-proving ``authority.claimed``
-    event, so wherever the claim replicates the old epoch is stale and every fenced primitive rejects it.
-    The caller decides takeover is safe; this makes it atomic and provable. Until exclusive-authority
-    recovery can prove it, the room store quarantines the claimed room: readable, but closed to new events.
+    Moves the replica log into the authoritative store and appends the lineage event, so wherever it
+    replicates the old epoch is stale and every fenced primitive rejects it. The caller decides takeover is
+    safe; this makes it atomic. Without a ``transition`` the event is an ``authority.claimed`` the room store
+    quarantines: readable, but closed to new events. With one the caller verified (``{proof_kind,
+    proof_digest, proof}``), it is an ``authority.transition`` carrying that proof, marked verified in the
+    same transaction, and the room stays writable. A verified transition may skip epochs no authority
+    held (``to_epoch``, any later epoch). A ``handover`` or ``evidence`` statement must name this copy's
+    last event: the transition directly follows exactly the history it moves. Its optional ``text``
+    and ``display`` (names, reason, events at risk) are shown to readers as the event's notice; they are
+    outside the proof and its digest.
     """
     room_id = _room_id(room_id)
     if not isinstance(reason, str) or not reason or len(reason) > 200:
         raise ReplicaError("reason must be a non-empty string of at most 200 chars")
+    verified = _verified_transition(transition) if transition is not None else None
+    notice = {**_transition_text(text, verified), **_transition_display(display, verified)}
+    if to_epoch is not None:
+        if verified is None:
+            raise ReplicaError("only a verified transition names its epoch")
+        to_epoch = _positive_int(to_epoch, message="to_epoch must be a positive integer")
     now = clock(now)
     local_gateway = local_authority_gateway_id()
     with _replica_transaction(db_path) as conn:
@@ -589,10 +735,24 @@ def promote_replica(
         if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone():
             raise RoomConflictError("room_id belongs to a disbanded room")
         previous_gateway, previous_epoch = str(replica["authority_gateway_id"]), int(replica["authority_epoch"])
-        target_epoch, claim_seq = previous_epoch + 1, int(replica["last_seq"]) + 1
-        claim = _control_event("claimed", target_epoch, {
-            "previous_gateway_id": previous_gateway, "authority_gateway_id": local_gateway,
-            "authority_epoch": target_epoch, "promoted_from_replica": True, "reason": reason})
+        target_epoch, claim_seq = to_epoch or previous_epoch + 1, int(replica["last_seq"]) + 1
+        if target_epoch <= previous_epoch:
+            raise ReplicaEpochRegressionError("a transition moves authority to a later epoch")
+        if verified is None:
+            claim = _control_event("claimed", target_epoch, {
+                "previous_gateway_id": previous_gateway, "authority_gateway_id": local_gateway,
+                "authority_epoch": target_epoch, "promoted_from_replica": True, "reason": reason})
+        else:
+            _require_transition_scope(
+                verified, room_id=room_id, from_epoch=previous_epoch, to_epoch=target_epoch,
+                successor_gateway_id=local_gateway, last_seq=claim_seq - 1)
+            claim = _control_event("transition", target_epoch, {
+                "from_epoch": previous_epoch, "to_epoch": target_epoch, "successor_gateway_id": local_gateway,
+                **verified, **notice})
+            mark_verified_transition(
+                conn, room_id=room_id, from_epoch=previous_epoch, to_epoch=target_epoch,
+                successor_gateway_id=local_gateway, proof_kind=verified["proof_kind"],
+                proof_digest=verified["proof_digest"])
         # Move, not copy: the history leaves the replica tables before it enters the room tables, so the
         # shared byte budget never counts it twice, and the copy hands its room-id reservation to the
         # authority row it becomes (any other authority insert for a reserved id is still refused).
@@ -618,19 +778,26 @@ def promote_replica(
 
 
 def demote_room(
-    db_path: DbPath, *, room_id: Any, observed_gateway_id: Any, observed_epoch: Any, now: float | None = None
+    db_path: DbPath, *, room_id: Any, observed_gateway_id: Any, observed_epoch: Any, now: float | None = None,
+    transition: Any = None, text: Any = None, display: Any = None,
 ) -> dict[str, Any]:
     """Fence THIS gateway's stale room authority against a proven newer epoch.
 
     When a returning gateway observes (replicated ``authority.claimed`` or a transport rejection) that another
     gateway owns the room at a higher epoch, append ``authority.lost`` and adopt the observed lineage so no
-    local send can commit at the stale epoch. Idempotent per lineage. The room store then quarantines the
-    room, since its history may have diverged: it stays readable but accepts no new events.
+    local send can commit at the stale epoch. Idempotent per lineage. Without a ``transition`` the room store
+    then quarantines the room, since its history may have diverged: it stays readable but accepts no new
+    events. With the verified transition to that epoch (``{proof_kind, proof_digest, proof}``), the
+    demotion is marked in the same transaction and records that proof's kind and digest, and its
+    optional ``text`` and ``display`` notice. The old authority marks its own ``handover`` this way: the
+    statement names its last event, which ``authority.lost`` directly follows.
     """
     room_id = _room_id(room_id)
     observed_gateway_id = _validate_identifier(
         observed_gateway_id, label="observed_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
     observed_epoch = _positive_int(observed_epoch, message="observed_epoch must be a positive integer")
+    verified = _verified_transition(transition) if transition is not None else None
+    notice = {**_transition_text(text, verified), **_transition_display(display, verified)}
     now = clock(now)
     local_gateway = local_authority_gateway_id()
     with _transaction(db_path, immediate=True) as conn:
@@ -648,9 +815,19 @@ def demote_room(
             raise ReplicaEpochRegressionError("observed epoch does not supersede the stored authority")
         if current_gateway != local_gateway:
             raise ReplicaError("room is not locally authoritative; nothing to demote")
-        lost = _control_event("lost", observed_epoch, {
+        payload = {
             "previous_gateway_id": current_gateway, "authority_gateway_id": observed_gateway_id,
-            "authority_epoch": observed_epoch})
+            "authority_epoch": observed_epoch}
+        if verified is not None:
+            _require_transition_scope(
+                verified, room_id=room_id, from_epoch=current_epoch, to_epoch=observed_epoch,
+                successor_gateway_id=observed_gateway_id, last_seq=int(row["next_seq"]) - 1)
+            payload.update(proof_kind=verified["proof_kind"], proof_digest=verified["proof_digest"], **notice)
+            mark_verified_transition(
+                conn, room_id=room_id, from_epoch=current_epoch, to_epoch=observed_epoch,
+                successor_gateway_id=observed_gateway_id, proof_kind=verified["proof_kind"],
+                proof_digest=verified["proof_digest"])
+        lost = _control_event("lost", observed_epoch, payload)
         _append_control_event(conn, room_id, int(row["next_seq"]), observed_epoch, lost, now)
         conn.execute("""UPDATE hosted_rooms
                   SET authority_gateway_id=?, authority_epoch=?, next_seq=next_seq+1, event_bytes=event_bytes+?,

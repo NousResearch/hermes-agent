@@ -22,6 +22,8 @@ SOURCE_NAME = "state.db"
 MARKER_TABLE = "hosted_room_legacy_imports"
 # Liveness state, never copied: a lease is a ~15s heartbeat plus a process generation, so a copied
 # lease names a process that is gone. Derived policy/event-budget rows are rebuilt from the durable log.
+# A verified-transition mark vouches for one event in the store that wrote it; an imported copy of that
+# history is classified again here, and an unmarked transition is quarantined.
 # A canonical default-profile home keeps its rooms in this same root state.db; its copy-delivery
 # checkpoints and copy-retirement obligations belong to that home, never to the legacy store.
 # Canonical participants likewise keep enrollment/retirement beside their admission authority in
@@ -31,6 +33,7 @@ _SKIP_TABLES = frozenset({
     "hosted_room_policy_cursors", "hosted_room_policy_threads", "hosted_room_policy_events",
     "hosted_room_policy_watermarks", "hosted_room_policy_publications", "hosted_room_policy_transcript",
     "hosted_room_policy_transcript_state",
+    "hosted_room_verified_transitions", "hosted_room_verified_transition_uses", "hosted_room_branch_transitions",
     "hosted_room_replication_publishers", "hosted_room_replication_targets",
     "hosted_room_replica_retirement_home", "hosted_room_replica_retirement_enrollments",
     "hosted_room_replica_retirements",
@@ -198,15 +201,17 @@ def import_legacy_rooms(conn: sqlite3.Connection, db_path: Path) -> None:
         if source.is_file():
             from gateway.hosted_room_safety import _quarantine_unsafe_authorities_locked
 
-            # Historical replay is not a live append. Suspend only the two
-            # quarantine event triggers inside this write-locked savepoint;
+            # Historical replay is not a live append. Suspend only the
+            # quarantine and lineage triggers inside this write-locked savepoint;
             # reservation and byte-accounting guards remain active. SQLite DDL
             # is transactional: rollback restores the triggers on any failure,
             # and no other writer can enter before they are restored on success.
+            # Imported copies are audited before any replica read or write.
             triggers = conn.execute(
                 """SELECT name, sql FROM sqlite_master WHERE type='trigger'
                    AND name IN ('trg_hosted_events_reject_quarantined_insert',
-                                'trg_hosted_events_quarantine_unsafe_lineage')"""
+                                'trg_hosted_events_quarantine_unsafe_lineage',
+                                'trg_hosted_replica_events_verified_lineage')"""
             ).fetchall()
             for name, _ in triggers:
                 conn.execute(f'DROP TRIGGER "{name}"')

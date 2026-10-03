@@ -333,6 +333,25 @@ reason `room_authority_quarantined`. A stored copy whose history fails validatio
 reported as `safety_status: "quarantined"` by `groups.replica_state`. Quarantined history is never
 pruned.
 
+An authority change is accepted only together with its proof. When exclusive-authority recovery
+verifies a change of authority, it records a **verified-transition mark** in the same database
+transaction as the change. The proof is `attested` when the room owner (or the owner of a successor
+the room owner designated and that consented) explicitly continued the group on that machine, or,
+after a split, when the rule's choice is signed by the host it keeps (`decided_by: "rule"`);
+`certified` when a majority of the group's voting computers (its host and its always-on successors)
+signed promises to stop following the old host, which each gives only once its lease to that host has
+run out; `handover` when the old host itself signed over its exact history to the successor, for
+example while shutting down; and `evidence` when, in a group with exactly two voting computers, the
+standby signed that it had no contact with the host for the careful-mode window before continuing.
+Bots never vote: only computers do, the host and its always-on successors. The mark names one room,
+the step from epoch
+`N` to a later epoch, the successor gateway and the digest of the proof, and it is spent by that one change:
+it can't be reused for a later change, applied to another room, or saved without the change it
+verifies. A promotion or demotion without its own mark, including any made through `groups.promote`
+or `groups.demote` once the gate opens, still leaves the room read-only as described above, with
+`safety_reason` `unsafe_replica_promotion`, `unsafe_authority_demotion` or
+`unverified_authority_transition`.
+
 To end such a room on this gateway, call `groups.disband` with `confirm_quarantined: true`; without it
 the call is refused with reason `room_authority_quarantined`. The confirmed Disband only tombstones the
 room here: it leaves the room lists, its id is never reused, and its history stays readable through

@@ -448,10 +448,12 @@ def _write_machine_sentinel_line(line: str) -> None:
 
 
 def _report_port_in_use(host: str, port: int) -> None:
-    """Print the machine sentinel + a human hint naming likely holders."""
+    """Print the machine sentinel + a human hint naming the holder when it can be found."""
+    from hermes_cli.port_owners import describe_port_owners
+
     _write_machine_sentinel_line(_PORT_IN_USE_SENTINEL.format(port=port))
     print(
-        f"  Port {port} on {host} is already in use — likely another "
+        f"  Port {port} on {host} is already in use{describe_port_owners(port)} — likely another "
         "'hermes serve' / 'hermes dashboard' backend or the Hermes gateway. "
         "Stop the other process, or pass --port <other> "
         "(--port 0 picks a free ephemeral port).",

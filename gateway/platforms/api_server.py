@@ -4567,6 +4567,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._runner = None
                 self._site = None
                 if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                    from hermes_cli.port_owners import describe_port_owners
+
+                    # Name the holder: a stale backend, another profile's gateway and an unrelated
+                    # program each need a different fix (port cline/cline#14532).
+                    holder = describe_port_owners(self._port)
                     # Config error: non-retryable, or the reconnect watcher leaks fds forever.
                     self._set_fatal_error(
                         # A port conflict is a configuration error, not a transient blip — another process
@@ -4577,14 +4582,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         # fds each retry. Non-retryable drops it from the reconnect queue; the operator
                         # recovers with ``/platform resume api_server`` after changing the port.
                         "api_server_port_in_use",
-                        f"Port {self._port} already in use. Set "
+                        f"Port {self._port} already in use{holder}. Set "
                         f"platforms.api_server.port in config.yaml to a "
                         f"different value, then `/platform resume api_server`.",
                         retryable=False)
+                else:
+                    holder = ""
                 logger.error(
-                    "[%s] Could not bind %s:%d: %s. Set a different port in "
+                    "[%s] Could not bind %s:%d: %s%s. Set a different port in "
                     "config.yaml: platforms.api_server.port",
-                    self.name, self._host, self._port, exc)
+                    self.name, self._host, self._port, exc, holder)
                 return False
             from gateway.platforms.shared_ingress import listener_base_url
             self._mark_connected(listener_base=listener_base_url(self._host, self._port))

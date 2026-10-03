@@ -468,7 +468,8 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 # Install core messaging gateway dependencies
 cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram, Discord, Slack, and shared gateway deps
 
-# Check for port conflicts
+# Check for port conflicts (the gateway's own bind error already names the holder:
+# "Port 8080 already in use (held by PID 4242: hermes gateway run)")
 lsof -i :8080
 
 # Verify configuration

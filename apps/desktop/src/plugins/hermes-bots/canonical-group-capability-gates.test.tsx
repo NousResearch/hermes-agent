@@ -403,6 +403,42 @@ it('reconciles a late discovery with creation, rename and retirement that happen
   expect($canonicalGroupBindings.get()[transientKey]).toBeUndefined()
 })
 
+it.each([
+  ['canonical', CANONICAL_GROUP_CAPABILITIES],
+  ['classic', STANDALONE_GROUP_CAPABILITIES]
+] as const)('chooses %s rooms on a non-local connection from advertised capabilities alone', async (expected, capabilities) => {
+  state.connectionId.set('ssh-mini')
+  const remote = roster.map(bot => ({ ...bot, connectionId: 'ssh-mini' }))
+  const listed = { room_id: 'listed-room', name: 'Listed remotely', members: [] }
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return capabilities}
+
+    if (method === 'groups.list') {return { rooms: [listed], next_offset: null }}
+
+    if (method === 'groups.create') {return { room: { room_id: params.room_id, name: params.name, members: params.members } }}
+
+    if (method === 'profiles.configure') {return {}}
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+
+  await act(async () => { render(<CanonicalGroupList onOpen={vi.fn()} />) })
+  expect(screen.queryByRole('button', { name: listed.name }) !== null).toBe(expected === 'canonical')
+  cleanup()
+
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={remote} />) })
+  expect(screen.queryByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }) !== null).toBe(expected === 'canonical')
+  cleanup()
+
+  const { onCreated } = await submitDialog(remote)
+  expect(onCreated).toHaveBeenCalledOnce()
+  const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
+  expect(creates).toHaveLength(expected === 'canonical' ? 1 : 0)
+  expect(updateGroupChat).toHaveBeenCalledTimes(expected === 'canonical' ? 0 : 1)
+  expect(Object.values($canonicalGroupBindings.get()).filter(binding => binding.roomId !== listed.room_id))
+    .toEqual(expected === 'canonical' ? [expect.objectContaining({ connectionId: 'ssh-mini', profile: 'default' })] : [])
+  expect(request.mock.calls.filter(call => call[1].startsWith('groups.')).every(call => call[0]?.connectionId === 'ssh-mini')).toBe(true)
+})
+
 it('keeps the existing classic transcript and composer when explicitly starting a separate gateway group', async () => {
   answer(CANONICAL_GROUP_CAPABILITIES)
   const log = [

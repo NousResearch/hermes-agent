@@ -120,6 +120,13 @@ export interface CanonicalGroupMessages {
   activityRenamed: string
   activityUpdated: string
   createdGroupSyncFailed: string
+  continuedOn: string
+  continuedOnSince: string
+  continuedOnUnnamed: string
+  waitingForHostBot: string
+  waitingForHostFile: string
+  waitingForUnnamedHostBot: string
+  waitingForUnnamedHostFile: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL =
@@ -250,7 +257,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'Group chat ended.',
     activityRenamed: 'Group chat renamed.',
     activityUpdated: 'Group chat updated.',
-    createdGroupSyncFailed: '“{name}” is ready. Some Bot details couldn’t sync.'
+    createdGroupSyncFailed: '“{name}” is ready. Some Bot details couldn’t sync.',
+    continuedOn: 'This group now continues on {target}.',
+    continuedOnSince: 'This group now continues on {target}. {host} went offline at {time}.',
+    continuedOnUnnamed: 'This group now continues on another computer.',
+    waitingForHostBot: 'Waiting for {host}: this needs a Bot that’s only there.',
+    waitingForHostFile: 'Waiting for {host}: this needs a file that’s only there.',
+    waitingForUnnamedHostBot: 'Waiting for another computer: this needs a Bot that’s only there.',
+    waitingForUnnamedHostFile: 'Waiting for another computer: this needs a file that’s only there.'
   },
   ja: {
     legacyRoom: 'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
@@ -379,7 +393,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'グループチャットを終了しました。',
     activityRenamed: 'グループチャットの名前を変更しました。',
     activityUpdated: 'グループチャットを更新しました。',
-    createdGroupSyncFailed: '「{name}」の準備ができました。一部のBot情報を同期できませんでした。'
+    createdGroupSyncFailed: '「{name}」の準備ができました。一部のBot情報を同期できませんでした。',
+    continuedOn: 'このグループは現在{target}で続いています。',
+    continuedOnSince: 'このグループは現在{target}で続いています。{host}は{time}にオフラインになりました。',
+    continuedOnUnnamed: 'このグループは現在、別のコンピューターで続いています。',
+    waitingForHostBot: '{host}を待っています：そこにしかないBotが必要です。',
+    waitingForHostFile: '{host}を待っています：そこにしかないファイルが必要です。',
+    waitingForUnnamedHostBot: '別のコンピューターを待っています：そこにしかないBotが必要です。',
+    waitingForUnnamedHostFile: '別のコンピューターを待っています：そこにしかないファイルが必要です。'
   },
   zh: {
     legacyRoom: '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
@@ -503,7 +524,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: '已结束群聊。',
     activityRenamed: '已重命名群聊。',
     activityUpdated: '已更新群聊。',
-    createdGroupSyncFailed: '“{name}”已准备就绪。部分Bot信息未能同步。'
+    createdGroupSyncFailed: '“{name}”已准备就绪。部分Bot信息未能同步。',
+    continuedOn: '此群聊现在在{target}上继续。',
+    continuedOnSince: '此群聊现在在{target}上继续。{host}于{time}离线。',
+    continuedOnUnnamed: '此群聊现在在另一台电脑上继续。',
+    waitingForHostBot: '正在等待{host}：这需要一个只在那里的Bot。',
+    waitingForHostFile: '正在等待{host}：这需要一个只在那里的文件。',
+    waitingForUnnamedHostBot: '正在等待另一台电脑：这需要一个只在那里的Bot。',
+    waitingForUnnamedHostFile: '正在等待另一台电脑：这需要一个只在那里的文件。'
   },
   'zh-hant': {
     legacyRoom: '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
@@ -627,7 +655,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: '已結束群聊。',
     activityRenamed: '已重新命名群聊。',
     activityUpdated: '已更新群聊。',
-    createdGroupSyncFailed: '「{name}」已準備就緒。部分Bot資訊未能同步。'
+    createdGroupSyncFailed: '「{name}」已準備就緒。部分Bot資訊未能同步。',
+    continuedOn: '此群聊現在在{target}上繼續。',
+    continuedOnSince: '此群聊現在在{target}上繼續。{host}於{time}離線。',
+    continuedOnUnnamed: '此群聊現在在另一台電腦上繼續。',
+    waitingForHostBot: '正在等待{host}：這需要一個只在那裡的Bot。',
+    waitingForHostFile: '正在等待{host}：這需要一個只在那裡的檔案。',
+    waitingForUnnamedHostBot: '正在等待另一台電腦：這需要一個只在那裡的Bot。',
+    waitingForUnnamedHostFile: '正在等待另一台電腦：這需要一個只在那裡的檔案。'
   },
   ar: {
     legacyRoom: 'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
@@ -753,7 +788,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'انتهت محادثة المجموعة.',
     activityRenamed: 'تمت إعادة تسمية محادثة المجموعة.',
     activityUpdated: 'تم تحديث محادثة المجموعة.',
-    createdGroupSyncFailed: '«{name}» جاهزة. تعذّرت مزامنة بعض تفاصيل البوتات.'
+    createdGroupSyncFailed: '«{name}» جاهزة. تعذّرت مزامنة بعض تفاصيل البوتات.',
+    continuedOn: 'تستمر هذه المجموعة الآن على {target}.',
+    continuedOnSince: 'تستمر هذه المجموعة الآن على {target}. أصبح {host} غير متصل عند {time}.',
+    continuedOnUnnamed: 'تستمر هذه المجموعة الآن على جهاز كمبيوتر آخر.',
+    waitingForHostBot: 'بانتظار {host}: يحتاج هذا إلى بوت موجود هناك فقط.',
+    waitingForHostFile: 'بانتظار {host}: يحتاج هذا إلى ملف موجود هناك فقط.',
+    waitingForUnnamedHostBot: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى بوت موجود هناك فقط.',
+    waitingForUnnamedHostFile: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى ملف موجود هناك فقط.'
   },
   ru: {
     legacyRoom: 'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
@@ -882,7 +924,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'Групповой чат завершён.',
     activityRenamed: 'Групповой чат переименован.',
     activityUpdated: 'Групповой чат обновлён.',
-    createdGroupSyncFailed: '«{name}» готов. Некоторые сведения о Ботах не удалось синхронизировать.'
+    createdGroupSyncFailed: '«{name}» готов. Некоторые сведения о Ботах не удалось синхронизировать.',
+    continuedOn: 'Теперь эта группа продолжает работу на компьютере {target}.',
+    continuedOnSince: 'Теперь эта группа продолжает работу на компьютере {target}. Компьютер {host} отключился в {time}.',
+    continuedOnUnnamed: 'Теперь эта группа продолжает работу на другом компьютере.',
+    waitingForHostBot: 'Ожидание компьютера {host}: для этого нужен Бот, который есть только там.',
+    waitingForHostFile: 'Ожидание компьютера {host}: для этого нужен файл, который есть только там.',
+    waitingForUnnamedHostBot: 'Ожидание другого компьютера: для этого нужен Бот, который есть только там.',
+    waitingForUnnamedHostFile: 'Ожидание другого компьютера: для этого нужен файл, который есть только там.'
   },
   fr: {
     legacyRoom: 'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
@@ -1015,7 +1064,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'Discussion de groupe terminée.',
     activityRenamed: 'Discussion de groupe renommée.',
     activityUpdated: 'Discussion de groupe mise à jour.',
-    createdGroupSyncFailed: '« {name} » est prêt. Certaines informations sur les Bots n’ont pas pu être synchronisées.'
+    createdGroupSyncFailed: '« {name} » est prêt. Certaines informations sur les Bots n’ont pas pu être synchronisées.',
+    continuedOn: 'Ce groupe continue désormais sur {target}.',
+    continuedOnSince: 'Ce groupe continue désormais sur {target}. L’ordinateur {host} s’est déconnecté à {time}.',
+    continuedOnUnnamed: 'Ce groupe continue désormais sur un autre ordinateur.',
+    waitingForHostBot: 'En attente de l’ordinateur {host} : il faut un Bot qui ne se trouve que là-bas.',
+    waitingForHostFile: 'En attente de l’ordinateur {host} : il faut un fichier qui ne se trouve que là-bas.',
+    waitingForUnnamedHostBot: 'En attente d’un autre ordinateur : il faut un Bot qui ne se trouve que là-bas.',
+    waitingForUnnamedHostFile: 'En attente d’un autre ordinateur : il faut un fichier qui ne se trouve que là-bas.'
   },
   de: {
     legacyRoom: 'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
@@ -1151,7 +1207,14 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'Gruppenchat beendet.',
     activityRenamed: 'Gruppenchat umbenannt.',
     activityUpdated: 'Gruppenchat aktualisiert.',
-    createdGroupSyncFailed: '„{name}“ ist bereit. Einige Bot-Details konnten nicht synchronisiert werden.'
+    createdGroupSyncFailed: '„{name}“ ist bereit. Einige Bot-Details konnten nicht synchronisiert werden.',
+    continuedOn: 'Diese Gruppe läuft jetzt auf {target} weiter.',
+    continuedOnSince: 'Diese Gruppe läuft jetzt auf {target} weiter. {host} ist um {time} offline gegangen.',
+    continuedOnUnnamed: 'Diese Gruppe läuft jetzt auf einem anderen Computer weiter.',
+    waitingForHostBot: 'Warten auf {host}: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
+    waitingForHostFile: 'Warten auf {host}: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
+    waitingForUnnamedHostBot: 'Warten auf einen anderen Computer: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
+    waitingForUnnamedHostFile: 'Warten auf einen anderen Computer: Dafür wird eine Datei gebraucht, die es nur dort gibt.'
   },
   es: {
     legacyRoom: 'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
@@ -1280,6 +1343,13 @@ export const CANONICAL_GROUP_LOCALES = {
     activityEnded: 'Chat de grupo finalizado.',
     activityRenamed: 'Chat de grupo renombrado.',
     activityUpdated: 'Chat de grupo actualizado.',
-    createdGroupSyncFailed: '«{name}» está listo. Algunos detalles de los Bots no se pudieron sincronizar.'
+    createdGroupSyncFailed: '«{name}» está listo. Algunos detalles de los Bots no se pudieron sincronizar.',
+    continuedOn: 'Este grupo continúa ahora en {target}.',
+    continuedOnSince: 'Este grupo continúa ahora en {target}. {host} se desconectó ({time}).',
+    continuedOnUnnamed: 'Este grupo continúa ahora en otro equipo.',
+    waitingForHostBot: 'Esperando a {host}: esto necesita un Bot que solo está allí.',
+    waitingForHostFile: 'Esperando a {host}: esto necesita un archivo que solo está allí.',
+    waitingForUnnamedHostBot: 'Esperando a otro equipo: esto necesita un Bot que solo está allí.',
+    waitingForUnnamedHostFile: 'Esperando a otro equipo: esto necesita un archivo que solo está allí.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

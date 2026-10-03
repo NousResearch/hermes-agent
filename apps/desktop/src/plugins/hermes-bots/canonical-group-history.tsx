@@ -11,19 +11,63 @@ export interface CanonicalGroupEvent {
   room_id?: string
   created_at?: number
   kind: string
-  payload: { text?: string; content?: string; attachments?: CanonicalGroupAttachment[]; member_id?: string; error?: string; reason?: string }
+  payload: {
+    text?: string; content?: string; attachments?: CanonicalGroupAttachment[]; member_id?: string; error?: string; reason?: string
+    resource?: string; host_name?: string | null
+    to_name?: string | null; from_name?: string | null; offline_since?: number | null; successor_gateway_id?: string
+  }
   actor?: { kind?: string; id?: string; display_name?: string }
 }
 
 /** Bookkeeping kinds that carry nothing to show when empty. Unknown kinds always stay visible. */
-const QUIET_KINDS = new Set(['turn.settled', 'room.activity'])
+const QUIET_KINDS = new Set(['turn.settled', 'room.activity', 'task.admitted', 'custody.configured', 'succession.state'])
+
+type Labels = ReturnType<typeof useCanonicalGroupLabels>
 
 function quiet(event: CanonicalGroupEvent) {
   return QUIET_KINDS.has(event.kind) && !event.payload.text && !event.payload.content && !event.payload.attachments?.length
 }
 
-export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: {
+const label = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : undefined
+
+/** One pass, so a computer's display label is never read as another placeholder. */
+const fill = (template: string, values: Record<string, string>) =>
+  template.replace(/\{(\w+)\}/g, (token, key: string) => Object.hasOwn(values, key) ? values[key] : token)
+
+function offlineAt(seconds: unknown, locale: string | undefined) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {return undefined}
+  const at = new Date(seconds * 1000)
+  const today = at.toDateString() === new Date().toDateString()
+
+  return new Intl.DateTimeFormat(locale, today ? { hour: 'numeric', minute: '2-digit' }
+    : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(at)
+}
+
+/** The gateway words these notices in English; display labels let Desktop say them in the reader's language.
+ * A computer the event leaves unnamed may still be named by the room's latest status. */
+function localizedNotice({ kind, payload }: CanonicalGroupEvent, labels: Labels, locale: string | undefined,
+  computerName?: (installId: string) => string | undefined) {
+  if (kind === 'authority.transition') {
+    const named = typeof payload.successor_gateway_id === 'string' ? computerName?.(payload.successor_gateway_id) : undefined
+    const target = label(payload.to_name) ?? named, host = label(payload.from_name), time = offlineAt(payload.offline_since, locale)
+
+    if (!target) {return Object.hasOwn(payload, 'to_name') ? labels.continuedOnUnnamed : undefined}
+
+    return host && time ? fill(labels.continuedOnSince, { target, host, time }) : fill(labels.continuedOn, { target })
+  }
+
+  if (kind === 'turn.deferred' && payload.reason === 'waiting_for_host' && (payload.resource === 'bot' || payload.resource === 'file')) {
+    const host = label(payload.host_name)
+
+    if (!host) {return payload.resource === 'bot' ? labels.waitingForUnnamedHostBot : labels.waitingForUnnamedHostFile}
+
+    return fill(payload.resource === 'bot' ? labels.waitingForHostBot : labels.waitingForHostFile, { host })
+  }
+}
+
+export function CanonicalGroupHistory({ binding, events, members = [], disabled = false, computerName }: {
   binding: CanonicalGroupBinding; events: CanonicalGroupEvent[]; members?: CanonicalRoomMember[]; disabled?: boolean
+  computerName?: (installId: string) => string | undefined
 }) {
   const labels = useCanonicalGroupLabels()
   const { locale } = useI18n()
@@ -43,10 +87,11 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
       'room.renamed': labels.activityRenamed, 'room.stop_requested': labels.stopped
     }
 
-    const suppliedText = event.payload.text || event.payload.content
-    const system = !suppliedText && !event.payload.attachments?.length
+    const notice = localizedNotice(event, labels, locale, computerName)
+    const suppliedText = notice ? undefined : event.payload.text || event.payload.content
+    const system = !!notice || !suppliedText && !event.payload.attachments?.length
 
-    const text = suppliedText || (system ? (activity[event.kind] || labels.activityUpdated)
+    const text = notice || suppliedText || (system ? (activity[event.kind] || labels.activityUpdated)
       .replace('{name}', canonicalMemberName(member, labels.unknownBot)) : '')
 
     const timestamp = event.created_at && Number.isFinite(event.created_at)

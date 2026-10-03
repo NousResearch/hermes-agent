@@ -1666,3 +1666,190 @@ class TestTranscribeOpenaiFiveXxRetry:
         assert result["success"] is False
         assert "503" in result["error"] and "ffmpeg" not in result["error"]
         assert mock_client.audio.transcriptions.create.call_count == 1
+
+
+# ============================================================================
+# Local STT language normalization (#132118)
+# ============================================================================
+
+
+class TestNormalizeLocalSttLanguage:
+    """faster-whisper accepts only lowercase ISO-639 codes, while the Desktop
+    language picker deals in uppercase variants, script/region forms and display
+    names — each of which used to abort the transcription outright."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("ZH", "zh"),
+            ("  En  ", "en"),
+            ("fr", "fr"),
+            ("zh-hant", "zh"),
+            ("zh-TW", "zh"),
+            ("zh_TW", "zh"),
+            ("en-US", "en"),
+            ("yue", "yue"),
+            ("繁體中文", "zh"),
+            ("繁体中文", "zh"),
+            ("简体中文", "zh"),
+            ("中文", "zh"),
+            ("Chinese", "zh"),
+            ("english", "en"),
+        ],
+    )
+    def test_resolves_picker_style_values(self, value, expected):
+        from tools.transcription_local import _normalize_local_stt_language
+
+        assert _normalize_local_stt_language(value) == expected
+
+    @pytest.mark.parametrize("value", [None, "", "   ", "deutsch", "123", "x", "中 文"])
+    def test_unresolvable_values_drop_the_hint(self, value):
+        from tools.transcription_local import _normalize_local_stt_language
+
+        assert _normalize_local_stt_language(value) is None
+
+    def test_unknown_text_warns_before_dropping(self, caplog):
+        from tools.transcription_local import _normalize_local_stt_language
+
+        with caplog.at_level("WARNING"):
+            assert _normalize_local_stt_language("deutsch") is None
+        assert "deutsch" in caplog.text
+
+
+class TestTranscribeLocalLanguageNormalization:
+    """_transcribe_local must not forward picker-style language values into
+    model.transcribe — faster-whisper raises on them and the recording is lost."""
+
+    @staticmethod
+    def _transcribe(tmp_path, monkeypatch, *, language=None, config_language=None):
+        audio = tmp_path / "say.ogg"
+        audio.write_bytes(b"fake")
+
+        segment = types.SimpleNamespace(text="hi", no_speech_prob=0.1, avg_logprob=-0.2)
+        info = types.SimpleNamespace(language="zh", duration=1.0)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([segment], info)
+
+        def fake_build(stt_config):
+            kwargs = {"beam_size": 5}
+            if config_language is not None:
+                kwargs["language"] = config_language
+            return kwargs
+
+        monkeypatch.setattr("tools.transcription_tools._HAS_FASTER_WHISPER", True)
+        monkeypatch.setattr(
+            "tools.transcription_tools._get_or_load_local_model",
+            lambda *a, **k: mock_model,
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {"local": {}}
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools.build_local_transcribe_kwargs", fake_build
+        )
+
+        from tools.transcription_tools import _transcribe_local
+
+        result = _transcribe_local(str(audio), "base", language=language)
+        assert result["success"] is True
+        return mock_model.transcribe.call_args.kwargs
+
+    def test_uppercase_override_is_lowercased(self, tmp_path, monkeypatch):
+        kwargs = self._transcribe(tmp_path, monkeypatch, language="ZH")
+        assert kwargs["language"] == "zh"
+
+    def test_script_subtag_config_hint_collapses_to_primary(
+        self, tmp_path, monkeypatch
+    ):
+        kwargs = self._transcribe(tmp_path, monkeypatch, config_language="zh-hant")
+        assert kwargs["language"] == "zh"
+
+    def test_known_display_name_maps_to_code(self, tmp_path, monkeypatch):
+        kwargs = self._transcribe(tmp_path, monkeypatch, language="繁體中文")
+        assert kwargs["language"] == "zh"
+
+    def test_unknown_display_name_drops_hint_for_autodetect(
+        self, tmp_path, monkeypatch
+    ):
+        kwargs = self._transcribe(tmp_path, monkeypatch, language="deutsch")
+        assert "language" not in kwargs
+
+    def test_lowercase_code_passes_through_untouched(self, tmp_path, monkeypatch):
+        kwargs = self._transcribe(tmp_path, monkeypatch, language="fr")
+        assert kwargs["language"] == "fr"
+
+
+class TestLocalCommandLanguageNormalization:
+    """The whisper CLI template rejects the same values the library does; the
+    normalized value is what reaches the command line (#132118)."""
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, sample_wav, env_language):
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", env_language)
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: {})
+
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        (out_dir / "transcript.txt").write_text("hello", encoding="utf-8")
+
+        class _TempDir:
+            def __enter__(self_inner):
+                return str(out_dir)
+
+            def __exit__(self_inner, *exc):
+                return False
+
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["cmd"] = args[0]
+
+            class R:
+                returncode = 0
+
+            return R()
+
+        monkeypatch.setattr(
+            "tools.transcription_local.tempfile.TemporaryDirectory",
+            lambda prefix=None: _TempDir(),
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_local._prepare_local_audio",
+            lambda *a, **k: (str(sample_wav), None),
+        )
+        monkeypatch.setattr(
+            "tools.transcription_local._find_whisper_binary", lambda: "/usr/bin/whisper"
+        )
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(str(sample_wav), "base")
+        assert result["success"] is True
+        return " ".join(captured["cmd"])
+
+    def test_uppercase_env_language_reaches_cli_lowercased(
+        self, monkeypatch, tmp_path, sample_wav
+    ):
+        command = self._run(monkeypatch, tmp_path, sample_wav, "ZH")
+        assert "--language zh" in command
+        assert "--language ZH" not in command
+
+    def test_script_subtag_env_language_reaches_cli_collapsed(
+        self, monkeypatch, tmp_path, sample_wav
+    ):
+        command = self._run(monkeypatch, tmp_path, sample_wav, "zh-hant")
+        assert "--language zh" in command
+
+    def test_known_display_name_env_language_reaches_cli_mapped(
+        self, monkeypatch, tmp_path, sample_wav
+    ):
+        command = self._run(monkeypatch, tmp_path, sample_wav, "繁體中文")
+        assert "--language zh" in command
+
+    def test_unknown_display_name_env_language_falls_back_to_default(
+        self, monkeypatch, tmp_path, sample_wav
+    ):
+        command = self._run(monkeypatch, tmp_path, sample_wav, "deutsch")
+        assert "--language en" in command

@@ -590,8 +590,8 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { updateGateReason, waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { waitForUpdateClearance } from './update-gate'
+import { markerPath, readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -2964,9 +2964,10 @@ function directoryExists(filePath) {
 // own relaunch hits our single-instance lock and quits). Marker parsing +
 // staleness self-heal live in update-marker.ts (unit-tested).
 
-// How long we'll park the launch waiting for a live update to finish before
-// giving up and starting the backend anyway (belt-and-suspenders alongside the
-// marker's own age ceiling; covers a stuck-but-alive updater).
+// How long the launch parks on an in-process update signal (in-flight /
+// hand-off) before starting the backend anyway. A LIVE marker owner is waited
+// out with no deadline (owner liveness, never age); past this the boot copy
+// says the update is still running.
 const UPDATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000
 const UPDATE_WAIT_POLL_MS = 1000
 // How long the desktop lingers on the "updating, don't reopen" overlay after
@@ -2988,20 +2989,22 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // The hand-off state closes the later Windows `cmd start` wrapper gap: the
 // wrapper exits 0 before the real PowerShell script claims the marker, and
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
-function updateGateDeps() {
+function updateGateDeps(onLiveMarker?: (marker: { startedAt: number | null }) => void) {
   return {
-    hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
-    isUpdateInFlight: () => updateInFlight,
-    isHandoffActive: () => isQuittingForHandoff,
-    // The latest receipt is cross-process truth: a `hermes update` that failed
-    // records outcome "failed" even when its marker write/release raced a
-    // crash (#122206). Only a TERMINAL failure counts — "running" must keep
-    // parking, and "partial" kept the install usable.
-    hasFailedReceipt: () => {
-      const receipt = readLatestSyncReceipt()
+    // Owner liveness (pid + creation time) only: a failed receipt never
+    // outranks a live marker — `latest.json` is written at finalize, so a retry
+    // after a failed update still reads "failed" while the new one runs (V2).
+    hasLiveMarker: async () => {
+      const marker = await readLiveUpdateMarker(HERMES_HOME)
 
-      return receipt?.outcome === 'failed'
-    }
+      if (marker) {
+        onLiveMarker?.(marker)
+      }
+
+      return Boolean(marker)
+    },
+    isUpdateInFlight: () => updateInFlight,
+    isHandoffActive: () => isQuittingForHandoff
   }
 }
 
@@ -3063,31 +3066,35 @@ function relaunchIntoSwappedBundle() {
 // rather than a frozen splash. Returns true if it parked at all.
 async function waitForUpdateToFinish() {
   let announced = false
-  let parkedOnFailedReceipt = false
+  let longWaitAnnounced = false
+  // Marker line 2 of the run this boot parked on: the result we report is that
+  // run's, never an older one (C2 started_at match).
+  let parkedRunStartedAt: number | null = null
 
-  const outcome = await waitForUpdateClearance(updateGateDeps(), {
+  const outcome = await waitForUpdateClearance(updateGateDeps(marker => (parkedRunStartedAt = marker.startedAt)), {
     signal: localBackendLifecycle.signal,
-    abandonOn: reason => {
-      // The update that owns the gate already recorded a terminal failure
-      // (#122206): parking the full 20-minute budget on a receipt that says
-      // "failed" strands the window behind a dead updater (486 silent polls
-      // measured). Stop waiting; the failure dialog below carries the
-      // recovery guidance and the backend's own launch path finishes only
-      // what is safely retryable, bounded by venv_sync's completion-retry
-      // backoff.
-      if (reason === 'failed-receipt') {
-        parkedOnFailedReceipt = true
-        rememberLog('[updates] latest update receipt records a failure; not parking the boot on it')
-
-        return true
-      }
-
-      return false
-    },
-    onWaitTick: async reason => {
+    onWaitTick: async (reason, waitedMs) => {
       if (!announced) {
         announced = true
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
+      }
+
+      // A live update owner is waited out, never aged out (C1 rule 3): booting
+      // a backend into a half-replaced runtime is the failure this gate exists
+      // for. Past the old ceiling, say so instead of silently counting down.
+      if (reason === 'marker' && waitedMs >= UPDATE_WAIT_TIMEOUT_MS) {
+        if (!longWaitAnnounced) {
+          longWaitAnnounced = true
+          rememberLog('[updates] update still running past 20 minutes; its owner is alive, so the boot keeps waiting')
+        }
+
+        await advanceBootProgress(
+          'backend.update-wait',
+          'An update is still running — Hermes will start automatically when it finishes. Its progress is in logs/update.log.',
+          12
+        )
+
+        return
       }
 
       await advanceBootProgress(
@@ -3107,9 +3114,22 @@ async function waitForUpdateToFinish() {
   // (previously a failed detached update was indistinguishable from
   // "nothing happened").
   try {
-    const result = readAndConsumeHandoffResult(HERMES_HOME)
+    const result = readAndConsumeHandoffResult(HERMES_HOME, {
+      expectedStartedAt: parkedRunStartedAt,
+      log: rememberLog
+    })
 
-    if (result && result.ok && result.manual) {
+    if (result && result.ok && result.warnings.length && !result.manual) {
+      // Committed, but follow-up work failed (C2/C3): the user IS on the new
+      // version, so this is a non-blocking notice, never "previous version".
+      rememberLog(`[updates] detached update finished with warnings: ${result.warnings.join(' | ')}`)
+      void dialog.showMessageBox({
+        type: 'info',
+        title: 'Hermes update',
+        message: 'Hermes updated, but some follow-up steps need another try',
+        detail: `${result.warnings.join('\n')}\n\nHermes retries them on the next launch or the next update.`
+      })
+    } else if (result && result.ok && result.manual) {
       // Update landed but the user must act (reopen/reinstall/sandbox). On
       // machines with no shim browser and no notifier this dialog is the
       // FIRST time the message is visible — it must not be a log line.
@@ -3164,11 +3184,6 @@ async function waitForUpdateToFinish() {
 
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
-  } else if (parkedOnFailedReceipt) {
-    // The gate closed on a terminal failure, not a live update: no swap to
-    // relaunch into (the update never succeeded), so boot the current build
-    // and let the failure dialog above carry the recovery guidance.
-    rememberLog('[updates] proceeding with backend start despite the failed update receipt')
   } else if (relaunchIntoSwappedBundle()) {
     await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
@@ -4868,7 +4883,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
-  const handoffConflict = updateHandoffConflict(HERMES_HOME)
+  const handoffConflict = await updateHandoffConflict(HERMES_HOME)
 
   if (handoffConflict) {
     // Same hazard as applyUpdates (#75778): a live foreign updater already
@@ -4913,7 +4928,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
   // strand the very recovery meant to heal the install.
   if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-    writeUpdateMarker(HERMES_HOME, child.pid)
+    await writeUpdateMarker(HERMES_HOME, child.pid)
   } else if (Number.isInteger(child.pid)) {
     rememberLog(
       `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
@@ -18786,7 +18801,9 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 const checkRendererSkew = createBundleSkewChecker(
   INSTALL_STAMP,
   (args, options) => execGit(resolveGitBinary(), args, options),
-  { isUpdating: () => updateGateReason(updateGateDeps()) !== null }
+  // Sync and conservative: any marker file defers the skew warning; the async
+  // owner-liveness verdict belongs to the boot gate.
+  { isUpdating: () => updateInFlight || isQuittingForHandoff || fs.existsSync(markerPath(HERMES_HOME)) }
 )
 
 async function detectRendererSkew() {

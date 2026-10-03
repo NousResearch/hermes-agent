@@ -89,6 +89,17 @@ def _allowlist_env_for_platform(platform: str) -> Optional[str]:
 
 
 def _split_allowlist(raw: str) -> list:
+    """IDs from an allowlist env value: a comma-separated string, or a JSON-list string
+    (the shape ``hermes config set`` writes — the core gate,
+    ``gateway.authz_mixin._coerce_allow_set``, already decodes it). Always returns a plain
+    list, so a write-back that ``",".join()``s it produces a comma-separated string every
+    reader accepts — approving a pairing code against a JSON-list allowlist must not corrupt
+    it into ``["a","b"],c`` (no longer valid JSON, comma-split into garbage entries)."""
+    from gateway.platforms._shared import decode_json_list_literal
+
+    decoded = decode_json_list_literal(raw)
+    if isinstance(decoded, list):
+        return [str(uid).strip() for uid in decoded if str(uid).strip()]
     return [uid.strip() for uid in raw.split(",") if uid.strip()]
 
 

@@ -672,6 +672,9 @@ class CLIStatusBarMixin:
             display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
             pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
             enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
+            # terminal_enabled (default true) hides the pixelated terminal pet without
+            # touching the desktop surfaces (they render from pet.info, not this pane).
+            terminal_enabled = is_truthy_value(pet_cfg.get("terminal_enabled"), default=True)
             slug = str(pet_cfg.get("slug", "") or "")
             scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
             cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
@@ -684,7 +687,7 @@ class CLIStatusBarMixin:
             renderer_mode = "kitty" if use_kitty else "unicode"
 
             pet = None
-            if enabled and configured_mode != "off":
+            if enabled and terminal_enabled and configured_mode != "off":
                 pet = store.resolve_active_pet(slug)
             if pet is None or not pet.exists:
                 with self._pet_lock:

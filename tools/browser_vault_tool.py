@@ -371,6 +371,11 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         if code:
             source = backend.name
     if not code:
+        from agent.vault_sms_otp import wait_for_code
+        code = wait_for_code(origin)
+        if code:
+            source = "sms"
+    if not code:
         prompt = get_code_prompt_callback()
         if prompt is None or not can_prompt_here():
             return json.dumps({"success": False, "error_type": "prompt_unavailable",

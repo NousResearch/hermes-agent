@@ -47,12 +47,14 @@ exec "$@"
 """
 
 
-def test_every_sudo_in_a_compound_command_gets_the_password(tmp_path, monkeypatch):
+def test_every_sudo_in_a_compound_command_gets_the_password(tmp_path, monkeypatch, real_bash):
     """The gateway runs the command text in a shell whose stdin is ``stdinData``. Every
     ``sudo -S`` in an ``&&`` list must read its own password line from that stream."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "sudo").write_text(_FAKE_SUDO)
+    # Byte-exact script and stdin: text mode would turn "\n" into "\r\n" on Windows, and the
+    # fake sudo would then read "<password>\r".
+    (bin_dir / "sudo").write_text(_FAKE_SUDO, newline="")
     (bin_dir / "sudo").chmod(0o755)
     monkeypatch.setenv("SUDO_PASSWORD", SYNTHETIC_SUDO_PASSWORD)
 
@@ -61,9 +63,9 @@ def test_every_sudo_in_a_compound_command_gets_the_password(tmp_path, monkeypatc
             return SimpleNamespace(status_code=200, json=lambda: {})
         shell_env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                      "EXPECTED_SUDO_PASSWORD": SYNTHETIC_SUDO_PASSWORD}
-        proc = subprocess.run(["bash", "-c", json["command"]], input=json.get("stdinData", ""),
-                              capture_output=True, text=True, cwd=tmp_path, env=shell_env, timeout=20)
-        body = {"status": "completed", "output": proc.stdout + proc.stderr, "returncode": proc.returncode}
+        proc = subprocess.run([real_bash, "-c", json["command"]], input=json.get("stdinData", "").encode(),
+                              capture_output=True, cwd=tmp_path, env=shell_env, timeout=20)
+        body = {"status": "completed", "output": (proc.stdout + proc.stderr).decode(), "returncode": proc.returncode}
         return SimpleNamespace(status_code=200, json=lambda: body)
 
     result = _env_with_gateway(gateway).execute("cd / && sudo echo one && sudo echo two")

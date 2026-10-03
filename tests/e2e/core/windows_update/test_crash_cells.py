@@ -286,10 +286,18 @@ def _direct_update_child(proc) -> psutil.Process | None:
 UPDATE_BANNER = "Updating Hermes Agent..."
 
 
-def _update_banners(machine) -> int:
+UPDATE_DONE = "Update complete!"
+# CPython's exit status when the final flush of stdout fails at shutdown. The orphan's
+# stdout is a pipe into the killed script, so its last flush has no reader; only that
+# dead script ever waited on this exit code (run 37149266852: the update's own receipt
+# says success, the checkout is at the target, the process exits 120).
+PY_FINAL_FLUSH_FAILED = 120
+
+
+def _update_banners(machine, banner: str = UPDATE_BANNER) -> int:
     try:
         return (machine.hermes_home / "logs" / "update.log").read_text(
-            encoding="utf-8-sig", errors="replace").count(UPDATE_BANNER)
+            encoding="utf-8-sig", errors="replace").count(banner)
     except OSError:
         return 0
 
@@ -326,6 +334,7 @@ def _orphan(machine, srv, label: str) -> dict:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/F"], capture_output=True, timeout=60)
         proc.wait(timeout=60)
         killed_at = time.monotonic()
+        done_before = _update_banners(machine, UPDATE_DONE)
         dead_while_running = None
         holders: set[str] = set()
         rc = None
@@ -357,12 +366,14 @@ def _orphan(machine, srv, label: str) -> dict:
         if not orphan_finished:
             machine.kill_owned()
         after_orphan = _head(machine)
+        orphan_reported_done = _update_banners(machine, UPDATE_DONE) > done_before
         marker_after_orphan = _read_marker(machine)
         marker_after_orphan_text = _marker_text(machine)
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")
         follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
     return {"pre": pre, "target": target, "seen": f"update child {child.pid}",
             "marker_at_kill": marker_at_kill, "orphan_finished": orphan_finished, "orphan_rc": rc,
+            "orphan_reported_done": orphan_reported_done,
             "dead_while_running": dead_while_running, "holders": sorted(holders),
             "after_orphan": after_orphan, "marker_after_orphan": marker_after_orphan,
             "marker_after_orphan_text": marker_after_orphan_text,
@@ -448,10 +459,12 @@ def test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_upd
             m, f"orphaned_update: {MARKER} read DEAD {r['dead_while_running'][0]}s after the script died "
                f"while its hermes update still ran: {r['dead_while_running'][1]} "
                f"(at kill: {r['marker_at_kill']!r})")
-    assert r["orphan_rc"] == 0 and r["after_orphan"] == r["target"], fail_with(
+    finished = r["after_orphan"] == r["target"] and r["orphan_reported_done"] and (
+        r["orphan_rc"] in (0, PY_FINAL_FLUSH_FAILED))
+    assert finished, fail_with(
         m, f"orphaned_update: the hermes update orphaned by the dead script did not finish the update "
-           f"(rc={r['orphan_rc']}, checkout {r['after_orphan']}, target {r['target']}; "
-           f"marker holders seen: {r['holders']})")
+           f"(rc={r['orphan_rc']}, '{UPDATE_DONE}' logged={r['orphan_reported_done']}, "
+           f"checkout {r['after_orphan']}, target {r['target']}; marker holders seen: {r['holders']})")
     with known_failure(*ORPHAN_MARKER_GAP):
         assert r["marker_after_orphan"] is None, fail_with(
             m, f"orphaned_update: {MARKER} survived the orphaned update's exit: "

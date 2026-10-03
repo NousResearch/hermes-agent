@@ -3064,9 +3064,11 @@ class BasePlatformAdapter(ABC):
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
         # <img src="url"> / <img src="url"></img> / <img src="url"/>
         html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        # Only extract URLs that look like actual images.
+        # Only extract URLs that look like actual images. WeChat CDN images
+        # (mmbiz.qpic.cn/...?wx_fmt=png) and the images.weserv.nl proxy that
+        # fetches them carry no literal extension, so they are matched by host.
         markers = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn',
-                   'replicate.delivery')
+                   'replicate.delivery', 'images.weserv.nl', 'qpic.cn', 'wx_fmt=')
         images = [(m.group(2), m.group(1)) for m in re.finditer(md_pattern, content)
                   if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
                          for ext in markers)]

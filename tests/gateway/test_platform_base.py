@@ -181,6 +181,23 @@ class TestExtractImages:
         assert images[0][1] == ""
 
 
+    def test_raw_wechat_cdn_image(self):
+        """mmbiz.qpic.cn URLs carry the format as ?wx_fmt=, not a file extension."""
+        url = "https://mmbiz.qpic.cn/mmbiz_jpg/abc/640?wx_fmt=jpeg&from=appmsg"
+        images, cleaned = BasePlatformAdapter.extract_images(f"![cover]({url})")
+        assert images == [(url, "cover")]
+        assert "![cover]" not in cleaned
+
+
+    def test_weserv_proxied_wechat_image(self):
+        """The same WeChat image proxied through images.weserv.nl is still an image."""
+        url = ("https://images.weserv.nl/?url="
+               "https%3A%2F%2Fmmbiz.qpic.cn%2Fmmbiz_png%2Fabc%2F640%3Fwx_fmt%3Dpng")
+        images, cleaned = BasePlatformAdapter.extract_images(f"![]({url})")
+        assert images == [(url, "")]
+        assert "![]" not in cleaned
+
+
     def test_html_img_tag(self):
         content = 'Check this: <img src="https://example.com/photo.png">'
         images, cleaned = BasePlatformAdapter.extract_images(content)

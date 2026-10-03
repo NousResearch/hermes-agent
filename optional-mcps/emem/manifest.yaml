@@ -1,0 +1,51 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: emem
+description: Recall signed, citeable facts about real-world locations.
+source: https://emem.dev
+
+# emem is an open protocol (Apache 2.0) serving cryptographically signed,
+# content-addressed geospatial facts over a remote Streamable HTTP MCP
+# server. Stateless, no session negotiation, nothing to install locally.
+# Every fact carries an ed25519 signature and a content address; receipts
+# verify offline against the responder's public key and an append-only
+# transparency log (RFC 6962 inclusion/consistency proofs).
+transport:
+  type: http
+  url: https://emem.dev/mcp/full
+
+# No auth: the public responder is open-read. Writes to /memories/* are
+# key-scoped server-side; no credentials are held by Hermes.
+
+# Tool selection at install time:
+# The full surface is ~105 tools. The curated default below covers the
+# working loop (locate a place, recall facts, cite them, verify a claim)
+# plus the common one-shot recalls. Everything else stays available but
+# unchecked; users opt in via `hermes mcp configure emem`.
+tools:
+  default_enabled:
+    - emem_tools            # map of the surface, start here
+    - emem_locate           # canonical cell64 address for a place
+    - emem_at               # one-shot signed facts at a place
+    - emem_ask              # free-text answer backed by signed receipts
+    - emem_recall           # signed facts at a cell64, auto-materializing
+    - emem_ndvi
+    - emem_forest
+    - emem_water
+    - emem_weather
+    - emem_elevation
+    - emem_verify           # claim -> verdict + evidence + signed receipt
+    - emem_memory_token     # mint a resolvable citation handle
+    - emem_memory_token_resolve
+    - emem_echo_verify      # grade a value against the fact it cites
+    - emem_verify_receipt   # offline receipt verification
+
+post_install: |
+  No authentication needed. Try:
+    "Locate JSCA Stadium Ranchi and recall the signed NDVI fact there."
+  Facts return with a fact_cid and an emem:fact: citation token any agent
+  can resolve to the byte-identical signed object. Re-run the tool
+  checklist any time with:
+    hermes mcp configure emem

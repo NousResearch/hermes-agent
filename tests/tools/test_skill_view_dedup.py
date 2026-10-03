@@ -125,3 +125,49 @@ class TestSkillViewDedup:
         repeat = _view("demo-dedup-skill")
         assert repeat.get("dedup") is True
         assert repeat.get("content_returned") is False
+
+
+@pytest.mark.parametrize("file_path", [None, "references/guide.md"])
+def test_qualified_names_load_distinct_skill_sources(skills_home, file_path):
+    """An explicit category is how users disambiguate same-named skills."""
+    from tools.registry import registry
+
+    for category in ("left", "right"):
+        root = skills_home / "skills" / category / "shared"
+        (root / "references").mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            "---\nname: shared\ndescription: A shared skill.\n---\n"
+            f"Follow the {category} procedure.\n", encoding="utf-8")
+        (root / "references" / "guide.md").write_text(
+            f"Follow the {category} reference.\n", encoding="utf-8")
+
+    for category in ("left", "right"):
+        args = {"name": f"{category}/shared", "file_path": file_path}
+        loaded = json.loads(registry.dispatch("skill_view", args, task_id="qualified-sources"))
+        assert loaded["success"]
+        assert f"Follow the {category}" in loaded.get("content", "")
+        repeat = json.loads(registry.dispatch("skill_view", args, task_id="qualified-sources"))
+        assert repeat["dedup"]
+        assert repeat["name"] == loaded["name"]
+
+
+def test_local_skill_does_not_dedup_namespaced_plugin(skills_home, tmp_path, monkeypatch):
+    """A matching bare suffix does not identify a plugin's registered skill."""
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from tools.registry import registry
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    md = tmp_path / "plugin" / "SKILL.md"
+    md.parent.mkdir()
+    md.write_text("---\nname: demo-dedup-skill\ndescription: Plugin procedure.\n---\n"
+                  "Follow the plugin procedure.\n", encoding="utf-8")
+    manifest = PluginManifest(name="other", version="1.0.0", description="test", source="user")
+    PluginContext(manifest, manager).register_skill("demo-dedup-skill", md)
+    local = json.loads(registry.dispatch("skill_view", {"name": "demo-dedup-skill"}, task_id="plugin-sources"))
+    assert "Step one" in local["content"]
+    plugin = json.loads(registry.dispatch("skill_view", {"name": "other:demo-dedup-skill"}, task_id="plugin-sources"))
+    assert plugin["success"]
+    assert "Follow the plugin procedure" in plugin.get("content", "")

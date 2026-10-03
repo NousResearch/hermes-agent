@@ -115,9 +115,17 @@ def take_deterministic_summary_pin() -> bool:
 
 
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
-    """Consume the pinned route as explicit ``call_llm`` keyword arguments."""
+    """Consume the pinned route as explicit ``call_llm`` keyword arguments.
+
+    A route pinned with ``authoritative`` is an override, not a patch: the retry must not inherit ANY
+    remaining field from ``auxiliary.{task}`` config, so a main runtime that leaves ``base_url``/
+    ``api_mode`` implicit cannot pick up the failed auxiliary endpoint or wire mode (#113322).
+    """
     route = take_pinned_summary_route() or {}
-    return {field: route[field] for field in _PINNED_ROUTE_FIELDS if route.get(field) not in (None, "")}
+    kwargs = {field: route[field] for field in _PINNED_ROUTE_FIELDS if route.get(field) not in (None, "")}
+    if route.get("authoritative") is True:
+        kwargs["route_authoritative"] = True
+    return kwargs
 
 
 _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
@@ -4322,7 +4330,22 @@ Write only the summary body. Do not include any preamble or prefix."""
         if _route_model and _route_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
             self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
             # Retry immediately on the main model.
-            return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
+            # ponytail: pin the main route explicitly; clearing summary_model
+            # alone re-resolves task routing to the same aux route (#113322).
+            # ``authoritative`` suppresses task-route inheritance for every field,
+            # including the ones a main runtime leaves unset (base_url/api_mode).
+            # A reduced-input/budget retry is out of scope.
+            main_route = {
+                "label": "main model fallback",
+                "provider": self.provider,
+                "model": self.model,
+                "base_url": self.base_url,
+                "api_key": self.api_key,
+                "api_mode": self.api_mode,
+                "authoritative": True,
+            }
+            with pin_summary_route(main_route):
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
         # Transient errors: short cooldown for JSON-decode/streaming-closed/empty-content. Timeouts escalate
         # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung; truncation

@@ -40,7 +40,11 @@ def test_auto_resolved_summary_model_falls_back_to_main_on_empty_content():
         result = c._generate_summary(_msgs())
 
     assert mock_call.call_count == 2  # first auto route failed → retried on main
-    assert "model" not in mock_call.call_args_list[1].kwargs
+    # The retry pins the MAIN route explicitly (and authoritatively: the auxiliary
+    # route's fields cannot be inherited), so the failed route cannot be re-resolved (#113322).
+    retry = mock_call.call_args_list[1].kwargs
+    assert retry.get("model") == "main-model"
+    assert retry.get("route_authoritative") is True
     assert result is not None and "summary via main model" in result
     # The model that actually failed (the auto-resolved one) is recorded for the user warning.
     assert c._last_aux_model_failure_model == "z-ai/glm-5.3"

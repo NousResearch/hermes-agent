@@ -379,12 +379,18 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
     st.say(f"  ↑ {skill_name} (updated)")
 
 
-def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]]) -> None:
-    """Copy category DESCRIPTION.md files not already present; ``only_dirs`` restricts
-    seeding to the essential skills' categories on opted-out profiles."""
+def _seed_category_descriptions(bundled_dir: Path) -> None:
+    """Copy category DESCRIPTION.md files not already present.
+
+    An opted-out profile (.no-bundled-skills) gets zero category-description
+    writes: the essential skill's category must not be resurrected after the
+    user deletes it (#122534).
+    """
+    if (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists():
+        return
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         dest_desc = _skills_dir() / desc_md.relative_to(bundled_dir)
-        if (only_dirs is not None and dest_desc.parent not in only_dirs) or dest_desc.exists():
+        if dest_desc.exists():
             continue
         try:
             dest_desc.parent.mkdir(parents=True, exist_ok=True)
@@ -444,9 +450,7 @@ def sync_skills(quiet: bool = False) -> dict:
     cleaned = [name for name in removed if name not in present]
     for name in cleaned:
         del st.manifest[name]
-    _seed_category_descriptions(
-        bundled_dir,
-        {_compute_relative_dest(src, bundled_dir).parent for _, src in bundled_skills} if essential_only else None)
+    _seed_category_descriptions(bundled_dir)
     _write_manifest(st.manifest)
     return {
         "copied": st.copied, "updated": st.updated, "skipped": st.skipped, "user_modified": st.user_modified,

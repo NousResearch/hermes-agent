@@ -787,6 +787,57 @@ class TestNoBundledSkillsOptOut:
         assert "new-skill" in seeded["copied"]
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
+    def test_marker_prevents_category_description_reseed(self, tmp_path):
+        """#122534: an opted-out home gets zero bundled category DESCRIPTION.md
+        writes; deleting the essential skill's category must stick across syncs."""
+        bundled = tmp_path / "bundled"
+        (bundled / "category" / "hermes-agent").mkdir(parents=True)
+        (bundled / "category" / "hermes-agent" / "SKILL.md").write_text(
+            "---\nname: hermes-agent\n---\nbody\n")
+        (bundled / "category" / "DESCRIPTION.md").write_text("Category desc")
+
+        skills_dir = tmp_path / "user_skills"
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        marker = hermes_home / ".no-bundled-skills"
+        marker.write_text("opted out\n")
+
+        from contextlib import ExitStack
+
+        def _patches():
+            stack = ExitStack()
+            stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+            stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+            stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+            stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", skills_dir / ".bundled_manifest"))
+            stack.enter_context(patch("tools.skills_sync.HERMES_HOME", hermes_home))
+            return stack
+
+        with _patches():
+            sync_skills(quiet=True)
+        # The essential skill still seeds on an opted-out profile...
+        assert (skills_dir / "category" / "hermes-agent" / "SKILL.md").exists()
+        desc = skills_dir / "category" / "DESCRIPTION.md"
+        # ...but the category description must not: the user deletes (or tampers
+        # with) it, runs the startup seed again, and it must stay gone.
+        if desc.exists():
+            desc.unlink()
+        with _patches():
+            sync_skills(quiet=True)
+        assert not desc.exists(), "opted-out profile must not re-seed DESCRIPTION.md"
+
+        # Reporter repro step 3: rm -rf the whole category folder.
+        shutil.rmtree(skills_dir / "category")
+        with _patches():
+            sync_skills(quiet=True)
+        assert not desc.exists(), "deleted category must not be resurrected"
+
+        # Guard: without the marker the legit path still seeds the description.
+        marker.unlink()
+        with _patches():
+            sync_skills(quiet=True)
+        assert desc.exists()
+
 
 class TestOptOutToggleAndRemove:
     """`hermes skills opt-out/opt-in` core: marker toggle + safe removal."""

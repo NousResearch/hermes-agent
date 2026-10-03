@@ -170,7 +170,9 @@ def _check_mcp_security(should_fix: bool, f: Finding) -> None:
 @doctor_check()
 def _check_env_file(should_fix: bool, f: Finding) -> None:
     """Managed scope plus ~/.hermes/.env presence and provider credentials."""
-    from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
+    from hermes_cli.doctor import PROJECT_ROOT, _DHH
+    from hermes_cli.config import get_hermes_home
+    HERMES_HOME = get_hermes_home()
     managed_scope_check()
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
@@ -335,7 +337,9 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
-    from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
+    from hermes_cli.doctor import PROJECT_ROOT, _DHH
+    from hermes_cli.config import get_hermes_home
+    HERMES_HOME = get_hermes_home()
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
@@ -529,7 +533,8 @@ def _check_config_drift(should_fix: bool, f: Finding) -> None:
 
     Each step is independent and best-effort: a failure in one never hides the next.
     """
-    from hermes_cli.doctor import HERMES_HOME
+    from hermes_cli.config import get_hermes_home
+    HERMES_HOME = get_hermes_home()
     config_path = HERMES_HOME / 'config.yaml'
     if not config_path.exists():
         config_path = None

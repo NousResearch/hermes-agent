@@ -12,12 +12,15 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
-HERMES_HOME = get_hermes_home()
-_DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
+# ``HERMES_HOME`` and ``_DHH`` (the user-facing display path, e.g. ~/.hermes or
+# ~/.hermes/profiles/coder) are served live by ``__getattr__`` at the foot of this module.
 
-# Load environment variables from ~/.hermes/.env so API key checks work
-_env_path = get_env_path()
-load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
+
+def _dhh() -> str:
+    """``_DHH`` for THIS module's own code: a module ``__getattr__`` does not serve a module's
+    own global lookups, and going through the module object also honors a test's
+    ``monkeypatch.setattr(doctor, "_DHH", …)``, which a direct call would bypass."""
+    return sys.modules[__name__]._DHH
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
@@ -137,7 +140,7 @@ def _ack_advisory(ack_target: str) -> None:
     if ack_advisory(ack_target):
         print(color(f"  ✓ Acknowledged advisory {ack_target}. It will no longer trigger startup banners.", Colors.GREEN))
     else:
-        print(color(f"  ✗ Could not save the acknowledgement for {ack_target}. Make sure {_DHH}/config.yaml is "
+        print(color(f"  ✗ Could not save the acknowledgement for {ack_target}. Make sure {_dhh()}/config.yaml is "
                     f"writable (`hermes config path` prints the exact file), then re-run "
                     f"`hermes doctor --ack {ack_target}`.", Colors.RED))
         sys.exit(1)
@@ -167,8 +170,10 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
     print()
 
 
-def run_doctor(args):
+def _run_doctor(args):
     """Run diagnostic checks."""
+    env_path = get_env_path()
+    load_hermes_dotenv(hermes_home=env_path.parent, project_env=PROJECT_ROOT / ".env")
     should_fix = getattr(args, 'fix', False)
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
@@ -190,3 +195,26 @@ def run_doctor(args):
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))
+
+
+#: Home-derived names this module used to bind at module scope. It now resolves the home at CALL
+#: time (a module constant freezes it at import and drifts the moment ``HERMES_HOME`` moves), but
+#: tests patch ``doctor.HERMES_HOME`` / ``doctor._DHH`` with ``raising=True``, which needs the
+#: NAME to exist. PEP 562 gives both: the attribute answers, and it answers live.
+#: ``monkeypatch.setattr`` still shadows it with a real attribute, so isolation keeps working.
+_LIVE_HOME_NAMES = {
+    'HERMES_HOME': lambda: get_hermes_home(),
+    '_DHH': lambda: display_hermes_home(),
+}
+
+
+def __getattr__(name):  # PEP 562 — live home names
+    resolve = _LIVE_HOME_NAMES.get(name)
+    if resolve is not None:
+        return resolve()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def run_doctor(args):
+    """Resolve the selected home when invoked."""
+    return _run_doctor(args)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 
@@ -154,3 +156,24 @@ def probe_root(tmp_path):
     """
     (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     return tmp_path
+
+
+def _unshadow_doctor_live_home_names():
+    doctor = sys.modules.get("hermes_cli.doctor")
+    if doctor is None:
+        return
+    for name in getattr(doctor, "_LIVE_HOME_NAMES", ()):
+        doctor.__dict__.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
+def _doctor_live_home_names():
+    """``hermes_cli.doctor`` serves ``HERMES_HOME`` / ``_DHH`` live through a module
+    ``__getattr__``. A test's ``monkeypatch.setattr(doctor, "HERMES_HOME", …)`` restores the
+    value it READ on teardown as a real module attribute, which then shadows ``__getattr__``
+    for every later test. Drop those names before and after each test so they resolve live
+    again. Both ends, because fixture teardown order relative to ``monkeypatch`` is not fixed.
+    """
+    _unshadow_doctor_live_home_names()
+    yield
+    _unshadow_doctor_live_home_names()

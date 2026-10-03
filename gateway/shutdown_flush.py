@@ -37,9 +37,13 @@ def _get_flush_dir():
     flush_dir = get_hermes_home() / "pending_messages"
     from hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(flush_dir)
-    flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
+        flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(flush_dir, 0o700)
+    else:
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        flush_dir.mkdir(parents=True, exist_ok=True)
     return flush_dir
 
 

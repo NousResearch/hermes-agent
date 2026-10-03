@@ -101,7 +101,13 @@ class _EmbeddedCuaDaemon:
     narrow a profile but never widen it", so a configured v3 manifest is forwarded even for ``unrestricted``
     (bounding an approval-bypassed run). Mandatory for ``bounded``, optional everywhere else."""
 
-    _START_TIMEOUT_SECONDS = 15.0
+    # `status --socket` blocks for the driver's full handshake, which is not bounded by 2s on a
+    # slow or loaded host: a 2s probe ceiling makes every probe expire as TimeoutExpired (swallowed
+    # to None by _run_quiet), so the readiness loop can never observe a ready daemon and every
+    # start dies at the start budget. The probe ceiling must exceed a plausible handshake, and the
+    # start budget must leave room for a second probe after the first one eats the slack.
+    _PROBE_TIMEOUT_SECONDS = 20.0
+    _START_TIMEOUT_SECONDS = 60.0
 
     def __init__(self, driver_cmd: str, permission_mode: str, capability_manifest: Optional[str] = None) -> None:
         if permission_mode not in {"unrestricted", "bounded"}:
@@ -191,7 +197,7 @@ class _EmbeddedCuaDaemon:
 
     def _socket_ready(self, env: Dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
-        probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=2.0, env=env, swallow=_QUIET_ERRORS)
+        probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=self._PROBE_TIMEOUT_SECONDS, env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
 
     def proxy_invocation(self) -> Tuple[str, List[str]]:

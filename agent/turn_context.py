@@ -23,7 +23,11 @@ from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
-from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_native_anthropic_request_tokens_rough,
+    estimate_request_tokens_rough,
+)
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
@@ -60,9 +64,30 @@ def _preflight_request_tokens(
             "using generic transcript estimate",
             exc_info=True,
         )
+    charge_stale_thinking = _agent_stale_thinking_on_wire(agent)
+    estimate_messages = messages
+    if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+        if native_anthropic_preserves_prior_thinking(
+            getattr(agent, "base_url", ""), getattr(agent, "model", "")
+        ):
+            from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+            # Preflight runs on canonical history, while the eventual request is a
+            # filtered copy. Mirror suppression onto shallow message copies before
+            # pricing the exact native replay carriers.
+            estimate_messages = [
+                dict(message) if isinstance(message, dict) else message
+                for message in messages
+            ]
+            apply_rejected_thinking_suppression(agent, estimate_messages)
+            return estimate_native_anthropic_request_tokens_rough(
+                estimate_messages, system_prompt=system_prompt or "", tools=tools
+            )
     return estimate_request_tokens_rough(
-        messages, system_prompt=system_prompt or "", tools=tools,
-        charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
+        estimate_messages, system_prompt=system_prompt or "", tools=tools,
+        charge_stale_thinking=charge_stale_thinking,
     )
 
 
@@ -162,7 +187,9 @@ def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bo
 _UNTITLED_PLATFORMS = frozenset({"cron"})
 
 
-def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
+def _maybe_title_session_at_turn_start(
+    agent: Any, messages: List[Any], title_user_message: Optional[str] = None,
+) -> None:
     """Kick off auto-titling for the session's first user message; never fatal."""
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
@@ -185,6 +212,8 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 if isinstance(metadata, dict) and isinstance(metadata.get("title_preview"), str):
                     title_preview = metadata["title_preview"]
                 break
+        if title_user_message is not None:
+            user_text = title_user_message.strip()
         if not user_text:
             return
         # The session row is created lazily; force it now or the title write matches
@@ -573,6 +602,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None),
+    ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
@@ -608,6 +638,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
+    if getattr(agent, "_pending_startup_notices", None):  # gateway: init ran before its callbacks
+        agent._replay_startup_warnings()
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
     # Wall-clock run budget: stamped only when configured (one wrap-up notice per run).
@@ -990,6 +1022,7 @@ def build_turn_context(
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
+    title_user_message: Optional[str]=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1138,7 +1171,7 @@ def build_turn_context(
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
     # no-op once titled; it ensures the session row itself.
-    _maybe_title_session_at_turn_start(agent, messages)
+    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
@@ -1279,6 +1312,11 @@ def build_api_messages(
         # 'reasoning_details' is kept here; the chat-completions transport drops it on the
         # wire for every route that does not replay it (OpenRouter/Nous do).
         api_messages.append(api_msg)
+
+    # A provider-rejected Anthropic signature is suppressed outside canonical history and
+    # survives fresh request construction / process resume via session model_config.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+    apply_rejected_thinking_suppression(agent, api_messages)
 
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the

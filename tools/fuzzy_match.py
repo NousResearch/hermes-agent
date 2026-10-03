@@ -367,12 +367,14 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             continue
 
         if len(matches) > 1 and not replace_all:
+            _note_edit_match(None, "ambiguous")
             locations = _format_match_locations(content, matches)
             return content, 0, None, (
                 f"Found {len(matches)} matches for old_string. "
                 f"Provide more context to make it unique, or use replace_all=True. "
                 f"Matches:\n{locations}")
         if replace_all and len(matches) > 1 and strategy_name in SIMILARITY_STRATEGIES:
+            _note_edit_match(None, "ambiguous")
             return content, 0, None, (
                 f"Found {len(matches)} approximate matches via the "
                 f"'{strategy_name}' strategy; replace_all only applies to exact "
@@ -387,22 +389,68 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 return content, 0, None, drift_err
 
         effective_new = _maybe_unescape_new_string(new_string, content, matches)
-        if strategy_name == "unicode_normalized":
-            effective_new = _preserve_unicode_in_replacement(content, matches, old_string, effective_new)
         new_content = _apply_replacements(
             content, matches, effective_new,
-            old_string=old_string if strategy_name != "exact" else None)
+            old_string=old_string if strategy_name != "exact" else None,
+            unicode_plan=(_unicode_edit_plan(old_string, effective_new)
+                          if strategy_name == "unicode_normalized" else None))
+        _note_edit_match(strategy_name)
         return new_content, len(matches), strategy_name, None
 
+    _note_edit_match(None, "no_match")
     return content, 0, None, "Could not find a match for old_string in the file"
+
+
+def _note_edit_match(strategy: Optional[str], miss: Optional[str] = None) -> None:
+    """Report to shared metrics which strategy landed (or why none did); a no-op unless a
+    metered patch tool call is in progress."""
+    try:
+        from hermes_cli.observability.shared_metrics_harness import note_edit_match
+    except Exception:
+        return
+    note_edit_match(strategy, miss)
 
 
 # ── Escape-drift guards ──────────────────────────────────────────────────
 
+def _detect_newline_literal_drift(content: str, matches: list[Span],
+                                  old_string: str, new_string: str) -> Optional[str]:
+    """Error string when a literal two-character ``\\n`` in the arguments stands in
+    for a real line break in the file (arguments JSON-escaped one extra time), else None.
+
+    Fires when some matched region contains a real newline and old_string holds MORE
+    literal ``\\n`` than that region. old_string is copied from the file, so a genuine
+    edit has equal counts even when the code legitimately contains ``"\\n"``; only the
+    surplus is drift. Regions are compared one by one because joining them would
+    multiply the file-side count under replace_all. new_string must carry a literal
+    ``\\n`` too: that is what gets written in place of a line break, since
+    _maybe_unescape_new_string deliberately never rewrites ``\\n``. ``\\r`` needs no
+    guard here -- that helper converts it whenever the region has a real CR. Drift in
+    new_string alone is indistinguishable from an edit that adds a ``\\n`` literal.
+    """
+    if "\\n" not in new_string:
+        return None
+    old_literals = old_string.count("\\n")
+    for start, end in matches:
+        region = content[start:end]
+        if "\n" in region and old_literals > region.count("\\n"):
+            return (
+                "Escape-drift detected: old_string contains more literal "
+                "'\\\\n' sequences than the matched region of the file, which "
+                "has real line breaks there instead. This is almost always a "
+                "tool-call serialization artifact where a line break got escaped "
+                "one extra time; new_string would write it as backslash + n. "
+                "Re-read the file with read_file and pass old_string/new_string "
+                "with actual line breaks, keeping only the '\\\\n' sequences "
+                "that appear literally in the file.")
+    return None
+
+
 def _detect_escape_drift(content: str, matches: list[Span],
                          old_string: str, new_string: str) -> Optional[str]:
     """Error string when new_string carries tool-call escape artifacts, else None:
-    ``\\'``/``\\"`` in both strings but not the matched region, or doubled backslash runs."""
+    ``\\'``/``\\"`` in both strings but not the matched region, doubled backslash
+    runs, or a literal ``\\n`` standing in for a real line break."""
     has_quote_suspects = "\\'" in new_string or '\\"' in new_string
     if not has_quote_suspects and "\\" not in old_string:
         return None
@@ -420,6 +468,9 @@ def _detect_escape_drift(content: str, matches: list[Span],
                     f"prefixed with a spurious backslash. Re-read the file with "
                     f"read_file and pass old_string/new_string without "
                     f"backslash-escaping {plain!r} characters.")
+    newline_drift = _detect_newline_literal_drift(content, matches, old_string, new_string)
+    if newline_drift:
+        return newline_drift
     return _detect_backslash_doubling(matched_regions, old_string, new_string)
 
 
@@ -500,19 +551,26 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
     return "\n".join(out_lines)
 
 
-def _preserve_unicode_in_replacement(content: str, matches: list[Span],
-                                     old_string: str, new_string: str) -> str:
-    """Apply only the old->new edits onto the file's original (Unicode) text, so a
-    unicode_normalized match doesn't flatten the file's em-dashes/smart quotes."""
-    file_region = _matched_regions(content, matches)
+def _unicode_edit_plan(old_string: str, new_string: str) -> tuple[str, list]:
+    """``(normalized old, old->new opcodes)``: independent of the file region, so
+    a replace_all computes it once for every match."""
     norm_old = _unicode_normalize(old_string)
+    return norm_old, SequenceMatcher(None, norm_old, new_string).get_opcodes()
+
+
+def _preserve_unicode_in_replacement(file_region: str, new_string: str,
+                                     plan: tuple[str, list]) -> str:
+    """Apply only the old->new edits onto ``file_region``'s original (Unicode) text,
+    so a unicode_normalized match doesn't flatten the file's em-dashes/smart quotes.
+    ``plan`` is ``_unicode_edit_plan(old_string, new_string)``."""
+    norm_old, opcodes = plan
     if norm_old != _unicode_normalize(file_region):
         return new_string  # strategy shouldn't have fired; fall back
 
     file_orig_to_norm = _build_orig_to_norm_map(file_region)
 
     result_parts: list[str] = []
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, norm_old, new_string).get_opcodes():
+    for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":
             # The original char owning norm index i1, even one inside a multi-char expansion (em-dash -> '--').
             orig_start = bisect.bisect_right(file_orig_to_norm, i1) - 1
@@ -524,14 +582,21 @@ def _preserve_unicode_in_replacement(content: str, matches: list[Span],
 
 
 def _apply_replacements(content: str, matches: list[Span],
-                        new_string: str, old_string: Optional[str] = None) -> str:
+                        new_string: str, old_string: Optional[str] = None,
+                        unicode_plan: Optional[tuple[str, list]] = None) -> str:
     """Splice ``new_string`` over each span (end-to-start so offsets stay valid);
-    ``old_string`` non-None (non-exact match) re-indents it per region."""
+    ``old_string`` non-None (non-exact match) re-indents it per region, and
+    ``unicode_plan`` (unicode_normalized match) keeps each region's typography."""
     result = content
     for start, end in sorted(matches, key=lambda x: x[0], reverse=True):
         adjusted = new_string
         if old_string is not None:
-            adjusted = _reindent_replacement(content[start:end], old_string, new_string)
+            region = content[start:end]
+            if unicode_plan is not None:
+                # Each occurrence may use different typographic characters even
+                # though all normalize to the same old_string.
+                adjusted = _preserve_unicode_in_replacement(region, adjusted, unicode_plan)
+            adjusted = _reindent_replacement(region, old_string, adjusted)
         result = result[:start] + adjusted + result[end:]
     return result
 

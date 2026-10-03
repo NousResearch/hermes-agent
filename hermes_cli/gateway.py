@@ -2118,9 +2118,13 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
+        # pythonw/console-less backend startup reaches this probe; powershell.exe is a
+        # console-subsystem binary and would flash a window per spawn (#117781).
+        from hermes_cli._subprocess_compat import windows_hide_flags
         result = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None
@@ -3005,11 +3009,17 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
 
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
-    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted."""
+    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
+
+    Only the which()-resolved tool dirs and the hardcoded System32 family belong here. The
+    shell PATH is deliberately NOT scraped: WSL appends every Windows PATH entry (Desktop app,
+    git, node dirs under ``/mnt/``) ahead of the interop defaults, and persisting those into the
+    unit makes the gateway open 9p (Plan 9 interop) connections to each of them at start — enough
+    to exhaust the 9p server connection limit (#73163). Interop tools don't need them."""
     if not is_wsl():
         return []
 
-    candidates = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.startswith("/mnt/")]
+    candidates: list[str] = []
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)
         if resolved:
@@ -4131,7 +4141,16 @@ def host_multiplexer_serving(profile_name: str | None = None):
     try:
         from gateway.host_attach import host_gateway_serving
         name = profile_name if profile_name is not None else _current_profile_name()
-        return host_gateway_serving(name or "default")
+        gateway = host_gateway_serving(name or "default")
+        if gateway is None:
+            return None
+        # Same predicate as decide() / _claim_host_gateway_role: another tenant's multiplexer
+        # "serving default" is a name collision, and the CLI guards refused on it with exit 78 (#121352).
+        from gateway.host_attach import launched_by_other_tenant
+        if launched_by_other_tenant(gateway.home, get_hermes_home()):
+            logger.debug("Host gateway %s belongs to another Hermes home; not ours", gateway.describe())
+            return None
+        return gateway
     except Exception:
         logger.debug("Host multiplexer probe failed", exc_info=True)
         return None
@@ -4170,9 +4189,15 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     # The host record answers first: it names the live host process whatever home launched it, so a
-    # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
-        return True
+    # multiplexer started by a named profile is visible here too. A record launched by THIS profile's
+    # own home is its own gateway (a standalone fleet member, or a multiplexer it hosts), never a
+    # multiplexer serving a satellite: counting it refused the owner's own restart with exit 78 and
+    # pointed it at `-p default`, whose gateway was not running (#120871).
+    gateway = host_multiplexer_serving(suffix)
+    if gateway is not None:
+        from hermes_cli.profiles import normalize_profile_name
+        if normalize_profile_name(gateway.profile_label) != normalize_profile_name(suffix):
+            return True
 
     try:
         from hermes_constants import get_default_hermes_root
@@ -4592,6 +4617,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
+    from hermes_cli.observability.shared_metrics_process import begin_process
+    begin_process("gateway")
 
     # Detached Windows runs (HERMES_GATEWAY_DETACHED=1, or non-TTY for older wrappers) ignore
     # console-control broadcasts from sibling CLIs; foreground runs keep Ctrl+C-to-stop.
@@ -5472,6 +5499,39 @@ def _restart_all_as_host(owner, system: bool) -> None:
     run_gateway(verbose=0, replace=True)
 
 
+def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+    """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
+
+    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the fallback's
+    stop + in-process ``run_gateway`` SIGKILLed a live service-managed gateway and spawned an
+    unsupervised orphan in the caller's cgroup while the unit flapped against the stolen lock
+    (#126474). Reuses the dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone
+    (the caller itself started under some unit) never proves ownership.
+    """
+    if not pid or pid <= 1:
+        return
+    from hermes_cli import main_dashboard as _dash
+
+    unit = _dash._get_systemd_service_for_pid(pid)
+    if unit is None:
+        return
+    scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    cmds = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [user_cmd, system_cmd])
+    _print_lines(
+        "",
+        f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
+        "  `hermes gateway restart` cannot restart it from here: the fallback would",
+        "  kill a live gateway and spawn an unsupervised replacement in this shell's",
+        "  cgroup while the unit keeps failing against the stolen lock.",
+        "  Restart it through its unit instead:",
+        *(f"    {c}" for c in cmds),
+        "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
+        "  removes the legacy unit so the canonical one can own the gateway.)",
+    )
+    sys.exit(1)
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
@@ -5547,6 +5607,7 @@ def _cmd_restart(args):
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
         restart_externally_supervised_gateway(supervised_pid)
         return
+    _refuse_restart_of_service_managed_gateway(supervised_pid)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
@@ -5594,12 +5655,14 @@ def _status_host_kind() -> str:
 
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
-    if print_parked_status():
-        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    # The marker records intent, not runtime: a `--force` gateway bypasses parking and stays live
+    # beside it, so only a parked profile with nothing running stops here.
+    if print_parked_status() and not snapshot.running:
+        return
     from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
     active_standalone = ((get_active_profile_name() or "default") != "default"
@@ -5635,6 +5698,13 @@ def _cmd_status(args):
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
+        elif snapshot.service_running:
+            # s6 container: the service is up but the scan finds no PID (the `python -c` launcher
+            # argv is deliberately unmatched, #123881, and there is no gateway.pid) — #125390.
+            print(f"✓ Gateway is running (supervised by {snapshot.manager})")
+            _print_runtime_health()
+            _print_multiplex_standalone_reason()
+            _print_served_ingress_urls()
         else:
             print("✗ Gateway is not running")
             _print_runtime_health()

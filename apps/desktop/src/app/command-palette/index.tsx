@@ -70,10 +70,11 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
+import { completeFlow, recordAction } from '@/store/desktop-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
-import { openBrowserTab } from '@/store/preview'
+import { toggleBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
@@ -985,9 +986,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             action: 'view.showBrowser',
             icon: codiconIcon('globe'),
             id: 'cc-open-browser',
-            keywords: ['browser', 'web', 'url', 'address', 'open', 'navigate', 'internet', 'site'],
-            label: cc.openBrowser,
-            run: () => openBrowserTab()
+            keywords: ['browser', 'web', 'url', 'address', 'open', 'toggle', 'close', 'navigate', 'internet', 'site'],
+            label: cc.toggleBrowser,
+            run: () => toggleBrowserTab()
           }
         ]
       },
@@ -1564,6 +1565,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
       return
     }
+
+    completeFlow('command_palette')
+    recordAction(item.action ?? 'other', 'palette')
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

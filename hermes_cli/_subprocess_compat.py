@@ -31,6 +31,8 @@ __all__ = [
     "selected_git_env",
     "expose_pm_git",
     "noninteractive_git_env",
+    "noninteractive_repo_git_env",
+    "FILTER_DISCOVERY_FAILED",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
@@ -42,8 +44,8 @@ __all__ = [
 # arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``; because the
 # attacker chooses the name, ``GIT_CONFIG_KEY`` overrides in ``noninteractive_git_env`` cannot
 # enumerate it — only these flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv`` kills
-# ``textconv=``; each alone leaves the other live. Smudge/clean filters are neutralized by the env
-# layer's ``core.hooksPath`` + running against the index without checkout.
+# ``textconv=``; each alone leaves the other live. Repository-named clean/smudge/process filters
+# are handled separately by ``noninteractive_repo_git_env`` at repo-scoped automatic call sites.
 NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 
 # Only these subcommands accept ``NO_DRIVER_DIFF_FLAGS`` — ``status`` and friends reject them
@@ -343,6 +345,7 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
                 ["git", "config", scope, "-z", "--get-all", "safe.directory"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+                creationflags=windows_hide_flags(),
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -463,6 +466,121 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
+    return env
+
+
+_FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
+# ``includeIf`` is evaluated against the CURRENT checkout: ``onbranch:`` against the current branch,
+# ``gitdir:`` against the current git dir (``.git/worktrees/<name>`` during ``worktree add``), so
+# the spawned git can load an include this discovery's ``--includes`` skipped. Every include target
+# is therefore read directly, whatever its condition, and its filter names are neutralized too.
+# Global/system config is already /dev/null, so only repo-local includes reach this.
+_INCLUDE_IF_KEY = re.compile(r"^includeif\..*\.path$", re.IGNORECASE)
+# Any include (conditional or not) inside an include target: discovery does not walk it twice.
+_INCLUDE_KEY = re.compile(r"^include(?:if\..*)?\.path$", re.IGNORECASE)
+# `git config --get-regexp` pattern for the keys discovery reads (filter commands and includes).
+_DISCOVERY_KEYS_REGEXP = r"^(filter\..*\.(clean|smudge|process)|include\.path|includeif\..*\.path)$"
+# Each include target costs one bounded spawn on every hardened git call; refuse past this many.
+_MAX_INCLUDE_TARGETS = 16
+# Each discovered key costs two env entries; a repo with tens of thousands of filters would make
+# every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
+_MAX_FILTER_KEYS = 256
+# Stand-in stderr for a git call refused because filter discovery could not be trusted.
+FILTER_DISCOVERY_FAILED = "git filter discovery failed"
+
+
+def noninteractive_repo_git_env(
+    cwd: "str | os.PathLike[str]",
+    base: "Mapping[str, str] | None" = None,
+) -> "dict[str, str] | None":
+    """Harden internal git for one repository, including named clean/smudge/process filters.
+
+    The static environment can pin fixed config keys such as core.fsmonitor and
+    core.hooksPath, but a repository chooses filter driver names through .gitattributes.
+    Discover the effective filter command keys for this checkout and append empty command
+    overrides plus required=false to the already-isolated config block. Discovery is
+    bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
+    automatic git operation instead of running with only partial hardening.
+    """
+    env = noninteractive_git_env(base)
+    # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
+    # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
+    # One probe lists the filter keys and the include paths with their origin file: -z --show-origin
+    # yields "file:<origin>", "<key>\n<value>" pairs.
+    proc = bounded_probe_run(
+        ["git", "-C", str(cwd), "config", "--includes", "--show-origin", "-z", "--get-regexp",
+         _DISCOVERY_KEYS_REGEXP],
+        timeout=2, env=env,
+    )
+    if proc is None or proc.returncode not in (0, 1):
+        return None
+    names: list[str] = []
+    targets: set[Path] = set()
+    toplevel: "Path | None" = None
+    fields = proc.stdout.split("\0")
+    for origin, entry in zip(fields[0::2], fields[1::2]):
+        key, _, value = entry.partition("\n")
+        if not _INCLUDE_IF_KEY.fullmatch(key):
+            names.append(key)
+            continue
+        if not origin.startswith("file:"):
+            return None
+        origin_path = Path(origin[len("file:"):])
+        if not origin_path.is_absolute():
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*; with a
+            # caller-set GIT_DIR/GIT_WORK_TREE they are relative to something else, so refuse.
+            if env.get("GIT_DIR") or env.get("GIT_WORK_TREE"):
+                return None
+            if toplevel is None:
+                top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                                        timeout=2, env=env)
+                if top is None or top.returncode != 0:
+                    return None
+                toplevel = Path(top.stdout.rstrip("\r\n"))  # a checkout path may end in a space
+            origin_path = toplevel / origin_path
+        # A relative include path resolves against the directory of the config file naming it.
+        target = (origin_path.parent / os.path.expanduser(value)).resolve()
+        if target in targets or not target.exists():
+            continue  # already read, or missing (git skips a missing include file)
+        if not target.is_file() or len(targets) >= _MAX_INCLUDE_TARGETS:
+            return None  # a FIFO/device/directory, or too many targets to read on every call
+        targets.add(target)
+        probe = bounded_probe_run(
+            ["git", "config", "--file", str(target), "--name-only", "-z", "--get-regexp", _DISCOVERY_KEYS_REGEXP],
+            timeout=2, env=env,
+        )
+        if probe is None or probe.returncode not in (0, 1):
+            return None
+        found = probe.stdout.split("\0")
+        # An include inside an include target would need the same walk again; refuse instead.
+        if any(_INCLUDE_KEY.fullmatch(name) for name in found):
+            return None
+        names.extend(found)
+
+    keys: list[str] = []
+    required: list[str] = []
+    seen: set[str] = set()
+    # Dedup on the exact key name git prints: section and variable lowercased, subsection case kept,
+    # and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
+    for raw in names:
+        key = raw.strip()
+        if not key or key in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
+            continue
+        seen.add(key)
+        keys.append(key)
+        if len(keys) > _MAX_FILTER_KEYS:
+            return None
+        required_key = key.rsplit(".", 1)[0] + ".required"
+        if required_key not in seen:
+            seen.add(required_key)
+            required.append(required_key)
+
+    start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
+    overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    for offset, (key, value) in enumerate(overrides):
+        env[f"GIT_CONFIG_KEY_{start + offset}"] = key
+        env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
+    env["GIT_CONFIG_COUNT"] = str(start + len(overrides))
     return env
 
 
@@ -718,7 +836,7 @@ def _close_job(job) -> None:
         pass
 
 
-def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
+def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: "Mapping[str, str] | None" = None) -> str:
     """Run a short ``git`` probe and return stripped stdout, or ``""`` on ANY failure.
 
     On Windows ``run()``'s post-timeout cleanup calls an unbounded ``communicate()``; a suspended
@@ -744,7 +862,7 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV})
+    result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()

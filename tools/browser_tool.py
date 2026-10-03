@@ -23,6 +23,7 @@ from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli.observability.shared_metrics_loop import record_browser_call
 
 
 # Env keys re-added to the agent-browser subprocess AFTER credential stripping.
@@ -264,6 +265,9 @@ from tools import browser_tool_lightpanda_fallback as _lp
 # Single shared real-profile copy-browser session: concurrent tasks reuse it
 # instead of each launching a rival Chromium on the same copied user-data-dir.
 _REAL_PROFILE_SESSION = "hermes-real-profile"
+# Keep lock contention well inside the agent's 420-second outer tool deadline.
+# The holder may be an abandoned daemon worker that Python cannot terminate.
+_REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
@@ -1348,8 +1352,10 @@ def _routed_check_fn(name: str):
 
 def _routed_handler(name: str, fallback):
     def handler(args, **kw):
-        return routed_browser_handler(name, args, fallback=lambda: fallback(args, kw),
-                                      task_id=kw.get("task_id"), session_id=kw.get("session_id"))
+        return record_browser_call(lambda legacy: routed_browser_handler(
+            name, args, fallback=lambda: legacy(lambda: fallback(args, kw)),
+            task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+        ), _cloud.browser_backend_name)
     return handler
 
 

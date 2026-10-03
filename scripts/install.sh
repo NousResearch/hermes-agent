@@ -463,6 +463,24 @@ stage_repository() {
         # Explicit refspec: a tag-pinned --single-branch checkout from an older
         # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
         # never the origin/$BRANCH everything below resolves (#125112).
+        # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor
+        # marker (#124272), and an install stuck there never fetches the updater that
+        # heals it. Marking is idempotent and never rewrites objects.
+        if [ "$(git -C "$INSTALL_DIR" config --bool --get remote.origin.promisor)" = true ]; then
+            local pack
+            for pack in "$INSTALL_DIR"/.git/objects/pack/pack-*.pack; do
+                if [ -f "$pack" ] && [ ! -e "${pack%.pack}.promisor" ]; then
+                    : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
+                fi
+            done
+            # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
+            git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+                || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+                || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+                || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
+        fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"
         local stamp
@@ -578,6 +596,16 @@ stage_repository() {
             fail "cannot publish cloned checkout"
         fi
         rmdir "$staged"
+        # A treeless checkout must never write a commit-graph: over a graph with
+        # changed-path data that lazy-fetches the trees of every unseen commit, in a
+        # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with
+        # `gc --auto`.
+        git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+            || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+            || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+            || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then
@@ -694,10 +722,14 @@ wire_shell_path() {
         *)
             append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            # Bash prefers .bash_profile over .profile if both exist.
-            if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            fi
+            # A login bash reads only the first of .bash_profile, .bash_login, .profile,
+            # so an existing earlier file hides the .profile line above.
+            local rc
+            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$rc" ]; then
+                    append_shell_path "$rc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+                fi
+            done
             ;;
     esac
 }

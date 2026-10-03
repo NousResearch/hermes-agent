@@ -318,6 +318,11 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        # A model switch queued on the host side while this session was busy rides
+        # the turn frame; adopt it here so the child's turn thread applies it via
+        # _apply_pending_model_switch — in the child the live agent exists.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:
@@ -400,6 +405,10 @@ class ComputeHost:
         session["profile_home"] = profile_home or session.get("profile_home")
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
+        # See _ensure_server_session's existing-session branch — a queued model
+        # switch crosses the process boundary and applies at this child's turn start.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:
@@ -427,7 +436,8 @@ class ComputeHost:
             else:
                 ack = self._control_ack(server, frame, session)
                 if "error" in ack:
-                    self._reply("control.error", sid, request_id, message=ack["error"])
+                    self._reply("control.error", sid, request_id, message=ack["error"],
+                                **({"code": c} if (c := ack.get("code")) else {}))
                 else:
                     self._reply("control.ack", sid, request_id, route_name=route_name, **ack)
 
@@ -459,14 +469,19 @@ class ComputeHost:
             response = server._methods[route_name](frame.get("request_id"), params)
             if "error" in response:
                 failure = _CONTROL_FAILURES[route_name]
-                return {"error": str(response["error"].get("message") or failure)}
+                return {"error": str(response["error"].get("message") or failure), "code": response["error"].get("code")}
             ack = {"result": response.get("result") or {}}
             if route_name == "session.save":
                 return ack
             with session["history_lock"]:
                 ack.update(_history_meta(session))
         else:
-            output = server._mirror_slash_side_effects(sid, session, command) if command else ""
+            if route_name == "slash.refine":
+                parts = command.lstrip("/").split(maxsplit=1)
+                focus = parts[1] if len(parts) > 1 else ""
+                output = server._live_slash_command_output(sid, session, "refine", focus) or ""
+            else:
+                output = server._mirror_slash_side_effects(sid, session, command) if command else ""
             with session["history_lock"]:
                 messages = server._history_to_messages(list(session.get("history") or []), profile_home=session.get("profile_home"))
                 ack = {"output": output, **_history_meta(session), "messages": messages}

@@ -82,6 +82,16 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
 )
 
 
+def _gateway_owns_cron(name: str, home) -> bool:
+    """A gateway already ticks this profile's store with live adapters: its OWN process, or the
+    live default multiplexer (a served satellite has no gateway.pid of its own). Winning the
+    tick-lock race here would deliver through the standalone path (#52202, #100489, #107485)."""
+    from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
+
+    return _check_gateway_running(Path(home)) or (
+        name != "default" and _served_by_running_multiplexer(name))
+
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -99,34 +109,19 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
-
-    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
-    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
-    # paths below (profile enumeration failure, empty served set, external provider) start
-    # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
-    # wins, delivery has no live adapter and the cold send hangs until script_timeout.
-    try:
-        from hermes_constants import get_hermes_home
-        from hermes_cli.profiles import _check_gateway_running
-
-        if _check_gateway_running(Path(get_hermes_home())):
-            _log.info(
-                "Desktop cron scheduler not started: live gateway owns cron on this "
-                "HERMES_HOME; the gateway ticks with live adapters"
-            )
-            return
-    except Exception:
-        # Liveness probe failed: fall through to the existing per-tick gating, which
-        # still stands down profile-by-profile for gateway-owned homes.
-        _log.warning("Desktop cron: gateway-ownership probe failed; using per-tick gating only", exc_info=True)
+    from hermes_constants import get_hermes_home, profile_name_for_home
 
     provider = resolve_cron_scheduler()
+    own_home = Path(get_hermes_home())
+    own_name = profile_name_for_home(own_home) or "default"
+    # Ownership is re-checked every tick, not once at startup, so Desktop takes over when the
+    # gateway stops (#126822).
+    profile_gate = lambda name, home: not _gateway_owns_cron(name, home)
 
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
-            from hermes_cli.profiles import (
-                _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
+            from hermes_cli.profiles import profiles_to_serve
 
             # Same served set as the multiplexer: default + every live profile under profiles/.
             # The ticker re-enumerates this callable every cycle. Passing a
@@ -139,13 +134,7 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
                 # Even one profile needs the per-tick gateway gate; otherwise
                 # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
-                # Stand down, per tick, for a profile already owned by a gateway — its OWN
-                # process, or the live default multiplexer (a served satellite has no gateway.pid
-                # of its own). That gateway ticks with live adapters; winning the tick-lock race
-                # here would deliver through the standalone path (#100489, #107485).
-                start_kwargs["profile_gate"] = lambda name, home: not (
-                    _check_gateway_running(Path(home))
-                    or (name != "default" and _served_by_running_multiplexer(name)))
+                start_kwargs["profile_gate"] = profile_gate
                 from hermes_logging import enable_profile_log_routing
 
                 enable_profile_log_routing(initial_profile_homes)
@@ -157,6 +146,31 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
             _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+        if "profile_homes" not in start_kwargs:
+            # Fail open to this backend's own store behind the same gate. A gated-out profile is
+            # neither ticked nor heartbeated, so Desktop never marks the gateway's store healthy.
+            start_kwargs["profile_homes"] = lambda: [(own_name, own_home)]
+            start_kwargs["profile_gate"] = profile_gate
+    else:
+        # External providers take no per-tick gate: defer their start until the gateway is gone.
+        def _owned() -> bool:
+            try:
+                return _gateway_owns_cron(own_name, own_home)
+            except Exception:
+                # Start the ticker rather than silently stand down.
+                _log.warning("Desktop cron: gateway-ownership probe failed; starting the ticker", exc_info=True)
+                return False
+
+        if _owned():
+            _log.info(
+                "Desktop cron scheduler waiting: live gateway owns cron on this HERMES_HOME; "
+                "the gateway ticks with live adapters (re-probing every %ds)", interval,
+            )
+            while True:
+                if stop_event.wait(interval):
+                    return
+                if not _owned():
+                    break
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)
@@ -1141,6 +1155,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    shared_metrics as _shared_metrics_routes,
 )
 
 app.include_router(_files_routes.router)
@@ -1173,6 +1188,7 @@ app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_shared_metrics_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -1380,6 +1396,11 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
+        # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
+        # mid-turn request orphans the backend past that budget (#76244). 3s
+        # leaves room for lifespan shutdown + cron_stop before the kill.
+        timeout_graceful_shutdown=3,
     )
     return config, uvicorn.Server(config)
 
@@ -1449,6 +1470,7 @@ def _on_server_started(
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
+    ssh_lock_path: Optional[Path] = None,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1487,11 +1509,22 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
-        # A connected client keeps the idle watchdog quiet forever, and the host's updater may not
-        # restart this backend, so it retires itself (between turns) when the install moves on.
+    if getattr(app.state, "ssh_isolated_clients", None) is not None or is_desktop_owned_backend():
+        # The host's updater never restarts this backend (SSH-isolated: only the remote Desktop
+        # client holds its token and owner nonce, #91668/#101626; Desktop-owned local serve:
+        # the updater defers to the app's ledger-verified restart and the backend otherwise
+        # outlives the handoff, #99859), so it retires itself (between turns) when the install
+        # moves on. The retirement fence closes admission process-wide before the exit, so a
+        # connected Desktop just sees its next request reconnect-respawn the backend on new code.
         from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
 
         start_code_skew_watchdog(server)
+    if getattr(app.state, "ssh_isolated_clients", None) is not None and ssh_lock_path and _SSH_OWNER_NONCE:
+        # A reconnect that cannot prove this pid is its own drops the lock without signalling us
+        # and spawns a new nonce (#132034); retire (between turns) once the lock names that spawn.
+        from hermes_cli.web_server_owner_exit import start_owner_watchdog
+
+        start_owner_watchdog(server, lock_path=ssh_lock_path, nonce=_SSH_OWNER_NONCE)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1653,6 +1686,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ssh_lock_path: Optional[Path] = None,
 ):
     """Start the web UI server.
 
@@ -1662,7 +1696,8 @@ def start_server(
     ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
     discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
-    bootstrap state, never persisted or exported to children.
+    bootstrap state, never persisted or exported to children; ``ssh_lock_path`` is the
+    Desktop's ``backend.lock.json`` for that ownership slot (supersession watchdog).
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
@@ -1750,7 +1785,11 @@ def start_server(
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
+                ssh_lock_path=ssh_lock_path,
             )
+            if headless:
+                from hermes_cli.observability.shared_metrics_startup import record_process_ready
+                record_process_ready("serve_boot", background=True)
 
             await server.main_loop()
             if server.started:

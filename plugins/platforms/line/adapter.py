@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
+from agent.i18n import t
 from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
@@ -68,11 +69,13 @@ DEFAULT_MEDIA_PATH_PREFIX = "/line/media"
 DEFAULT_HOST = None
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # LINE can't fetch media from these → public URL required
 DEFAULT_SLOW_RESPONSE_THRESHOLD = 45.0  # seconds; 0 disables the postback button
-DEFAULT_PENDING_REPLY_TEXT = "🤔 Still thinking. Tap below to fetch the answer when it's ready."
-DEFAULT_BUTTON_LABEL = "Get answer"
-DEFAULT_DELIVERED_TEXT = "Already replied ✅"
-DEFAULT_INTERRUPTED_TEXT = "Run was interrupted before completion."
-DEFAULT_EXPIRED_TEXT = "That request has expired — send your message again."
+# Catalog keys of the default copy (operators override per key via LINE_*_TEXT / extra.*);
+# resolved through ``t()`` in ``__init__``/at send time, never at import.
+DEFAULT_PENDING_REPLY_TEXT_KEY = "platform.line.pending.still_thinking"
+DEFAULT_BUTTON_LABEL_KEY = "platform.line.pending.button_label"  # LINE caps postback labels at 20 chars
+DEFAULT_DELIVERED_TEXT_KEY = "platform.line.pending.delivered"
+DEFAULT_INTERRUPTED_TEXT_KEY = "platform.line.pending.interrupted"
+DEFAULT_EXPIRED_TEXT_KEY = "platform.line.pending.expired"
 MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
@@ -296,15 +299,17 @@ def build_postback_button_message(text: str, button_label: str, request_id: str)
     alt = text if len(text) <= 400 else text[:397] + "..."
     action = {
         "type": "postback",
-        "label": button_label[:20] or "Get answer",
+        "label": button_label[:20] or t(DEFAULT_BUTTON_LABEL_KEY)[:20],
         "data": json.dumps({"action": "show_response", "request_id": request_id}),
-        "displayText": button_label[:300] or "Get answer"}
+        "displayText": button_label[:300] or t(DEFAULT_BUTTON_LABEL_KEY)[:300]}
     return {"type": "template", "altText": alt, "template": {"type": "buttons", "text": truncated, "actions": [action]}}
 
 
 # Gateway busy-ack prefixes (interrupting / queued / steered / background review / working
-# heartbeat); these bypass a PENDING postback cache so they land as visible bubbles.
-_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡ Interrupting", "⏳ Queued", "⏩ Steered", "💾", "⏳ Working")
+# heartbeat); these bypass a PENDING postback cache so they land as visible bubbles. Matched on
+# the leading emoji marker only: the words behind it are localized (``gateway.busy.*``) and every
+# translation keeps the marker, so the fallback keeps firing in any language.
+_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡", "⏳", "⏩", "💾")
 
 
 def _is_system_bypass(content: str) -> bool:
@@ -395,13 +400,13 @@ class LineAdapter(BasePlatformAdapter):
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)
-        for attr, env, default in (
-            ("pending_text", "LINE_PENDING_TEXT", DEFAULT_PENDING_REPLY_TEXT),
-            ("button_label", "LINE_BUTTON_LABEL", DEFAULT_BUTTON_LABEL),
-            ("delivered_text", "LINE_DELIVERED_TEXT", DEFAULT_DELIVERED_TEXT),
-            ("interrupted_text", "LINE_INTERRUPTED_TEXT", DEFAULT_INTERRUPTED_TEXT),
-            ("expired_text", "LINE_EXPIRED_TEXT", DEFAULT_EXPIRED_TEXT)):
-            setattr(self, attr, env_or(env, attr, default))
+        for attr, env, default_key in (
+            ("pending_text", "LINE_PENDING_TEXT", DEFAULT_PENDING_REPLY_TEXT_KEY),
+            ("button_label", "LINE_BUTTON_LABEL", DEFAULT_BUTTON_LABEL_KEY),
+            ("delivered_text", "LINE_DELIVERED_TEXT", DEFAULT_DELIVERED_TEXT_KEY),
+            ("interrupted_text", "LINE_INTERRUPTED_TEXT", DEFAULT_INTERRUPTED_TEXT_KEY),
+            ("expired_text", "LINE_EXPIRED_TEXT", DEFAULT_EXPIRED_TEXT_KEY)):
+            setattr(self, attr, env_or(env, attr, t(default_key)))
         # Runtime state
         self._client: Optional[_LineClient] = None
         self._app = self._runner = self._site = None  # aiohttp web.Application / AppRunner / TCPSite
@@ -932,7 +937,8 @@ async def _standalone_send(
         return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]
     if media_files:  # tell the recipient media was generated but not delivered
-        messages.append(_text_message(f"[{len(media_files)} attachment(s) generated; not deliverable from cron]"))
+        messages.append(_text_message(
+            t("platform.line.standalone.attachments_not_deliverable", count=str(len(media_files)))))
         messages = messages[:LINE_MAX_MESSAGES_PER_CALL]
     try:
         await _LineClient(token).push(chat_id, messages)

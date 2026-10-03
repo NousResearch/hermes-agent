@@ -234,6 +234,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 
 ### Panes
@@ -420,6 +421,45 @@ manual pick. To tint the *active* theme rather than replace it, use
 `setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
 [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
 plugin is the worked example (it is also a complete, installable disk plugin).
+
+#### Styling the chat switch — `data-session-switching`
+
+Opening a chat places its transcript in steps: the session loads, the rows
+land, then the restored scroll position settles a few frames later. A theme
+that wants that hidden (or faded) targets one documented attribute instead of
+watching the route or the DOM: core sets `data-session-switching="true"` on the
+chat surface root (`[data-chat-surface]`) from the frame the switch starts until
+the new transcript's rows are on screen and its scroll position has settled,
+then removes it.
+
+```css
+/* Hide the transcript while it is being placed, fade it in when it lands. */
+:root[data-hermes-theme="noir"] [data-chat-surface] [data-slot="aui_thread-viewport"] {
+  transition: opacity 0.12s ease-out;
+}
+:root[data-hermes-theme="noir"] [data-chat-surface][data-session-switching] [data-slot="aui_thread-viewport"] {
+  opacity: 0;
+  transition: none;
+}
+```
+
+- **Per surface.** The primary chat and every tile has its own
+  `[data-chat-surface]`; the attribute marks only the one switching. Narrow to
+  the primary pane with `[data-composer-target="main"]`.
+- **Always ends.** It is held by core's own load and scroll-restore phases:
+  the load phase ends when the transcript arrives or the resume gives up, the
+  restore phase on settle (a bounded number of frames) or the first user
+  scroll/key/pointer input, and both on unmount — a theme that hides content
+  under it cannot strand the chat hidden. A brand-new empty draft never sets it.
+- **The contract is the attribute.** Target `[data-session-switching]` and the
+  `data-chat-surface` / `data-slot` hooks; internal class names are not a
+  contract and change without notice. Do not toggle the attribute yourself or
+  reproduce it with a route listener or `MutationObserver` (catalog rule 8).
+
+This replaces the t3-code-theme `installSwitchFade` pattern (a focus-store
+listener plus a `requestAnimationFrame` loop that polled the transcript's rows
+and scroll position, then toggled its own root attribute): the CSS above is the
+whole migration.
 
 ### Composer extensions
 
@@ -652,6 +692,60 @@ register(ctx) {
 The reasoning-pill visibility CSS the plugin also injected has no hook; it is
 only needed if the app ever hides that label at narrow widths.
 
+#### Model menu row decorations
+
+`MODEL_MENU_ROW_AREA` puts a per-model mark inside the native model menu — the
+one the composer's pill opens, and every other surface that renders
+`ModelCatalogMenu`. A contribution supplies `decorate(row)`; core paints what it
+returns in two fixed slots of the row: a **leading icon** before the model name
+and a **trailing badge** after core's own chips. The row's markup, name,
+star, submenu and click stay core's.
+
+```ts
+import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from '@hermes/plugin-sdk'
+
+interface ModelMenuRowContext {
+  provider: string  // provider slug: 'anthropic', 'openrouter', …
+  model: string     // the model id the row commits
+  label: string     // the display name core paints on the row
+}
+interface ModelMenuRowDecoration {
+  icon?: ReactNode  // element (<img>, <svg>, a component) or short text, drawn in a 1rem box
+  badge?: string    // plain text chip
+}
+
+ctx.register({
+  area: MODEL_MENU_ROW_AREA,
+  id: 'provider-marks',
+  data: {
+    decorate: ({ provider }) => {
+      const src = PROVIDER_ICONS[provider]   // data: URL of an SVG mark
+      return src ? { icon: <img alt="" src={src} /> } : null
+    }
+  } satisfies ModelMenuRowContribution
+})
+```
+
+**Arbitration.** Decorators run in registry order, **per slot**: the first one
+that returns a usable `icon` fills the icon slot, the first usable `badge` the
+badge slot, so an icon plugin and a pricing-badge plugin compose on the same
+row. `null` (or nothing usable) declines. Only a React element or a non-empty
+string is an icon and only a non-empty string is a badge; anything else is
+ignored rather than rendered. A decorator that **throws** declines too, and an
+icon component that throws while rendering blanks only its own slot (it sits
+in its own error boundary) — a broken plugin can never take the menu down.
+`decorate()` re-runs only when the registry or the row's provider/model/label
+changes, so keep it a pure lookup.
+
+**Teardown.** An ordinary data contribution: the `ctx.register` disposer (and
+plugin disable/reload) removes it and the rows repaint bare.
+
+**Migrating t3-code-theme.** Its provider marks were painted into the open menu
+by a `MutationObserver` that located the rows in the menu's DOM and wrote mask
+images onto them. The same marks come from `decorate({ provider })` returning
+`{ icon: <img alt="" src={providerSvgDataUrl(provider)} /> }` — no DOM reads,
+and the row keeps working when the menu's markup changes.
+
 ### Appearance settings
 
 `APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
@@ -796,8 +890,13 @@ prompt to the agent as a user turn, off-screen: no bubble takes up the
 transcript, the widget updating is the visible response. The turn is still
 real — it wakes the agent, rides the composer's steer/queue rules, and
 persists (typed `hidden`) so resume and the session DB keep the full record.
-Prompts are trimmed, capped at 500 chars, and throttled to one per second
-per frame.
+Prompts are trimmed, capped at 500 chars (`window.hermes.maxLength`), and
+throttled to one per second per frame. Nothing is truncated or dropped
+silently: `send()` returns a Promise that resolves `{ ok: true }` once the
+prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
+`too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
+or `undelivered` (no visible composer took it). Check it before showing a
+widget as saved.
 
 ### Mount-scoped chrome (`Contribute`)
 
@@ -970,6 +1069,8 @@ host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
 host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
 host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
+host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
+host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1221,6 +1322,59 @@ JSON.parse(localStorage.getItem(                           host.pluginDecisions.
 localStorage.setItem('hermes.desktop.pluginDecisions.v2')  // declined — host.navigate('/capabilities?tab=plugins')
 row.querySelector('[data-slot="switch"]').click()          // same: the app's Plugins tab owns the toggle
 ```
+
+### Language packs — `host.i18n.registerAppLocale` / `ctx.i18n.registerAppLocale`
+
+`ctx.i18n.register` localizes YOUR plugin's strings. A **language pack** does the
+opposite: it adds (or extends) a language for the WHOLE app — every core label,
+dialog and tip — so a Polish user sees a Polish desktop. Registration is a
+partial catalog merged over the bundled catalog for that id (or English for a
+new language); anything the pack leaves out falls back per key, never to a raw
+key. The switcher lists the language by its endonym at once (no flags — languages
+are not countries), `<html dir>` follows `rtl`, and `display.language` stays
+whatever the user chose: registering is not selecting.
+
+```ts
+export default {
+  id: 'hermes-lang-pl',
+  register(ctx) {
+    // Attributed to this plugin and dropped on unload/disable.
+    ctx.i18n.registerAppLocale('pl', {
+      endonym: 'Polski',
+      englishName: 'Polish',        // search-only
+      rtl: false,
+      translations: {
+        // Nested like en.ts…
+        common: { save: 'Zapisz', cancel: 'Anuluj' },
+        // …or flat dotted keys (what a .desktop.yaml pack flattens to).
+        'catalog.results': '{0} wyników'
+      }
+    })
+  }
+}
+```
+
+```ts
+host.i18n.registerAppLocale(id, { endonym?, englishName?, rtl?, translations? }): () => void
+host.i18n.languageOptions(): LanguageOption[]   // bundled ∪ registered ∪ backend i18n.languages
+```
+
+Where English has a **function** entry (``results: n => `${n} results` ``), a pack
+gives a plain string with POSITIONAL placeholders — `{0}`, `{1}` in argument
+order — and the merge wraps it into the same call shape. The full key set is
+published in `locales/_keys.desktop.json` (regenerate with `npm run i18n:keys`
+in `apps/desktop` and commit it; CI pins the file to `en.ts`), which is what `hermes plugins
+validate` checks a pack's `<lang>.desktop.yaml` against.
+
+`host.i18n.registerAppLocale` is the same call for code with no `ctx` in reach;
+it returns the disposer — hand it to `ctx.onDispose`. Prefer the `ctx` form.
+
+A pack that also ships core (Python) and TUI strings needs **no desktop code**
+at all: declare `provides_locales: [pl]` in `plugin.yaml` with
+`locales/pl.yaml`, `pl.tui.yaml`, `pl.desktop.yaml`, and the gateway serves the
+desktop file over `i18n.catalog {lang, surface: 'desktop'}`; the app pulls it
+into the same registry (source `backend`) when `display.language` names it and
+re-pulls on a profile switch.
 
 ## Data layer — React Query + nanostores
 
@@ -1574,7 +1728,7 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |

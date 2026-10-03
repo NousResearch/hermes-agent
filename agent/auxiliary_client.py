@@ -860,10 +860,10 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
     except Exception:
         return None
 
-
 # Endpoints that reject image input: vision auto-detect skips these to the aggregator chain
-# instead of returning a client that 404s (Kimi Coding Plan Anthropic wire has no image_in).
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({"kimi-coding", "kimi-coding-cn"})
+# instead of returning a client that 404s (native DeepSeek chat and Kimi Coding Plan's
+# Anthropic wire have no image input).
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({"deepseek", "kimi-coding", "kimi-coding-cn"})
 
 # OpenRouter app attribution (always sent). `X-Title` is what the dashboard reads.
 _OR_HEADERS_BASE = {

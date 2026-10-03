@@ -1906,6 +1906,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
             <ChatSessionList
               activeSessionId={resumeParam}
+              isActive={isActive}
               profile={scopedProfile}
               onPicked={closeMobilePanel}
               onNewChat={startFreshDashboardChat}
@@ -2118,6 +2119,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatSessionList
                 activeSessionId={resumeParam}
+                isActive={isActive}
                 profile={scopedProfile}
                 onNewChat={startFreshDashboardChat}
                 workspaceCwd={workspaceCwd}

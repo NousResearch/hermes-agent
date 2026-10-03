@@ -257,6 +257,18 @@ def _validate_members(value: Any) -> tuple[list[dict[str, Any]], str]:
     return members, _canonical_json(members, label="members", max_bytes=MAX_MEMBERS_JSON_BYTES)
 
 
+def _resolve_member_alias(member: dict[str, Any]) -> dict[str, Any]:
+    """Project the legacy Desktop ``label`` field onto ``display_name`` for comparison."""
+    if "label" not in member:
+        return dict(member)
+    resolved = dict(member)
+    label = resolved.pop("label")
+    display_name = resolved.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        resolved["display_name"] = label
+    return resolved
+
+
 def _legacy_members_match(existing_json: str, proposed: list[dict[str, Any]]) -> bool:
     """Allow adoption to add routing metadata an older room could not store."""
     try:
@@ -268,9 +280,28 @@ def _legacy_members_match(existing_json: str, proposed: list[dict[str, Any]]) ->
     for previous, current in zip(existing, proposed, strict=True):
         if not isinstance(previous, dict):
             return False
-        previous, current = dict(previous), dict(current)
+        previous, current = _resolve_member_alias(previous), _resolve_member_alias(current)
         previous_target, current_target = previous.pop("target", None), current.pop("target", None)
         if previous != current or (previous_target not in (None, {}) and previous_target != current_target):
+            return False
+    return True
+
+
+def _stored_members_equal(existing_json: str, proposed_json: str) -> bool:
+    """Compare identical rosters across the legacy ``label`` alias without rewriting stored bytes."""
+    if existing_json == proposed_json:
+        return True
+    try:
+        existing = json.loads(existing_json)
+        proposed = json.loads(proposed_json)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(existing, list) or not isinstance(proposed, list) or len(existing) != len(proposed):
+        return False
+    for previous, current in zip(existing, proposed, strict=True):
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            return False
+        if _resolve_member_alias(previous) != _resolve_member_alias(current):
             return False
     return True
 
@@ -871,7 +902,7 @@ def create_room(
             if existing["disbanded_at"] is not None:
                 raise RoomConflictError("room_id belongs to a disbanded room")
             legacy_adoption = (existing["authority_gateway_id"] == "legacy" and authority_gateway_id != "legacy")
-            members_match = existing["members_json"] == members_json or (
+            members_match = _stored_members_equal(existing["members_json"], members_json) or (
                 legacy_adoption and _legacy_members_match(existing["members_json"], normalized_members))
             if existing["name"] != name or not members_match:
                 raise RoomConflictError("room_id already exists with different state")

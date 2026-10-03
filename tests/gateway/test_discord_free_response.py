@@ -1059,3 +1059,52 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backfill_enabled", [True, False])
+async def test_configured_free_response_backfill_preserves_prior_turn_and_trust(
+    adapter, monkeypatch, backfill_enabled,
+):
+    config = {
+        "free_response_channels": [321], "auto_thread": False,
+        "history_backfill_free_response": backfill_enabled,
+    }
+    adapter.config.extra.update(discord_platform._apply_yaml_config({}, config) or {})
+    adapter._is_sender_authorized = lambda sender_id, **kwargs: sender_id != "56"
+    human = SimpleNamespace(id=56, display_name="Guest", name="Guest", bot=False)
+    channel = FakeHistoryChannel([
+        make_history_message(author=adapter._client.user, content="recent answer", msg_id=12),
+        make_history_message(author=human, content="earlier task details", msg_id=11),
+        make_history_message(author=adapter._client.user, content="older answer", msg_id=10),
+        make_history_message(author=human, content="outside the prior turn", msg_id=9),
+    ], channel_id=321)
+    adapter._last_self_message_id["321"] = "12"
+
+    await adapter._handle_message(make_message(channel=channel, content="continue"))
+    event = adapter.handle_message.await_args.args[0]
+
+    if backfill_enabled:
+        assert "recent answer" in event.channel_context
+        assert "[unverified] [Guest] earlier task details" in event.channel_context
+        assert "outside the prior turn" not in event.channel_context
+    else:
+        assert event.channel_context is None
+
+
+@pytest.mark.asyncio
+async def test_free_response_history_switch_does_not_disable_mention_gap_backfill(adapter, monkeypatch):
+    adapter.config.extra.update({"history_backfill_free_response": False, "auto_thread": False})
+    human = SimpleNamespace(id=56, display_name="Guest", name="Guest", bot=False)
+    channel = FakeHistoryChannel([
+        make_history_message(author=human, content="missed while mention-gated", msg_id=11),
+        make_history_message(author=adapter._client.user, content="old answer", msg_id=10),
+    ], channel_id=321)
+    bot = adapter._client.user
+    message = make_message(channel=channel, content=f"<@{bot.id}> continue", mentions=[bot])
+
+    await adapter._handle_message(message)
+    event = adapter.handle_message.await_args.args[0]
+
+    assert "missed while mention-gated" in event.channel_context
+    assert "old answer" not in event.channel_context

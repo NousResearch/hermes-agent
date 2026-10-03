@@ -367,7 +367,8 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
-  history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
+  history_backfill: true          # Prepend recent channel scrollback when triggered (default: true)
+  history_backfill_free_response: true  # Include the preceding turn in configured free-response channels
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
     enabled: false

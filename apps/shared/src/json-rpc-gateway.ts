@@ -52,6 +52,11 @@ const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.rea
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the
 // guard open; generous enough for a 512-frame ring to drain.
 const REPLAY_REQUEST_TIMEOUT_MS = 10_000
+// The backend retains replay rings for at most 64 sessions. Mirror that bound
+// client-side so a missed lifecycle notification cannot turn every reconnect
+// into unbounded RPC fan-out; advancing a cursor makes it most-recently used.
+const MAX_REPLAY_SESSION_WATERMARKS = 64
+const GATEWAY_SESSION_NOT_FOUND_CODE = 4001
 // A reconnect after sleep/wake must not hang forever in 'connecting' (which
 // keeps the composer disabled and stuck on "Starting Hermes..."). If the open
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
@@ -410,12 +415,35 @@ export class JsonRpcGatewayClient {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    return this.channel.request<T>(
+    const call = this.channel.request<T>(
       method,
       params,
       timeoutMs,
       signal,
       () => new Error(this.options.notConnectedErrorMessage)
+    )
+
+    const sessionId = typeof params.session_id === 'string' ? params.session_id : ''
+
+    if (!sessionId) {
+      return call
+    }
+
+    return call.then(
+      result => {
+        if (method === 'session.close' && (result as { closed?: unknown } | null)?.closed === true) {
+          this.forgetSeqWatermark(sessionId)
+        }
+
+        return result
+      },
+      error => {
+        if ((error as { code?: unknown } | null)?.code === GATEWAY_SESSION_NOT_FOUND_CODE) {
+          this.forgetSeqWatermark(sessionId)
+        }
+
+        throw error
+      }
     )
   }
 
@@ -429,6 +457,14 @@ export class JsonRpcGatewayClient {
 
       if (typeof epoch === 'string' && epoch) {
         this.adoptReplayEpoch(epoch)
+      }
+    }
+
+    if (event.type === 'session.reclaimed') {
+      const reclaimedSessionId = (event.payload as { session_id?: unknown } | undefined)?.session_id
+
+      if (typeof reclaimedSessionId === 'string') {
+        this.forgetSeqWatermark(reclaimedSessionId)
       }
     }
 
@@ -459,11 +495,53 @@ export class JsonRpcGatewayClient {
       return
     }
 
+    this.advanceSeqWatermark(sid, seq)
+  }
+
+  private advanceSeqWatermark(sid: string, seq: number): boolean {
     const prev = this.lastSeenSeq.get(sid) ?? 0
 
-    if (seq > prev) {
-      this.lastSeenSeq.set(sid, seq)
+    if (seq <= prev) {
+      return false
     }
+
+    // Map insertion order is our LRU order. Active sessions keep advancing
+    // their seq and therefore survive stale-session churn at the fallback cap.
+    this.lastSeenSeq.delete(sid)
+    this.lastSeenSeq.set(sid, seq)
+
+    while (this.lastSeenSeq.size > MAX_REPLAY_SESSION_WATERMARKS) {
+      const oldest = this.lastSeenSeq.keys().next().value
+
+      if (typeof oldest !== 'string') {
+        break
+      }
+
+      this.forgetSeqWatermark(oldest)
+    }
+
+    return true
+  }
+
+  private forgetSeqWatermark(sid: string): void {
+    this.lastSeenSeq.delete(sid)
+
+    const replay = this.replayHold?.get(sid)
+
+    if (!replay) {
+      return
+    }
+
+    // A terminal lifecycle edge supersedes any in-flight replay for this id.
+    // Resolve its barrier and make a late response unable to restore the cursor.
+    replay.events.length = 0
+    this.replayHold?.delete(sid)
+
+    if (this.replayHold?.size === 0) {
+      this.replayHold = null
+    }
+
+    replay.resolve(true)
   }
 
   /** Test/telemetry hook: current last-seen seq map snapshot. */
@@ -552,6 +630,12 @@ export class JsonRpcGatewayClient {
         return
       }
 
+      // A close / gone response / reclaimed event may have retired this
+      // session while the replay RPC was in flight. Do not resurrect it.
+      if (!this.replayHold?.has(sid)) {
+        return
+      }
+
       const epoch = result?.epoch
 
       if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
@@ -622,13 +706,9 @@ export class JsonRpcGatewayClient {
     const seq = event.seq
 
     if (sid && typeof seq === 'number' && Number.isFinite(seq)) {
-      const prev = this.lastSeenSeq.get(sid) ?? 0
-
-      if (seq <= prev) {
+      if (!this.advanceSeqWatermark(sid, seq)) {
         return
       }
-
-      this.lastSeenSeq.set(sid, seq)
     }
 
     this.dispatchEvent(event)

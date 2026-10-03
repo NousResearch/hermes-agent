@@ -1069,11 +1069,6 @@ class TestDiscoverAndRegister:
 class TestMCPServerTask:
     """Test the MCPServerTask lifecycle with mocked MCP SDK."""
 
-    @pytest.fixture(autouse=True)
-    def _no_pm_launcher(self, monkeypatch):
-        # Launcher resolution is not under test here, and a CI host has no PM-managed Node.
-        monkeypatch.setattr("tools.mcp_tool_config._managed_launcher", lambda command: None)
-
     def _mock_stdio_and_session(self, session):
         """Return patches for stdio_client and ClientSession as async CMs."""
         mock_read, mock_write = MagicMock(), MagicMock()
@@ -2659,6 +2654,45 @@ class TestMCPSelectiveToolLoading:
             config,
             session=SimpleNamespace(),
         )
+        assert registered == []
+
+    def test_top_level_allowed_tools_whitelists_like_include(self):
+        config = {"url": "https://mcp.example.com", "allowed_tools": ["safe_tool"]}
+        registered, _ = self._run_discover(
+            "shared", ["safe_tool", "run", "exec"], config, session=SimpleNamespace())
+        assert registered == ["mcp__shared__safe_tool"]
+
+    def test_allowed_tools_empty_registers_nothing(self):
+        config = {"url": "https://mcp.example.com", "allowed_tools": []}
+        registered, _ = self._run_discover(
+            "shared", ["safe_tool", "run"], config, session=SimpleNamespace())
+        assert registered == []
+
+    def test_tools_include_wins_over_allowed_tools(self):
+        config = {
+            "url": "https://mcp.example.com",
+            "allowed_tools": ["run"],
+            "tools": {"include": ["safe_tool"]},
+        }
+        registered, _ = self._run_discover(
+            "shared", ["safe_tool", "run"], config, session=SimpleNamespace())
+        assert registered == ["mcp__shared__safe_tool"]
+
+    def test_allowed_tools_invalid_type_fail_closed(self):
+        """Present-but-malformed allowed_tools refuses registration (no include/exclude fallback)."""
+        config = {
+            "url": "https://mcp.example.com",
+            "allowed_tools": {"safe_tool": True},
+            "tools": {"exclude": ["run"]},
+        }
+        registered, _ = self._run_discover(
+            "shared", ["safe_tool", "run"], config, session=SimpleNamespace())
+        assert registered == []
+
+    def test_allowed_tools_null_fail_closed(self):
+        config = {"url": "https://mcp.example.com", "allowed_tools": None}
+        registered, _ = self._run_discover(
+            "shared", ["safe_tool", "run"], config, session=SimpleNamespace())
         assert registered == []
 
     def test_enabled_false_skips_connection_attempt(self):

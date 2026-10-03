@@ -213,6 +213,24 @@ class MemoryStore:
                         "updated_at = CURRENT_TIMESTAMP WHERE fact_id = ?", (new_trust, increment, fact_id))
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
 
+    def record_retrievals(self, fact_ids: "list[int] | None") -> int:
+        """Batch-increment retrieval_count once per returned fact; returns the number of rows updated.
+
+        One UPDATE per retrieval (not per fact): memory_store.db is opened read-write by several
+        processes (gateway, dashboard, workers), so per-fact writes would multiply lock contention.
+        A read-only handle or a cross-process lock timeout is telemetry loss, never a failed search —
+        the increment degrades to a no-op. Unknown ids simply match no row."""
+        ids = [int(f) for f in dict.fromkeys(fact_ids or [])]
+        if not ids:
+            return 0
+        with self._lock:
+            try:
+                cur = self._write("UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN "
+                                  f"({','.join('?' * len(ids))})", ids)
+                return cur.rowcount
+            except sqlite3.OperationalError:
+                return 0
+
     def _extract_entities(self, text: str) -> list[str]:
         """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""
         raw = [m.group(1) for pattern in _RE_SINGLE_ENTITY for m in pattern.finditer(text)]

@@ -5,7 +5,9 @@ subprocess env, command resolution, the cached-npx binary shortcut and the share
 import codecs
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import re
 import shutil
 import sys
@@ -234,6 +236,67 @@ def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
     return executable, dirs
 
 
+# What makes a token a path rather than a flag value, a package spec or a bare name: a drive, a
+# root, a UNC share, ``~`` or an explicit ``./``/``../``. Everything else keeps its spelling.
+_PATH_PREFIX = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|[/\\]|~|\.{1,2}[\\/])")
+
+
+def _looks_like_a_path(text: str) -> bool:
+    return bool(_PATH_PREFIX.match(text))
+
+
+def _normalize_path_spelling(value: Any, *, windows: Optional[bool] = None, fold_case: bool = False) -> str:
+    """One spelling for a path that names the same file, so two renderings of one launcher compare
+    equal. A Windows MCP config reaches Hermes spelled either way: ``config.yaml`` keeps the
+    backslashes a user pasted, while a plugin ``mcp.json`` or a desktop-written profile config
+    carries forward slashes. Without this, the duplicate checks and the connection identity that
+    lets a second profile reuse a live connection saw two servers and spawned the child twice
+    (#127824). ``ntpath`` is used on every host because the Windows rules are the data here, and
+    ``fold_case`` is for comparison keys only: a spawn command keeps the case the user wrote.
+    Flags, URLs, npm package specs and bare command names are returned unchanged - only a token
+    that is spelled like a path has a spelling to normalise (``--mode Strict`` is not
+    ``--mode strict``, and ``@mcp/github`` is not a path)."""
+    text = str(value)
+    is_windows = os.name == "nt" if windows is None else windows
+    if "://" in text or text.startswith("-") or not _looks_like_a_path(text):
+        return text
+    if is_windows:
+        text = ntpath.normpath(text.replace("/", "\\"))
+        return ntpath.normcase(text) if fold_case else text
+    return posixpath.normpath(text)
+
+
+def _mcp_entry_key(config: dict) -> str:
+    """Comparison key for "is this the same MCP server, reached by another spelling?": the route.
+
+    ``command``, ``args`` and ``url``/``transport`` in one spelling - not the whole entry, because
+    the rest of it is not identity: the plugin loader hands every portable stdio entry an injected
+    ``env`` (``PLUGIN_ROOT``/``PLUGIN_DATA``) and a resolved ``cwd`` that a ``config.yaml`` entry
+    never carries, so a whole-entry key could never match what a plugin actually produces and this
+    check never fired (#127824). On a clash the native config is the copy that survives."""
+    def _spelling(value):
+        if isinstance(value, list):
+            return [_spelling(item) for item in value]
+        return _normalize_path_spelling(value, fold_case=True) if isinstance(value, str) else value
+
+    return json.dumps({key: _spelling(config.get(key)) for key in ("command", "args", "url", "transport")},
+                      sort_keys=True, default=str)
+
+
+def _path_spelling_duplicate(config: dict, existing: Dict[str, dict]) -> Optional[str]:
+    """Name in *existing* that is the same server as *config* under another path spelling, or None.
+
+    Route comparison, deliberately: the plugin loader injects ``env``/``cwd`` into every portable
+    entry, so comparing whole entries could never match a native one. Two entries on one route are
+    one server - one child - and the native entry is the one that keeps the name.
+    """
+    key = _mcp_entry_key(config)
+    for name, other in existing.items():
+        if isinstance(other, dict) and _mcp_entry_key(other) == key:
+            return name
+    return None
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio command against the exact subprocess env (bare launchers under a filtered PATH).
 
@@ -262,6 +325,10 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:
             resolved_command = which_hit
+    # After resolution, never before it: the ``which`` branch above keys on ``os.sep``, and a
+    # forward-slash spelling would skip it. One spelling here is what makes the identity digest two
+    # profiles compare (and the argv a user sees) independent of the slash the config used (#127824).
+    resolved_command = _normalize_path_spelling(resolved_command)
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
         resolved_env = _prepend_path(resolved_env, command_dir)
@@ -424,7 +491,10 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
 
 
 def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
-    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises."""
+    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a
+    clash. A clash is a name OR the same server reached by another path spelling: a plugin that
+    names the launcher the way its own ``mcp.json`` wrote it is one server, not a second child
+    (#127824). Never raises."""
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
@@ -433,7 +503,12 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
             if name in safe_servers:
                 logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                safe_servers[name] = dict(cfg)
+                duplicate = _path_spelling_duplicate(cfg, safe_servers)
+                if duplicate is not None:
+                    logger.warning("Portable MCP server '%s' is the same server as '%s' with its path "
+                                   "spelled differently; skipping the duplicate", name, duplicate)
+                else:
+                    safe_servers[name] = dict(cfg)
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 

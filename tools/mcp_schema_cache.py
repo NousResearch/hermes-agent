@@ -25,11 +25,20 @@ def _cache_path() -> Path:
 
 
 def config_fingerprint(config: dict) -> str:
-    """Stable hash of the connection-defining parts of an MCP server config."""
+    """Stable hash of the connection-defining parts of an MCP server config. Paths go in through
+    the one spelling helper: the same launcher written with forward slashes and with backslashes is
+    one route, and hashing them apart made two profiles open two connections to one server
+    (#127824) with two schema-cache entries to match."""
+    from tools.mcp_tool_config import _normalize_path_spelling
+
+    def _path(value):
+        return _normalize_path_spelling(value, fold_case=True) if isinstance(value, str) else value
+
     tools_filter = config.get("tools") or {}
+    args = config.get("args") or []
     payload = {
-        "command": config.get("command"),
-        "args": config.get("args") or [],
+        "command": _path(config.get("command")),
+        "args": [_path(arg) for arg in args] if isinstance(args, list) else args,
         "url": config.get("url"),
         "transport": config.get("transport"),
         "tools_include": sorted(tools_filter.get("include") or []),

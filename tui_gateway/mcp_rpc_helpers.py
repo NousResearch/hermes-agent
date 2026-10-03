@@ -14,14 +14,16 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dic
     plugins: Dict[str, str | None] = {name: None for name in servers}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        from tools.mcp_tool_config import _filter_suspicious_mcp_servers
+        from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _path_spelling_duplicate
 
         discover_plugins()
         manager = get_plugin_manager()
         portable = _filter_suspicious_mcp_servers(manager.get_portable_mcp_servers())
         owners = manager.get_portable_mcp_server_plugins()
         for name, cfg in portable.items():
-            if name not in servers:
+            # Same duplicate rule the discovery merge applies: a name OR the same route spelled
+            # differently is one server, so the MCP list cannot show it twice (#127824).
+            if name not in servers and _path_spelling_duplicate(cfg, servers) is None:
                 servers[name] = dict(cfg)
                 plugins[name] = owners.get(name)
     except Exception:

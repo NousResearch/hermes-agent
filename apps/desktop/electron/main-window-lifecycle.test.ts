@@ -73,32 +73,44 @@ test('leaves live-window focus to deep-link delivery', () => {
 
 // Regression for #130810: an explicit relaunch restores + shows + focuses
 // (activation), so a minimized or tray-hidden window comes back instead of
-// flashing the taskbar. This must use show(), not showInactive().
+// flashing the taskbar. This must use show(), not showInactive(). The window
+// is a class instance whose methods read `this`, like a real BrowserWindow:
+// destructuring a method off it (`{ isFocused }`) throws "Object has been
+// destroyed" in Electron and dropped every activation (latent since #83998).
 test('explicit relaunch activates a minimized tray-hidden window', () => {
   const calls: string[] = []
-  let minimized = true
-  let visible = false
-  let focused = false
 
-  activateWindow({
-    isDestroyed: () => false,
-    isMinimized: () => minimized,
-    isVisible: () => visible,
-    isFocused: () => focused,
-    restore: () => {
-      calls.push('restore')
-      minimized = false
-      visible = false
-    },
-    show: () => {
-      calls.push('show')
-      visible = true
-    },
-    focus: () => {
-      calls.push('focus')
-      focused = true
+  class FakeWindow {
+    minimized = true
+    visible = false
+    focused = false
+    isDestroyed() {
+      return false
     }
-  })
+    isMinimized() {
+      return this.minimized
+    }
+    isVisible() {
+      return this.visible
+    }
+    isFocused() {
+      return this.focused
+    }
+    restore() {
+      calls.push('restore')
+      this.minimized = false
+    }
+    show() {
+      calls.push('show')
+      this.visible = true
+    }
+    focus() {
+      calls.push('focus')
+      this.focused = true
+    }
+  }
+
+  activateWindow(new FakeWindow())
 
   assert.deepEqual(calls, ['restore', 'show', 'focus'])
 })

@@ -2404,6 +2404,7 @@ cli:
     label_you: "● Siz:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... {count} önceki mesaj ..."
+    full_history_hint: "Tam konuşma geçmişini görmek için /history komutunu çalıştırın."
     panel_title: "Önceki Konuşma"
   startup:
     cooldown_cause_rate_limit: "hız sınırı veya kota yanıtından sonra"

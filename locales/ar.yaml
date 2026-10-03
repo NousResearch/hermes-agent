@@ -2404,6 +2404,7 @@ cli:
     label_you: "● أنت:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... {count} رسائل سابقة ..."
+    full_history_hint: "هل تريد النص الكامل للمحادثة؟ نفّذ /history."
     panel_title: "المحادثة السابقة"
   startup:
     cooldown_cause_rate_limit: "بعد استجابة بحدّ المعدّل أو الحصة"

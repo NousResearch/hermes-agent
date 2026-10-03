@@ -2404,6 +2404,7 @@ cli:
     label_you: "● 사용자:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... 이전 메시지 {count}개 ..."
+    full_history_hint: "전체 대화 기록을 보시겠습니까? /history 를 실행하세요."
     panel_title: "이전 대화"
   startup:
     cooldown_cause_rate_limit: "요청 제한 또는 한도 응답 이후"

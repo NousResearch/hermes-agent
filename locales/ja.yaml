@@ -2404,6 +2404,7 @@ cli:
     label_you: "● あなた:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... それ以前のメッセージ {count} 件 ..."
+    full_history_hint: "会話の全文を表示しますか？ /history を実行してください。"
     panel_title: "前回の会話"
   startup:
     cooldown_cause_rate_limit: "レート制限またはクォータ応答の後"

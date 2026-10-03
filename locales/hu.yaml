@@ -2421,6 +2421,7 @@ cli:
     label_you: "● Te:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... {count} korábbi üzenet ..."
+    full_history_hint: "Szeretnéd a teljes beszélgetés átiratát? Futtasd: /history."
     panel_title: "Korábbi beszélgetés"
   startup:
     cooldown_cause_rate_limit: "sebességkorlát- vagy keretválasz után"

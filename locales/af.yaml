@@ -2404,6 +2404,7 @@ cli:
     label_you: "● Jy:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... {count} vroeëre boodskappe ..."
+    full_history_hint: "Wil jy die volle gespreksoorwinning sien? Voer /history uit."
     panel_title: "Vorige Gesprek"
   startup:
     cooldown_cause_rate_limit: "na 'n tariefperk- of kwota-antwoord"

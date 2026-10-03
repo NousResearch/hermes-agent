@@ -2404,6 +2404,7 @@ cli:
     label_you: "● Tú:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... {count} mensajes anteriores ..."
+    full_history_hint: "¿Quieres la transcripción completa? Ejecuta /history."
     panel_title: "Conversación anterior"
   startup:
     cooldown_cause_rate_limit: "tras una respuesta de límite de tasa o de cuota"

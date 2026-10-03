@@ -144,6 +144,12 @@ _RESUME_EVENT_KEYS = {
     "process_complete": "cli.resume.event_process_finished",
     "auto_continue": "cli.resume.event_resumed_interrupted"}
 
+# ``display.resume_display`` values that suppress the recap entirely. ``off`` is offered
+# alongside ``minimal`` in the settings schema (hermes_cli/web_server_config.py), so it
+# must gate the same way — otherwise picking it renders the full recap. See #5703.
+_RESUME_DISPLAY_OFF = frozenset({"minimal", "off"})
+
+
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     """Displayable ``(role, text)`` recap entries from stored history, truncated per the
     ``display.resume_*`` config; system and tool-result rows are skipped. Returns
@@ -819,7 +825,7 @@ class CLIAgentSetupMixin:
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
-        if not display_history or self.resume_display == "minimal":
+        if not display_history or self.resume_display in _RESUME_DISPLAY_OFF:
             return
         _disp = CLI_CONFIG.get("display", {})
         entries, _last_asst_idx, _last_asst_full = _collect_resume_entries(
@@ -861,6 +867,11 @@ class CLIAgentSetupMixin:
                     lines.append(f"{indent}{ml}\n", style=body_style)
             if i < len(entries) - 1:
                 lines.append("")  # small gap
+        if skipped:
+            # The panel is a capped tail, so name the uncapped view — otherwise the
+            # dropped turns read as if they never happened. Only when something was
+            # actually dropped: an uncapped recap needs no pointer. See #5703.
+            lines.append(f"  {t('cli.resume.full_history_hint')}\n", style="dim italic")
         panel = Panel(
             lines, title=f"[dim {_session_label_c}]{_escape(t('cli.resume.panel_title'))}[/]",
             border_style=f"dim {_session_border_c}", padding=(0, 1), style=_history_text_c)

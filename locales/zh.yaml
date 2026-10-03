@@ -2404,6 +2404,7 @@ cli:
     label_you: "● 你："
     label_assistant: "◆ {agent_name}："
     earlier_messages: "... 还有 {count} 条更早的消息 ..."
+    full_history_hint: "想看完整对话记录？运行 /history。"
     panel_title: "之前的对话"
   startup:
     cooldown_cause_rate_limit: "由于收到限流或配额响应"

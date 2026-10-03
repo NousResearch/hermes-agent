@@ -2677,6 +2677,7 @@ cli:
     label_you: "● Vous :"
     label_assistant: "◆ {agent_name} :"
     earlier_messages: "... {count} messages précédents ..."
+    full_history_hint: "Vous voulez la transcription complète ? Lancez /history."
     panel_title: "Conversation précédente"
   startup:
     cooldown_cause_rate_limit: "après une réponse de limitation de débit ou de quota"

@@ -2404,6 +2404,7 @@ cli:
     label_you: "● Tusa:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... {count} teachtaireacht níos luaithe ..."
+    full_history_hint: "Ar mhaith leat an gcairdéanacha iomlán a fheiceáil? Rith `/history`."
     panel_title: "Comhrá Roimhe Seo"
   startup:
     cooldown_cause_rate_limit: "tar éis freagra teorann ráta nó cuóta"

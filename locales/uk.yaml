@@ -2404,6 +2404,7 @@ cli:
     label_you: "● Ви:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... ще {count} попередніх повідомлень ..."
+    full_history_hint: "Подивитися повний стенограм розмови? Виконайте /history."
     panel_title: "Попередня розмова"
   startup:
     cooldown_cause_rate_limit: "після відповіді про ліміт запитів або квоту"

@@ -2404,6 +2404,7 @@ cli:
     label_you: "● Вы:"
     label_assistant: "◆ {agent_name}:"
     earlier_messages: "... ещё {count} более ранних сообщений ..."
+    full_history_hint: "Посмотреть полный журнал разговора? Выполните /history."
     panel_title: "Предыдущий разговор"
   startup:
     cooldown_cause_rate_limit: "после ответа об ограничении частоты или квоте"

@@ -184,6 +184,19 @@ def test_update_parser_accepts_keep_stash():
     assert args.keep_stash is False
 
 
+def test_update_parser_accepts_gateway_run_identity():
+    """The gateway may pin its notification to one updater receipt."""
+    import argparse
+
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    build_update_parser(parser.add_subparsers(), cmd_update=lambda args: None)
+
+    assert parser.parse_args(["update"]).update_id is None
+    assert parser.parse_args(["update", "--update-id=run-123"]).update_id == "run-123"
+
+
 
 def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     """#38529: the Desktop bootstrap marker must be git-ignored so that

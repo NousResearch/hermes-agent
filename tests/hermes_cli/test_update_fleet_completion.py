@@ -55,6 +55,7 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
 
     receipt = json.loads((get_hermes_home() / "logs/update_receipts/latest.json").read_text())
     assert receipt["outcome"] == ("success" if healthy else "partial")
+    assert receipt["exit_code"] == (0 if healthy else 1)
     assert receipt["fleet"] == snapshot
     assert restart.incomplete is (state != "current")
     assert update_cmd_fleet._fleet_restart_obligation_armed() is (state != "current")

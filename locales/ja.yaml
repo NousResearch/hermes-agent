@@ -512,6 +512,7 @@ gateway:
     prompt: "☤ **更新に入力が必要です:**\n\n{prompt}{default_hint}\n\n`{prefix}approve` (はい) または `{prefix}deny` (いいえ) と返信するか、回答を直接入力してください。"
     finished: "✅ Hermes の更新が終了しました。"
     timed_out: "❌ Hermes の更新は 30 分でタイムアウトしました。"
+    did_not_finalize: "❌ Hermes update did not finalize — a fleet restart is still pending. Run `hermes update` to retry, or `hermes gateway restart` after clearing the marker."
     finished_success: "✅ Hermes の更新が正常に完了しました。"
     last_lines: "{msg}\n\n最後の行:\n```\n{tail}\n```"
     managed_action: "Hermes Agent の更新"

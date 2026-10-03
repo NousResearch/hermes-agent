@@ -33,6 +33,7 @@ import copy
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -110,6 +111,31 @@ def _launcher_correlation_id() -> Optional[str]:
     only accepts a receipt whose ``correlation_id`` equals it. This is separate
     from ``update_id``, which stays the CLI's own id for pm sync receipts."""
     return os.environ.get("HERMES_UPDATE_CORRELATION_ID", "").strip() or None
+
+
+# The correlation id is interpolated raw into a receipt filename and into the
+# pending-metrics filename, and update_completion globs on it. Producers inside
+# Hermes mint a uuid, but ``--update-id`` carries one across a process boundary
+# and the takeover/finish paths replay one read back from disk — including
+# receipts written by older updaters, whose ids are not uuids. So the rule is not
+# "is a uuid": it is "is a single safe path segment", which is what the sinks
+# actually require.
+_CORRELATION_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
+
+
+def _safe_correlation_id(candidate: Optional[str]) -> Optional[str]:
+    """``candidate`` when it is one safe path segment, else None.
+
+    Rejects the separators and glob metacharacters that make the filename sinks
+    unsafe (``.``, ``/``, ``\\``, ``*``, ``[`` …) while still honoring the legacy
+    non-uuid ids that handoff receipts carry. None makes the caller keep its own
+    freshly minted id, so a malformed external id degrades to "this run cannot be
+    correlated" rather than to "write a file where the caller pointed".
+    """
+    text = str(candidate or "").strip()
+    if not text or text in {".", ".."}:
+        return None
+    return text if _CORRELATION_ID_RE.match(text) else None
 
 
 class UpdateReceipt:
@@ -209,7 +235,11 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
         receipt = UpdateReceipt()
         if previous:
             receipt.data.update(copy.deepcopy(previous))
-        receipt.correlation_id = correlation_id or receipt.correlation_id
+        external_id = _safe_correlation_id(correlation_id)
+        if correlation_id and external_id is None:
+            logger.warning(
+                "Ignoring malformed update correlation id %r; minting a fresh one", correlation_id)
+        receipt.correlation_id = external_id or receipt.correlation_id
         receipt.data.update(update_id=receipt.correlation_id, outcome="running", finished_at=None)
         # A handoff receipt from an older interpreter may predate the field.
         receipt.data["correlation_id"] = receipt.data.get("correlation_id") or _launcher_correlation_id()
@@ -266,7 +296,13 @@ def record_gateway_restart(**kwargs: Any) -> None:
     _record("gateway_restart_result", "gateway restart result", **kwargs)
 
 
-def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:
+def finalize_update_receipt(
+    outcome: str,
+    fleet: list | None = None,
+    stop_reason: str = "",
+    *,
+    exit_code: int | None = None,
+) -> Optional[Path]:
     """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``); path or None.
 
     Exactly-once by construction: the context's receipt is popped first, so a second call (e.g. the
@@ -295,6 +331,8 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+        if exit_code is not None:
+            receipt.data["exit_code"] = int(exit_code)
         # Manual serve restart obligations outlive one receipt rotation: carry the previous
         # receipt's still-pending rows forward so the startup warning survives (see
         # update_serve_obligations).
@@ -410,7 +448,15 @@ def _publish_shared_metrics(data: dict[str, Any]) -> None:
                 shutil.rmtree(pending, ignore_errors=True)  # opted out: nothing parked may be counted later
             elif enabled:
                 pending.mkdir(parents=True, exist_ok=True)
-                _atomic_bytes(pending / f"{data.get('update_id')}.json", json.dumps(_metric_receipt(data), default=str).encode())
+                # Same filename rule as the receipt itself: a receipt replayed
+                # from disk carries its own id, so re-check rather than trust.
+                metric_id = _safe_correlation_id(data.get("update_id"))
+                if metric_id:
+                    _atomic_bytes(pending / f"{metric_id}.json",
+                                  json.dumps(_metric_receipt(data), default=str).encode())
+                else:
+                    logger.debug("Skipping parked update metrics for malformed update_id %r",
+                                 data.get("update_id"))
             return
         from hermes_cli.observability.shared_metrics_update import record_update_receipt
 

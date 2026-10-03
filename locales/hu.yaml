@@ -515,6 +515,7 @@ gateway:
     prompt: "☤ **A frissítéshez a válaszod kell:**\n\n{prompt}{default_hint}\n\nVálaszolj: `{prefix}approve` (igen) vagy `{prefix}deny` (nem), vagy írd be közvetlenül a válaszodat."
     finished: "✅ A Hermes frissítése befejeződött."
     timed_out: "❌ A Hermes frissítése 30 perc után időtúllépéssel leállt."
+    did_not_finalize: "❌ Hermes update did not finalize — a fleet restart is still pending. Run `hermes update` to retry, or `hermes gateway restart` after clearing the marker."
     finished_success: "✅ A Hermes frissítése sikeresen befejeződött."
     last_lines: "{msg}\n\nUtolsó sorok:\n```\n{tail}\n```"
     managed_action: "a Hermes Agent frissítése"

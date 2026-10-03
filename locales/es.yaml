@@ -512,6 +512,7 @@ gateway:
     prompt: "☤ **La actualización necesita tu respuesta:**\n\n{prompt}{default_hint}\n\nResponde `{prefix}approve` (sí) o `{prefix}deny` (no), o escribe tu respuesta directamente."
     finished: "✅ Actualización de Hermes terminada."
     timed_out: "❌ La actualización de Hermes expiró tras 30 minutos."
+    did_not_finalize: "❌ La actualización de Hermes no se finalizó: aún hay un reinicio de flota pendiente. Ejecuta `hermes update` para reintentar, o `hermes gateway restart` tras limpiar el marker."
     finished_success: "✅ La actualización de Hermes terminó correctamente."
     last_lines: "{msg}\n\nÚltimas líneas:\n```\n{tail}\n```"
     managed_action: "actualizar Hermes Agent"

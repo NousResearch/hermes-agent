@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -106,6 +107,8 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "releases, 'main' the branch tip. Source installs only."
         ),
     )
+    update_parser.add_argument(
+        "--update-id", default=None, metavar="ID", help=argparse.SUPPRESS)
     update_parser.add_argument(
         "--no-gateway-restart", action="store_true", default=False,
         help="Update code and dependencies but defer the fleet restart. Use for updates "

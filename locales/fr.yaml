@@ -591,6 +591,7 @@ gateway:
       Répondez `{prefix}approve` (oui) ou `{prefix}deny` (non), ou saisissez directement votre réponse.
     finished: "✅ Mise à jour d'Hermes terminée."
     timed_out: "❌ La mise à jour d'Hermes a expiré après 30 minutes."
+    did_not_finalize: "❌ La mise à jour d'Hermes ne s'est pas finalisée : un redémarrage de flotte est toujours en attente. Relancez `hermes update`, ou `hermes gateway restart` après avoir nettoyé le marqueur."
     finished_success: "✅ Mise à jour d'Hermes terminée avec succès."
     last_lines: |-
       {msg}

@@ -111,6 +111,12 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
+    def test_success_receipt_records_explicit_zero_exit_code(self, receipt_home):
+        ur.begin_update_receipt()
+        path = ur.finalize_update_receipt("success", exit_code=0)
+        assert path is not None
+        assert json.loads(path.read_text(encoding="utf-8"))["exit_code"] == 0
+
 
     def test_record_without_begin_is_noop(self, receipt_home):
         # No begin — nothing should raise, nothing should be written.
@@ -569,3 +575,64 @@ class TestPreUpdateBackupStep:
         empty = self._record(monkeypatch, args=args, snapshot_id=None, updates_cfg=updates_cfg)
         assert empty["skips"] == []
         assert [step["ok"] for step in empty["steps"]] == [False]
+
+
+class TestCorrelationIdIsNotAPath:
+    """The correlation id reaches a filename and a glob, so it must be shape-checked.
+
+    Every id producer inside Hermes mints a uuid, but ``--update-id`` carries one
+    across a process boundary and the takeover/finish paths replay one read back
+    from disk. An unchecked id is interpolated raw into
+    ``update_<stamp>_<pid>_<id>.json`` and ``pending_updates/<id>.json``, so a
+    value carrying ``..`` writes outside the receipts directory.
+    """
+
+    @pytest.mark.parametrize("hostile", [
+        "../../../../tmp/hermes-pwned",
+        "..",
+        ".",
+        "a/b",
+        "a\\b",
+        "with space",
+        "*",
+        "glob[abc]",
+        "x" * 200,
+        "",
+        "   ",
+    ])
+    def test_hostile_correlation_id_never_becomes_a_filename(self, receipt_home, hostile):
+        ur.begin_update_receipt(correlation_id=hostile)
+        written = ur.finalize_update_receipt(outcome="success")
+
+        assert ur.current_correlation_id() is None or ur._safe_correlation_id(
+            ur.current_correlation_id()) is not None, (
+            "a rejected id must be replaced by a freshly minted uuid4 hex, "
+            f"got {ur.current_correlation_id()!r}"
+        )
+        assert written is not None
+        # The only legitimate resolution of the written path is inside the
+        # receipts directory; anything with a traversal component escaped.
+        resolved = written.resolve()
+        assert resolved.is_relative_to((receipt_home / "logs" / "update_receipts").resolve()), (
+            f"receipt escaped the receipts directory: {resolved}"
+        )
+
+    def test_malformed_id_still_records_the_run(self, receipt_home):
+        """Rejecting the id must not lose the receipt — only its correlation."""
+        ur.begin_update_receipt(correlation_id="../../escape")
+        written = ur.finalize_update_receipt(outcome="success")
+
+        assert written is not None and written.exists()
+        payload = json.loads(written.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "success"
+        assert payload["update_id"] == written.stem.rsplit("_", 1)[-1]
+
+    @pytest.mark.parametrize("legitimate", [
+        "abc123",  # a handoff receipt written by an older updater
+        "20260924_191701_123-deadbeef",
+    ])
+    def test_safe_segment_is_still_honored(self, receipt_home, legitimate):
+        """The guard must not break ids that are safe, just not uuids."""
+        ur.begin_update_receipt(correlation_id=legitimate)
+
+        assert ur.current_correlation_id() == legitimate

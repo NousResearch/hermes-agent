@@ -20,6 +20,8 @@ import hashlib
 import hmac
 import base64
 import json
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -526,4 +528,120 @@ class TestMediaPublicUrlGuard:
         result = asyncio.run(ad.send_image_file("Uchat", str(img)))
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
+
+
+class TestCombinedMediaDelivery:
+    """Regression for #123435: the final text and the image attachments ride ONE call —
+    reply tokens are single-use, so a text-then-attachment turn spent the reply on the
+    text and pushed every image (metered per recipient)."""
+
+    def _adapter(self, monkeypatch, with_token=True):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok", "channel_secret": "sec",
+            "public_url": "https://example.com",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        if with_token:
+            ad._reply_tokens["C0"] = ("reply-tok", time.time() + 60)
+        return ad
+
+    @staticmethod
+    def _event():
+        return SimpleNamespace(
+            source=SimpleNamespace(chat_id="C0", platform=SimpleNamespace(value="line")),
+            text="make me a picture",
+        )
+
+    @staticmethod
+    def _extracted(image_path):
+        from gateway.platforms.base import _ExtractedResponse
+        return _ExtractedResponse(
+            text_content="Here is your picture.",
+            images=[], media_files=[(image_path, False)], local_files=[],
+            force_document_attachments=False, pre_extract=f"Here is your picture. MEDIA:{image_path}")
+
+    @pytest.mark.asyncio
+    async def test_media_rides_the_reply_call(self, tmp_path, monkeypatch):
+        image = tmp_path / "gen.jpg"
+        image.write_bytes(b"x" * 100)
+        ad = self._adapter(monkeypatch, with_token=True)
+        delivered = []
+
+        combined = await ad._deliver_final_with_attachments(
+            self._event(), "sess", self._extracted(str(image)), None,
+            is_ephemeral_response=False, ephemeral_ttl=0, record_delivery=delivered.append)
+
+        assert combined is True
+        ad._client.reply.assert_awaited_once()
+        ad._client.push.assert_not_awaited()
+        messages = ad._client.reply.call_args.args[1]
+        assert messages[0]["type"] == "text"
+        assert messages[1]["type"] == "image"
+        assert len(delivered) == 1 and delivered[0].success
+
+    @pytest.mark.asyncio
+    async def test_no_token_single_push_with_text_and_image(self, tmp_path, monkeypatch):
+        """Without a reply token the combined call is ONE push carrying text + image —
+        not two calls (text push + image push)."""
+        image = tmp_path / "gen.jpg"
+        image.write_bytes(b"x" * 100)
+        ad = self._adapter(monkeypatch, with_token=False)
+
+        combined = await ad._deliver_final_with_attachments(
+            self._event(), "sess", self._extracted(str(image)), None,
+            is_ephemeral_response=False, ephemeral_ttl=0, record_delivery=lambda r: None)
+
+        assert combined is True
+        ad._client.push.assert_awaited_once()
+        messages = ad._client.push.call_args.args[1]
+        assert messages[0]["type"] == "text" and messages[1]["type"] == "image"
+
+    def test_drain_clears_delivered_and_leaves_rest(self, tmp_path, monkeypatch):
+        from gateway.platforms.base import _ExtractedResponse
+        image = tmp_path / "gen.jpg"
+        image.write_bytes(b"x" * 100)
+        local_pic = tmp_path / "pic.png"
+        local_pic.write_bytes(b"x" * 100)
+        ad = self._adapter(monkeypatch, with_token=False)
+        extracted = _ExtractedResponse(
+            text_content="t",
+            images=["https://x.com/a.png", "http://x.com/b.png"],
+            media_files=[(str(image), False), (str(tmp_path / "clip.mp4"), False)],
+            local_files=[str(local_pic)],
+            force_document_attachments=False, pre_extract="t")
+
+        msgs = ad._combined_image_messages(extracted)
+
+        assert len(msgs) == 3  # https URL + image-typed MEDIA + image-typed local file
+        assert extracted.images == ["http://x.com/b.png"]  # non-HTTPS stays for the normal lane
+        assert extracted.media_files == [(str(tmp_path / "clip.mp4"), False)]  # video stays
+        assert extracted.local_files == []
+
+    @pytest.mark.asyncio
+    async def test_base_default_does_not_combine(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        result = await BasePlatformAdapter._deliver_final_with_attachments(
+            None, None, None, None, None, is_ephemeral_response=False, ephemeral_ttl=0,
+            record_delivery=None)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_no_attachments_or_no_text_falls_through(self, tmp_path, monkeypatch):
+        image = tmp_path / "gen.jpg"
+        image.write_bytes(b"x" * 100)
+        ad = self._adapter(monkeypatch, with_token=True)
+        no_media = self._extracted(str(image))
+        no_media.media_files = []
+
+        assert await ad._deliver_final_with_attachments(
+            self._event(), "sess", no_media, None,
+            is_ephemeral_response=False, ephemeral_ttl=0, record_delivery=lambda r: None) is False
+        ad._client.reply.assert_not_awaited()
 

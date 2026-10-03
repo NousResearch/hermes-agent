@@ -82,14 +82,35 @@ export function publishDirectory(staged, out, { source } = {}) {
   writeFileSync(path.join(staged, productMarker), productOwner)
   const backup = `${staged}.previous`
   const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  if (!previous) return renameWithRetry(staged, out)
+  renameWithRetry(out, backup)
   try {
-    renameSync(staged, out)
+    renameWithRetry(staged, out)
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    renameWithRetry(backup, out)
     throw error
   }
-  if (previous) rmSync(backup, { recursive: true, force: true })
+  rmSync(backup, { recursive: true, force: true })
+}
+
+// A just-built product tree is held for a moment on Windows (Defender scanning the fresh
+// ~4 MB entry.js, an indexer, a lingering handle), so the publication rename fails EPERM
+// where POSIX would have succeeded. Retry the transient lock instead of failing the build;
+// the same hardening rmTree below applies, and the class #126914 reports for web_dist.
+// Symptom hit here: `EPERM: operation not permitted, rename
+// '.dist-OtWazq' -> 'dist'` aborting `hermes update`'s TUI build.
+export function renameWithRetry(from, to, { maxAttempts = 7, baseDelayMs = 250 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (error) {
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= maxAttempts) throw error
+      // Give the scanner or indexer holding the tree a beat to let go. Synchronous by design:
+      // every caller here is sync, and Atomics.wait is the one sync sleep Node offers.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(baseDelayMs * 2 ** (attempt - 1), 2000))
+    }
+  }
 }
 
 export async function withProduct(out, compile, { source } = {}) {

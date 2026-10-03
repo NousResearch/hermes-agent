@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import platform
 import shutil
@@ -12,7 +13,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO
+from typing import IO, Callable
 
 from pm.filesystem import is_junction
 
@@ -270,9 +271,38 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+#: Windows holds a just-extracted tree for a moment (Defender, the indexer, a lingering handle from
+#: whatever unpacked it), so a rename fails with EACCES/EBUSY where POSIX would have succeeded.
+#: Retry briefly instead of failing the whole install; the same hardening ``Store.publish`` applies,
+#: and the class #122800 reports for ``pm/workspace.py``'s bare writes.
+_TRANSIENT_LOCK_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EBUSY})
+#: First backoff step; each retry doubles it (tests zero it so they don't spend real time).
+_RETRY_BASE_DELAY = 0.25
+
+
+def _retry_transient(operation: Callable[[], object], attempts: int = 6) -> None:
+    """Run a filesystem mutation, retrying the brief lock a freshly extracted tree carries on
+    Windows. A non-transient error, or the last attempt, propagates unchanged."""
+    delay = _RETRY_BASE_DELAY
+    for attempt in range(attempts):
+        try:
+            operation()
+            return
+        except OSError as exc:
+            if attempt == attempts - 1 or exc.errno not in _TRANSIENT_LOCK_ERRNOS:
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
-    (bin/, cmd/, lib/...). Refuses on name collisions."""
+    (bin/, cmd/, lib/...). Refuses on name collisions.
+
+    The hoist mutates a tree that was extracted seconds ago, exactly when Windows still holds
+    it, so every mutation retries the transient lock. Without that, ffmpeg and agent-browser
+    installs died with ``[WinError 5]`` on the ``bin`` rename.
+    """
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
@@ -282,8 +312,8 @@ def flatten_single_dir(dest: Path) -> None:
         target = dest / item.name
         if target.exists():
             return
-        item.rename(target)
-    inner.rmdir()
+        _retry_transient(lambda: item.rename(target))
+    _retry_transient(inner.rmdir)
 
 
 def merge_tree(src: Path, dst: Path) -> None:
@@ -298,7 +328,7 @@ def merge_tree(src: Path, dst: Path) -> None:
         if target.exists():
             raise FileExistsError(f"archives disagree about {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        item.replace(target)
+        _retry_transient(lambda: item.replace(target))
 
 
 def tree_digest(root: Path) -> str:

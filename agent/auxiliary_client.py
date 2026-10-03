@@ -1167,7 +1167,7 @@ def _parse_codex_final_response(
             _extract_responses_message_text(item) for item in output
             if _field(item, "type") == "message"
             and _lower_or_none(_field(item, "phase")) not in {"commentary", "analysis"}
-        ))).strip()
+        ))).strip() or (normalized_final.output_text or "").strip()
         if answer and _leaked_tool_call_text(answer):
             message.content, finish_reason = answer, "stop"
     # Aux consumers speak Chat Completions: "length" activates their existing

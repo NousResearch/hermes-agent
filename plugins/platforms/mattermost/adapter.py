@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -548,7 +549,11 @@ class MattermostAdapter(BasePlatformAdapter):
         return media_urls, media_types
 
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
-        if event.get("event") != "posted":
+        event_kind = event.get("event")
+        if event_kind == "post_edited":
+            await self._on_platform_post_edited(event)
+            return
+        if event_kind != "posted":
             return
         data = event.get("data", {})
         try:
@@ -588,6 +593,100 @@ class MattermostAdapter(BasePlatformAdapter):
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls or None, media_types=media_types or None,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+
+    # --- gateway_platform_event fire-site: post_edited → message_edited (#126794) ---
+
+    @staticmethod
+    def _platform_events_subscribed() -> bool:
+        """has_hook fast-path shared by every Mattermost fire-site."""
+        try:
+            from hermes_cli.lifecycle import has_hook
+            return has_hook("gateway_platform_event")
+        except Exception:
+            return False
+
+    def _source_for_platform_event(self, *, chat_id: str, user_id: Optional[str],
+                                   user_name: Optional[str], thread_id: Optional[str],
+                                   chat_type: str = "channel", message_id: Optional[str] = None):
+        """Build the SessionSource the gateway authorizes against; missing identity raises (fail closed)."""
+        if not user_id or not chat_id:
+            raise ValueError("gateway_platform_event requires actor and chat identities")
+        return self.build_source(
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name,
+            thread_id=thread_id, message_id=message_id)
+
+    async def _fire_platform_event(self, event: Dict[str, Any], source) -> None:
+        """Forward one envelope to the gateway boundary; no callback -> fail closed, errors never escape."""
+        handler = getattr(self, "_platform_event_handler", None)
+        if handler is None:
+            return
+        try:
+            await handler(event, source)
+        except Exception:
+            logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
+
+    def _message_edited_parts(self, event: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Normalize a Mattermost ``post_edited`` WS event into ``(payload, source_kwargs)`` or None.
+
+        The WebSocket payload carries the full edited post JSON under ``data.post``
+        (same shape as ``posted``); ``data.channel_type`` distinguishes DMs. The
+        editor is the post's ``user_id`` — the actor the gateway authorizes.
+        """
+        data = event.get("data") or {}
+        try:
+            post = json.loads(data.get("post") or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(post, dict):
+            return None
+        user_id, post_id = post.get("user_id", ""), post.get("id", "")
+        chat_id = post.get("channel_id", "")
+        if not user_id or not post_id or not chat_id:
+            return None
+        if user_id == self._bot_user_id:
+            return None  # the bot's own edits are noise, not user events
+        is_dm = data.get("channel_type", "O") == "D"
+        if not is_dm:
+            allowed_channels = _channel_id_set(_extra_or_secret(
+                self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
+            if allowed_channels and chat_id not in allowed_channels:
+                logger.debug("Mattermost: ignoring edit in non-allowed channel: %s", chat_id)
+                return None
+        text = post.get("message", "")
+        thread_id = post.get("root_id") or None
+        if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:
+            thread_id = post_id
+        update_at = post.get("update_at")
+        payload = {
+            "chat_id": str(chat_id)[:128], "message_id": str(post_id)[:128],
+            "thread_id": str(thread_id)[:128] if thread_id else None,
+            "text": text[:8192] if isinstance(text, str) else None,
+            "edited_at": None,
+        }
+        if isinstance(update_at, int) and update_at > 0:  # ms since epoch → ISO 8601 UTC
+            payload["edited_at"] = datetime.fromtimestamp(update_at / 1000, tz=timezone.utc).isoformat()
+        return payload, dict(
+            chat_id=str(chat_id), user_id=str(user_id),
+            chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
+            user_name=str(data.get("sender_name", "")).lstrip("@") or None,
+            thread_id=thread_id, message_id=str(post_id),
+        )
+
+    async def _on_platform_post_edited(self, event: Dict[str, Any]) -> None:
+        """Normalize ``post_edited`` into event_type ``message_edited`` (observer-only; never raises)."""
+        if not self._platform_events_subscribed():
+            return
+        try:
+            built = self._message_edited_parts(event)
+            if built is None:
+                return
+            payload, source_kwargs = built
+            event_envelope = {"platform": "mattermost", "event_type": "message_edited", "payload": payload}
+            source = self._source_for_platform_event(**source_kwargs)
+        except Exception:
+            logger.debug("[%s] gateway_platform_event normalize error", self.name, exc_info=True)
+            return
+        await self._fire_platform_event(event_envelope, source)
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---

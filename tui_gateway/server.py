@@ -43,7 +43,7 @@ from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
-    resume_failed_message, turn_error_text)
+    code_skew_restart_message, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -931,7 +931,7 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
         return _err(rid, 5032, AGENT_STILL_STARTING)
-    return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
+    return _agent_err(rid, session, err) if (err := session.get("agent_error")) else None
 
 
 # The deferred prompt path waits in short slices so a cancel is honored promptly and a slow
@@ -949,6 +949,17 @@ def _agent_build_wait_cap() -> float:
         if raw is not None and float(raw) > 0:
             return float(raw)
     return 600.0
+
+
+def _agent_err(rid: str, session: dict, msg: str) -> dict:
+    """A build-failure error for a waiting turn, carrying the failure's structured kind.
+
+    ``agent_error`` alone is free-text (a Python exception's message); the kind
+    (``code_skew`` for a refused stale-module build) lets the turn-error surface
+    classify without pattern-matching message text.
+    """
+    kind = session.get("agent_error_kind")
+    return _err(rid, 5032, msg, data={"kind": kind} if kind else None)
 
 
 def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
@@ -981,7 +992,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
         build_thread = session.get("_agent_build_thread")
         if build_thread is not None and not build_thread.is_alive() and not ready.is_set():
             # _build's finally guarantees ready.set(); dead thread + unset ready = died hard.
-            return _err(rid, 5032, session.get("agent_error") or "agent initialization failed before completing")
+            return _agent_err(rid, session, session.get("agent_error") or "agent initialization failed before completing")
         if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
             notified_slow = True  # one keyed, replace-in-place notice (toast / status bar)
             _emit("notification.show", sid, {
@@ -990,7 +1001,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
                 "key": _AGENT_BUILD_SLOW_NOTICE_KEY, "id": _AGENT_BUILD_SLOW_NOTICE_KEY})
     if notified_slow:
         _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
-    return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
+    return _agent_err(rid, session, err) if (err := session.get("agent_error")) else None
 
 
 def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
@@ -1160,6 +1171,18 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
         try:
+            try:
+                from gateway.code_skew import detect_code_skew
+                skew = detect_code_skew()
+            except Exception:
+                skew = None
+            if skew:
+                boot_rev, disk_rev = skew
+                msg = code_skew_restart_message(boot_rev, disk_rev)
+                current["agent_error"] = msg
+                current["agent_error_kind"] = "code_skew"
+                _emit("error", sid, {"message": msg, "code": "code_skew_restart_required"})
+                return
             if not _await_resume_history(sid, current):
                 # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
                 # why — a turn admitted against this record refuses with the real reason (#111531).
@@ -2845,7 +2868,7 @@ def _deferred_session_record(
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
     return {
-        "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
+        "agent": None, "agent_error": None, "agent_error_kind": None, "agent_ready": threading.Event(), "attached_images": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,

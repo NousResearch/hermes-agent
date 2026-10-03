@@ -148,6 +148,46 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_cross_turn_duplicate_tool_call_ids_uniquified(self):
+        msgs = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "res1"},
+            {"role": "user", "content": "turn 2"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "res2"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Turn 1 keeps call_123
+        assert out[1]["tool_calls"][0]["id"] == "call_123"
+        assert out[2]["tool_call_id"] == "call_123"
+        # Turn 2 gets renamed to call_123_d2 for both call and response
+        assert out[4]["tool_calls"][0]["id"] == "call_123_d2"
+        assert out[5]["tool_call_id"] == "call_123_d2"
+
+    def test_cross_turn_reuse_far_apart_in_parallel_batch_is_stable(self):
+        # Observed in a 500+ turn Antigravity session: a server-issued id reappeared
+        # ~200 turns later inside a parallel batch, and Gemini rejected the whole
+        # request with HTTP 400 INVALID_ARGUMENT until the reused id was renamed.
+        def call(cid):
+            return {"id": cid, "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        msgs = [{"role": "user", "content": "go"},
+                {"role": "assistant", "content": "", "tool_calls": [call("call_325040")]},
+                {"role": "tool", "tool_call_id": "call_325040", "content": "a"}]
+        for i in range(200):
+            msgs += [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [call("call_9"), call("call_325040")]},
+                 {"role": "tool", "tool_call_id": "call_9", "content": "b"},
+                 {"role": "tool", "tool_call_id": "call_325040", "content": "c"}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        ids = [tc["id"] for m in out if m.get("tool_calls") for tc in m["tool_calls"]]
+        assert len(ids) == len(set(ids)) == 3
+        assert [m["tool_call_id"] for m in out[-2:]] == ["call_9", "call_325040_d2"]
+        assert out[-3]["tool_calls"][1]["id"] == "call_325040_d2"
+        # Sanitizing the sanitized copy again (every retry does) is a no-op.
+        assert AIAgent._sanitize_api_messages(out) == out
+
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

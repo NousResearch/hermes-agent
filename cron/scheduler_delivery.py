@@ -836,9 +836,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
 
             pending = read_pending(key)
             # Suppression is a durable disposition, not a send: record it under the producer
-            # lock even when a live owner exists, so the deferred lane never replays it.
+            # lock even when a live owner exists, so the deferred lane never replays it. A
+            # no_agent job has no interactive turn to gain by running inline either — deferring
+            # it keeps the legacy CLI lane out of the fire claim even with no owner at all
+            # (#126126).
             if (pending is not None or suppress_notification
-                    or (find_canonical_live_owner(home) is None and find_canonical_owner(home))):
+                    or (find_canonical_live_owner(home) is None
+                        and (find_canonical_owner(home) or job.get("no_agent")))):
                 pending = defer(key, dict(job), content, profile, home,
                                 for_failure=for_failure, suppressed=suppress_notification)
             if pending is not None:

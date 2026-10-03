@@ -1,0 +1,26 @@
+name: doi-ref
+repo: https://github.com/EloquentBrush0x/hermes-context-refs
+sha: 49e286309ac2a904a2a60d8ae7445d19ebbd7c88
+subdir: doi-ref
+description: >-
+  @doi:<doi> context references: attach a paper's, dataset's or software release's metadata to a
+  message (title, authors, venue, publisher, date, type, citation count, license, abstract, and any
+  retraction or correction notice), from Crossref or, for DOIs Crossref lacks such as arXiv and
+  Zenodo, DataCite. Disclosure — sends an HTTPS GET per reference to api.crossref.org/works/<doi>
+  and only on a not-found answer a second one to api.datacite.org/dois/<doi> (the referenced DOI
+  leaves the machine; the publisher's site is never contacted); Crossref requests are queued one at
+  a time to respect its rate limit; no API key, no caching, no files written, no subprocess;
+  register() only adds the @doi: reference provider.
+maintainer: EloquentBrush0x
+tier: community
+category: web
+requires_hermes: ">=0.21"
+docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/doi-ref
+version: "1.0.0"
+image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/49e286309ac2a904a2a60d8ae7445d19ebbd7c88/docs/doi-ref-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

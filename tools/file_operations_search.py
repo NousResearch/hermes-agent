@@ -786,14 +786,24 @@ class SearchMixin:
 
     def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
-        """Search for files by name (glob-like) across one or more roots: rg --files,
-        else a bounded find. ``order``: "discovery" (fast, bounded) or "modified"
-        (exact global newest-first; needs rg 14+ or GNU find)."""
+        """Search for files by name (glob-like) across one or more roots: a locate
+        index when one can serve the query, else ``rg --files``, else a bounded
+        find. ``order``: "discovery" (fast, bounded) or "modified" (exact global
+        newest-first; needs rg 14+ or GNU find)."""
         search_pattern = pattern if (not pattern.startswith('**/') and '/' not in pattern) \
             else pattern.split('/')[-1]
         roots = [path] if isinstance(path, str) else path
         if not roots:
             return SearchResult(error="File search requires at least one search root in 'path'.")
+
+        # Indexed name query first: a locate lookup reads a prebuilt database
+        # instead of the filesystem, so its cost is the index scan rather than the
+        # tree walk. None means "walk this one" — including an index that has
+        # nothing to report (#127861).
+        if order == "discovery":
+            indexed = self._search_files_index(search_pattern, roots, limit, offset)
+            if indexed is not None:
+                return indexed
 
         # Prefer ripgrep: bounded parallel traversal with ignore semantics. Resolve
         # the engine and exact-order capability BEFORE admission so a queued request
@@ -895,6 +905,62 @@ class SearchMixin:
         return SearchResult(
             files=raw_files[offset:offset + limit], total_count=len(raw_files),
             truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+
+    def _search_files_index(self, pattern: str, roots: List[str], limit: int,
+                            offset: int) -> Optional[SearchResult]:
+        """Filename search answered by a locate index, or None to walk instead.
+
+        None — never an empty result — whenever the index cannot serve the request:
+        a non-local backend, a relative root, a git work-tree (where the walk is
+        bounded and ignore-filtered already), no locate binary, a missing or stale
+        database, a glob locate cannot express, an unusable query, no hit at all, or
+        a window the filter emptied out. A snapshot's own failure mode is the empty
+        answer (the file was created after the last updatedb), so an empty answer is
+        what falls through to the walk (#127861).
+        """
+        from tools import file_search_index as index_engine
+
+        if not self._lsp_local_only() or any(not root.startswith("/") for root in roots):
+            return None
+        if any(index_engine.inside_worktree(root) for root in roots):
+            return None
+        fetch_limit = offset + limit + 1
+        # The filter drops candidates after the query's own bound (hidden names,
+        # symlinks, and paths that only matched the root's own name), so ask for a
+        # window, not the bound.
+        window = index_engine.fetch_window(fetch_limit)
+        argv = index_engine.indexed_argv(pattern, roots, window)
+        if argv is None:
+            return None
+        # Same two transports as the walk: native argv on a local POSIX host, else
+        # the backend shell. A no-match and a bounded result both exit 1, so the
+        # payload decides.
+        words = [self._escape_shell_arg(word, translate_path=False) for word in argv]
+        result = self._run_rg_bounded(words, window, timeout=30,
+                                      shell_prefix="set -o pipefail; ")
+        if result.exit_code not in (0, 1) or not result.stdout.strip():
+            return None
+        candidates = [line for line in result.stdout.splitlines() if line]
+        protected = [absolute for _root, _rel, absolute
+                     in self._effective_macos_search_exclusions(roots)]
+        files = [
+            path for path in candidates
+            if index_engine.keep_indexed_path(path, roots, pattern)
+            and not any(index_engine.within_root(path, item) for item in protected)]
+        if not files:
+            return None
+        if len(candidates) >= window and len(files) <= offset + limit:
+            # The query filled its window but the filter dropped most of it: the
+            # candidates are a path-order slice, not a sample, so a short page from
+            # them is worse than the walk's own page (which is bounded the same way
+            # and cheap on the trees this happens in).
+            return None
+        # The window is this path's bound, so filling it makes the count a lower
+        # bound — the same cut the bounded walk reports.
+        return SearchResult(
+            files=files[offset:offset + limit], total_count=len(files),
+            truncated=len(candidates) >= window or len(files) > offset + limit,
+            warning=index_engine.SNAPSHOT_WARNING)
 
     def _search_files_rg(self, pattern: str, path: str | List[str], limit: int, offset: int,
                          order: str = "discovery", rg_executable: Optional[str] = None) -> SearchResult:

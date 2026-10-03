@@ -146,7 +146,12 @@
   },
   {
     "path": "hermes_cli/commands_completion.py",
-    "symbol": "SlashCommandCompleter._get_project_files",
+    "symbol": "SlashCommandCompleter._walk_project_files",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/commands_completion.py",
+    "symbol": "_bounded_listing_command",
     "kind": "bare_which"
   },
   {
@@ -682,6 +687,11 @@
   {
     "path": "tools/file_operations_lint.py",
     "symbol": "LintMixin._run_managed_node_linter",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/file_search_index.py",
+    "symbol": "which_exists",
     "kind": "bare_which"
   }
 ]

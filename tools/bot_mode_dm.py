@@ -586,8 +586,8 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
         if home is not None:
-            from tools.bot_live_delivery import find_canonical_owner
-            if find_canonical_owner(home) is not None:
+            from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
+            if find_canonical_owner(home) is not None and find_canonical_live_owner(home) is None:
                 print(json.dumps({
                     "error": "Delivery deferred: the target Bot Chat is open on another surface "
                              "that has not advertised live delivery yet. Try again later.",

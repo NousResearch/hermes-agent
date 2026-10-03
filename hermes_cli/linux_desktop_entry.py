@@ -802,8 +802,11 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     Only the app-id entry is written; a pre-rename ``hermes.desktop`` beside it is converted
     into a hidden alias once the new entry exists, and only while launcher management is
     enabled — deleting it instead would silently kill existing taskbar pins (#124492).
-    ``None`` on non-Linux platforms, when the write fails, or when the resolved ``Exec``
-    provably cannot serve ``hermes desktop`` — a convenience, never a reason to fail a launch.
+    GNOME filters ``NoDisplay`` entries out of its favourites, so the alias alone still
+    loses the pin there: a conversion that actually rewrites the legacy file also prints
+    a one-line re-pin hint (#125924). ``None`` on non-Linux platforms, when the write
+    fails, or when the resolved ``Exec`` provably cannot serve ``hermes desktop`` —
+    a convenience, never a reason to fail a launch.
     """
     if not is_supported():
         return None
@@ -856,6 +859,13 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     aliased = manage_enabled and _alias_legacy_desktop_entry(entry_path.parent, exec_command, icon_value)
     if aliased or not unchanged:
         refresh_desktop_databases(entry_path.parent)
+    if aliased:
+        # Notice only, printed once per conversion; GNOME drops NoDisplay
+        # favourites, so without this the migration stays silent and the pin is lost.
+        print(
+            f"✓ Launcher entry migrated: {LEGACY_DESKTOP_ENTRY_NAME} is now a hidden alias of {entry_path.name}\n"
+            "  If Hermes is pinned to your panel, unpin it and re-pin from the app grid."
+        )
     return entry_path
 
 

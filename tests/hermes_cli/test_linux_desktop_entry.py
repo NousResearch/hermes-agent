@@ -789,6 +789,49 @@ def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypa
     ), "the opt-out must leave the legacy entry byte-for-byte untouched"
 
 
+def test_install_aliasing_the_legacy_entry_prints_a_repin_hint(
+    tmp_path, xdg_home, monkeypatch, capsys
+):
+    """GNOME drops NoDisplay favourites, so the alias alone still loses the pin (#125924).
+
+    When the pre-rename entry is converted into the hidden alias, the launch must
+    say so with an actionable re-pin hint instead of migrating silently.
+    """
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n",
+        encoding="utf-8",
+    )
+
+    assert lde.install_desktop_entry(root) is not None
+
+    out = capsys.readouterr().out
+    assert "re-pin from the app grid" in out
+
+
+def test_install_stays_quiet_once_the_legacy_entry_is_already_an_alias(
+    tmp_path, xdg_home, monkeypatch, capsys
+):
+    """The hint is a one-shot migration notice, not an every-launch nag."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    assert lde.install_desktop_entry(root) is not None
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n",
+        encoding="utf-8",
+    )
+    assert lde.install_desktop_entry(root) is not None
+    capsys.readouterr()  # drain the one-shot notice
+
+    assert lde.install_desktop_entry(root) is not None
+
+    assert "re-pin from the app grid" not in capsys.readouterr().out
+
+
 def test_app_id_matches_the_desktop_build_identity():
     """APP_ID mirrors apps/desktop/product-identity.cjs; the two must not drift apart."""
     import shutil

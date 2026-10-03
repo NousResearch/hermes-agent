@@ -446,6 +446,9 @@ def main() -> None:
     parser.add_argument("--branch-config-path", type=Path)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    # Desktop runs this module directly, bypassing hermes_cli.main's TLS setup.
+    from agent.ssl_verify import install_truststore
+    install_truststore()
     with contextlib.redirect_stdout(sys.stderr):
         result = check_for_updates(**vars(args))
     print(json.dumps(result))

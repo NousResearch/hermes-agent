@@ -145,8 +145,8 @@ registry.register(
     emoji="🔗",
 )
 
-# The setup profile's catalog install. Reachable only through the ``setup`` toolset, which the
-# profile's role grants; registry dispatch has no card callback, so it answers with the CLI pointer.
+# The setup profile's catalog install. Reachable only through the ``setup`` toolset; registry dispatch
+# has no card callback, so it answers with the CLI pointer.
 registry.register(
     name="manage_catalog",
     toolset="setup",

@@ -1952,7 +1952,7 @@
     },
     {
       "name": "onboarding.ensure_setup_profile",
-      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.",
+      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name.",
       "params": [
         {
           "name": "params",
@@ -19678,12 +19678,6 @@
           "created": {
             "title": "Created",
             "type": "boolean"
-          },
-          "role": {
-            "const": "setup",
-            "default": "setup",
-            "title": "Role",
-            "type": "string"
           }
         },
         "required": [
@@ -23518,19 +23512,6 @@
             },
             "title": "Previous Names",
             "type": "array"
-          },
-          "role": {
-            "anyOf": [
-              {
-                "const": "setup",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Role"
           },
           "last_session": {
             "anyOf": [

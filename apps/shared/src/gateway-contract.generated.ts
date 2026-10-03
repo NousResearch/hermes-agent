@@ -1907,7 +1907,6 @@ export interface ProfileRow {
   display_name?: string
   skill_count?: number
   previous_names?: string[]
-  role?: 'setup' | null
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null
@@ -2102,7 +2101,6 @@ export interface OnboardingEnsureSetupProfileResult {
   name: string
   path: string
   created: boolean
-  role?: 'setup'
 }
 export interface OnboardingResetSetupProfileResult {
   name: string
@@ -5093,7 +5091,7 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
-  /** Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role. */
+  /** Create-or-read the backend-owned setup profile; the backend picks the name. */
   'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
   'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }

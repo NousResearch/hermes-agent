@@ -22,7 +22,7 @@ import hermes_yaml as yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
+from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT, SETUP_PROFILE_MARKER
 from utils import rmtree_readonly
 
 
@@ -547,10 +547,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
-    # A shipped profile.yaml must not carry a backend-assigned role.
-    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
-        from hermes_cli.profiles import drop_profile_role
-        drop_profile_role(target)
+    if any(rel_parts == (SETUP_PROFILE_MARKER,) for _, rel_parts in entries):
+        (target / SETUP_PROFILE_MARKER).unlink()
 
 
 def _bootstrap_user_dirs(target: Path) -> None:

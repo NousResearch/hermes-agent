@@ -1144,7 +1144,8 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     from agent.oneshot_footprint import prune_oneshot_tools
     agent.tools = prune_oneshot_tools(agent.tools or [])
     from tools.connectors.turn import side_agent_tool_drops
-    drops = side_agent_tool_drops(agent)
+    from toolsets import session_platform_tool_drops
+    drops = side_agent_tool_drops(agent) | session_platform_tool_drops(getattr(agent, "platform", None))
     if drops:
         agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 

@@ -13,7 +13,7 @@ def _(rid, params: dict) -> dict:
             _mirror_launch_credentials(setup.path, {"share_auth": True})
     except Exception as e:
         return _err(rid, 5073, str(e))
-    return _ok(rid, {"name": setup.name, "path": str(setup.path), "created": setup.created, "role": "setup"})
+    return _ok(rid, {"name": setup.name, "path": str(setup.path), "created": setup.created})
 
 
 @method("onboarding.reset_setup_profile")

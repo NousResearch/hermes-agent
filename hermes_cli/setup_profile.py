@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import random
 import shutil
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 from hermes_cli import profiles as profiles_mod
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +46,9 @@ class SetupProfile(NamedTuple):
 
 def find_setup_profile() -> Optional[tuple[str, Path]]:
     found = [(p.name, Path(p.path)) for p in profiles_mod.list_profiles(lazy_skill_count=True)
-             if p.role == profiles_mod.SETUP_ROLE]
+             if (Path(p.path) / profiles_mod.SETUP_PROFILE_MARKER).is_file()]
     if len(found) > 1:
-        logger.warning("several profiles carry role: setup (%s); using %s",
+        logger.warning("several profiles carry the setup marker (%s); using %s",
                        ", ".join(name for name, _ in found), found[0][0])
     return found[0] if found else None
 
@@ -55,15 +57,16 @@ def ensure_setup_profile() -> SetupProfile:
     found = find_setup_profile()
     if found is not None:
         return SetupProfile(found[0], found[1], created=False)
-    if profiles_mod.profile_exists(SETUP_PROFILE_NAME):
-        path = profiles_mod.get_profile_dir(SETUP_PROFILE_NAME)
-        profiles_mod.write_profile_meta(path, role=profiles_mod.SETUP_ROLE)
-        return SetupProfile(SETUP_PROFILE_NAME, path, created=False)
-    path = profiles_mod.create_profile(SETUP_PROFILE_NAME, clone_from="default", clone_config=True, no_alias=True,
-                                       description=SETUP_PROFILE_DESCRIPTION)
-    _write_soul(path)
-    profiles_mod.write_profile_meta(path, role=profiles_mod.SETUP_ROLE)
-    return SetupProfile(SETUP_PROFILE_NAME, path, created=True)
+    name = _free_setup_profile_name()
+    path = profiles_mod.create_profile(name, clone_config=True, no_alias=True, description=SETUP_PROFILE_DESCRIPTION)
+    try:
+        _write_soul(path)
+        _enable_setup_toolset(path)
+        (path / profiles_mod.SETUP_PROFILE_MARKER).write_text("{}\n", encoding="utf-8")
+    except BaseException:
+        profiles_mod.delete_profile(name, yes=True)
+        raise
+    return SetupProfile(name, path, created=True)
 
 
 def reset_setup_profile() -> SetupProfile:
@@ -71,7 +74,7 @@ def reset_setup_profile() -> SetupProfile:
     if found is None:
         raise LookupError("no setup profile to reset")
     name, path = found
-    source = profiles_mod.get_profile_dir("default")
+    source = get_hermes_home()
     _write_soul(path)
     _replace_dir(path / "memories")
     for relpath in profiles_mod._CLONE_SUBDIR_FILES:
@@ -81,6 +84,27 @@ def reset_setup_profile() -> SetupProfile:
         profiles_mod._copytree_keep_junctions(source / "skills", path / "skills",
                                               profiles_mod._non_exportable_entries, dirs_exist_ok=True)
     return SetupProfile(name, path, created=False)
+
+
+def _free_setup_profile_name() -> str:
+    from hermes_cli.dashboard_register import _NAME_NOUNS
+    name = SETUP_PROFILE_NAME
+    while profiles_mod.get_profile_dir(name).exists():
+        name = f"{SETUP_PROFILE_NAME}-{random.choice(_NAME_NOUNS)}"
+    return name
+
+
+def _enable_setup_toolset(path: Path) -> None:
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.tools_config import _coerce_platform_toolsets_value, _platform_default_toolset
+    config_path = path / "config.yaml"
+    config = read_user_config_raw(config_path)
+    platform_toolsets = config.get("platform_toolsets") or {}
+    cli = _coerce_platform_toolsets_value(platform_toolsets.get("cli"), "cli")
+    if not isinstance(cli, list):
+        cli = [_platform_default_toolset("cli")]
+    config["platform_toolsets"] = {**platform_toolsets, "cli": list(dict.fromkeys([*cli, "setup"]))}
+    atomic_config_write(config_path, config)
 
 
 def _write_soul(path: Path) -> None:

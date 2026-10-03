@@ -160,7 +160,6 @@ class ProfileRow(Result):
     display_name: str = ""
     skill_count: int = 0
     previous_names: list[str] = Field(default_factory=list)
-    role: Literal["setup"] | None = None
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
@@ -390,11 +389,10 @@ class OnboardingEnsureSetupProfileResult(Result):
     name: str
     path: str
     created: bool
-    role: Literal["setup"] = "setup"
 
 
 method("onboarding.ensure_setup_profile", params=Params, result=OnboardingEnsureSetupProfileResult,
-       doc="Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.")
+       doc="Create-or-read the backend-owned setup profile; the backend picks the name.")
 
 
 class OnboardingResetSetupProfileResult(Result):

@@ -185,10 +185,63 @@ hermes peer stop spark run_abc123
 跨 gateway 的链接是 gateway 到 gateway 的直接连接——Desktop 只是观察者，不是中继。位于家庭 NAT 之后的 gateway 可以向公网 peer 主动拨出（笔记本 → VPS 可行），但反方向没有入站路由（VPS → 家庭会失败），除非你的网络提供了一条。如果你的 Group Chat 跨越了 NAT 边界，请把房间的权威放在每个参与者都能触达的主机上（通常是公网 VPS），或者用 Tailscale/VPN 打通网络。
 :::
 
+### 当群聊的主机离线时
+
+群聊中每台带有 Bot 的计算机都会保存该群聊的完整备份副本，除非其运营者选择退出。主机以及可以继续群聊的始终在线计算机（没有电池，或其配置中写有 `group_chat.always_on: true`）还会投票决定是否自动迁移群聊：
+
+- **三个或更多投票者：** 如果主机离线，群聊会在大约一分钟内迁移到下一台始终在线的计算机。无法联系到其中多数的主机会暂停以保安全，直到能够联系上为止，因此群聊不会自行在两个地方同时运行；只有所有者选择 **仍然继续**，或在多数投票者无法联系时手动继续，才会越过这一点。
+- **两个投票者：** 双向都静默约 3 分钟后，群聊会迁移。如果两台计算机只是彼此断开，群聊可能会在两边同时运行，直到它们重新连接；之后它会继续在迁移到的那台计算机上运行，由你选择保留哪些消息。
+- **更少，或所有者关闭了“计算机离线时自动迁移”：** 群聊会暂停，在所有者继续它之前不会运行任何新内容。只有主机持有的最近消息，如果主机再也不回来就会丢失；Hermes Desktop 会显示有多少条。
+
+`hermes groups status` 会显示适用哪种情况。群聊暂停时，其所有者可以在另一台计算机上继续它：
+
+- 所有者自己的某台计算机，或
+- 所有者指定、且其运营者允许的某台成员计算机。
+
+Hermes Desktop 中的 **在…上继续** 会列出这些计算机，最合适的排在最前。在那台计算机的终端中运行：
+
+```bash
+hermes groups status "Weekend plans"      # 主机能否联系上？哪些计算机保存了副本？
+hermes groups continue "Weekend plans"    # 在这台计算机上继续群聊（会先请求确认）
+```
+
+`continue` 会在执行前说明迁移意味着什么：
+
+- 旧主机的 Bot 在群聊迁回它之前都不可用；
+- 进行中的工作已完成、仍在别处运行或状态未知，未知的工作永远不会自行再次运行；
+- 有多少条最近的消息只在旧主机上：在它回来之前，这里缺少这些消息。
+
+一旦你继续群聊，其他计算机就会停止接受旧主机的工作。旧主机回来后会重新保存一份副本。它在断开期间所做的任何事情都会单独显示，绝不会混入对话。它上线后，你可以把群聊迁回它（在 Hermes Desktop 中使用 **转回**，或在新主机上运行 `hermes groups move`），它的 Bot 就会重新参与。
+
+通过 Hermes 进行的重启（`hermes gateway restart`，或在聊天中使用 `/restart`）会事先通告，因此重启期间不会提供迁移。从 Hermes 外部重启服务（例如 `systemctl restart`、`docker restart`、`launchctl kickstart -k`，或用 `--replace` 启动新的 gateway）会先停止 gateway，因此它的群聊会像任何一次停止那样被移交。
+
+如果两台计算机在彼此无法联系时都继续了群聊，它们重新连接后群聊会继续在其中一台上运行，另一台的消息会单独保存，直到你作出选择。保留正在运行的那台即可了结此事，保留另一台则会切换过去：
+
+```bash
+hermes groups keep "Weekend plans" "Home VPS"
+```
+
+要有意迁移群聊，例如在关闭主机之前，请在主机上运行：
+
+```bash
+hermes groups move "Weekend plans" "Home VPS"
+```
+
+如果 Bot 仍在回复，迁移会等待这些回复完成，最多 15 分钟。加上 `--now` 可立即迁移：仍在进行的回复会在新主机上显示为未知，不会自行重新运行，你可以在那里重试它们。
+
+停止 gateway（而不是重启它）会在短暂等待后以同样方式移交其群聊，Hermes Desktop 也会在计算机睡眠前请求同样的操作。旧主机会保留一份副本，因此你之后可以把群聊迁回它。
+
+`hermes groups backups` 会列出保存副本的计算机：
+
+- `backups allow` / `backups disallow` 设置某台计算机是否可以继续群聊；
+- `backups add` 在你通过 `hermes peer` 连接的另一台计算机上保存一份副本。
+
+工作原理：[群聊主机丢失](../developer-guide/group-chat-host-loss.md)。
+
 ### 转移托管房间的权威
 
 :::caution 保留，但已停用
-`groups.replicate`、`groups.promote` 和 `groups.demote` 仍保留在协议中，但在 Hermes 具备独占权威恢复能力之前处于停用状态。只有当一个房间的权威只能由唯一一个 gateway 持有时，接管才是安全的，而 Hermes 目前还无法保证这一点：两个 gateway 可能都提升同一个副本，而被降级的 gateway 也无法被证明已经停止写入。交给 `groups.replicate` 的页面同样不能证明权威实际写入了什么。在此之前，每次调用都会在触及房间之前被拒绝，`groups.capabilities` 的 `features` 中也不会包含 `log_replication` 和 `authority_takeover`。`groups.replica_state` 仍会报告该 gateway 已持有的副本。
+`groups.replicate`、`groups.promote` 和 `groups.demote` 仍保留在协议中，但会一直处于停用状态：群聊只会通过经过验证的 `groups.succession.*` 调用更换主机（参见[当群聊的主机离线时](#当群聊的主机离线时)）。使用这些旧方法时，两个 gateway 可能都提升同一个副本，被降级的 gateway 无法被证明已经停止写入，而交给 `groups.replicate` 的页面也不能证明权威实际写入了什么。每次调用都会在触及房间之前被拒绝，`groups.capabilities` 的 `features` 中也不会包含 `log_replication` 和 `authority_takeover`。`groups.replica_state` 仍会报告该 gateway 已持有的副本。
 
 | 方法 | 错误码 | `error.data.reason` |
 | --- | --- | --- |
@@ -200,18 +253,18 @@ hermes peer stop spark run_abc123
 {"jsonrpc":"2.0","id":1,"error":{"code":4118,"message":"Group Chat takeover is disabled until Hermes can select one globally exclusive authority.","data":{"reason":"authority_takeover_disabled"}}}
 ```
 
-下面的流程描述的是独占权威恢复启用这些方法之后它们的工作方式。
+下面的旧流程仅供参考：这些方法会一直处于停用状态。
 :::
 
 如果一个群聊的历史中已经记录了提升或降级（发生在这些方法被停用之前，或由共享同一存储的旧版 gateway 执行），它会被保持为**只读**：在没有独占权威的情况下，Hermes 无法判断是否有两个 gateway 都在继续写入。`groups.list` 会用 `safety_status: "authority_quarantined"` 和 `safety_reason` 标记这样的房间，`groups.log` 仍会返回完整历史，但 `groups.state`、发送、重命名和解散都会以原因 `room_authority_quarantined` 被拒绝。历史未通过校验的已存储副本同样会由 `groups.replica_state` 报告为 `safety_status: "quarantined"`。被隔离的历史永远不会被清理。
 
-权威变更只有连同其证明一起才会被接受。当独占权威恢复验证了一次权威变更时，它会在与该变更相同的数据库事务中记录一条**已验证交接标记**。当房间所有者（或房间所有者指定且已同意的继任者的所有者）明确选择在那台机器上继续群聊时，或在出现分裂后、由规则所保留的主机签署规则的选择时（`decided_by: "rule"`），证明为 `attested`；当群聊中多数有投票权的计算机（其主机和始终在线的继任者）签署承诺、不再跟随旧主机时，证明为 `certified`，每台计算机只有在它给旧主机的租约到期后才会作出承诺；当旧主机本身（例如在关机时）签名将其完整历史移交给继任者时，证明为 `handover`；在恰好有两台有投票权计算机的群聊中，当备用计算机签名表明它在谨慎模式的等待时间内与主机完全失去联系后才继续时，证明为 `evidence`。Bot 从不投票：只有计算机（主机及其始终在线的继任者）投票。该标记指明一个房间、从 epoch `N` 到某个更晚 epoch 的一步、继任 gateway 以及证明的摘要，并且只能被这一次变更使用：它不能被后续变更复用，不能用于另一个房间，也不能脱离它所验证的变更单独保存。没有自身标记的提升或降级（包括闸门打开后通过 `groups.promote` 或 `groups.demote` 进行的操作）仍会像上文所述那样让房间保持只读，其 `safety_reason` 为 `unsafe_replica_promotion`、`unsafe_authority_demotion` 或 `unverified_authority_transition`。
+权威变更只有连同其证明一起才会被接受。当继任调用验证了一次权威变更时，它们会在与该变更相同的数据库事务中记录一条**已验证交接标记**。当房间所有者（或房间所有者指定且已同意的继任者的所有者）明确选择在那台机器上继续群聊时，或在出现分裂后、由规则所保留的主机签署规则的选择时（`decided_by: "rule"`），证明为 `attested`；当群聊中多数有投票权的计算机（其主机和始终在线的继任者）签署承诺、不再跟随旧主机时，证明为 `certified`，每台计算机只有在它给旧主机的租约到期后才会作出承诺；当旧主机本身（例如在关机时）签名将其完整历史移交给继任者时，证明为 `handover`；在恰好有两台有投票权计算机的群聊中，当备用计算机签名表明它在谨慎模式的等待时间内与主机完全失去联系后才继续时，证明为 `evidence`。Bot 从不投票：只有计算机（主机及其始终在线的继任者）投票。该标记指明一个房间、从 epoch `N` 到某个更晚 epoch 的一步、继任 gateway 以及证明的摘要，并且只能被这一次变更使用：它不能被后续变更复用，不能用于另一个房间，也不能脱离它所验证的变更单独保存。没有自身标记的提升或降级（包括通过 `groups.promote` 或 `groups.demote` 进行的操作）仍会像上文所述那样让房间保持只读，其 `safety_reason` 为 `unsafe_replica_promotion`、`unsafe_authority_demotion` 或 `unverified_authority_transition`。
 
 除非其运营者选择退出，每台成员计算机都会保存群聊历史的完整副本；所有者还可以添加一台不带 Bot、只保存副本的备份计算机。之后从他人计算机加入的 Bot 也是如此：该计算机会收到群聊的完整历史，包括它加入之前的消息；添加此类 Bot 时，Hermes Desktop 会提醒你。主机会记录哪些计算机保存副本、哪些可以继续群聊，以及哪些可以投票决定群聊是否自动迁移；`groups.custody.status` 显示每份副本覆盖到哪里，以及迁移时仍可能丢失的最近消息。带电池的计算机从不投票，除非其配置写明 `group_chat.always_on: true`。副本、投票者和迁移如何协同工作，请参阅 [群聊主机丢失](../developer-guide/group-chat-host-loss.md)。
 
 要在这个 gateway 上结束这样的房间，请调用 `groups.disband` 并传入 `confirm_quarantined: true`；不带该参数时，调用会以原因 `room_authority_quarantined` 被拒绝。确认后的解散只会在本 gateway 上为房间留下墓碑：它会从房间列表中移除，其 ID 永远不会被复用，其历史仍可通过 `groups.log`（带 `include_disbanded: true`）读取，并且依然永远不会被清理。它不会解除隔离，不会停止或启动任何工作，不会改变房间记录的权威，也不会联系其他 gateway：对端路由不会被撤销，其他 gateway 为该房间签发的授权会自行过期。
 
-权威接管是一项**运维恢复流程**，而不是原子化的交接。请在相应的 gateway 上使用现有的 JSON-RPC 方法 `groups.promote` 和 `groups.demote`。不存在 `groups.peer.promote` 或 `groups.peer.demote` 方法；`groups.capabilities` 会列出你的 gateway 支持的方法。
+**仅供参考。** `groups.promote` 和 `groups.demote` 会一直处于停用状态；群聊只会通过经过验证的 `groups.succession.*` 调用更换主机。下面的旧接管流程是一项**运维恢复流程**，而不是原子化的交接，需要在相应的 gateway 上使用这些 JSON-RPC 方法。不存在 `groups.peer.promote` 或 `groups.peer.demote` 方法；`groups.capabilities` 会列出你的 gateway 支持的方法。
 
 :::warning 提升之前先隔离旧的写入方
 在发送 `confirm: true` 之前，先确认之前的权威**无法再提交**，并在它被降级之前一直保持这道隔离。停止它写入房间的进程并阻止自动重启，或者使用等效的基础设施隔离手段。网络超时、Desktop 断开连接或 `groups.stop` 都不算证明：旧 gateway 可能仍在运行，而停止一个轮次并不会撤销房间权威。如果无法建立隔离，就不要提升。

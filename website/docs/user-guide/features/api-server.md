@@ -783,6 +783,18 @@ Once an epoch is fenced here:
   here and stop them. Once this gateway learns a verified successor for that
   epoch or a later one, control passes to that successor instead, so a candidate
   that lost never gains it. Neither can approve those runs or start them again.
+- Work stamped with the epoch this gateway promised (or learned) comes only from the
+  installation it was promised to. Another installation dispatching at that epoch gets
+  `409 room_authority_promised`.
+- A successor re-dispatching a task this gateway already admitted under an earlier epoch of the
+  same room and member gets that existing run back (`202`, `Idempotency-Replayed: true`,
+  `X-Hermes-Room-Task: inherited`) instead of running it twice. A later generation of the task
+  runs only once every earlier attempt has ended without success.
+
+Unless the invitation said `continuation: false`, the fence receipt also carries a fresh grant
+for each of this gateway's members, issued to the successor for its epoch. It has the same copy,
+evidence and lifetime options as the original grant. Hosted member sessions stay keyed to the
+room's original home, so a successor continues the same conversations.
 
 In a group that moves automatically, a voting computer also grants the group's
 host a short **lease** with each heartbeat. While it runs, this gateway promises

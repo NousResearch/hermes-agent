@@ -101,6 +101,10 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Model-authored text dispatched by a tool from an already authorized user turn. It remains
+    # external for auth, bot-loop, ignored-channel, and emergency-stop admission; the marker keeps
+    # its distinct provenance through queued-event copies and transcript persistence.
+    delegated_continuation: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

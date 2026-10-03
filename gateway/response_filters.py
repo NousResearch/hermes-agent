@@ -113,6 +113,13 @@ def display_kind_for_event(event: Any) -> str | None:
     return None
 
 
+def delegated_continuation_metadata(event: Any) -> dict:
+    """Durable provenance for model-authored text admitted as an external continuation."""
+    return {"input_origin": "agent_delegated_continuation"} if getattr(
+        event, "delegated_continuation", False
+    ) else {}
+
+
 def is_machinery_display_kind(display_kind: Any) -> bool:
     """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
 

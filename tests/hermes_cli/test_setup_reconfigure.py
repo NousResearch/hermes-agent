@@ -232,3 +232,46 @@ class TestArgparse:
             pass
         assert captured["args"].reconfigure is True
         assert captured["args"].quick is False
+
+
+_TUNED = "agent:\n  max_turns: 400\ncompression:\n  enabled: false\n  threshold: 0.85\n"
+
+
+@pytest.mark.parametrize("config_yaml, env, existing", [
+    ("model:\n  provider: custom\n  base_url: http://127.0.0.1:1234/v1\n", "", True),
+    ("model:\n  default: claude-sonnet-4-5\n", "ANTHROPIC_API_KEY=sk-ant-test\n", True),
+    # The installer-seeded template names no provider: still a first install.
+    ("model:\n  provider: auto\n  base_url: https://openrouter.ai/api/v1\n", "", False),
+], ids=["custom-endpoint", "anthropic-key", "template-auto"])
+def test_rerun_on_any_configured_provider_keeps_tuned_agent_settings(tmp_path, monkeypatch, config_yaml, env, existing):
+    """Any configured provider makes the install existing, so re-running `hermes setup` keeps the
+    user's agent budget and compression instead of stamping the first-install defaults."""
+    import hermes_cli.setup as setup_mod
+    from hermes_cli.config import read_user_config_raw
+
+    fresh_install = tmp_path / "home"
+    fresh_install.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(fresh_install))
+
+    (fresh_install / "config.yaml").write_text("_config_version: 48\n" + config_yaml + _TUNED)
+    (fresh_install / ".env").write_text(env)
+    picker_calls = []
+    with ExitStack() as stack:
+        for target, kwargs in [
+            ("hermes_cli.setup.is_interactive_stdin", {"return_value": True}),
+            ("hermes_cli.setup.prompt_choice", {"side_effect": lambda *a, **k: picker_calls.append(a) or 1}),
+            ("hermes_cli.setup._offer_openclaw_migration", {"return_value": False}),
+            ("hermes_cli.setup.setup_model_provider", {}),
+            ("hermes_cli.setup.setup_terminal_backend", {}),
+            ("hermes_cli.setup.setup_gateway", {}),
+            ("hermes_cli.setup.setup_tools", {}),
+            ("hermes_cli.setup._print_setup_summary", {}),
+        ]:
+            stack.enter_context(patch(target, **kwargs))
+        setup_mod.run_setup_wizard(_make_setup_args())
+
+    assert bool(picker_calls) is not existing
+    if existing:
+        saved = read_user_config_raw(fresh_install / "config.yaml")
+        assert saved["agent"]["max_turns"] == 400
+        assert saved["compression"] == {"enabled": False, "threshold": 0.85}

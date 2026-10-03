@@ -8,6 +8,7 @@ are limited to OS detection and process launch.
 """
 import json
 import os
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -697,6 +698,35 @@ class TestReviewRound3:
         assert not (copy / "Profile 6").exists()
 
     # ── ③ consent-off deletes the snapshot store ──
+    @pytest.mark.parametrize(
+        ("browser", "executable"),
+        [
+            ("chromium", "/snap/bin/chromium"),
+            ("brave", "/snap/bin/brave"),
+            ("chromium", "/usr/bin/chromium"),
+            ("brave", "/usr/bin/brave"),
+        ],
+    )
+    def test_cleanup_uses_resolved_copy_dir(self, tmp_path, monkeypatch, browser, executable):
+        import hermes_cli.browser_connect as bc
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            bc,
+            "chromium_executable",
+            lambda name, system=None: executable if name == browser else f"/usr/bin/{name}",
+        )
+
+        store = Path(bc.real_profile_copy_dir(browser)) / "Default"
+        store.mkdir(parents=True)
+        (store / "Cookies").write_text("secret")
+
+        bc.cleanup_real_profile_snapshots()
+
+        assert not store.parent.exists()
+
     def test_cleanup_removes_store(self, tmp_path, monkeypatch):
         import hermes_cli.browser_connect as bc
         home = tmp_path / "hh"

@@ -723,12 +723,19 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     return dst, None
 
 
-def cleanup_real_profile_snapshots() -> None:
-    """Delete the whole real-profile snapshot store when consent is OFF (idempotent)."""
-    root = str(get_hermes_home() / "browser-profile")
-    if os.path.isdir(root):
-        shutil.rmtree(root, ignore_errors=True)
-        logger.info("real-profile: removed snapshot store %s (consent off)", root)
+def cleanup_real_profile_snapshots(browser: str | None = None) -> None:
+    """Delete real-profile snapshots when consent is OFF (idempotent).
+
+    Clean each browser's resolved copy directory so snap-confined browsers are
+    covered as well as the legacy Hermes-owned store.
+    """
+    browsers = (browser,) if browser else tuple(_BROWSER_BY_KEY)
+    roots = {str(real_profile_copy_dir(name)) for name in browsers}
+    roots.add(str(get_hermes_home() / "browser-profile"))
+    for root in roots:
+        if os.path.isdir(root):
+            shutil.rmtree(root, ignore_errors=True)
+            logger.info("real-profile: removed snapshot store %s (consent off)", root)
 
 
 def _debug_candidate_paths(system: str):

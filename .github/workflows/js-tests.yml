@@ -31,9 +31,15 @@ jobs:
 
       - name: Install zsh and a virtual display for Electron
         if: runner.os == 'Linux'
+        # libx11-dev/libxi-dev: scripts/build-hud-modifier-monitor.mjs compiles
+        # electron/native/hud-modifier-monitor-x11.c against X11/Xlib.h and the
+        # XInput2 headers. Without them the Linux build only warns
+        # "[hud-modifier] unavailable" and ships no helper, so the C file was
+        # never compiled in CI and the desktop lanes tested a product without it.
         run: |
           sudo apt-get install -y zsh xvfb \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            libx11-dev libxi-dev \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
 
       # setup-pm caches npm downloads, not the installed workspace tree.

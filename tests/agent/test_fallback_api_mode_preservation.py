@@ -224,6 +224,35 @@ class TestPlainFallbackUnchanged:
         assert agent.api_mode == "anthropic_messages"
 
 
+class TestAzureFoundryPerModelWire:
+    """Foundry is a second entry point for the same model table (#120263): the primary ``model:``
+    path upgrades GPT-6 Luna/Sol to /responses, so a ``fallback_providers:`` entry naming
+    azure-foundry must land on the same wire. The deployment URL
+    (``*.services.ai.azure.com/api/projects/...``) never matches ``_is_azure_openai_url`` and the
+    generic predicate only knows ``gpt-5``, so the provider key carries the decision."""
+
+    @pytest.mark.parametrize(
+        ("entry", "resolved_base_url", "expected_mode"),
+        [
+            ({"provider": "azure-foundry", "model": "gpt-6-luna"},
+             "https://acct.services.ai.azure.com/api/projects/proj/openai/v1", "codex_responses"),
+            ({"provider": "azure-foundry", "model": "gpt-6-sol"},
+             "https://acct.openai.azure.com/openai/v1", "codex_responses"),
+            # controls: GPT-5.x was already covered, chat families stay put, an explicit pin wins.
+            ({"provider": "azure-foundry", "model": "gpt-5.4"},
+             "https://acct.services.ai.azure.com/api/projects/proj/openai/v1", "codex_responses"),
+            ({"provider": "azure-foundry", "model": "gpt-4o"},
+             "https://acct.services.ai.azure.com/api/projects/proj/openai/v1", "chat_completions"),
+            ({"provider": "azure-foundry", "model": "gpt-6-luna", "api_mode": "chat_completions"},
+             "https://acct.services.ai.azure.com/api/projects/proj/openai/v1", "chat_completions"),
+        ],
+    )
+    def test_fallback_wire_matches_azure_foundry_model_table(self, entry, resolved_base_url, expected_mode):
+        agent = _make_agent(fallback_model=[entry])
+        _activate(agent, resolved_base_url, entry["model"])
+        assert agent.api_mode == expected_mode
+
+
 class TestOpenCodeFamilyPerModelWire:
     """OpenCode Zen/Go serve Responses-only, Anthropic-wire and chat-completions models behind
     one provider; a fallback entry must land on the same wire the primary /model path picks

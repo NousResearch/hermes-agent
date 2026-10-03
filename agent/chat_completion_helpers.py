@@ -1882,6 +1882,14 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     if _is_anthropic_wire_url(fb_base_url):
         # Named custom providers (cron-anthropic) resolve base_url from config; the hint pass never saw it.
         return "anthropic_messages"
+    if fb_provider == "azure-foundry":
+        # Foundry's Responses-only families 400 on /chat/completions once tools and reasoning
+        # coexist (#120263: gpt-6-luna/sol). Keyed on the provider, like the primary ``model:``
+        # path (``_azure_inferred_api_mode``): the deployment URL — ``*.services.ai.azure.com``
+        # /api/projects/... — never matches ``_is_azure_openai_url``, and the generic predicate
+        # below only knows ``gpt-5``. Same table, so both paths agree on every Foundry deployment.
+        from hermes_cli.models import azure_foundry_model_api_mode
+        return azure_foundry_model_api_mode(fb_model) or "chat_completions"
     if agent._is_azure_openai_url(fb_base_url):
         return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
     # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.

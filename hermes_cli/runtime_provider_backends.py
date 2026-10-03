@@ -82,7 +82,7 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
         cfg_auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
         if isinstance(model_cfg.get("entra"), dict):
             cfg_entra = model_cfg["entra"]
-    # GPT-5.x / codex / o1-o4 deployments are Responses-API-only on Foundry.
+    # GPT-5.x / GPT-6 (Luna/Sol) / codex / o1-o4 deployments are Responses-API-only on Foundry.
     effective_model = str(target_model or model_cfg.get("default") or "").strip()
     cfg_api_mode = rp._azure_inferred_api_mode(effective_model, cfg_api_mode)
     env_base_url = get_secret_str("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")

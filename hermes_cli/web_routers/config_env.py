@@ -829,7 +829,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
 
 
 @router.post("/api/providers/custom-endpoints/validate")
-async def validate_custom_endpoint(body: CustomEndpointUpdate):
+async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
@@ -840,14 +840,21 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not api_key:
         # The form intentionally redacts saved credentials. Reuse one only when
         # this is still the configured endpoint; a changed destination must not
-        # receive a credential belonging to the old host.
-        cfg = load_config()
-        _stored, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), body.id or body.name)
-        saved_url = str(entry.get("base_url") or "").strip().rstrip("/") if entry else ""
-        if entry and saved_url == base_url:
-            api_key = str(entry.get("api_key") or "").strip()
-            if not api_key and entry.get("key_env"):
-                api_key = str(get_env_value_prefer_dotenv(str(entry["key_env"])) or "").strip()
+        # receive a credential belonging to the old host. Config and env reads
+        # must run inside the requested profile scope and off the event loop.
+        def _saved_endpoint_key():
+            with _config_profile_scope(profile):
+                cfg = load_config()
+                _stored, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), body.id or body.name)
+                saved_url = str(entry.get("base_url") or "").strip().rstrip("/") if entry else ""
+                if not entry or saved_url != base_url:
+                    return ""
+                saved_key = str(entry.get("api_key") or "").strip()
+                if not saved_key and entry.get("key_env"):
+                    saved_key = str(get_env_value_prefer_dotenv(entry["key_env"]) or "").strip()
+                return saved_key
+
+        api_key = await asyncio.to_thread(_saved_endpoint_key)
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 

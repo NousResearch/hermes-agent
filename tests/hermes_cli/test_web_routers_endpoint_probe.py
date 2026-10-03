@@ -187,3 +187,37 @@ def test_custom_endpoint_probe_does_not_reuse_saved_key_for_changed_url(monkeypa
     asyncio.run(mod.validate_custom_endpoint(body))
 
     assert "Authorization" not in captured["headers"]
+
+
+
+def test_custom_endpoint_probe_reads_saved_key_inside_requested_profile_scope(monkeypatch):
+    import contextlib
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate
+
+    captured = {}
+    scopes = []
+
+    @contextlib.contextmanager
+    def profile_scope(profile):
+        scopes.append(profile)
+        yield
+
+    async def probe(url, headers):
+        captured["headers"] = headers
+        return url, type("Resp", (), {"status_code": 200, "is_success": True})()
+
+    monkeypatch.setattr(mod, "_config_profile_scope", profile_scope)
+    monkeypatch.setattr(mod, "load_config", lambda: {"providers": {"local": {
+        "base_url": "http://127.0.0.1:9000", "key_env": "LOCAL_KEY", "model": "model"}}})
+    monkeypatch.setattr(mod, "get_env_value_prefer_dotenv", lambda key: "profile-token")
+    monkeypatch.setattr(mod, "_probe_openai_compatible_models", probe)
+    monkeypatch.setattr(mod, "_parse_model_entries", lambda response: [])
+    monkeypatch.setattr(mod, "_probe_transport_route", lambda *args: "")
+
+    body = CustomEndpointUpdate(id="local", name="local", base_url="http://127.0.0.1:9000", model="model")
+    result = asyncio.run(mod.validate_custom_endpoint(body, profile="workerb"))
+
+    assert result["ok"] is True
+    assert scopes == ["workerb"]
+    assert captured["headers"]["Authorization"] == "Bearer profile-token"

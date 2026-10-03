@@ -1328,6 +1328,11 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     _split_available = _completion_split_budget(error_lower)
     if _split_available is not None:
         return _split_available
+    # Anthropic: "input length and `max_tokens` exceed context limit: 188240 + 21333 > 200000" -> window - input
+    # (None when the input alone fills the window -> compress).
+    _m_sum = re.search(r'exceed context limit:\s*(\d+)\s*\+\s*\d+\s*>\s*(\d+)', error_lower)
+    if _m_sum and int(_m_sum.group(2)) - int(_m_sum.group(1)) >= 1:
+        return int(_m_sum.group(2)) - int(_m_sum.group(1))
     # LM Studio / llama.cpp: window in tokens, prompt in CHARACTERS; ~3 chars/token over-reserves the input.
     _m_ctx_tok = re.search(r'maximum context length is (\d+)\s*token', error_lower)
     _m_chars = re.search(r'prompt contains (\d+)\s*character', error_lower)
@@ -1386,7 +1391,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
-    ("limited to",),
+    ("limited to",), ("max_tokens", "exceed context limit"),
 )
 
 

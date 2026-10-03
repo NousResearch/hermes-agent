@@ -835,10 +835,18 @@ def _resolved_or_nothing(candidate: str, cwd: Optional[str]) -> Iterator[Path]:
 
 def _resolve_script_path(script_path: str) -> Optional[Path]:
     """Resolve a cron ``script`` value the way ``cron.scheduler`` does (relative paths live under
-    ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run."""
+    ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run.
+
+    The value may carry arguments (``"job.py expire"``), and the scheduler splits them off before
+    resolving. This MUST split identically, or the guard resolves a different path than the one
+    executed — scanning a file that never runs while the real script goes unscanned, which is a
+    security hole rather than a cosmetic mismatch (#20300 / #43). The parser is imported from the
+    scheduler so the two definitions cannot drift.
+    """
     from hermes_constants import get_hermes_home
 
-    raw = _expand_candidate_path(script_path)
+    path_part = _script_path_part(script_path)
+    raw = _expand_candidate_path(path_part)
     if raw is None:
         return None
     if raw.is_absolute():
@@ -849,6 +857,26 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
         # get_hermes_home() falls back to Path.home(), which raises when neither HERMES_HOME nor
         # HOME is resolvable (launchd/systemd) — same ingestion contract: nothing to scan.
         return None
+
+
+def _script_path_part(script_path: str) -> str:
+    """The path component of a ``script`` value, parsed exactly as the scheduler does.
+
+    Delegates to ``cron.scheduler_script._split_script_command`` so the guard and the executor
+    share one definition of where the path ends and the arguments begin. Falls back to the raw
+    value if that import fails (the guard must never crash on a scheduler import problem) and to
+    the raw value when parsing errors, so a malformed value is still scanned as a whole rather
+    than skipped.
+    """
+    try:
+        from cron.scheduler_script import _split_script_command
+
+        path_part, _args, err = _split_script_command(script_path)
+        if err or not path_part:
+            return script_path
+        return path_part
+    except Exception:
+        return script_path
 
 
 def _resolve_script_directory(script_path: str) -> Optional[str]:

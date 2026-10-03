@@ -37,10 +37,34 @@ def _cron_string_list(value: Any) -> Optional[List[str]]:
 
 
 def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
-    """Validate a dashboard-selected cron script against the profile sandbox."""
+    """Validate a dashboard-selected cron script against the profile sandbox.
+
+    The value may carry arguments (``"job.py expire"``). Only the path part is
+    validated and relativised; the arguments are preserved in the returned value.
+    Previously the whole string was treated as a filename, so an argument-bearing
+    entry was rejected as "script does not exist" — and, had it been accepted, the
+    relative-path rewrite would have silently DROPPED the arguments (#20300 / #43).
+    """
     text = _cron_optional_text(value)
     if not text:
         return None
+    # Split exactly as cron.scheduler_script does, so the dashboard, the create-time
+    # validator and the executor all agree on where the path ends. A parse error is a
+    # 400 rather than a stored value that fails on every fire.
+    try:
+        from cron.scheduler_script import _split_script_command
+
+        path_part, script_args, split_err = _split_script_command(text)
+        if split_err:
+            raise HTTPException(status_code=400, detail=split_err)
+    except HTTPException:
+        raise
+    except Exception:
+        # Scheduler import unavailable: fall back to the raw value (pre-existing behaviour).
+        path_part, script_args = text, []
+    text = (path_part or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="script value names no script file")
     scripts_root = (profile_home / "scripts").resolve()
     raw_path = Path(text).expanduser()
     candidate = raw_path.resolve() if raw_path.is_absolute() else (scripts_root / raw_path).resolve()
@@ -52,7 +76,14 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
         raise HTTPException(status_code=400, detail=f"script does not exist: {candidate}")
     if not candidate.is_file():
         raise HTTPException(status_code=400, detail=f"script is not a file: {candidate}")
-    return str(relative)
+    if not script_args:
+        return str(relative)
+    # Re-quote each argument: a bare " ".join() loses quoting, so an argument that
+    # contained a space would re-split into two when the scheduler parses the stored
+    # value back (verified by round-trip test).
+    import shlex
+
+    return " ".join([str(relative), *(shlex.quote(a) for a in script_args)])
 
 
 def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:

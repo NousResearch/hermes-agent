@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 from functools import partial
 from pathlib import Path
@@ -48,6 +49,30 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+
+
+def _wake_kinds_for_subscription(sub: dict) -> tuple[str, ...]:
+    """Resolve an optional per-subscription wake filter.
+
+    Missing, malformed, or wholly unrecognized filters retain the historical
+    behavior so bad metadata cannot silently suppress every Kanban wake.
+    """
+    metadata = sub.get("delivery_metadata")
+    raw = metadata.get("wake_kinds") if isinstance(metadata, dict) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return _WAKE_KINDS
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, list):
+        if not all(isinstance(kind, str) for kind in decoded):
+            return _WAKE_KINDS
+        requested = {kind.strip() for kind in decoded if kind.strip()}
+    else:
+        requested = {kind.strip() for kind in raw.split(",") if kind.strip()}
+    selected = tuple(kind for kind in _WAKE_KINDS if kind in requested)
+    return selected or _WAKE_KINDS
 
 
 def diagnostic_event(ev) -> bool:
@@ -575,7 +600,10 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        allowed_wake_kinds = set(_wake_kinds_for_subscription(sub))
+        self.wake_kinds = {
+            ev.kind for ev in self.d["events"] if ev.kind in allowed_wake_kinds
+        } if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return

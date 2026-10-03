@@ -12,6 +12,7 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 
 import asyncio
 
+from gateway.kanban_watchers_notifier import _WAKE_KINDS, _wake_kinds_for_subscription
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
@@ -64,6 +65,18 @@ def _make_runner(adapter):
     return runner
 
 
+def test_wake_kinds_accepts_json_list_of_strings():
+    assert _wake_kinds_for_subscription(
+        {"delivery_metadata": {"wake_kinds": '["blocked", "gave_up"]'}}
+    ) == ("gave_up", "blocked")
+
+
+def test_wake_kinds_malformed_json_keeps_all_wakes():
+    assert _wake_kinds_for_subscription(
+        {"delivery_metadata": {"wake_kinds": '["blocked", 7]'}}
+    ) == _WAKE_KINDS
+
+
 def _make_completed_task(delivery_mode):
     conn = kbc.connect()
     try:
@@ -80,6 +93,30 @@ def _make_completed_task(delivery_mode):
             chat_id="chat-1",
             chat_type="dm",
             delivery_mode=delivery_mode,
+        )
+        kb.complete_task(conn, tid, summary="done")
+        return tid
+    finally:
+        conn.close()
+
+
+def _make_completed_task_with_wake_filter():
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="filtered completion task",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode="notify+wake",
+            delivery_metadata={"wake_kinds": "blocked,gave_up,crashed,timed_out"},
         )
         kb.complete_task(conn, tid, summary="done")
         return tid
@@ -156,6 +193,21 @@ def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner2))
     assert len(adapter.handled) == 2, "event must be redelivered next tick"
     assert list(runner2._kanban_sub_fail_counts.values()) == [2]
+
+
+def test_wake_filter_keeps_completion_passive(tmp_path, monkeypatch):
+    """A filtered completion is pinged and acknowledged, but does not wake the agent."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "filtered-completion.db"))
+    kb.init_db()
+    tid = _make_completed_task_with_wake_filter()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "completion remains visible as a passive notification"
+    assert adapter.handled == [], "a completion excluded by wake_kinds must not wake the agent"
+    assert _unseen_terminal_events(tid) == [], "the passive event is still acknowledged"
 
 
 def test_notify_wake_failure_retries_without_repeating_ping(tmp_path, monkeypatch):

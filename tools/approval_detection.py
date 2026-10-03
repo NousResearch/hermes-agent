@@ -514,7 +514,11 @@ def _normalize_command_for_detection(command: str) -> str:
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
-    return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    # Inline `$NAME` from a plain literal assigned earlier in the same command (`x=rm; $x -rf /`), so
+    # every variant, and with them the hardline floor, the dangerous patterns and approvals.deny, sees
+    # the command that actually runs.
+    return _inline_simple_var_assignments(command)
 
 
 def _lower_preserving_flags(command: str) -> str:
@@ -672,6 +676,7 @@ _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+_UNRESOLVED_COMMAND_WORD_DESCRIPTION = "command name from an unresolved variable or substitution"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
 
@@ -1189,6 +1194,389 @@ def _mark_command_starts(command: str, marker: str = "\n") -> str:
     return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
 
 
+# ---- Variable-indirection inlining ----------------------------------------------------------
+# `x=rm; $x -rf /` runs as `rm -rf /`, but every pattern anchors on literal command and path
+# text. The inliner below replaces `$NAME` / `${NAME}` with a value assigned earlier in the same
+# command, and only when that value is a plain literal whose assignment certainly ran in the
+# current shell. It never executes anything and never expands recursively: a value is resolved
+# once, against what is already known, when its assignment is read. Anything it cannot resolve
+# with certainty is left as written, and a command word that stays an expansion is prompted by
+# _has_unresolved_command_word() instead of being treated as safe.
+_VAR_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_ASSIGNMENT_WORD_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
+_ASSIGNING_EXPANSION_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=")
+_LET_TARGET_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))")
+_FUNCTION_DEFINITION_RE = re.compile(r"[^\s()<>;&|'\"`$]+\s*\(\s*\)")
+# Declaration builtins that assign like a bare `NAME=value` when their flags only change export or
+# readonly attributes. Other flags (-a, -A, -i, -l, -u, -n, ...) change what the value becomes.
+_DECLARATION_WORDS = frozenset({"export", "local", "declare", "typeset", "readonly"})
+_PLAIN_DECLARATION_FLAGS = frozenset("xrg")
+# Words that assign names the inliner cannot see the value of (`read x`, `for x in ...`).
+_NAME_ASSIGNING_WORDS = frozenset({"read", "unset", "for", "select", "getopts", "mapfile", "readarray"})
+# Words that can assign ANY name (`eval "x=rm"`, `. ./env.sh`).
+_STATE_CLOBBERING_WORDS = frozenset({"eval", "source", "."})
+_COMPOUND_OPENERS = frozenset({"if", "while", "until", "for", "select"})
+_COMPOUND_CLOSERS = frozenset({"fi", "done"})
+# POSIX special builtins: a prefix assignment on them persists in POSIX shells (dash, sh).
+_SPECIAL_BUILTINS = frozenset({":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly",
+                               "return", "set", "shift", "source", "times", "trap", "unset"})
+# Inlining text that the shell would treat as data but a detector reads as syntax could HIDE a
+# later command (a `#` value turns the rest of the line into a comment, a quote flips quote state).
+_UNSAFE_INLINE_VALUE_CHARS = frozenset("'\"`\\#\n")
+
+
+class _InlineBail(Exception):
+    """Raised when the command uses a construct whose variable scoping the inliner does not model."""
+
+
+def _shell_var_ref_spans(command: str) -> list[tuple[int, int, str]]:
+    """``(start, end, name)`` of each ``$NAME`` / ``${NAME}`` the shell would expand: not inside
+    single quotes, not escaped, not in a comment. Substitution bodies are scanned with a fresh
+    quote state, as the shell parses them."""
+    spans: list[tuple[int, int, str]] = []
+
+    def walk(start: int, end: int) -> None:
+        for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
+                                            comments=True):
+            if kind == "subst":
+                inner = i + (1 if command[i] == "`" else 2)
+                walk(inner, end if j is None else j - 1)
+            elif kind == "char" and quote != "'" and command[i] == "$":
+                match = _VAR_REF_RE.match(command, i)
+                if match and match.end() <= end:
+                    spans.append((i, match.end(), match.group(1) or match.group(2)))
+
+    walk(0, len(command))
+    return spans
+
+
+def _shell_scope_events(command: str) -> list[tuple[int, str]]:
+    """``(offset, kind)`` for subshell and brace-group boundaries. ``push``/``pop`` bound a scope
+    whose assignments do not survive it (``( ... )``, ``$( ... )``, backticks); ``brace``/``unbrace``
+    bound a ``{ ...; }`` group, which runs in the current shell unless piped or backgrounded."""
+    events: list[tuple[int, str]] = []
+
+    def walk(start: int, end: int) -> None:
+        for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
+                                            comments=True):
+            if kind == "subst":
+                inner = i + (1 if command[i] == "`" else 2)
+                close = end if j is None else j - 1
+                events.append((inner, "push"))
+                walk(inner, close)
+                events.append((close, "pop"))
+            elif kind == "char" and quote is None:
+                ch = command[i]
+                before = command[i - 1] if i else " "
+                after = command[i + 1] if i + 1 < end else " "
+                if ch == "(":
+                    events.append((i + 1, "push"))
+                elif ch == ")":
+                    events.append((i, "pop"))
+                elif ch == "{" and (before.isspace() or before in "(;&|") and after.isspace():
+                    events.append((i, "brace"))
+                elif ch == "}" and (before.isspace() or before == ";") and (after.isspace() or after in ";&|)"):
+                    events.append((i + 1, "unbrace"))
+
+    walk(0, len(command))
+    return events
+
+
+def _has_unquoted_heredoc(command: str) -> bool:
+    return any(kind == "char" and quote is None and command.startswith("<<", i) and not command.startswith("<<<", i)
+               and (i == 0 or command[i - 1] != "<")
+               for kind, i, _, quote in _scan_shell(command, comments=True))
+
+
+def _mask_shell_comments(command: str) -> str:
+    return "".join(" " * (j - i) if kind == "comment" else command[i:j]
+                   for kind, i, j, _ in _scan_shell(command, comments=True))
+
+
+def _preceding_operator(masked: str, start: int) -> str:
+    """The control operator right before *start* in comment-masked text: ``&&``, ``||``, ``|``,
+    ``&`` or ``""``. A pipeline or and-or list continues across newlines."""
+    head = masked[:start].rstrip(" \t\n")
+    for operator in ("&&", "||", "|", "&"):
+        if head.endswith(operator):
+            return "&" if operator == "&" and not head.endswith("&&") else operator
+    return ""
+
+
+def _resolve_assignment_value(raw: str, lookup: dict) -> str | None:
+    """Plain literal value of an assignment's right-hand side, or None when it is not one."""
+    if raw.startswith("(") or "$(" in raw or "`" in raw or "$'" in raw or '$"' in raw:
+        return None
+    unknown = False
+
+    def resolve(match: re.Match) -> str:
+        nonlocal unknown
+        name = match.group(1) or match.group(2)
+        if name not in lookup:
+            return match.group(0)  # e.g. $HOME from the real environment: keep the text
+        if lookup[name] is None:
+            unknown = True
+            return match.group(0)
+        return lookup[name]
+
+    refs = _shell_var_ref_spans(raw)
+    resolved = _splice(raw, [(i, j, resolve(_VAR_REF_RE.match(raw, i))) for i, j, _ in refs]) if refs else raw
+    if unknown:
+        return None
+    value = _strip_shell_word_syntax(resolved)
+    # Tilde expansion happens only for a `~` the shell reads unquoted in the assignment itself.
+    if value.startswith("~") and raw[:1] in ("'", '"', "\\"):
+        return None
+    if any(ch in _UNSAFE_INLINE_VALUE_CHARS for ch in value):
+        return None
+    return value
+
+
+def _skip_blanks(command: str, pos: int) -> int:
+    """Skip spaces and tabs only: an unquoted newline ends the command."""
+    while pos < len(command) and command[pos] in " \t":
+        pos += 1
+    return pos
+
+
+def _plain_word(command: str, pos: int) -> tuple[int, int, str]:
+    pos = _skip_blanks(command, pos)
+    if command.startswith("\n", pos):
+        return pos, pos, ""
+    start, end, word = _read_shell_word(command, pos)
+    return start, end, _strip_shell_word_syntax(word)
+
+
+def _chunk_words(command: str, start: int) -> list[str]:
+    words, pos = [], start
+    while True:
+        word_start, pos, word = _plain_word(command, pos)
+        if word_start == pos:
+            return words
+        words.append(word)
+
+
+@functools.lru_cache(maxsize=64)
+def _inline_simple_var_assignments(command: str) -> str:
+    """Replace ``$NAME`` / ``${NAME}`` with a literal assigned earlier in this command, when the
+    assignment certainly ran in the current shell. Returns *command* unchanged when it uses a
+    construct whose scoping is not modelled (functions, ``case``, heredocs, an ``IFS`` assignment)."""
+    if "$" not in command or "=" not in command:
+        return command
+    try:
+        return _inline_simple_var_assignments_unchecked(command)
+    except _InlineBail:
+        return command
+
+
+def _inline_simple_var_assignments_unchecked(command: str) -> str:
+    if _has_unquoted_heredoc(command):
+        raise _InlineBail
+    refs = _shell_var_ref_spans(command)
+    if not refs:
+        return command
+    # Event order at one offset: close a scope, apply pending effects, open a scope, read a command
+    # start, then substitute a reference.
+    events: list[tuple[int, int, str, object]] = []
+    for pos, kind in _shell_scope_events(command):
+        events.append((pos, 0 if kind in ("pop", "unbrace") else 2, kind, None))
+    for pos in _iter_shell_command_starts(command):
+        events.append((pos, 3, "start", None))
+    for i, j, name in refs:
+        events.append((i, 4, "ref", (j, name)))
+    events.sort(key=lambda event: (event[0], event[1]))
+
+    masked = _mask_shell_comments(command)
+    state: dict = {"vars": {}, "compound": 0}
+    stack: list[tuple[str, object]] = []
+    pending: list[tuple[int, object]] = []  # (offset, effect) applied once processing reaches offset
+    edits: list[tuple[int, int, str]] = []
+
+    def apply_pending(upto: int) -> None:
+        while pending and pending[0][0] <= upto:
+            pending.pop(0)[1]()
+
+    def schedule(offset: int, effect) -> None:
+        pending.append((offset, effect))
+        pending.sort(key=lambda item: item[0])
+
+    def poison(names) -> None:
+        for name in names:
+            state["vars"][name] = None
+
+    for pos, _, kind, data in events:
+        apply_pending(pos)
+        if kind == "push":
+            # The subshell works on a copy; effects already scheduled keep writing to the parent.
+            stack.append(("sub", state))
+            state = {"vars": dict(state["vars"]), "compound": state["compound"]}
+        elif kind == "pop":
+            if stack and stack[-1][0] == "sub":
+                state = stack.pop()[1]
+        elif kind == "brace":
+            stack.append(("brace", (dict(state["vars"]), _preceding_operator(masked, pos))))
+        elif kind == "unbrace":
+            if stack and stack[-1][0] == "brace":
+                before, preceding = stack.pop()[1]
+                following = masked[pos:].lstrip(" \t")
+                piped = following[:1] in ("|", "&") and not following.startswith(("&&", "||"))
+                if piped or preceding in ("&&", "||", "|"):
+                    # A piped or backgrounded group runs in a subshell; a conditional one may not run.
+                    poison([name for name, value in state["vars"].items() if before.get(name, ...) != value])
+        elif kind == "ref":
+            end, name = data
+            value = state["vars"].get(name)
+            if isinstance(value, str):
+                edits.append((pos, end, value))
+        else:
+            _read_command_start(command, masked, pos, state, schedule, poison)
+    return _splice(command, edits) if edits else command
+
+
+def _read_command_start(command: str, masked: str, start: int, state: dict, schedule, poison) -> None:
+    """Record what the command at *start* does to tracked variables."""
+    words = _chunk_words(command, start)
+    if not words:
+        return
+    first = words[0]
+    while first in ("builtin", "command") and len(words) > 1:
+        words = words[1:]
+        first = words[0]
+    if first in ("case", "function", "coproc") or _FUNCTION_DEFINITION_RE.match(command, start):
+        raise _InlineBail
+    if first in _COMPOUND_OPENERS:
+        state["compound"] += 1
+    elif first in _COMPOUND_CLOSERS:
+        state["compound"] = max(0, state["compound"] - 1)
+    # The command's own arguments expand before it runs (`eval $x` sees the old x), so what it
+    # assigns takes effect at the end of the command.
+    segment = _shell_command_segment(command, start)
+    segment_end = start + len(segment)
+
+    def poison_after(names) -> None:
+        names = list(names)
+        schedule(segment_end, lambda: poison(names))
+
+    # `${x:=rm}` / `${x=rm}` assign wherever they are expanded.
+    poison_after(_ASSIGNING_EXPANSION_RE.findall(segment))
+    if first in _STATE_CLOBBERING_WORDS:
+        schedule(segment_end, lambda: poison(list(state["vars"])))
+        return
+    if first in ("for", "select") and len(words) > 1:
+        poison_after([words[1]])
+        return
+    if first in _NAME_ASSIGNING_WORDS:
+        poison_after(w for w in words[1:] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", w))
+        return
+    if first == "printf":
+        poison_after(re.findall(r"(?:^|\s)-v\s*([A-Za-z_][A-Za-z0-9_]*)", " ".join(words[1:])))
+        return
+    if first == "let":
+        poison_after(_LET_TARGET_RE.findall(segment))
+        return
+    if first == "time":
+        # `time x=rm` assigns in the current shell; the reserved word hides it from the parse below.
+        poison_after(match.group(1) for w in words[1:] if (match := _ASSIGNMENT_WORD_RE.match(w)))
+        return
+
+    pos, declaration = start, False
+    word_start, word_end, word = _plain_word(command, pos)
+    if word in _DECLARATION_WORDS:
+        declaration, pos = True, word_end
+        while True:
+            word_start, word_end, word = _plain_word(command, pos)
+            if not word.startswith("-"):
+                break
+            if not set(word[1:]) <= _PLAIN_DECLARATION_FLAGS:
+                # declare -n / -i / -a ...: the stored value is not the written one.
+                poison_after(match.group(1) if (match := _ASSIGNMENT_WORD_RE.match(w)) else w
+                             for w in _chunk_words(command, word_end))
+                return
+            pos = word_end
+
+    assignments: list[tuple[str, str, str | None]] = []  # (name, op, raw value or None for array)
+    while True:
+        pos = _skip_blanks(command, pos)
+        redirect = _SHELL_REDIRECTION_RE.match(command, pos)
+        if redirect:
+            _, pos, _ = _read_shell_word(command, redirect.end())
+            continue
+        if command.startswith("\n", pos):
+            break
+        word_start, word_end, raw_word = _read_shell_word(command, pos)
+        match = _ASSIGNMENT_WORD_RE.match(raw_word)
+        if word_start == word_end or not match:
+            break
+        raw_value = raw_word[match.end():]
+        if not raw_value and command.startswith("(", word_end):
+            raw_value = None  # array assignment: x=(a b)
+        assignments.append((match.group(1), match.group(2), raw_value))
+        pos = word_end
+    if not assignments:
+        return
+    if any(name == "IFS" for name, _, _ in assignments):
+        # IFS changes how every later unquoted expansion splits; the inliner assumes the default.
+        raise _InlineBail
+
+    rest = masked[pos:].lstrip(" \t")
+    names = [name for name, _, _ in assignments]
+    if rest[:1] not in ("", ";", "\n", "&", "|", ")", "}") or rest.startswith(";;"):
+        # Prefix assignment (`x=rm cmd`): applies to cmd's environment only, except on a POSIX
+        # special builtin, where POSIX shells keep it.
+        if not declaration:
+            _, _, command_word = _plain_word(command, pos)
+            if command_word in _SPECIAL_BUILTINS:
+                schedule(pos, lambda: poison(names))
+        return
+
+    followed = "&&" if rest.startswith("&&") else "||" if rest.startswith("||") else rest[:1]
+    certain = (state["compound"] == 0
+               and _preceding_operator(masked, start) not in ("&&", "||", "|")
+               and followed not in ("|", "&"))
+    if not certain:
+        schedule(pos, lambda: poison(names))
+        return
+
+    def assign() -> None:
+        variables = state["vars"]
+        for name, op, raw_value in assignments:
+            value = None if raw_value is None else _resolve_assignment_value(raw_value, variables)
+            if op and value is not None:
+                previous = variables.get(name)
+                value = previous + value if isinstance(previous, str) else None
+            variables[name] = value
+
+    schedule(pos, assign)
+
+
+def _command_word_names_expansion(word: str, *, resolve_literals: bool = True) -> bool:
+    """Whether the program a command word names depends on an expansion left unresolved."""
+    if resolve_literals:
+        # Resolving `$(echo rm)` / `${x:-rm}` is costly; skip it when the raw word has no expansion.
+        if not _command_word_names_expansion(word, resolve_literals=False):
+            return False
+        word = _replace_simple_shell_expansions(word)
+    last_slash, expansions = -1, []
+    for kind, i, _, quote in _scan_shell(word, subst="uq", brace=True):
+        if kind == "subst":
+            expansions.append(i)
+        elif kind == "char" and word[i] == "/":
+            last_slash = i
+        elif (kind == "char" and quote != "'" and word[i] == "$" and i + 1 < len(word)
+              and (word[i + 1].isalnum() or word[i + 1] in "_{@*#?!$-")):
+            expansions.append(i)
+    return any(i > last_slash for i in expansions)
+
+
+def _has_unresolved_command_word(command: str) -> bool:
+    """A command word whose program name is still an expansion after inlining (`$x -rf /` with x
+    unknown, `x=rm; $x$y`, `read x; $x`). The program is unknown, so it cannot be judged safe."""
+    if "$" not in command and "`" not in command:
+        return False
+    text = _inline_simple_var_assignments(_mask_quoted_newlines(command))
+    return any(_command_word_names_expansion(word) for _, _, word in _iter_shell_command_word_spans(text))
+
+
 def _mask_quoted_newlines(command: str) -> str:
     """Replace raw newlines inside single/double quotes with a space (detection-only).
     A quoted newline is DATA to the shell, yet the flat ``_CMDPOS`` class treats every raw ``\\n``
@@ -1367,7 +1755,8 @@ def _deny_command_variants(command: str):
     executable basename (never arbitrary argument paths).
     """
     yield from _command_detection_variants(command)
-    pending, seen = [command], set()
+    # Project the inlined command too, so a rule on `git push --force` sees `x=git; $x push --force`.
+    pending, seen = list(dict.fromkeys((command, _inline_simple_var_assignments(command)))), set()
     while pending:
         source = pending.pop()
         if source in seen:
@@ -1543,6 +1932,8 @@ def detect_dangerous_command(command: str) -> tuple:
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)
+    if _has_unresolved_command_word(command):
+        return (True, _UNRESOLVED_COMMAND_WORD_DESCRIPTION, _UNRESOLVED_COMMAND_WORD_DESCRIPTION)
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
     return (False, None, None)

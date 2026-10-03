@@ -23,6 +23,19 @@ class TestValidateCronScriptPath:
         (scripts_dir / "real.sh").write_text("#!/bin/sh\necho hi\n")
         assert _validate_cron_script_path("real.sh") is None
 
+    def test_non_python_extension_is_rejected_at_creation(self):
+        """Create/edit must refuse .cjs before a job exists that later dies
+        inside Python (#129350). .py stays accepted."""
+        scripts_dir = get_hermes_home() / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "job.cjs").write_text("const dash = 1;\n")
+        (scripts_dir / "job.py").write_text("print('ok')\n")
+        error = _validate_cron_script_path("job.cjs")
+        assert error is not None
+        assert ".cjs" in error
+        assert ".py" in error and ".sh" in error
+        assert _validate_cron_script_path("job.py") is None
+
     def test_missing_file_error_names_the_resolved_scripts_dir(self):
         # The resolved dir must appear literally so the message stays correct
         # under profiles, where get_hermes_home() is not the global ~/.hermes.

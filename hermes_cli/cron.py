@@ -631,7 +631,8 @@ def _script_health_issue(script: str) -> Optional[str]:
         return f"script not found: {path}"
     if not path.is_file():
         return f"script path is not a file: {path}"
-    return None
+    from cron.scheduler_script import unsupported_script_extension_error
+    return unsupported_script_extension_error(path)
 
 
 # A busy tick can push dispatch a few minutes late; only a next_run_at parked well in the past

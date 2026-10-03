@@ -116,7 +116,7 @@ def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
 def _assert_keepalive_tight(instances):
     assert instances, "connect() built no HTTPXRequest — test setup is wrong"
     for inst in instances:
-        limits = inst.kwargs.get("httpx_kwargs", {}).get("limits")
+        limits = inst.kwargs["httpx_kwargs"]["transport"].limits
         assert isinstance(limits, httpx.Limits), (
             "HTTPXRequest must receive httpx_kwargs['limits'] = httpx.Limits "
             "wired from platform_httpx_limits() (#31599). Missing → PTB falls "
@@ -136,7 +136,7 @@ def _assert_keepalive_tight(instances):
 
 def _assert_updates_pool_never_reuses(instance):
     """The long-poll pool must not reuse server-closed connections (#87057)."""
-    limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
+    limits = instance.kwargs["httpx_kwargs"]["transport"].limits
     assert isinstance(limits, httpx.Limits)
     assert limits.max_keepalive_connections == 0
 
@@ -149,7 +149,24 @@ def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     _assert_keepalive_tight(instances[:1])
     _assert_updates_pool_never_reuses(instances[1])
     # Sanity: the proxy was actually threaded through (we're on the proxy branch).
-    assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
+    assert all(
+        str(inst.kwargs["httpx_kwargs"]["transport"].proxy.url)
+        == "http://127.0.0.1:9/"
+        for inst in instances
+    )
+
+
+def test_direct_branch_uses_admission_transport_with_tuned_limits(monkeypatch):
+    instances = _drive_connect(monkeypatch, proxy_url=None)
+
+    assert len(instances) >= 2
+    assert all(
+        type(inst.kwargs["httpx_kwargs"]["transport"]).__name__
+        == "AdmissionHTTPTransport"
+        for inst in instances
+    )
+    _assert_keepalive_tight(instances[:1])
+    _assert_updates_pool_never_reuses(instances[1])
 
 
 def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
@@ -166,6 +183,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
     for index, instance in enumerate(instances):
         transport = instance.kwargs["httpx_kwargs"]["transport"]
         assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+        assert transport._transport_factory.__name__ == "AdmissionHTTPTransport"
         limits = transport._transport_kwargs["limits"]
         assert isinstance(limits, httpx.Limits)
         assert limits.keepalive_expiry is not None

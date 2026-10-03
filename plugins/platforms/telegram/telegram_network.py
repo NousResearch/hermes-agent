@@ -11,6 +11,8 @@ from typing import Iterable, Optional
 
 import httpx
 
+from .transport_admission import AdmissionHTTPTransport, check_admission, operation_admission
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
@@ -73,7 +75,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # See #63311.
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(self, fallback_ips: Iterable[str], *, transport_factory=None, **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
@@ -81,31 +83,34 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._transport_kwargs = transport_kwargs
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        # The adapter supplies the fenced backend.  The default keeps this
+        # helper compatible with callers that use it independently.
+        self._transport_factory = transport_factory or httpx.AsyncHTTPTransport
+        self._primary = self._transport_factory(**transport_kwargs)
         self._primary_lock = asyncio.Lock()
         self._primary_closed = False
         # Built on demand and discarded on failure — see _reset_fallback.
-        self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
+        self._fallbacks: dict[str, httpx.AsyncBaseTransport] = {}
         self._fallback_lock = asyncio.Lock()
         # ``_UNSET`` / ``None`` / ``str`` = no sticky yet / sticky hostname / sticky IPv4.
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
         self._last_failure: tuple[str, str] | None = None
 
-    async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
+    async def _get_fallback(self, ip: str) -> httpx.AsyncBaseTransport:
         async with self._fallback_lock:
             transport = self._fallbacks.get(ip)
             if transport is None:
-                transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+                transport = self._transport_factory(**self._transport_kwargs)
                 self._fallbacks[ip] = transport
             return transport
 
-    async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
+    async def _reset_primary(self, transport: httpx.AsyncBaseTransport) -> None:
         # Retryable primary failures leave half-closed sockets in the pool; replace the generation first.
         async with self._primary_lock:
             if self._primary_closed or transport is not self._primary:
                 return
-            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+            self._primary = self._transport_factory(**self._transport_kwargs)
         try:
             await transport.aclose()
         except Exception as exc:
@@ -139,13 +144,17 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         return order
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        check_admission()
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
+            self._note_uninstrumented_dispatch(self._primary)
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
         for ip in self._attempt_order():
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
+            check_admission()
             try:
+                self._note_uninstrumented_dispatch(transport)
                 response = await transport.handle_async_request(candidate)
                 if self._last_failure is not None:
                     failed_path, failure = self._last_failure
@@ -166,6 +175,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 return response
             except Exception as exc:
                 last_error = exc
+                admission = operation_admission.get()
+                if admission is not None and admission.dispatched:
+                    # Once request bytes may have been written, retrying could
+                    # duplicate a remotely completed operation.
+                    raise
                 if not _is_retryable_connect_error(exc):
                     raise
                 path = ip or _TELEGRAM_API_HOST
@@ -188,6 +202,14 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
+
+    @staticmethod
+    def _note_uninstrumented_dispatch(transport) -> None:
+        admission = operation_admission.get()
+        if admission is not None and not isinstance(transport, AdmissionHTTPTransport):
+            # Only the admission backend can prove no bytes were written.
+            # Foreign transports and test doubles are conservative, never unsent.
+            admission.dispatched = True
 
     async def aclose(self) -> None:
         async with self._primary_lock:

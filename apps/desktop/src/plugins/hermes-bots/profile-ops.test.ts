@@ -230,4 +230,25 @@ describe('roster avatar sync (#102978)', () => {
     // The raster is a notice-only copy of the live face, never parked on the roster.
     expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
   })
+
+  it('matches a hostile bot name by attribute, not selector interpolation (#131562)', async () => {
+    // The face lookup used to splice JSON.stringify(name) into a CSS
+    // selector: control chars JSON spells `\n` are re-read by CSS as a
+    // literal "n", so the lookup silently targeted a mangled name — and a
+    // quote-bearing name steered the query at attacker-chosen elements.
+    const { findFaceSvg } = await import('./profile-ops')
+    const hostile = 'x" onmouseover="alert(1)\n\ttab'
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    svg.setAttribute('data-bot-face', hostile)
+    document.body.appendChild(svg)
+    // The control-char-mangled twin the old selector actually looked for.
+    const decoy = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    decoy.setAttribute('data-bot-face', 'x" onmouseover="alert(1)nttab')
+    document.body.appendChild(decoy)
+
+    expect(findFaceSvg(hostile)).toBe(svg)
+
+    svg.remove()
+    decoy.remove()
+  })
 })

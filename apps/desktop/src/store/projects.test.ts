@@ -1232,15 +1232,21 @@ describe('project read result contract', () => {
   it('reports a departed owner when a failure is superseded by an owner switch', async () => {
     const { promise: defaultResponse, reject: rejectDefault } = deferred<unknown>()
 
-    openGateway(
-      vi.fn((_method: string, params: Record<string, unknown>) =>
-        params.profile === 'default'
-          ? defaultResponse
-          : Promise.resolve({ active_id: null, projects: [], scoped_session_ids: [] })
-      )
+    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
+      params.profile === 'default'
+        ? defaultResponse
+        : Promise.resolve({ active_id: null, projects: [], scoped_session_ids: [] })
     )
 
+    openGateway(request)
+
     const pendingDefault = refreshProjectTree()
+    // The default owner's request must be in flight (holding the deferred)
+    // before the owner moves; otherwise the read stops at the connection
+    // boundary and the later rejection has no consumer.
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('projects.tree', expect.objectContaining({ profile: 'default' }))
+    )
     $activeGatewayProfile.set('profile-b')
     await expect(refreshProjectTree()).resolves.toBe('complete')
     rejectDefault(new Error('gateway read failed'))

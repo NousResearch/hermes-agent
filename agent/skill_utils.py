@@ -295,6 +295,59 @@ def _home_relative(p: Path) -> Path:
 ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
 
 
+def _read_bundled_manifest_names() -> Set[str]:
+    """Read the set of skill names from the active profile's bundled-skills manifest.
+
+    Parses the same 'name:hash' line format as ``tools.skills_sync._read_manifest``.
+    Returns an empty set when the manifest is missing, unreadable, or the profile
+    has no bundled skills. Does NOT import tools.skills_sync to avoid layering
+    violations (agent/ is lower than tools/).
+    """
+    from hermes_constants import get_hermes_home
+
+    manifest_path = get_hermes_home() / "skills" / ".bundled_manifest"
+    if not manifest_path.exists():
+        return set()
+    try:
+        names: Set[str] = set()
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                name, _, _ = line.partition(":")
+                names.add(name.strip())
+            else:
+                # v1 format: plain name
+                names.add(line)
+        return names
+    except (OSError, IOError, UnicodeDecodeError):
+        return set()
+
+
+def _bundled_whitelist_blocked(skills_cfg: dict | None) -> Set[str]:
+    """Return skill names that the bundled-skills whitelist blocks.
+
+    When ``bundled_whitelist`` is truthy in *skills_cfg*, any bundled-provenance
+    skill whose name is NOT in ``bundled_enabled`` is treated as effectively
+    disabled (blocked). When the whitelist is off (default) or the whitelist
+    config is absent, returns an empty set — zero behavior change.
+
+    Essential skills (``ESSENTIAL_SKILLS``) are never blocked even when they
+    are bundled and not in the enabled list.
+    """
+    if not isinstance(skills_cfg, dict) or not skills_cfg.get("bundled_whitelist"):
+        return set()
+
+    bundled_names = _read_bundled_manifest_names()
+    if not bundled_names:
+        return set()
+
+    enabled = _normalize_string_set(skills_cfg.get("bundled_enabled"))
+    blocked = bundled_names - enabled
+    return blocked - ESSENTIAL_SKILLS
+
+
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Disabled skill names from config.yaml: global list ∪ platform list
     (*platform* defaults to ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM``)."""
@@ -303,7 +356,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         return set()
     from gateway.session_context import get_session_env
     resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
-    disabled = _normalize_string_set(skills_cfg.get("disabled"))
+    disabled = _normalize_string_set(skills_cfg.get("disabled")) | _bundled_whitelist_blocked(skills_cfg)
     platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
     if platform_disabled is not None:
         disabled |= _normalize_string_set(platform_disabled)

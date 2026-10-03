@@ -172,3 +172,24 @@ class TestGetCategories:
         from hermes_cli.skills_config import _get_categories
         skills = [{"name": "a", "category": None, "description": ""}]
         assert "uncategorized" in _get_categories(skills)
+
+
+# ---------------------------------------------------------------------------
+# Config defaults for bundled_whitelist / bundled_enabled
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsConfigDefaults:
+    """bundled_whitelist and bundled_enabled exist in DEFAULT_CONFIG."""
+
+    def test_bundled_whitelist_default(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        skills = DEFAULT_CONFIG["skills"]
+        assert "bundled_whitelist" in skills
+        assert skills["bundled_whitelist"] is False
+
+    def test_bundled_enabled_default(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        skills = DEFAULT_CONFIG["skills"]
+        assert "bundled_enabled" in skills
+        assert skills["bundled_enabled"] == []

@@ -1492,6 +1492,19 @@ DEFAULT_CONFIG = {
         # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
         # the ledger append-only forever, the previous behaviour).
         "ledger_max_bytes": 5 * 1024 * 1024,
+        # Opt-in bundled skill whitelist (default off — no filtering).
+        # When true, ONLY the bundled skills listed in ``bundled_enabled``
+        # remain active; all other bundled skills are filtered out (in
+        # addition to ``skills.disabled``). An empty list blocks ALL bundled
+        # skills. User-authored (non-bundled) skills are unaffected.
+        # Bundled skills are those recorded in
+        # ``~/.hermes/skills/.bundled_manifest`` (auto-seeded from the
+        # bundled catalog). If the manifest is missing (e.g. bundled skills
+        # never synced), the whitelist filters nothing — fail-open — so
+        # enabling it on an installation without the manifest cannot hide
+        # every skill.
+        "bundled_whitelist": False,
+        "bundled_enabled": [],
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

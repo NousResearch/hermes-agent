@@ -152,10 +152,15 @@ def _parse_tags(tags_value) -> List[str]:
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
     """Disabled in config? Platform precedence: explicit arg, ``HERMES_PLATFORM``, session
     ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
-    (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
+    (keep in sync with agent.skill_utils.get_disabled_skill_names). Bundled skills blocked by
+    ``skills.bundled_whitelist`` count as disabled too."""
     try:
+        from agent.skill_utils import _bundled_whitelist_blocked
+
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
+        if name in _bundled_whitelist_blocked(skills_cfg):
+            return True
         resolved_platform = platform or os.getenv("HERMES_PLATFORM")
         if not resolved_platform:
             with suppress(Exception):

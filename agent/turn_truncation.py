@@ -337,7 +337,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
         append_message(messages, {
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
-            "_length_continuation_nudge": True,
+            "_length_continuation_nudge": True, "display_kind": "hidden",
         })
         agent._session_messages = messages
         _retry.restart_with_length_continuation = True
@@ -659,7 +659,8 @@ def continue_codex_incomplete(
                 )
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
-                    append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+                    append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE,
+                                             "display_kind": "hidden"})
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
             agent._ephemeral_reasoning_off = True
             # No configured cap means the provider's own ceiling was hit: the observed

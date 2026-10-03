@@ -2499,7 +2499,8 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
         if steer_text:
             return _insert_real_user_anchor(compressed, {"role": "user", "content": steer_text})
     from agent.message_metadata import append_message
-    append_message(compressed, {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT})
+    append_message(compressed, {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+                                "display_kind": "hidden"})
     return "placeholder_appended"
 
 
@@ -3149,7 +3150,16 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
             _probe["content"] = _stripped
             if _is_real_user_message(_probe):
                 _snapshot_text = f"\n\n{todo_snapshot}" if isinstance(_stripped, str) and _stripped else todo_snapshot
+                _old_api = _tail.get("api_content") if isinstance(_tail.get("api_content"), str) else None
                 _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
+                # Preserve a skill scaffold sidecar across the fold so the model
+                # still receives the expanded body, not the bare invocation.
+                if _old_api is not None and isinstance(_snapshot_text, str):
+                    _tail["api_content"] = _old_api + _snapshot_text
+                # Appended to a real user turn: keep the carrier's own
+                # display_kind; record the fold as display-only metadata.
+                _tail["display_metadata"] = {**(_tail.get("display_metadata") or {}),
+                                              "todo_snapshot_appended": True}
                 merged = True
             elif (
                 _stripped != _tail.get("content") and not _message_text({"role": "user", "content": _stripped}).strip()
@@ -3158,9 +3168,11 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
                 _tail["_todo_snapshot_synthetic"] = True
+                _tail["display_kind"] = "hidden"
                 merged = True
         if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True,
+                               "display_kind": "hidden"})
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

@@ -1828,6 +1828,10 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
     entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    # The kind is stamped at construction above: model-switch markers stay visible
+    # by design (a hidden reclassification would silently drop the pivot notice).
+    # The session_history fallback covers rows arriving WITHOUT a kind; there is
+    # nothing to re-stamp here.
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]

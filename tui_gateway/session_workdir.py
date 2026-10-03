@@ -588,9 +588,20 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
-    staged = stamp_message_timestamp({"role": "user", "content": text})
-    if display_kind:
-        staged["display_kind"] = display_kind
+    # Skill invocations persist what the user typed; the expanded scaffold rides
+    # the api_content sidecar the provider replays (see methods_tools._skill_persist_fields).
+    _skill_content, _skill_api_content, _skill_kind = text, None, display_kind
+    try:
+        from tui_gateway.methods_tools import _skill_persist_fields as _skill_fields
+        if (fields := _skill_fields(text)) is not None:
+            _skill_content, _skill_api_content, _skill_kind = fields
+    except Exception:
+        pass
+    staged = stamp_message_timestamp({"role": "user", "content": _skill_content})
+    if _skill_kind:
+        staged["display_kind"] = _skill_kind
+    if _skill_api_content is not None:
+        staged["api_content"] = _skill_api_content
     if accept_metadata:
         staged["display_metadata"] = {**accept_metadata}
     with _session_db(session) as db:
@@ -599,7 +610,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         target = _submit_row_target_key(session)
         try:
             staged["_row_id"] = db.append_message(
-                target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                target, "user", content=_skill_content, api_content=_skill_api_content,
+                display_kind=_skill_kind, timestamp=staged["timestamp"],
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
                 display_metadata=staged.get("display_metadata"))
         except Exception as exc:
@@ -634,8 +646,20 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
     ``text`` is THIS turn's raw submit: a staged row from an earlier send (its turn ended before the agent
     ran) is discarded untouched, so the DB row stays the user's message and never a synthesized turn's text."""
     staged = session.pop("_submit_user_row", None)
-    if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
+    if not isinstance(staged, dict) or agent is None:
         return
+    if staged.get("content") != text:
+        # Skill split: the staged row holds the typed invocation while ``text``
+        # is the expanded scaffold the turn was submitted with. Accept it when
+        # the staged content is that scaffold's projection instead of discarding
+        # it as a stale send.
+        try:
+            from tui_gateway.methods_tools import _skill_persist_fields as _adopt_skill_fields
+            _adopt_fields = _adopt_skill_fields(text)
+        except Exception:
+            _adopt_fields = None
+        if _adopt_fields is None or staged.get("content") != _adopt_fields[0]:
+            return
     if staged["content"] != persist_user_message:
         from agent.session_persistence import _durable_content
         with _session_db(session) as db:

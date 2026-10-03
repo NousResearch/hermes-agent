@@ -694,6 +694,27 @@ def _bundle_key_for(name: str):
         return None
 
 
+def _skill_persist_fields(text):
+    """(typed_content, api_content, display_kind) for a skill scaffold, else None.
+
+    The dispatcher returns the expanded scaffold as ``message`` and the typed
+    invocation as ``display`` (UIs render ``display``, never ``message``). The
+    turn persists the typed invocation as ``content``, the scaffold as the
+    ``api_content`` sidecar the provider replays, and ``skill_invocation`` as
+    the kind — so the transcript shows what the user typed and never the body.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        from agent.skill_commands import describe_skill_invocation
+        typed = describe_skill_invocation(text, separator=" ") or ""
+    except Exception:
+        return None
+    if not typed:
+        return None
+    return (typed, text, "skill_invocation")
+
+
 def _dispatch_bundle(rid, params, session, name, arg):
     bundle_key = _bundle_key_for(name)
     if bundle_key is None:

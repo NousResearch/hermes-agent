@@ -269,7 +269,43 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
 
     if failed_turn := untyped_failed_turn_display_kind(role, text):
         return failed_turn
-    return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
+    if role == "user":
+        stripped = text.lstrip()
+        # Crash-recovery note predates typing.
+        if stripped.startswith(_AUTO_CONTINUE_NOTE_PREFIX):
+            return "auto_continue"
+        # Model-only scaffolding persisted without a kind: hide it like new
+        # hidden rows so it never renders as a user bubble.
+        if stripped.startswith("[System:"):
+            return "hidden"
+        try:
+            from agent.context_compressor import (
+                _INFLIGHT_TASK_REPLAY_HEADER,
+                COMPRESSION_CONTINUATION_USER_CONTENT,
+                _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+            )
+            if _INFLIGHT_TASK_REPLAY_HEADER in text:
+                return "hidden"
+            if text.strip() in (COMPRESSION_CONTINUATION_USER_CONTENT,
+                                _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT):
+                return "hidden"
+        except Exception:
+            pass
+        try:
+            from tools.todo_tool import TODO_INJECTION_HEADER
+            from agent.conversation_compression import (
+                _strip_stale_todo_snapshot,
+                _todo_snapshot_is_only_content,
+            )
+            if TODO_INJECTION_HEADER in text:
+                # Standalone snapshot rows hide; snapshots folded into a real
+                # user turn keep the carrier's own kind (see _fold_todo_snapshot).
+                stripped_snapshot = _strip_stale_todo_snapshot(text)
+                if _todo_snapshot_is_only_content(text, stripped_snapshot):
+                    return "hidden"
+        except Exception:
+            pass
+    return None
 
 
 _HISTORY_ASSISTANT_DETAIL_KEYS = (
@@ -354,6 +390,10 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
         display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
+        if display_kind == "hidden" and not m.get("display_kind"):
+            # Legacy untagged scaffolding: drop like stored hidden rows (line 300)
+            # so it never renders as a user bubble.
+            continue
         if display_kind:
             msg["display_kind"] = display_kind
         if m.get("display_metadata"):

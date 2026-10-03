@@ -283,7 +283,23 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"model.provider '{provider_raw}' is unknown. Valid providers: {known_list}. "
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
-    accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    # A provider the user declared under providers: fronts an uncurated
+    # OpenAI-compatible endpoint, so custom/claude-opus-5 is a REAL model id
+    # there, not an aggregator vendor prefix. ai-hub runs exactly that shape
+    # (model.provider=cliproxyapi -> 127.0.0.1:8318/v1) and doctor raised a
+    # permanent false issue telling the user to switch to openrouter or drop
+    # the prefix; both break the live route.
+    provider_is_user_declared = bool(provider) and isinstance(
+        cfg.get("providers"), dict
+    ) and provider in {
+        str(k).strip().lower() for k in cfg["providers"]
+    }
+    accepts_vendor_slug = (
+        policy_id in _VENDOR_SLUG_PROVIDERS
+        or policy_id == "custom"
+        or policy_id.startswith("custom:")
+        or provider_is_user_declared
+    )
     # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()

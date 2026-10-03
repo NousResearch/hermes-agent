@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
 from tools.transcription_common import (
     DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV,
-    OPENAI_MODELS, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
+    LOCAL_STT_MODEL_OPTIONS, OPENAI_MODELS, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
     _process_error_detail)
 
 # Log-record parity with the origin module.
@@ -49,8 +49,8 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
         logger.warning(
             "STT model '%s' is a cloud-only name and cannot be used with the local "
             "provider. Falling back to '%s'. Set stt.local.model to a valid "
-            "faster-whisper size (tiny, base, small, medium, large-v3).",
-            model_name, DEFAULT_LOCAL_MODEL)
+            "faster-whisper size (%s).",
+            model_name, DEFAULT_LOCAL_MODEL, ", ".join(LOCAL_STT_MODEL_OPTIONS))
         return DEFAULT_LOCAL_MODEL
     return model_name
 

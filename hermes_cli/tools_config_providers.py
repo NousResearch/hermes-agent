@@ -15,6 +15,7 @@ from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, 
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+from tools.transcription_common import DEFAULT_LOCAL_MODEL, LOCAL_STT_MODEL_OPTIONS
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -646,10 +647,10 @@ _select_plugin_image_gen_provider = partial(_select_plugin_gen_provider, "image_
 _select_plugin_video_gen_provider = partial(_select_plugin_gen_provider, "video_gen")
 
 # Per-provider STT model catalogs for the picker; keys are ``stt.<provider>`` sections, first entry is the
-# default. Kept in sync with the dashboard selects (web_server _CONFIG_FIELD_META) and the desktop settings
-# enums (apps/desktop/src/app/settings/constants.ts).
+# default. Local options come from the same source as the dashboard schema;
+# Desktop consumes that backend schema instead of keeping another static list.
 STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
+    "local": [DEFAULT_LOCAL_MODEL, *(model for model in LOCAL_STT_MODEL_OPTIONS if model != DEFAULT_LOCAL_MODEL)],
     "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
     "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
     "elevenlabs": ["scribe_v2", "scribe_v1"]}

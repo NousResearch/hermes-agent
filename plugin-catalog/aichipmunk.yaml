@@ -4,14 +4,14 @@
 
 name: aichipmunk
 repo: https://github.com/Pacific-Cloud-Solutions/hermes-plugins
-sha: 8c05df7d2543656c1ae32dde6c2f0f7928d55de0
+sha: d565d7698a28f4364f819446e5f7ae2b67c57352
 subdir: plugins/aichipmunk
 description: Pairs this machine's Hermes bots with the AI Chipmunk mobile app from inside Hermes Desktop — pick a bot, get the reachable host, profile and API key as a scannable code. Registers a `hermes aichipmunk` CLI command, a desktop page and a dashboard API; no tools or hooks. Disclosure — it adds a `tailscale serve` entry carrying the API server's port onto the tailnet (and only on a machine with no Tailscale CLI does it fall back to setting `platforms.api_server.host` and restarting that gateway), reads `API_SERVER_KEY` from the owning profile's secret scope at pairing time and renders it locally as the pairing code, and shells out to the `tailscale` and `hermes` CLIs; it makes no other network calls and touches no core files. Pairing requires Tailscale on this machine and on the phone.
 maintainer: Pacific-Cloud-Solutions
 tier: community
 category: platform
 version: "0.1.0"
-image: https://raw.githubusercontent.com/Pacific-Cloud-Solutions/hermes-plugins/8c05df7d2543656c1ae32dde6c2f0f7928d55de0/plugins/aichipmunk/docs/hero-2x1.webp
+image: https://raw.githubusercontent.com/Pacific-Cloud-Solutions/hermes-plugins/d565d7698a28f4364f819446e5f7ae2b67c57352/plugins/aichipmunk/docs/hero-2x1.webp
 readme: true
 platforms: []
 capabilities:

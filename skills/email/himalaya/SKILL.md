@@ -236,13 +236,19 @@ himalaya message delete 42
 Add flag:
 
 ```bash
-himalaya flag add 42 --flag seen
+himalaya flag add 42 seen
 ```
 
 Remove flag:
 
 ```bash
-himalaya flag remove 42 --flag seen
+himalaya flag remove 42 seen
+```
+
+For multiple accounts, keep `--account` on the flag subcommand:
+
+```bash
+himalaya flag add 42 seen --account work
 ```
 
 ## Multiple Accounts

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MANAGED_DIR = Path("/etc/hermes")
 
 _CACHE_LOCK = threading.Lock()
+_MISSING = object()  # Distinct from an explicit YAML null; absent files are not cached.
 # path_key -> (*file_signature, parsed)
 _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
@@ -66,17 +67,20 @@ def invalidate_managed_cache() -> None:
         _ENV_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+def _cached_read(path: Path, cache: Dict[str, tuple], parse, *, fail_closed: bool = False):
     """Shared stat-signature-keyed read; returns a deepcopy of the parsed value.
 
-    ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
-    LOUDLY — the admin needs to know their policy isn't applied — but never raises, so a malformed
-    managed file can't brick startup.
+    ``_MISSING`` when absent; ordinary parse failures return ``None`` and log loudly. Strict
+    policy reads raise instead of recovering lower-priority authority.
     """
     try:
         st = path.stat()
+    except FileNotFoundError:
+        return _MISSING
     except OSError:
-        return None  # absent
+        if fail_closed:
+            raise
+        return None
     key = file_signature(st)
     path_key = str(path)
     with _CACHE_LOCK:
@@ -86,6 +90,8 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     try:
         parsed = parse(path)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
+        if fail_closed:
+            raise
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
             "Admin policy from this file is NOT being applied. Fix and restart.",
@@ -96,17 +102,30 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     return parsed
 
 
-def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
+def _load_managed_file(
+    name: str, cache: Dict[str, tuple], parse, *, fail_closed: bool = False
+) -> dict:
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
-    parsed = _cached_read(managed_dir / name, cache, parse)
+    parsed = _cached_read(
+        managed_dir / name, cache, parse, fail_closed=fail_closed
+    )
+    if parsed is _MISSING or parsed is None:
+        return {}  # absent, empty or ``null`` file: no managed policy, for strict readers too
+    if fail_closed and not isinstance(parsed, dict):
+        raise ValueError("managed config must be a mapping")
     return parsed if isinstance(parsed, dict) else {}
 
 
-def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
+def load_managed_config(*, fail_closed: bool = False) -> dict:
+    """Parsed managed config.yaml; strict policy readers reject invalid roots."""
+    return _load_managed_file(
+        "config.yaml",
+        _CONFIG_CACHE,
+        lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")),
+        fail_closed=fail_closed,
+    )
 
 
 def load_managed_env() -> Dict[str, str]:
@@ -121,17 +140,17 @@ def _parse_managed_env(path: Path) -> Dict[str, str]:
     return load_env_file(path)
 
 
-def apply_managed_overlay(config: dict) -> dict:
+def apply_managed_overlay(config: dict, *, fail_closed: bool = False) -> dict:
     """Overlay administrator-pinned config values on top of an already-built dict.
 
     ``${VAR}`` refs in the managed config expand against the PROCESS env only, so a user cannot
     shadow a managed literal via a ref they control; a bare root ``model: x/y`` string is promoted
     to ``model.default`` so it can't clobber the dict shape callers expect; managed values
-    deep-merge ON TOP per leaf while sibling keys stay user-controlled. Fail-open: returns
-    ``config`` unchanged when no scope is present or on any error. Mutates and returns ``config``.
+    deep-merge ON TOP per leaf while sibling keys stay user-controlled. Ordinary reads fail open;
+    strict reads raise and preserve explicit nulls. Mutates and returns ``config``.
     """
     try:
-        managed = load_managed_config()
+        managed = load_managed_config(fail_closed=fail_closed)
         if not managed:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).
@@ -143,8 +162,10 @@ def apply_managed_overlay(config: dict) -> dict:
         if isinstance(managed_expanded.get("model"), str):
             managed_expanded = dict(managed_expanded)
             managed_expanded["model"] = {"default": managed_expanded["model"]}
-        return _deep_merge(config, managed_expanded)
+        return _deep_merge(config, managed_expanded, preserve_null=fail_closed)
     except Exception:  # noqa: BLE001 — overlay must never break a caller
+        if fail_closed:
+            raise
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
         return config
 

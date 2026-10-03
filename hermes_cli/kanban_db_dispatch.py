@@ -1714,7 +1714,9 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
     """
     try:
         from hermes_cli.config_effective import load_user_config_effective
-        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+        kanban = (
+            load_user_config_effective(fail_closed=True, side_effect_free=True) or {}
+        ).get("kanban", {})
     except Exception as exc:
         _kb._log.warning(
             "kanban: could not read kanban.dispatch_profiles (%s: %s) — "
@@ -1722,7 +1724,9 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
             type(exc).__name__, exc,
         )
         return frozenset()
-    if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
+    if not isinstance(kanban, Mapping):
+        return frozenset()
+    if "dispatch_profiles" not in kanban:
         return None
     raw = kanban["dispatch_profiles"]
     if raw is None or (isinstance(raw, str) and not raw.strip()):

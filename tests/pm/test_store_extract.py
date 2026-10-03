@@ -26,7 +26,23 @@ def _tar(tmp_path, members):
     return archive
 
 
+def _symlinks_available(tmp_path: object) -> bool:
+    """Creating symlinks on Windows needs Developer Mode or an elevated shell;
+    without it every os.symlink raises and the host cannot run link tests."""
+    import tempfile as _tempfile
+    try:
+        with _tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "t")
+            open(target, "w").close()
+            os.symlink(target, os.path.join(d, "l"))
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
 def test_relative_symlinks_resolve_from_their_own_directory(tmp_path):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("host cannot create symlinks (Windows without Developer Mode)")
     archive = _tar(tmp_path, [("python/share/terminfo/a/adm1178", None), ("python/share/terminfo/1/1178", "../a/adm1178")])
     dest = tmp_path / "out"
     extract(archive, dest)

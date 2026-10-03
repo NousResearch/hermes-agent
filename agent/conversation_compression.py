@@ -4050,6 +4050,16 @@ def _route_codex_compaction(
             commit_fence.finish_commit()
 
 
+def _refresh_main_credential(agent: Any) -> None:
+    """Re-resolve a rotating Anthropic OAuth token so the summary call never carries a revoked one."""
+    if getattr(agent, "api_mode", None) != "anthropic_messages":
+        return
+    refresh = getattr(agent, "_try_refresh_anthropic_client_credentials", None)
+    if callable(refresh):
+        with _swallow("pre-compression credential refresh failed: %s"):
+            refresh()
+
+
 def _announce_compression_start(
     agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool
 ) -> _CompactionLifecycle:
@@ -4125,6 +4135,8 @@ def compress_context(
     # fresh AIAgent loads the persisted streak via bind_session_state() first.
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
         return messages, _existing_system_prompt(agent, system_message)
+
+    _refresh_main_credential(agent)
 
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A

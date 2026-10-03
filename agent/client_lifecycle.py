@@ -560,6 +560,13 @@ class ClientLifecycleMixin:
         """Mirror ``self.api_key`` / ``self.base_url`` into the OpenAI-style client kwargs."""
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        self._sync_compressor_credential()
+
+    def _sync_compressor_credential(self) -> None:
+        """The compressor calls the auxiliary client with its own copy of the main key; keep it current."""
+        compressor = getattr(self, "context_compressor", None)
+        if compressor is not None and hasattr(compressor, "api_key"):
+            compressor.api_key = self.api_key
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
@@ -910,6 +917,8 @@ class ClientLifecycleMixin:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
+        self.api_key = new_token
+        self._sync_compressor_credential()
         return True
 
     # ------------------------------------------------------------------ route-derived client config

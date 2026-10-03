@@ -1,0 +1,32 @@
+name: limbic
+repo: https://github.com/dyiapanis/limbic
+sha: 01c04e2404b40b2c007899b8a415c67235d225d9
+description: >-
+  Self-organising memory provider (MemoryProvider ABC): local SQLite (WAL) with
+  sqlite-vec KNN + FTS5 hybrid recall, adaptive trust scoring, activation
+  maturation, interference-based forgetting, NLI-based correction detection and
+  synaptic atrophy. No LLM cost — all lifecycle mechanisms are deterministic.
+  Disclosure — on first use it downloads ~2.5GB of ONNX models (Arctic Embed 2.0
+  L embedding, ~2.1GB; MiniLMv2-L6-mnli-xnli NLI, ~430MB) plus spaCy NER models
+  from huggingface.co, cached locally (~/.cache/limbic/); downloads are
+  atomic and bounded by a 60s socket timeout so unattended runs fail cleanly
+  instead of hanging. All memory data stays local (limbic.db under HERMES_HOME);
+  no telemetry, no credentials read, no network egress after first use. Tools
+  (remember/recall) and lifecycle hooks dispatch via the MemoryManager from the
+  registered provider — this entry registers a MemoryProvider only, so
+  provides_tools/provides_hooks are empty. PolyForm Noncommercial 1.0.0
+  (source-available; commercial use requires a separate license).
+maintainer: dyiapanis
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/dyiapanis/limbic#readme
+version: "0.5.1"
+image: https://raw.githubusercontent.com/dyiapanis/limbic/01c04e2404b40b2c007899b8a415c67235d225d9/assets/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

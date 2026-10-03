@@ -169,7 +169,8 @@ def sandbox_mcp_invocation() -> Optional[Tuple[Tuple[str, List[str]], Dict[str, 
     command, args = sandbox_host.cua_mcp_invocation(env, _bd_runtime._profile_name(),
                                                     {**published, _CUA_TELEMETRY_ENV_VAR: "0"})
     _bd_runtime.touch_activity()
-    return (command, args), {"PATH": os.environ.get("PATH", "")}
+    from tools.environments import streams
+    return (command, args), {"PATH": os.environ.get("PATH", ""), **streams.client_connection_env()}
 
 
 def sanitized_cua_driver_env() -> Dict[str, str]:

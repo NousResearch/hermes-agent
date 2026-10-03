@@ -162,6 +162,8 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
     from tools.computer_use import cua_backend as cb
 
     _placed(monkeypatch, "terminal", "docker")
+    for name in streams._CLIENT_CONNECTION_ENV:
+        monkeypatch.delenv(name, raising=False)
     started: list[str] = []
     monkeypatch.setattr(runtime, "sandbox_screen_running", lambda: bool(started))
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":20", "XAUTHORITY": "/x"} if started else {})
@@ -179,6 +181,40 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
     (command, args), child_env = cb.sandbox_mcp_invocation()
     assert command == "docker" and "cua-driver mcp" in args[-1] and "export DISPLAY=:20" in args[-1]
     assert set(child_env) == {"PATH"}  # the host driver's env never reaches the sandbox driver
+
+
+def test_sandbox_clients_keep_the_daemon_connection_env(monkeypatch, isolated_home):
+    """The browser and cua-driver clients run with a minimal host env, but a rootless/colima/remote daemon
+    (DOCKER_HOST, a context) or ssh agent auth lives in that env: without it ``docker exec``/``ssh`` reach a
+    different daemon or host than the terminal backend's own client. Only those connection names cross."""
+    from tools import browser_tool_session as bts
+    from tools.bot_desktop import sandbox_host
+    from tools.computer_use import cua_backend as cb
+
+    _placed(monkeypatch, "terminal", "docker")
+    for name in streams._CLIENT_CONNECTION_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///run/user/1000/docker.sock")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")  # no-tmp: ok — env value only
+    monkeypatch.setenv("CUA_DRIVER_HOST_ONLY", "x")
+    fake = _FakeDocker()
+    fake._bd_browser_dirs_ready = True
+    monkeypatch.setattr(runtime, "sandbox_screen_running", lambda: True)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":20"})
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create: fake)
+    monkeypatch.setattr(runtime, "touch_activity", lambda: None)
+    monkeypatch.setattr(sandbox_host, "_user_for", lambda e: "pn")
+    monkeypatch.setattr(sandbox_host, "browser_profile_dir", lambda e: "/home/pn/.browser")
+    monkeypatch.setattr(streams, "exec_prefix", lambda e, *, user=None, interactive=True:
+                        ["docker", "exec", "-i", "-u", user, e._container_id])
+    expected = {"DOCKER_HOST": "unix:///run/user/1000/docker.sock", "SSH_AUTH_SOCK": "/tmp/agent.sock"}  # no-tmp: ok
+
+    _, child_env = cb.sandbox_mcp_invocation()
+    assert set(child_env) == {"PATH", *expected} and all(child_env[k] == v for k, v in expected.items())
+
+    wrapped, host_env = bts._sandbox_wrap(["agent-browser", "open", "about:blank"], {"PATH": "/bin"}, "/tmp/s")  # no-tmp: ok
+    assert wrapped[:2] == ["docker", "exec"]
+    assert set(host_env) == {"PATH", "HOME", *expected} and all(host_env[k] == v for k, v in expected.items())
 
 
 def test_refused_placement_never_falls_back_to_the_host(monkeypatch, isolated_home):

@@ -22,7 +22,7 @@ def _usage(read, write, prompt):
 def _line(agent, caplog, resp):
     from agent import turn_usage
     caplog.clear()
-    with caplog.at_level(logging.INFO, logger="agent.turn_usage"):
+    with caplog.at_level(logging.INFO, logger=turn_usage.logger.name):
         turn_usage.record_response_usage(agent, resp, messages=[{"role": "user", "content": "hi"}], api_call_count=1,
                                          api_duration=0.2, compression_attempts=0, max_compression_attempts=3)
     return next(r.getMessage() for r in caplog.records if r.getMessage().startswith("API call #"))
@@ -49,7 +49,8 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
         line = _line(a, caplog, SimpleNamespace(usage=_usage(0, 0, 100), id=None, model="anthropic/claude-fable-5.1"))
     finally:
         a.close()
-    assert "write=" not in line and "id=" not in line and "upstream=" not in line
+    assert " write=" not in line and " id=" not in line and " upstream=" not in line
+    assert "cache_state=miss" in line  # _usage reports explicit zero counters.
 
 
 def test_forensics_parser_reads_the_new_fields(tmp_path):

@@ -1,7 +1,10 @@
 /*
  * Clone of ui.html for systems without chromium.
  *
- *   /usr/bin/osascript -l JavaScript update-panel.js <status-file>
+ *   /usr/bin/osascript -l JavaScript update-panel.js <status-file> [<started-at>]
+ *
+ * <started-at> is the hand-off's own clock start (epoch seconds, posix.sh
+ * STARTED_AT), the same value serve-ui.py turns into elapsed_seconds.
  *
  * Must remain here, next to posix.sh.
  * The desktop spawns this directory as-is (see resolvePosixScriptHandoff) and the script references it via
@@ -111,6 +114,19 @@ function colors () {
       }
 }
 
+// ui.html's elapsedText, verbatim: every OS words the clock the same way.
+const elapsedText = s =>
+  s < 60 ? `${s}s elapsed` : `${Math.floor(s / 60)}m ${s % 60}s elapsed`
+
+// ui.html apply() for a running state. The clock belongs to the orchestrator
+// (#90194): a clock started by this window would measure when it painted, not
+// the update. No valid start (an older spawner) = the stage without a clock,
+// like ui.html against an orchestrator that sends no elapsed_seconds.
+function runningLine (stage, startedAt, nowSeconds) {
+  const elapsed = Math.floor(nowSeconds - startedAt)
+  return startedAt > 0 && elapsed >= 0 ? `${stage}\n${elapsedText(elapsed)}` : stage
+}
+
 function readStatus (path) {
   // write_status emits a flat, one-line JSON pair we control, so a missing
   // or malformed file simply yields undefined (no update this tick). The
@@ -143,8 +159,10 @@ function wrappedLabel (text, font, color, frame) {
 }
 
 function run (argv) {
-  if (argv.length < 1) throw new Error('usage: osascript -l JavaScript update-panel.js <status-file>')
+  if (argv.length < 1) throw new Error('usage: osascript -l JavaScript update-panel.js <status-file> [<started-at>]')
   const statusPath = argv[0]
+  const startedAt = argv.length > 1 ? Number(argv[1]) : NaN
+  const defaultLine = 'Hermes will open once done.' // what a stage-less run says
 
   const app = $.NSApplication.sharedApplication
   // Accessory: no Dock icon — this is a status panel, not an app.
@@ -181,7 +199,7 @@ function run (argv) {
 
   const title = wrappedLabel('Updating Hermes', $.NSFont.systemFontOfSize(18), fg,
     $.NSMakeRect(0, 178, 280, 26))
-  const line = wrappedLabel('Hermes will open once done.', $.NSFont.systemFontOfSize(12), null,
+  const line = wrappedLabel(defaultLine, $.NSFont.systemFontOfSize(12), null,
     $.NSMakeRect(24, 118, 232, 54))
   content.addSubview(title)
   content.addSubview(line)
@@ -189,7 +207,7 @@ function run (argv) {
   win.makeKeyAndOrderFront(null)
   app.activateIgnoringOtherApps(true)
 
-  // Elapsed clock = when the panel started, like serve-ui.py's started_at.
+  // Animation clock = when the panel started (the loader's time base only).
   // Random phase like the page's Math.random() phaseOffset.
   const startedAtMs = $.CACurrentMediaTime() * 1000
   const phaseOffset = Math.random()
@@ -197,15 +215,13 @@ function run (argv) {
   let everPublished = false
   let settled = null // null = running; else 'done' | 'manual' | 'error'
   let message = ''
+  let shown = defaultLine
 
   while (settled === null) {
     const state = readStatus(statusPath)
     if (state) {
       everPublished = true
-      if (state.message) {
-        message = String(state.message)
-        line.stringValue = message
-      }
+      if (state.message) message = String(state.message)
       if (['done', 'manual', 'error'].includes(state.status)) settled = state.status
     } else if (everPublished) {
       // The status file vanished after having existed: the shim removes it
@@ -218,6 +234,13 @@ function run (argv) {
     }
 
     if (settled === null) {
+      // Recomputed every tick, not per publish: stages are minutes apart,
+      // and a line frozen between them is the stall this clock disproves.
+      const text = runningLine(message || defaultLine, startedAt, Date.now() / 1000)
+      if (text !== shown) {
+        line.stringValue = text
+        shown = text
+      }
       loaderView.image = renderLoaderFrame($.CACurrentMediaTime() * 1000 - startedAtMs, phaseOffset, fg)
       const screen = $.NSScreen.mainScreen;
       const refreshRate = screen.maximumFramesPerSecond;

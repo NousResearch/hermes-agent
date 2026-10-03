@@ -69,6 +69,19 @@ def _status_from_marker() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _marker_started_at() -> str | None:
+    """The hand-off's clock start: the marker's second line (epoch seconds), or None.
+
+    The shim writes it once for the whole ownership chain, so a panel spawned
+    mid-update still counts from when the update began, not from when it painted.
+    """
+    try:
+        started = (_process_home() / MARKER_NAME).read_text(encoding="utf-8-sig").splitlines()[1].strip()
+    except (OSError, IndexError):
+        return None
+    return started if started.isascii() and started.isdigit() else None
+
+
 def publish_stage(message: str) -> None:
     """Report a running stage to the watching UI. Best-effort, never raises.
 
@@ -128,8 +141,12 @@ def ensure_panel(update_root: Path) -> None:
         # Own session + devnull stdio: the panel must outlive this child the
         # same way the shim-spawned UI outlives the shim's stages, and it
         # self-exits when the shim publishes a terminal state.
+        argv = ["/usr/bin/osascript", "-l", "JavaScript", str(panel), str(status_file())]
+        started_at = _marker_started_at()
+        if started_at is not None:
+            argv.append(started_at)  # the hand-off's clock, as posix.sh passes it
         subprocess.Popen(
-            ["/usr/bin/osascript", "-l", "JavaScript", str(panel), str(status_file())],
+            argv,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )

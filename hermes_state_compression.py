@@ -310,15 +310,16 @@ class SessionCompressionMixin:
                 # Clone the parent's concurrent tail into the child after the handoff;
                 # originals stay in the closed parent for lineage recovery.
                 bounded = watermark_ceiling is not None
-                tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
+                tail_ids, _tail_tool_calls = self._tail_rows_after_watermark(
                     conn, "SELECT id, tool_calls FROM messages "
                     "WHERE session_id = ? AND active = 1 AND id > ?"
                     f"{' AND id <= ?' if bounded else ''} ORDER BY id",
                     [parent_session_id, int(watermark), *([int(watermark_ceiling)] if bounded else [])])
                 if tail_ids:
-                    self._clone_message_rows(conn, tail_ids, session_id=child_session_id)
-                    total_messages += len(tail_ids)
-                    total_tool_calls += tail_tool_calls
+                    cloned, cloned_tool_calls = self._clone_message_rows(
+                        conn, tail_ids, session_id=child_session_id)
+                    total_messages += cloned
+                    total_tool_calls += cloned_tool_calls
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, child_session_id))

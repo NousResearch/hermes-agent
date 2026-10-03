@@ -149,8 +149,51 @@ class TestWatermarkCommit:
         assert info["message_count"] == 3
         assert info["tool_call_count"] == 1
 
+    def test_skipped_tail_clone_does_not_count_its_tool_calls(self, db: SessionDB) -> None:
+        """A tail whose platform id is already live is not inserted, so its tool calls stay out of the counter."""
+        _seed(db, 2)
+        watermark = db.get_active_message_watermark("sess1")
+        db.append_message(
+            "sess1", role="assistant", content="tail tools",
+            platform_message_id="19505",
+            tool_calls=[
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                {"id": "t2", "type": "function", "function": {"name": "y", "arguments": "{}"}},
+            ],
+        )
+        summary = [
+            {"role": "user", "content": "already live", "platform_message_id": "19505"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        count = db.archive_and_compact("sess1", summary, watermark=watermark)
+        info = db.get_session("sess1")
+        assert count == 2
+        assert info["message_count"] == 2
+        assert info["tool_call_count"] == 0
+        assert [r["content"] for r in db.get_messages("sess1")] == ["already live", "ok"]
 
-class TestCommitFence:
+    def test_skipped_named_row_clone_does_not_count_its_tool_calls(self, db: SessionDB) -> None:
+        """Covered-id compaction uses the same clone return: a skipped unseen row adds no tool calls."""
+        first = db.append_message("sess1", role="user", content="turn 0")
+        second = db.append_message("sess1", role="assistant", content="turn 1")
+        db.append_message(
+            "sess1", role="assistant", content="tail tools",
+            platform_message_id="19505",
+            tool_calls=[
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+            ],
+        )
+        summary = [
+            {"role": "user", "content": "already live", "platform_message_id": "19505"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        count = db.archive_and_compact(
+            "sess1", summary, covered_ids=[first, second],
+        )
+        info = db.get_session("sess1")
+        assert count == 2
+        assert info["message_count"] == 2
+        assert info["tool_call_count"] == 0
     def test_commit_refused_when_lease_lost(self, db: SessionDB) -> None:
         _seed(db)
         watermark = db.get_active_message_watermark("sess1")
@@ -290,6 +333,41 @@ class TestRotationPathWatermark:
         # Parent keeps its copy for lineage recovery; parent is closed.
         parent_info = db.get_session("sess1")
         assert parent_info["end_reason"] == "compression"
+
+    def test_skipped_child_clone_does_not_inflate_counters(self, db: SessionDB) -> None:
+        """Handoff already holds the platform id, so the tail clone is dropped and its tool calls are not counted."""
+        _seed(db, 2)
+        watermark = db.get_active_message_watermark("sess1")
+        assert db.try_acquire_compression_lock("sess1", "rotator") is True
+        db.append_message(
+            "sess1", role="assistant", content="tail tools",
+            platform_message_id="19505",
+            tool_calls=[
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                {"id": "t2", "type": "function", "function": {"name": "y", "arguments": "{}"}},
+            ],
+        )
+        ceiling = db.get_active_message_watermark("sess1")
+        handoff = [
+            {"role": "user", "content": "already live", "platform_message_id": "19505"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        db.publish_compression_child(
+            parent_session_id="sess1",
+            child_session_id="child1",
+            source="test",
+            messages=handoff,
+            compression_lock_holder="rotator",
+            require_compression_lease=True,
+            watermark=watermark,
+            watermark_ceiling=ceiling,
+        )
+        info = db.get_session("child1")
+        assert info["message_count"] == 2
+        assert info["tool_call_count"] == 0
+        assert [m["content"] for m in db.get_messages_as_conversation("child1")] == [
+            "already live", "ok",
+        ]
 
     def test_ceiling_excludes_the_rotators_own_flush(self, db: SessionDB) -> None:
         """Rows the rotation path flushes AFTER the ceiling (its own input

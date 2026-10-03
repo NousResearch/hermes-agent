@@ -620,8 +620,9 @@ def _platform_max_length(platform):
 
 # Plugin platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
 # registry ``standalone_sender_fn`` (Discord: forums/threads/multipart; Slack: files_upload_v2;
-# WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
-# caption-capable, media_files sentinel for non-final chunks, forward force_document)
+# WhatsApp: only when native mentions must be forwarded to the bridge). platform -> (error label,
+# run discover_plugins first, caption-capable, media_files sentinel for non-final chunks, forward
+# force_document)
 _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "feishu": ("Feishu", True, False, None, False),
                             "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
 
@@ -669,6 +670,7 @@ _CHUNKED_ROUTES = {
         pc.extra, cid, chunk, media_files=media)),
     "yuanbao": (True, None, lambda p, pc, cid, chunk, media, tid, fd: _send_yuanbao(cid, chunk, media_files=media)),
     "slack": (False, [], _via_adapter_route),
+    "whatsapp": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
 
 # Text-only senders for built-in platforms (generic path; media is dropped with a
@@ -703,7 +705,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
-            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
+            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA and platform_name != "whatsapp")):
+        return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             mentions=mentions)
+    if media_files and platform_name == "whatsapp" and _live_adapter(platform)[1] is None:
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
                                              mentions=mentions)

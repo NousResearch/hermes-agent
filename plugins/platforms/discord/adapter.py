@@ -2937,7 +2937,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
+            try:
+                await mutate(http.delete_global_command, app_id, current.id)
+            except Exception as exc:
+                # A concurrent sync or out-of-band deletion can make this command
+                # disappear between fetch and delete.  Discord error 10063 means
+                # the desired end state is already satisfied; keep reconciling the
+                # remaining commands.  Other failures must still abort the sync.
+                if getattr(exc, "code", None) != 10063:
+                    raise
+                logger.debug("Discord command %s was already deleted during sync", current.id)
             summary["deleted"] += 1
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)

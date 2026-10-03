@@ -375,6 +375,30 @@ class TestStatusBarFieldConfig:
 
 
 class TestCacheHitRate:
+    def test_usage_prints_prompt_cache_counters(self, capsys, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            input_tokens=2_000,
+            cache_read_tokens=7_600,
+            cache_write_tokens=400,
+        )
+        cli_obj.verbose = False
+        monkeypatch.setattr(cli_obj, "_print_account_limits", lambda: False)
+        monkeypatch.setattr(cli_obj, "_print_nous_credits_block", lambda: False)
+
+        cli_obj._show_usage()
+
+        out = capsys.readouterr().out
+        assert "Input tokens:" in out and "2,000" in out
+        assert "Cache read tokens:" in out and "7,600" in out
+        assert "Cache write tokens:" in out and "400" in out
+
     def test_cache_hit_rate_shown_in_wide_terminal(self):
         cli_obj = _attach_agent(
             _make_cli(),

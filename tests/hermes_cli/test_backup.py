@@ -810,12 +810,15 @@ class TestImport:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(source_db) as conn:
+            conn.execute("CREATE TABLE evidence (value TEXT)")
         zip_path = tmp_path / "backup.zip"
         self._make_backup_zip(zip_path, {
             "config.yaml": "model: openrouter\n",
             ".env": "OPENROUTER_API_KEY=sk-secret\n",
             "auth.json": '{"providers": {"nous": "token"}}',
-            "state.db": b"SQLite format 3\x00",
+            "state.db": source_db.read_bytes(),
             "profiles/coder/.env": "ANTHROPIC_API_KEY=sk-ant-secret\n",
         })
 
@@ -827,6 +830,22 @@ class TestImport:
         for rel in (".env", "auth.json", "state.db", "profiles/coder/.env"):
             mode = (hermes_home / rel).stat().st_mode & 0o777
             assert mode == 0o600, f"{rel} restored with mode {oct(mode)}, expected 0o600"
+
+    def test_fresh_import_validates_database_before_publication(self, tmp_path):
+        from hermes_cli import backup
+
+        archive = tmp_path / "backup.zip"
+        target = tmp_path / "fresh" / "state.db"
+        target.parent.mkdir()
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("state.db", b"not a sqlite database")
+
+        with zipfile.ZipFile(archive) as zf:
+            with pytest.raises(OSError, match="integrity check"):
+                backup._import_db_member(zf, "state.db", target)
+
+        assert not target.exists()
+        assert not list(target.parent.glob(".*.partial"))
 
 
 # ---------------------------------------------------------------------------

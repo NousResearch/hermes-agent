@@ -127,6 +127,63 @@ def test_quick_snapshot_listing_ignores_partial_directories(tmp_path) -> None:
     assert list_quick_snapshots(hermes_home=home) == []
 
 
+def test_quick_snapshot_copy_failure_keeps_previous_generation(tmp_path, monkeypatch) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text("generation: good\n", encoding="utf-8")
+    previous_id = create_quick_snapshot(hermes_home=home, keep=1)
+    assert previous_id is not None
+
+    config.write_text("generation: newer\n", encoding="utf-8")
+    env_file = home / ".env"
+    env_file.write_text("FEATURE=present\n", encoding="utf-8")
+    from hermes_cli import backup
+
+    real_copy = backup.shutil.copy2
+
+    def copy_with_fault(source, destination, *args, **kwargs):
+        if Path(source) == env_file:
+            raise OSError("injected copy fault")
+        return real_copy(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(backup.shutil, "copy2", copy_with_fault)
+
+    assert create_quick_snapshot(hermes_home=home, keep=1) is None
+    assert [item["id"] for item in list_quick_snapshots(hermes_home=home)] == [previous_id]
+    snapshot_root = home / "state-snapshots"
+    assert (snapshot_root / previous_id / "config.yaml").read_text(
+        encoding="utf-8-sig"
+    ) == "generation: good\n"
+    assert not list(snapshot_root.glob(".*.partial"))
+
+
+@pytest.mark.parametrize("damage", ["manifest", "member"])
+def test_torn_quick_snapshot_is_rejected_before_restore(tmp_path, damage) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    env_file = home / ".env"
+    config.write_text("generation: snapshot\n", encoding="utf-8")
+    env_file.write_text("SETTING=snapshot-value\n", encoding="utf-8")
+    snapshot_id = create_quick_snapshot(hermes_home=home)
+    assert snapshot_id is not None
+
+    snapshot = home / "state-snapshots" / snapshot_id
+    if damage == "manifest":
+        (snapshot / "manifest.json").write_text('{"files": {"config.yaml":', encoding="utf-8")
+    else:
+        (snapshot / ".env").write_bytes(b"torn")
+    config.write_text("generation: live\n", encoding="utf-8")
+    env_file.write_text("SETTING=live-value\n", encoding="utf-8")
+
+    from hermes_cli.backup import restore_quick_snapshot
+
+    assert not restore_quick_snapshot(snapshot_id, hermes_home=home)
+    assert config.read_text(encoding="utf-8-sig") == "generation: live\n"
+    assert env_file.read_text(encoding="utf-8-sig") == "SETTING=live-value\n"
+
+
 def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatch) -> None:
     home = tmp_path / ".hermes"
     home.mkdir()

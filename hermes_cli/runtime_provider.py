@@ -739,6 +739,94 @@ _EXPLICIT_RESOLVERS: Dict[str, Callable[..., Dict[str, Any]]] = {
 }
 
 
+def _canonical_base_url_for_provider(provider: str) -> str:
+    """The provider's canonical inference endpoint, or "" when it has no fixed one.
+
+    Pool-entry providers (codex / xai-oauth / qwen / openrouter / …) declare it in
+    ``_POOL_ENTRY_SIMPLE_MODES``; registry providers carry it on their ``ProviderConfig``. A
+    provider with neither (notably ``custom``, whose endpoint is user-defined) is deliberately
+    excluded — there is no endpoint boundary to prove membership against.
+    """
+    simple = _POOL_ENTRY_SIMPLE_MODES.get(provider)
+    if simple:
+        default_url = simple[1]
+        return str(default_url() if callable(default_url) else default_url).strip().rstrip("/")
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig is None:
+        return ""
+    return str(getattr(pconfig, "inference_base_url", "") or "").strip().rstrip("/")
+
+
+def _pool_has_member_key(pool: Any, api_key: str) -> bool:
+    """Whether ``api_key`` is a registered runtime credential of ``pool`` (any entry).
+
+    Falls back to ``entry_id_for_api_key`` for pool adapters that expose no ``entries()``; a pool
+    that answers neither is treated as having no members, so nothing attaches.
+    """
+    if not api_key:
+        return False
+    try:
+        entries = list(pool.entries())
+    except Exception:
+        entries = []
+    if entries:
+        return any(_pool_entry_api_key(entry) == api_key for entry in entries)
+    try:
+        return pool.entry_id_for_api_key(api_key) is not None
+    except Exception:
+        return False
+
+
+def _attach_member_pool_to_explicit_runtime(runtime: Optional[Dict[str, Any]], *, provider: str,
+                                            explicit_api_key: str) -> Optional[Dict[str, Any]]:
+    """Attach the resolved provider's credential pool to an explicitly-keyed runtime IFF the
+    explicit key is a registered member of THAT provider's pool AND the resolved endpoint is that
+    provider's canonical endpoint. Otherwise the runtime stays exactly as resolved.
+
+    This is the second drop site from #92250: a ``/model`` switch stages the selected key in
+    ``_explicit_api_key``, so the lazy ``_ensure_runtime_credentials`` re-resolution takes the
+    explicit rung and used to come back pool-less — the new provider then ran with no rotation for
+    the whole session.
+
+    Boundaries (all must hold):
+      * the key must match an entry of the pool loaded for the resolved provider, so a one-off
+        non-member override stays pool-less (rotating away from a deliberately chosen key would
+        surprise the user);
+      * a foreign provider's pool is rejected even when the key strings collide — the pool is
+        loaded for THIS provider and must pass ``credential_pool_matches_provider`` (the same
+        provider/endpoint predicate used when the pool is bound);
+      * the resolved base_url must equal the provider's canonical endpoint, so a custom/different
+        destination is never lent the canonical provider's pool.
+    """
+    if not isinstance(runtime, dict) or not explicit_api_key:
+        return runtime
+    resolved_provider = str(runtime.get("provider") or provider or "").strip().lower()
+    if not resolved_provider:
+        return runtime
+    canonical = _canonical_base_url_for_provider(resolved_provider)
+    if not canonical:
+        return runtime
+    runtime_base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+    if runtime_base_url != canonical:
+        return runtime
+    try:
+        pool = load_pool(resolved_provider)
+    except Exception as exc:
+        logger.debug("Explicit-runtime pool load for %s failed: %s", resolved_provider, exc)
+        return runtime
+    try:
+        if pool is None or not pool.has_credentials():
+            return runtime
+    except Exception:
+        return runtime
+    if not credential_pool_matches_provider(pool, resolved_provider, base_url=runtime_base_url):
+        return runtime
+    if not _pool_has_member_key(pool, explicit_api_key):
+        return runtime
+    runtime["credential_pool"] = pool
+    return runtime
+
+
 def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_cfg: Dict[str, Any],
                               explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
                               target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -748,11 +836,14 @@ def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_c
         return None
     resolver = _EXPLICIT_RESOLVERS.get(provider)
     if resolver is not None:
-        return resolver(requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if not (pconfig and pconfig.auth_type == "api_key"):
-        return None
-    return _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+        runtime = resolver(requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+    else:
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if not (pconfig and pconfig.auth_type == "api_key"):
+            return None
+        runtime = _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+    # An explicitly selected key that belongs to the provider's pool keeps rotation (#92250).
+    return _attach_member_pool_to_explicit_runtime(runtime, provider=provider, explicit_api_key=explicit_api_key)
 
 
 # ── OAuth / auth-store providers ───────────────────────────────────────────────────────────

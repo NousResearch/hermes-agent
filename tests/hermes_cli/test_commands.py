@@ -1,5 +1,6 @@
 """Tests for the central command registry and autocomplete."""
 
+import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -379,6 +380,18 @@ class TestSubcommandCompletion:
         completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
         texts = {c.text for c in completions}
         assert "spotify" not in texts
+
+    @pytest.mark.parametrize(("subcommand", "verb"), [("enable", "Enabled"), ("disable", "Disabled")])
+    def test_tools_offers_only_toolsets_the_command_accepts(self, subcommand, verb, capsys):
+        """Every toolset that `/tools <subcommand> <TAB>` offers is accepted by the CLI's `/tools`."""
+        from argparse import Namespace
+        from hermes_cli.tools_config import tools_disable_enable_command
+
+        completions = _completions(SlashCommandCompleter(), f"/tools {subcommand} ")
+        offered = [c.text for c in completions if not c.text.endswith(":")]
+        tools_disable_enable_command(Namespace(tools_action=subcommand, names=offered, platform="cli"))
+
+        assert capsys.readouterr().out.splitlines() == [f"✓ {verb}: {', '.join(offered)}"]
 
 
     def _fake_gateway(self, monkeypatch, platforms):

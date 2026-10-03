@@ -427,6 +427,7 @@ export interface ToolsConfigureResponse {
   enabled_toolsets?: string[]
   info?: SessionInfo
   missing_servers?: string[]
+  rejected?: Record<string, string>
   reset?: boolean
   unknown?: string[]
 }

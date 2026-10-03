@@ -108,76 +108,18 @@ test('explicit relaunch activates a minimized tray-hidden window', () => {
 // down. It must not consult the overlay-suppression latch, must stay quiet
 // on macOS, during handoff, with peers left, or mid-quit.
 test('last-chat fallback quits only for a final non-macOS close outside a quit', () => {
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'win32',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 0,
-      quitInProgress: false
-    }),
-    true
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'linux',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 0,
-      quitInProgress: false
-    }),
-    true
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'darwin',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 0,
-      quitInProgress: false
-    }),
-    false
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'win32',
-      isQuittingForHandoff: true,
-      remainingChatWindows: 0,
-      quitInProgress: false
-    }),
-    false
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'win32',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 1,
-      quitInProgress: false
-    }),
-    false
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'linux',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 2,
-      quitInProgress: false
-    }),
-    false
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'win32',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 0,
-      quitInProgress: true
-    }),
-    false
-  )
-  assert.equal(
-    shouldQuitOnLastChatClosed({
-      platform: 'linux',
-      isQuittingForHandoff: false,
-      remainingChatWindows: 0,
-      quitInProgress: true
-    }),
-    false
-  )
+  const cases: [string, boolean, number, boolean, boolean][] = [
+    // platform, isQuittingForHandoff, remainingChatWindows, quitInProgress, expected
+    ['win32', false, 0, false, true],
+    ['linux', false, 0, false, true],
+    ['darwin', false, 0, false, false],
+    ['win32', true, 0, false, false],
+    ['win32', false, 1, false, false],
+    ['win32', false, 0, true, false]
+  ]
+
+  for (const [platform, isQuittingForHandoff, remainingChatWindows, quitInProgress, expected] of cases) {
+    const input = { platform, isQuittingForHandoff, remainingChatWindows, quitInProgress }
+    assert.equal(shouldQuitOnLastChatClosed(input), expected, JSON.stringify(input))
+  }
 })

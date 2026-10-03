@@ -1,3 +1,5 @@
+import { shouldFocusToTakeKeyboard } from './window-focus-policy'
+
 type MainWindowLike = {
   isDestroyed: () => boolean
 }
@@ -47,7 +49,8 @@ export function ensureMainWindow<T extends MainWindowLike>(
  * `appQuitting = true` in its `close` handler (for #55920 pop-in
  * suppression) before `closed` fires, so gating on that latch would suppress
  * the very quit the fallback exists for and strand a windowless
- * single-instance lock holder.
+ * single-instance lock holder. A tray-absorbed close never reaches the
+ * fallback (preventDefault) and a multi-window close still has peers left.
  */
 export function shouldQuitOnLastChatClosed({
   platform,
@@ -60,19 +63,7 @@ export function shouldQuitOnLastChatClosed({
   remainingChatWindows: number
   quitInProgress: boolean
 }): boolean {
-  if (platform === 'darwin') {
-    return false
-  }
-
-  if (isQuittingForHandoff) {
-    return false
-  }
-
-  if (quitInProgress) {
-    return false
-  }
-
-  return remainingChatWindows === 0
+  return platform !== 'darwin' && !isQuittingForHandoff && !quitInProgress && remainingChatWindows === 0
 }
 
 /**
@@ -102,7 +93,7 @@ export function activateWindow(window: ActivatableWindow | null | undefined): vo
     window.show()
   }
 
-  if (!window.isFocused()) {
+  if (shouldFocusToTakeKeyboard(window)) {
     window.focus()
   }
 }

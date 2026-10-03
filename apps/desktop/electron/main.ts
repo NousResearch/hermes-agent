@@ -360,11 +360,7 @@ import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import {
-  activateWindow as activateRestoredWindow,
-  ensureMainWindow,
-  shouldQuitOnLastChatClosed
-} from './main-window-lifecycle'
+import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -13782,7 +13778,7 @@ const minimizeToTray = createMinimizeToTray({
   // A tray click is an explicit relaunch gesture (#130810): restore with
   // activation (show + focus), not the ambient showInactive path.
   restoreMainWindow: () =>
-    ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateRestoredWindow }),
+    ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow }),
   isQuittingForHandoff: () => isQuittingForHandoff,
   log: rememberLog
 })
@@ -14130,14 +14126,7 @@ let petOverlayWindow = null
 // persisted popped-out flag survives for the next boot's restorePetOverlay
 // (#55920).
 let appQuitting = false
-// Whether a quit is actually in progress (#130810). Set in before-quit only
-// once the active-work guard has passed (quit is confirmed/proceeding, not
-// held for confirmation), so the last-chat `closed` fallback can tell "the
-// user closed the last chat surface, quit now" apart from "windows are
-// closing because a quit is already tearing down". Deliberately distinct from
-// appQuitting above, which is also set by the primary window's `close`
-// handler for overlay pop-in suppression and would otherwise suppress the
-// fallback on every ordinary close.
+// Real quit proceeding; see shouldQuitOnLastChatClosed (#130810).
 let quitInProgress = false
 // Set while a close is in flight: Electron's close() is async and can be
 // aborted on macOS, so the window may still be alive after closePetOverlay().
@@ -19234,24 +19223,8 @@ function handleDeepLink(url) {
   }
 
   try {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
-    }
-
-    // #130810: same tray-hidden case as above — a second-instance deep link
-    // must un-hide the window before delivering, otherwise the payload goes
-    // to an invisible renderer and the relaunch looks like a silent exit.
-    // Showing emits `show`, so minimize-to-tray releases the window from its
-    // hidden set (and clears skipTaskbar on Windows).
-    if (!mainWindow.isVisible()) {
-      mainWindow.show()
-    }
-
-    // #83998: a deep link must deliver without re-pumping the Windows
-    // foreground when the window already has focus.
-    if (shouldFocusToTakeKeyboard(mainWindow)) {
-      mainWindow.focus()
-    }
+    // #130810 un-hide a tray-hidden window; #83998 no foreground re-pump.
+    activateWindow(mainWindow)
 
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
@@ -19358,7 +19331,7 @@ if (!isPrimaryInstance) {
     ensureMainWindow(mainWindow, {
       isReady: app.isReady(),
       createWindow,
-      focusWindow: activateRestoredWindow,
+      focusWindow: activateWindow,
       // deep-link delivery focuses a live window after its renderer is ready.
       focusExisting: !url
     })
@@ -19515,7 +19488,7 @@ app.whenReady().then(() => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
     } else {
-      activateRestoredWindow(mainWindow)
+      activateWindow(mainWindow)
     }
   })
 })
@@ -19667,16 +19640,7 @@ function registerChatWindow(window: BrowserWindow) {
   window.once('closed', () => {
     chatWindows.delete(window)
 
-    // #130810: hidden helpers (Quick Entry, HUD, pet overlay) are still
-    // BrowserWindows, so `window-all-closed` never fires while one lingers
-    // and a windowless app keeps holding the single-instance lock — every
-    // later launch then exits silently. A tray-absorbed close never reaches
-    // here (preventDefault), and a multi-window close still has peers left,
-    // so quitting only when no chat surface remains is safe: it forces the
-    // ordinary before-quit teardown (backends, SSH, PTYs, watchers) even when
-    // window-all-closed is blocked. Keyed on quitInProgress, not appQuitting:
-    // an ordinary primary-window close sets appQuitting for overlay pop-in
-    // suppression before `closed` fires, which must not suppress this quit.
+    // See shouldQuitOnLastChatClosed (#130810).
     // Popped-out Browser windows (browserWindows registry) are user-visible
     // surfaces too, so they keep the app alive.
     if (

@@ -9,6 +9,7 @@ Four calling shapes:
 All run zero LLM calls.
 """
 import json
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -1208,3 +1209,34 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+class TestSessionSearchErrorPropagation:
+    def test_read_shape_propagates_db_exception(self, monkeypatch):
+        class BrokenDB:
+            def get_session(self, session_id):
+                raise sqlite3.OperationalError("database is locked")
+
+        res = json.loads(session_search(session_id="s_test", db=BrokenDB()))
+        assert res["success"] is False
+        assert "failed to load session: database is locked" in res["error"]
+
+    def test_scroll_shape_propagates_db_exception(self, monkeypatch):
+        class BrokenDB:
+            def get_session(self, session_id):
+                raise sqlite3.OperationalError("disk I/O error")
+            def get_messages_around(self, *args, **kwargs):
+                return {"window": []}
+
+        res = json.loads(session_search(session_id="s_test", around_message_id=1, db=BrokenDB()))
+        assert res["success"] is False
+        assert "failed to load session: disk I/O error" in res["error"]
+
+    def test_genuine_miss_still_gets_the_profile_hint(self):
+        """#106761's profile hint must survive: a real miss is still re-labelled, a load failure is not."""
+        class EmptyDB:
+            def get_session(self, session_id):
+                return None
+
+        res = json.loads(session_search(session_id="s_missing", db=EmptyDB()))
+        assert res["success"] is False
+        assert "not found in this profile" in res["error"]
+

@@ -108,7 +108,7 @@ def liveness_for(server_name: str) -> Liveness:
         return Liveness("static")
 
 
-def _action(state: LivenessState, app_name: str, gpu_label: str = "") -> tuple[str, Retry]:
+def _action(state: LivenessState, app_name: str, gpu_label: str) -> tuple[str, Retry]:
     actions: dict[LivenessState, tuple[str, Retry]] = {
         "app_not_running": (f"Start {app_name}, then try again.", "after_user_action"),
         "hermes_not_connected": (f"Reconnect {app_name} in Hermes, then try again.", "after_user_action"),

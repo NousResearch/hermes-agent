@@ -89,9 +89,8 @@ def availability(entry: _HasRequirements, *, os_family: str | None = None) -> Av
     # the machines that have the GPU, and the MCP connection check still applies.
     if gpu is not None and facts.gpu_class() not in (gpu, "unknown"):
         return Availability("unsupported_gpu", min_version=entry.min_version)
-    if not entry.requires_app:
+    if definition is None:
         return Availability("no_requirements")
-    assert definition is not None
     resolver = AppResolver(definition)
     res = resolver.locate()
     looked_at = res.command[0] if res.command else (res.candidates[0].value if res.candidates else None)

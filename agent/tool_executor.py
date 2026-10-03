@@ -581,12 +581,21 @@ def _interrupt_worker_tids(agent, tids, *, reason=_NO_REASON) -> None:
             _ra()._set_interrupt(True, tid, **kwargs)
 
 
+def _touch_tool_progress(agent, label: str) -> None:
+    """Advance turn progress when supported; keep lightweight tool-test doubles compatible."""
+    touch_progress = getattr(agent, "_touch_progress", None)
+    if callable(touch_progress):
+        touch_progress(label)
+    else:
+        agent._touch_activity(label)
+
+
 def _set_worker_activity_callback(agent) -> None:
     """The activity callback is thread-local: bind it on THIS thread so tool-layer heartbeats fire."""
     with contextlib.suppress(Exception):
         from tools.environments.base import set_activity_callback
 
-        set_activity_callback(agent._touch_activity)
+        set_activity_callback(lambda label: _touch_tool_progress(agent, label))
 
 
 # Must stay far below the gateway turn-inactivity timeout (default 1800s) so a silent tool never looks idle.
@@ -614,7 +623,7 @@ def _run_tool_activity_heartbeat(
         while not stop_event.wait(interval):
             if is_thread_interrupted(worker_tid):
                 return
-            agent._touch_activity(label)
+            _touch_tool_progress(agent, label)
     except Exception:
         pass  # a heartbeat must never break the agent loop
 
@@ -887,7 +896,7 @@ def _poll_sequential_future(agent, future, function_name: str, deadline: float |
             elapsed = int(time.monotonic() - started)
             if elapsed - _last_heartbeat >= 30:
                 _last_heartbeat = elapsed
-                agent._touch_activity(f"sequential tool running ({elapsed}s): {function_name}")
+                _touch_tool_progress(agent, f"sequential tool running ({elapsed}s): {function_name}")
 
 
 def _run_sequential_tool_execution_middleware(
@@ -1102,7 +1111,11 @@ def _commit_tool_result(
 
     agent._current_tool = None
     _status_suffix = " (error)" if is_error else ""
-    agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
+    _tool_status = f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}"
+    if not is_error and not blocked:
+        _touch_tool_progress(agent, _tool_status)
+    else:
+        agent._touch_activity(_tool_status)
 
     persisted_result = function_result
     if _is_multimodal_tool_result(persisted_result):
@@ -1450,7 +1463,8 @@ class _ConcurrentBatch:
                 # Heartbeat every ~30s (6 × 5s poll intervals)
                 if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                     _still_running = self._running_names(not_done, future_to_index)
-                    agent._touch_activity(
+                    _touch_tool_progress(
+                        agent,
                         f"concurrent tools running ({_conc_elapsed}s, "
                         f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                     )

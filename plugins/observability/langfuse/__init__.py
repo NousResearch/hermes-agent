@@ -553,7 +553,8 @@ def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, 
         canonical = normalize_usage(raw_usage, provider=provider, api_mode=api_mode) if usage is None else CanonicalUsage(
             output_tokens=usage.get("output_tokens", 0) or usage.get("completion_tokens", 0),
             request_count=usage.get("request_count", 1),
-            **{attr: usage.get(attr, 0) for attr in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")},
+            **{attr: usage.get(attr, 0) for attr in ("input_tokens", "cache_read_tokens", "cache_write_tokens",
+                                                          "cache_write_1h_tokens", "reasoning_tokens")},
         )
         return _canonical_usage_and_cost(canonical, provider=provider, model=model, base_url=base_url)
     except Exception as exc:  # pragma: no cover - fail-open

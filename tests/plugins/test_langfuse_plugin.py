@@ -1001,6 +1001,26 @@ class TestCostTotal:
         assert components
         assert cost_details["total"] == pytest.approx(sum(components.values()))
 
+    def test_usage_summary_path_prices_1h_cache_writes_like_the_response_path(self):
+        """``post_api_request`` rebuilds usage from the hook's summary dict; a bucket it
+        drops reverts to the 5m write rate and Langfuse reports a different cost."""
+        from dataclasses import asdict
+
+        from agent.usage_pricing import normalize_usage
+
+        mod = self._fresh_plugin()
+        raw = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 1_000_000,
+               "cache_creation": {"ephemeral_1h_input_tokens": 400_000, "ephemeral_5m_input_tokens": 600_000}}
+        resp = SimpleNamespace(usage=raw)
+        summary = asdict(normalize_usage(raw, provider="anthropic", api_mode="anthropic_messages"))
+        summary.pop("raw_usage")
+        kwargs = dict(provider="anthropic", api_mode="anthropic_messages", model="claude-opus-4-8", base_url="")
+
+        _, direct = mod._usage_and_cost(resp, **kwargs)
+        _, via_hook = mod._usage_and_cost(None, usage=summary, **kwargs)
+
+        assert via_hook["total"] == pytest.approx(direct["total"])
+
     def test_priced_model_with_no_tokens_reports_no_total(self):
         mod = self._fresh_plugin()
 

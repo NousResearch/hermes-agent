@@ -1115,6 +1115,13 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             model = (entry.get("model") or "").strip()
             if not provider or not model:
                 continue
+            if provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"}:
+                # Bedrock resolves without raising even when no AWS credential source exists;
+                # probe first so a credentialless entry never wins the walk.
+                from agent.bedrock_adapter import has_aws_credentials
+                if not has_aws_credentials():
+                    logger.debug("Fallback entry %s/%s skipped: no AWS credentials", provider, model)
+                    continue
             kwargs: Dict[str, Any] = {"requested": provider, "target_model": model}
             if entry.get("base_url"):
                 kwargs["explicit_base_url"] = entry["base_url"]
@@ -1128,6 +1135,11 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             except Exception as fb_exc:
                 # Not a credential problem: a mistyped provider/base_url must be visible, not silently skipped.
                 logger.warning("Fallback entry %s/%s is misconfigured and was skipped: %s", provider, model, fb_exc)
+                continue
+            # Keyless endpoints resolve to the ``no-key-required`` placeholder, so an empty key here means
+            # the entry has no credential at all; Bedrock authenticates through the AWS SDK instead.
+            if (runtime.get("provider") or "").strip().lower() != "bedrock" and not runtime.get("api_key"):
+                logger.debug("Fallback entry %s/%s skipped: missing API key", provider, model)
                 continue
             # Named custom entries resolve to the bare "custom" class; persist the configured identity (#98739).
             runtime["provider"] = effective_runtime_provider(entry, runtime)

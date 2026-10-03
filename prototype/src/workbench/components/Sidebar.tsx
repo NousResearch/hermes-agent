@@ -8,13 +8,14 @@ import { MODES } from "../data/catalog";
 import type { Project } from "../data/providers";
 import { useApp } from "../lib/app";
 import {
-  AgentMark, IconArchive, IconCheck, IconChevronDown, IconCopy, IconFolder, IconGrip, IconLayers, IconList, IconMore, IconPanelLeft,
+  AgentMark, IconArchive, IconBrain, IconCheck, IconChevronDown, IconClock, IconCopy, IconFolder, IconGrip, IconLayers, IconList, IconMore, IconPanelLeft,
   IconPencil, IconPin, IconPlug, IconPlus, IconPulse, IconSearch, IconSettings, IconShield, IconSpark, IconTrash, IconX, IconZap, LogoMark,
 } from "./Icons";
 import { Badge, Button, IconButton, Input, Kbd, Menu, MenuItem, MenuLabel, MenuSep, Modal, Segmented, Select, Tip, Toggle } from "./ui";
 
 export type ViewId =
   | "workbench" | "tasks" | "skills" | "connectors" | "projects"
+  | "automations" | "memory" | "artifacts"
   | "runs" | "agents" | "bridges" | "git" | "browser" | "review" | "design" | "settings";
 
 /* Sidebar navigation — Codex style: a short list, no icon rail.
@@ -22,16 +23,22 @@ export type ViewId =
 export const NAV_CODE: { id: ViewId; label: string; icon: React.ComponentType<{ size?: number; className?: string }>; key: string }[] = [
   { id: "workbench", label: "Threads", icon: IconPulse, key: "1" },
   { id: "tasks", label: "Tasks", icon: IconList, key: "2" },
-  { id: "skills", label: "Skills", icon: IconSpark, key: "3" },
-  { id: "connectors", label: "Connectors", icon: IconPlug, key: "4" },
-  { id: "projects", label: "Projects", icon: IconFolder, key: "5" },
+  { id: "automations", label: "Automations", icon: IconClock, key: "3" },
+  { id: "skills", label: "Skills", icon: IconSpark, key: "4" },
+  { id: "connectors", label: "Connectors", icon: IconPlug, key: "5" },
+  { id: "projects", label: "Projects", icon: IconFolder, key: "6" },
+  { id: "memory", label: "Memory", icon: IconBrain, key: "7" },
+  { id: "artifacts", label: "Artifacts", icon: IconPin, key: "8" },
 ];
 export const NAV_AGENT: typeof NAV_CODE = [
   { id: "workbench", label: "Chats", icon: IconPulse, key: "1" },
   { id: "tasks", label: "Tasks", icon: IconList, key: "2" },
-  { id: "skills", label: "Skills", icon: IconSpark, key: "3" },
-  { id: "connectors", label: "Connectors", icon: IconPlug, key: "4" },
-  { id: "projects", label: "Projects", icon: IconFolder, key: "5" },
+  { id: "automations", label: "Automations", icon: IconClock, key: "3" },
+  { id: "skills", label: "Skills", icon: IconSpark, key: "4" },
+  { id: "connectors", label: "Connectors", icon: IconPlug, key: "5" },
+  { id: "projects", label: "Projects", icon: IconFolder, key: "6" },
+  { id: "memory", label: "Memory", icon: IconBrain, key: "7" },
+  { id: "artifacts", label: "Artifacts", icon: IconPin, key: "8" },
 ];
 
 const statusDot: Record<Session["status"], string> = { running: "bg-cyan animate-breathe", idle: "bg-line-strong", waiting: "bg-amber", done: "bg-mint", failed: "bg-rose" };

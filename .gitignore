@@ -40,6 +40,9 @@ data/
 # The Connectors page's wire layer (apps/desktop/src/app/capabilities/connectors/data/)
 # — same reason: the bare `data/` pattern above would otherwise swallow it.
 !apps/desktop/src/app/capabilities/connectors/data/
+# The Aro Workbench prototype's seed data (prototype/src/workbench/data/)
+# — same reason: the bare `data/` pattern above would otherwise swallow it.
+!prototype/src/workbench/data/
 .pytest_cache/
 test_durations.json
 .pytest-cache/

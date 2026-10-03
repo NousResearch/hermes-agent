@@ -18,6 +18,10 @@ import { CommandPalette } from "./components/CommandPalette";
 import { FleetView, ReviewView } from "./components/views";
 import { BrowserView, GitView, TasksView } from "./components/views2";
 import { ConnectorsView, ProjectsView, SkillsView } from "./components/views3";
+import { AutomationsView } from "./components/views4";
+import { ArtifactsView } from "./components/views5";
+import { MemoryView } from "./components/MemoryView";
+import { OnboardingStrip } from "./components/Onboarding";
 import { SettingsView } from "./components/Settings";
 import { TerminalPanel } from "./components/Terminal";
 import { TodoPopup } from "./components/TodoPopup";
@@ -60,6 +64,7 @@ const typing = () => { const el = document.activeElement; return !!el && (el.tag
 const SHEET_TITLES: Partial<Record<ViewId, [string, string]>> = {
   settings: ["Settings", "preferences"], tasks: ["Tasks", "work graph"], skills: ["Skills", "capability"], connectors: ["Connectors", "integrations"],
   projects: ["Projects", "workspace"], review: ["Changes", "review"], git: ["Git", "source control"], browser: ["Browser", "preview"], runs: ["Fleet", "parallel runs"],
+  automations: ["Automations", "cron & channels"], memory: ["Memory", "what aro learned"], artifacts: ["Artifacts", "pinned outputs"],
 };
 
 function loadSessions(key: string, seeds: Session[]): Session[] {
@@ -114,6 +119,10 @@ function Shell() {
   useEffect(() => localStorage.setItem("aro.sidebar.collapsed", String(!listOpen)), [listOpen]);
   const [statusOpen, setStatusOpen] = useState(true);
   const [paneSection, setPaneSection] = useState<ContextSectionId>("plan");
+  /* first-run onboarding strip (dismissed → aro.onboarding.done) */
+  const [onboarding, setOnboarding] = useState(false);
+  useEffect(() => { setOnboarding(!localStorage.getItem("aro.onboarding.done")); }, []);
+  const dismissOnboarding = () => { localStorage.setItem("aro.onboarding.done", "1"); setOnboarding(false); toast("Aro is ready — the doctor is in Settings if you need it", "mint"); };
   /* narrow screens: sidebar becomes a drawer, context pane is tucked away */
   const [isNarrow, setIsNarrow] = useState(false);
   useEffect(() => {
@@ -324,7 +333,7 @@ function Shell() {
       }
       else if (k === "v" && want(["⌘", "⇧"])) { e.preventDefault(); if (view !== "workbench") setViewRaw("workbench"); window.dispatchEvent(new CustomEvent("aro:voice:dictate")); }
       else if (e.key === "Enter" && want(["⌘"])) { e.preventDefault(); toast("Approval granted", "mint"); }
-      else if (/^[1-6]$/.test(e.key) && views[+e.key - 1]) { e.preventDefault(); setView(views[+e.key - 1]); }
+      else if (/^[1-9]$/.test(e.key) && views[+e.key - 1]) { e.preventDefault(); setView(views[+e.key - 1]); }
     };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
   });
@@ -391,8 +400,12 @@ function Shell() {
           <div className="flex min-h-0 flex-1">
             <>
                 {/* Chat is always mounted; panels open as sheets over it. */}
-                <div className="relative flex min-w-0 flex-1">
-                  <Workbench {...wbProps} />
+                <div className="relative flex min-w-0 flex-1 flex-col">
+                  {onboarding && isWb && (
+                    <div className="shrink-0 px-3 pt-3"><OnboardingStrip onDismiss={dismissOnboarding} /></div>
+                  )}
+                  <div className="relative flex min-h-0 min-w-0 flex-1">
+                    <Workbench {...wbProps} />
                   {!isWb && (
                     <Sheet title={SHEET_TITLES[view]?.[0] ?? view} eyebrow={SHEET_TITLES[view]?.[1]} onClose={closeSheet} streaming={streaming}>
                      <ErrorBoundary key={view} label={SHEET_TITLES[view]?.[0]}>
@@ -401,6 +414,9 @@ function Shell() {
                       {view === "skills" && <SkillsView />}
                       {view === "connectors" && <ConnectorsView />}
                       {view === "projects" && <ProjectsView projects={projects} sessions={sessions} onUpdate={updateProject} onNew={(pid) => openNew(undefined, pid)} onOpenThread={selectAndGo} />}
+                      {view === "automations" && <AutomationsView />}
+                      {view === "memory" && <MemoryView />}
+                      {view === "artifacts" && <ArtifactsView />}
                       {view === "review" && <ReviewView />}
                       {view === "git" && <GitView onReview={() => setView("review")} />}
                       {view === "browser" && <BrowserView onAskAgent={send} />}
@@ -408,6 +424,7 @@ function Shell() {
                      </ErrorBoundary>
                     </Sheet>
                   )}
+                  </div>
                 </div>
                 {inspectorOpen && !isNarrow ? (
                   <><div {...pane.handle} /><div style={{ width: pane.size }} className="shrink-0"><ContextPane section={paneSection} setSection={setPaneSection} onNavigate={(v) => setView(v)} onAskAgent={send} onCollapse={() => setInspectorOpen(false)} onOpenTerminal={() => setTermOpen(true)} /></div></>

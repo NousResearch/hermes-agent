@@ -8,6 +8,7 @@ import { THEMES, useApp } from "../lib/app";
 import { AgentMark, IconBolt, IconBrain, IconCheck, IconCoin, IconFile, IconGit, IconLayers, IconMcp, IconMic, IconMonitor, IconPalette, IconPlug, IconPlus, IconSearch, IconSettings, IconShield, IconSpark, IconTerminal, IconX, IconAt, IconStar } from "./Icons";
 import { Badge, Bar, Button, Input, Kbd, Segmented, Select, Toggle } from "./ui";
 import { SHORTCUTS, SHORTCUT_GROUPS } from "../lib/shortcuts";
+import { getBackend, setBackend, testBackend, type BackendConfig, type BackendMode } from "../lib/live";
 import { AgentsView, BridgesView } from "./views";
 import { DesignSystemView } from "./DesignSystemView";
 import { modeDefs } from "./Workbench";
@@ -24,6 +25,7 @@ const GROUPS: { label: string; items: Section[] }[] = [
   { label: "Agents", items: [
     { id: "agents", label: "Agents & models", icon: IconLayers, keywords: "claude codex cursor aro glm provider api key routing" },
     { id: "providers", label: "Providers & models", icon: IconBrain, keywords: "ollama lm studio local offline cloud inference openai compatible model endpoint" },
+    { id: "backend", label: "Backend", icon: IconBolt, keywords: "demo live sandbox real aro agent api server openai compatible endpoint 8642 replies chat completions" },
     { id: "permissions", label: "Permissions", icon: IconShield, keywords: "mode plan read only full access approvals allowlist sandbox spend cap" },
     { id: "rules", label: "Rules & memory", icon: IconFile, keywords: "agents.md claude.md soul memory instructions" },
     { id: "connectors", label: "Connectors (MCP)", icon: IconMcp, keywords: "mcp tools servers github linear sentry" },
@@ -299,6 +301,62 @@ function Gateway() {
     </Page>
   );
 }
+function BackendSettings() {
+  const { toast } = useApp();
+  const [cfg, setCfg] = useState<BackendConfig>(() => getBackend());
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; detail: string; ms: number } | null>(null);
+  const setMode = (mode: BackendMode) => { setBackend({ ...cfg, mode }); setCfg({ ...cfg, mode }); setResult(null); };
+  const runTest = async () => { setTesting(true); setResult(null); const r = await testBackend(cfg); setResult(r); setTesting(false); };
+  const save = () => { setBackend(cfg); toast("Live backend saved — replies now come from your Aro agent", "mint"); };
+  return (
+    <Page title="Backend" sub="Where replies come from. Demo uses this sandbox's z-ai model; live points the workbench at any OpenAI-compatible endpoint — like your Aro agent's api_server on :8642.">
+      <Card title="Mode" sub="Takes effect immediately for new messages.">
+        <Row label="Reply backend" desc="Demo: this sandbox's z-ai model. Live: any OpenAI-compatible endpoint.">
+          <Segmented value={cfg.mode} onChange={setMode} items={[{ value: "demo", label: "Demo" }, { value: "live", label: "Live" }]} />
+        </Row>
+      </Card>
+      {cfg.mode === "demo" ? (
+        <Card title="Demo" sub="Scripted tool steps close with a real reply from the sandbox model.">
+          <div className="flex items-center justify-between gap-6 px-4 py-3">
+            <div className="min-w-0">
+              <div className="font-mono text-[11px] text-ink-2">POST /api/chat · sandbox model · GLM via z-ai</div>
+              <div className="mt-0.5 text-[11.5px] text-ink-3">the reply you see in chat</div>
+            </div>
+            <Badge tone="mint" mono dot>connected</Badge>
+          </div>
+        </Card>
+      ) : (
+        <Card title="Live endpoint" sub="Any server that speaks POST /chat/completions.">
+          <Row label="Base URL" desc="Aro agent's api_server speaks OpenAI-compatible on :8642.">
+            <div className="w-[250px]"><Input value={cfg.baseUrl} onChange={(e) => setCfg((c) => ({ ...c, baseUrl: e.target.value }))} placeholder="http://localhost:8642/v1" className="h-[28px] font-mono text-[11px]" /></div>
+          </Row>
+          <Row label="Model" desc="Model id sent with every completion.">
+            <div className="w-[200px]"><Input value={cfg.model} onChange={(e) => setCfg((c) => ({ ...c, model: e.target.value }))} placeholder="aro-4-70b" className="h-[28px] font-mono text-[11px]" /></div>
+          </Row>
+          <Row label="API key" desc="Optional for local servers.">
+            <div className="w-[200px]"><Input type="password" value={cfg.key} onChange={(e) => setCfg((c) => ({ ...c, key: e.target.value }))} placeholder="sk-…" className="h-[28px] font-mono text-[11px]" /></div>
+          </Row>
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              {result ? (
+                result.ok
+                  ? <Badge tone="mint" mono dot>reachable · {result.ms}ms</Badge>
+                  : <Badge tone="rose" mono dot>unreachable · check host</Badge>
+              ) : <Badge tone="neutral" mono>{testing ? "testing…" : "not tested"}</Badge>}
+              {result && <span className="truncate font-mono text-[10.5px] text-ink-4">{result.detail}{result.ok ? "" : ` · ${result.ms}ms`}</span>}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button variant="secondary" disabled={testing} onClick={runTest}>{testing ? "Testing…" : "Test connection"}</Button>
+              <Button variant="primary" onClick={save}>Save</Button>
+            </div>
+          </div>
+        </Card>
+      )}
+      <div className="flex items-start gap-2 rounded-[10px] border border-amber/20 bg-amber-tint/40 px-3 py-2.5 text-[11px] leading-[1.55] text-amber"><IconBolt size={12} className="mt-0.5 shrink-0" /><span>Live mode points the workbench at a real agent. Demo data elsewhere (sessions, tasks) stays seeded.</span></div>
+    </Page>
+  );
+}
 function Usage() {
   const rows = [["claude-code", 84.2], ["codex", 51.6], ["cursor", 22.1], ["aro", 14.8], ["glm-code", 6.4], ["darwin", 5.1]] as const;
   return (
@@ -341,6 +399,7 @@ export function SettingsView({ onStart }: { onStart: (a: string) => void }) {
         {sec === "voice" && <VoiceSettings />}
         {sec === "agents" && <AgentsView onStart={onStart} />}
         {sec === "providers" && <ProviderSettings />}
+        {sec === "backend" && <BackendSettings />}
         {sec === "permissions" && <Permissions />}
         {sec === "rules" && <Rules />}
         {sec === "connectors" && <Connectors />}

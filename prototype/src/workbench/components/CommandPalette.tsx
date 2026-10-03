@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../utils/cn";
 import { AGENTS, BRIDGES, RUNS, SESSIONS, SLASH_COMMANDS, agentById } from "../data/catalog";
-import { AgentMark, IconBolt, IconFile, IconGit, IconLayers, IconMonitor, IconPalette, IconPulse, IconSearch, IconSpark, IconTerminal } from "./Icons";
+import { AgentMark, IconBolt, IconBrain, IconClock, IconFile, IconGit, IconLayers, IconMonitor, IconPalette, IconPin, IconPulse, IconSearch, IconSpark, IconTerminal } from "./Icons";
 import { Kbd } from "./ui";
 import type { ViewId } from "./Sidebar";
 
@@ -49,6 +49,9 @@ export function CommandPalette({
       { id: "v5", group: "Jump to", label: "Review — diffs & checkpoints", glyph: <IconGit size={13} />, run: () => setView("review") },
       { id: "v6", group: "Jump to", label: "Design system reference", glyph: <IconPalette size={13} />, run: () => setView("design") },
       { id: "v7", group: "Jump to", label: "Tasks — work graph", glyph: <IconFile size={13} />, run: () => setView("tasks") },
+      { id: "v15", group: "Jump to", label: "Automations — cron & channels", glyph: <IconClock size={13} />, run: () => setView("automations") },
+      { id: "v16", group: "Jump to", label: "Memory — what Aro learned", glyph: <IconBrain size={13} />, run: () => setView("memory") },
+      { id: "v17", group: "Jump to", label: "Artifacts — pinned outputs", glyph: <IconPin size={13} />, run: () => setView("artifacts") },
       { id: "v12", group: "Jump to", label: "Skills — runnable procedures", glyph: <IconSpark size={13} />, run: () => setView("skills") },
       { id: "v13", group: "Jump to", label: "Connectors — MCP servers & tools", glyph: <IconSpark size={13} />, run: () => setView("connectors") },
       { id: "v14", group: "Jump to", label: "Projects — inherited defaults", glyph: <IconFile size={13} />, run: () => setView("projects") },

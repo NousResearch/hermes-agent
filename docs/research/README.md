@@ -11,7 +11,7 @@ Research folder for the Aro rebrand and desktop redesign — lives in-repo at `d
 | [03-redesign-plan.md](03-redesign-plan.md) | The 8-phase (P0–P7) Aro Desktop redesign plan, plus the 3 implementation options (restyle / new frontend / ACP) with a recommendation. |
 | [04-rebrand-log.md](04-rebrand-log.md) | What the surface-rebrand commit `2ed2492` changed, and the remaining deep-rebrand TODO list (`~/.aro`, `aro://`, module renames, signing, update feed). |
 | [05-prototype-spec.md](05-prototype-spec.md) | Spec for the first Aro Desktop prototype (Next.js 16 single route): shell, chat canvas with tool timeline, tasks board, context inspector, ⌘K palette, live AI backend. |
-| [06-prototype-vs-hermes-integration.md](06-prototype-vs-hermes-integration.md) | **Current.** The attached design system (now the Aro Workbench prototype) vs. the Hermes/SamAgent codebase: capability matrix, what to port into `apps/desktop` (phases R1–R7), what to add to the prototype next (P-A…P-F), and the open decisions (agent fleet direction, integration target). |
+| [06-prototype-vs-hermes-integration.md](06-prototype-vs-hermes-integration.md) | **Current.** The attached design system (now the Aro Workbench prototype) vs. the Hermes/SamAgent codebase: capability matrix, what to port into `apps/desktop` (phases R1–R7), what to add to the prototype next (P-A…P-F). Round 2: all §5 decisions resolved and executed — Option A confirmed with **R1 shipped** (additive design-system port at `apps/desktop/src/aro/`), and **P-A…P-F shipped** in the prototype (automations, memory graph, hunk review, live-backend toggle, onboarding, artifacts). |
 
 Brand guidelines: [`../brand/BRAND.md`](../brand/BRAND.md).
 

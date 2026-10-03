@@ -4,8 +4,9 @@ import { useState, type ComponentType } from "react";
 import { cn } from "../utils/cn";
 import { MCP_SERVERS, PINNED_FILES, PLAN_TASKS, RULES, RUNS, agentById, type PlanTask, type Run } from "../data/catalog";
 import { CHANGED_FILES } from "../data/extra";
+import { LEARNED_THIS_WEEK } from "../data/memory";
 import { useApp } from "../lib/app";
-import { AgentMark, IconAt, IconBolt, IconBranch, IconCheck, IconChevronDown, IconEye, IconFile, IconFolder, IconGit, IconGrid, IconHistory, IconLayers, IconList, IconMcp, IconMonitor, IconPanelRight, IconPlug, IconPlus, IconRefresh, IconSearch, IconShield, IconSpark, IconTerminal, IconWarning, IconX } from "./Icons";
+import { AgentMark, IconAt, IconBolt, IconBrain, IconBranch, IconCheck, IconChevronDown, IconEye, IconFile, IconFolder, IconGit, IconGrid, IconHistory, IconLayers, IconList, IconMcp, IconMonitor, IconPanelRight, IconPlug, IconPlus, IconRefresh, IconSearch, IconShield, IconSpark, IconTerminal, IconWarning, IconX } from "./Icons";
 import { Badge, Bar, Button, IconButton, Ring, Toggle, Tip, toneText, type Tone } from "./ui";
 import { DiffView } from "./Transcript";
 import { REVIEW_FILES } from "./views";
@@ -105,7 +106,7 @@ function ChangesSection({ onFullView }: { onFullView: () => void }) {
 }
 
 /* ---------- context ---------- */
-function ContextSection() {
+function ContextSection({ onMemory }: { onMemory: () => void }) {
   const { product } = useApp();
   return (
     <div className="space-y-3 p-3">
@@ -124,6 +125,14 @@ function ContextSection() {
       <div className="rounded-[10px] border border-line-soft bg-raise">
         <div className="flex items-center justify-between border-b border-line-soft px-2.5 py-2"><span className="font-mono text-[9.5px] font-semibold tracking-[.14em] text-ink-4 uppercase">pinned</span><span className="font-mono text-[9.5px] text-ink-4">11.6k tok</span></div>
         {PINNED_FILES.map((f) => <div key={f.path} className="group flex items-center gap-2 border-b border-line-soft/70 px-2.5 py-[7px] last:border-0 hover:bg-hover/60"><IconFile size={11} className="shrink-0 text-ink-4" /><span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-2">{f.path}</span><span className="font-mono text-[9.5px] text-ink-4">{(f.tokens / 1000).toFixed(1)}k</span></div>)}
+      </div>
+      <div className="rounded-[10px] border border-mint/20 bg-raise">
+        <div className="flex items-center justify-between border-b border-line-soft px-2.5 py-2"><span className="flex items-center gap-1.5 font-mono text-[9.5px] font-semibold tracking-[.14em] text-ink-4 uppercase"><IconBrain size={10} className="text-mint" /> learned this week</span><button onClick={onMemory} className="cursor-pointer font-mono text-[9.5px] text-iris-soft hover:underline">graph →</button></div>
+        <div className="space-y-1.5 p-2">
+          {LEARNED_THIS_WEEK.slice(0, 3).map((m) => (
+            <div key={m.id} className="flex items-start gap-2 rounded-[7px] border border-line-soft bg-well px-2 py-1.5"><i className="mt-[5px] size-[5px] shrink-0 rounded-full bg-mint" /><div className="min-w-0 flex-1"><p className="truncate text-[11px] text-ink-2">{m.label}</p><span className="font-mono text-[9px] text-ink-4">{m.when} · {m.session}</span></div></div>
+          ))}
+        </div>
       </div>
       <div className="rounded-[10px] border border-line-soft bg-raise">
         <div className="flex items-center justify-between border-b border-line-soft px-2.5 py-2"><span className="flex items-center gap-1.5 font-mono text-[9.5px] font-semibold tracking-[.14em] text-ink-4 uppercase"><IconMcp size={10} /> connectors</span><Badge tone="mint" mono className="text-[9px]">4 live</Badge></div>
@@ -275,7 +284,7 @@ export function ContextPane({ section, setSection, onNavigate, onAskAgent, onCol
         <div key={section} className="scroll-thin flex-1 animate-fade overflow-y-auto">
           {section === "plan" && <PlanSection />}
           {section === "changes" && <ChangesSection onFullView={() => onNavigate("review")} />}
-          {section === "context" && <ContextSection />}
+          {section === "context" && <ContextSection onMemory={() => onNavigate("memory")} />}
           {section === "runs" && <RunsSection onFullView={() => onNavigate("runs")} />}
           {section === "git" && <GitSection onFullView={() => onNavigate("git")} />}
           {section === "browser" && <BrowserSection onFullView={() => onNavigate("browser")} onAskAgent={onAskAgent} />}

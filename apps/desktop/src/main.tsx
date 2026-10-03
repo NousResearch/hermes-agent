@@ -9,6 +9,9 @@ import './store/translucency'
 import './store/user-bubble-transparency'
 // Side-effect: restores chat typography before the first conversation paints.
 import './store/chat-text-scale'
+// Side-effect: registers the Aro design-system reference page (/aro-design)
+// and its sidebar row via the contribution registry.
+import './aro/register'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen

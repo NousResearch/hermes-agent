@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "../utils/cn";
-import { AGENTS, BRIDGES, RUNS, agentById, type Agent, type AgentKind, type DiffFile } from "../data/catalog";
+import { AGENTS, BRIDGES, RUNS, agentById, type Agent, type AgentKind, type DiffFile, type DiffLine } from "../data/catalog";
 import { useApp } from "../lib/app";
-import { AgentMark, IconBolt, IconCheck, IconChevronDown, IconFile, IconGit, IconPlug, IconRefresh, IconSpark, IconTerminal, IconUndo, IdeMark } from "./Icons";
-import { Badge, Bar, Button, IconButton, Ring, Segmented, Stat, type Tone } from "./ui";
+import { AgentMark, IconBolt, IconCheck, IconChevronDown, IconFile, IconGit, IconPencil, IconPlug, IconRefresh, IconSpark, IconTerminal, IconUndo, IconX, IdeMark } from "./Icons";
+import { Badge, Bar, Button, IconButton, Input, Ring, Segmented, Stat, type Tone } from "./ui";
 import { DiffView } from "./Transcript";
 import { Grid, PageHeader } from "./Titlebar";
 
@@ -149,34 +149,118 @@ export function BridgesView() {
 }
 
 /* ================================ REVIEW ================================ */
+type Hunk = { header: string; lines: DiffLine[]; adds: number; dels: number };
+function splitHunks(file: DiffFile): Hunk[] {
+  const hunks: Hunk[] = [];
+  for (const ln of file.lines) {
+    let cur = hunks[hunks.length - 1];
+    if (ln.t === "hunk" || !cur) {
+      cur = { header: ln.t === "hunk" ? ln.text : "@@", lines: [], adds: 0, dels: 0 };
+      hunks.push(cur);
+    }
+    cur.lines.push(ln);
+    if (ln.t === "add") cur.adds++;
+    else if (ln.t === "del") cur.dels++;
+  }
+  return hunks;
+}
 export const REVIEW_FILES: DiffFile[] = [
-  { path: "packages/bridge/src/server.ts", adds: 14, dels: 4, lang: "ts", lines: [
+  { path: "packages/bridge/src/server.ts", adds: 20, dels: 6, lang: "ts", lines: [
     { t: "hunk", text: "@@ -4,9 +4,19 @@ export async function startBridge", o: 4, n: 4 }, { t: "ctx", text: "  const store = new SessionStore(opts.root)", o: 5, n: 5 }, { t: "del", text: "  const server = createServer({ port: opts.port })", o: 6 },
     { t: "add", text: "  const channel = new SessionChannel(store, {", n: 6 }, { t: "add", text: "    flushEveryMs: 12,", n: 7 }, { t: "add", text: "    resume: 'cursor',", n: 8 }, { t: "add", text: "  })", n: 9 },
-    { t: "ctx", text: "  server.on('connection', (socket) => {", o: 8, n: 12 }, { t: "del", text: "    socket.send(store.snapshot())", o: 9 }, { t: "add", text: "    const client = attachEditor(socket, channel, {", n: 13 }, { t: "add", text: "      capabilities: socket.requested ?? [],", n: 14 }, { t: "add", text: "      onEdit: (patch) => reviewer.enqueue(patch),", n: 15 }, { t: "add", text: "    })", n: 16 }, { t: "ctx", text: "  })", o: 10, n: 18 } ] },
-  { path: "packages/editor-kit/src/attach.ts", adds: 41, dels: 7, lang: "ts", lines: [
+    { t: "ctx", text: "  server.on('connection', (socket) => {", o: 8, n: 12 }, { t: "del", text: "    socket.send(store.snapshot())", o: 9 }, { t: "add", text: "    const client = attachEditor(socket, channel, {", n: 13 }, { t: "add", text: "      capabilities: socket.requested ?? [],", n: 14 }, { t: "add", text: "      onEdit: (patch) => reviewer.enqueue(patch),", n: 15 }, { t: "add", text: "    })", n: 16 }, { t: "ctx", text: "  })", o: 10, n: 18 },
+    { t: "hunk", text: "@@ -38,7 +48,10 @@ export async function stopBridge", o: 38, n: 48 }, { t: "ctx", text: "  server.on('close', () => {", o: 39, n: 49 }, { t: "del", text: "    store.dispose()", o: 40 },
+    { t: "add", text: "    void channel.drain().then(() => {", n: 50 }, { t: "add", text: "      store.dispose()", n: 51 }, { t: "add", text: "      for (const s of sockets) s.close(1000, 'server-stop')", n: 52 }, { t: "add", text: "    })", n: 53 }, { t: "ctx", text: "  })", o: 42, n: 55 },
+    { t: "hunk", text: "@@ -60,4 +73,9 @@ export function describeBridge", o: 60, n: 73 }, { t: "ctx", text: "export function describeBridge(b: Bridge) {", o: 61, n: 74 }, { t: "del", text: "  return `bridge:${b.port}`", o: 62 },
+    { t: "add", text: "  const caps = b.editors.map((e) => e.caps.join('+')).sort()", n: 75 }, { t: "add", text: "  return `bridge:${b.port} editors=${caps.length}`", n: 76 }, { t: "add", text: "    + ` caps=${caps.join(',')}`", n: 77 }, { t: "add", text: "    + ` queue=${b.reviewer.size()}`", n: 78 }, { t: "ctx", text: "}", o: 63, n: 80 } ] },
+  { path: "packages/editor-kit/src/attach.ts", adds: 47, dels: 9, lang: "ts", lines: [
     { t: "hunk", text: "@@ -12,6 +12,47 @@ export function attachEditor", o: 12, n: 12 }, { t: "add", text: "export type EditorCaps = 'diff' | 'terminal' | 'worktree' | 'rules'", n: 12 }, { t: "add", text: "const BACKOFF = [0, 250, 500, 1_000, 2_500, 5_000]", n: 14 },
-    { t: "ctx", text: "export function attachEditor(socket, channel, opts) {", o: 13, n: 16 }, { t: "del", text: "  socket.on('message', (m) => channel.push(m))", o: 14 }, { t: "add", text: "  const caps = negotiate(socket, opts.capabilities)", n: 17 }, { t: "add", text: "  let cursor = channel.head", n: 18 }, { t: "add", text: "  socket.on('ack', (n) => { cursor = n })", n: 19 }, { t: "add", text: "  socket.on('edit', (patch) => reviewer.enqueue({ ...patch, origin: 'editor' }))", n: 24 }, { t: "ctx", text: "  return { dispose }", o: 18, n: 30 } ] },
+    { t: "ctx", text: "export function attachEditor(socket, channel, opts) {", o: 13, n: 16 }, { t: "del", text: "  socket.on('message', (m) => channel.push(m))", o: 14 }, { t: "add", text: "  const caps = negotiate(socket, opts.capabilities)", n: 17 }, { t: "add", text: "  let cursor = channel.head", n: 18 }, { t: "add", text: "  socket.on('ack', (n) => { cursor = n })", n: 19 }, { t: "add", text: "  socket.on('edit', (patch) => reviewer.enqueue({ ...patch, origin: 'editor' }))", n: 24 }, { t: "ctx", text: "  return { dispose }", o: 18, n: 30 },
+    { t: "hunk", text: "@@ -41,6 +76,13 @@ function dispose", o: 41, n: 76 }, { t: "ctx", text: "  function dispose() {", o: 42, n: 77 }, { t: "del", text: "    socket.close()", o: 43 },
+    { t: "add", text: "    clearTimeout(retryTimer)", n: 78 }, { t: "add", text: "    for (const t of backoffTimers) clearTimeout(t)", n: 79 }, { t: "add", text: "    socket.close(1000, 'client-dispose')", n: 80 }, { t: "add", text: "    channel.release(cursor)", n: 81 }, { t: "ctx", text: "  }", o: 45, n: 83 } ] },
   { path: "packages/review/src/reviewer.ts", adds: 9, dels: 3, lang: "ts", lines: [
     { t: "hunk", text: "@@ -30,4 +30,12 @@ class DiffReviewer", o: 30, n: 30 }, { t: "del", text: "  enqueue(patch: AgentPatch) {", o: 31 }, { t: "add", text: "  enqueue(patch: Patch) {   // agent- or editor-originated", n: 31 }, { t: "add", text: "    const entry = normalise(patch, patch.origin ?? 'agent')", n: 32 }, { t: "add", text: "    if (entry.origin === 'editor') this.markHuman(entry)", n: 33 }, { t: "ctx", text: "    this.queue.push(entry)", o: 33, n: 34 }, { t: "add", text: "    checkpoints.snapshot([entry.path])", n: 36 } ] },
 ];
+const REVIEW_HUNKS: Record<string, Hunk[]> = Object.fromEntries(REVIEW_FILES.map((f) => [f.path, splitHunks(f)]));
+const REVIEW_TOTAL_HUNKS = REVIEW_FILES.reduce((n, f) => n + REVIEW_HUNKS[f.path].length, 0);
+type HunkVerdict = "accepted" | "rejected";
+type HunkThreadData = { id: string; hunkKey: string; text: string };
+
+function HunkThread({ thread }: { thread: HunkThreadData }) {
+  const [queued, setQueued] = useState(false);
+  const [resolved, setResolved] = useState(false);
+  useEffect(() => {
+    if (queued) return;
+    const t = setTimeout(() => setQueued(true), 1200);
+    return () => clearTimeout(t);
+  }, [queued]);
+  return (
+    <div className="animate-slide-down">
+      <div className={cn("border-t border-line-soft bg-amber-tint/50 px-2.5 py-2 transition-opacity", resolved && "opacity-60")}>
+        <div className="flex items-start gap-2">
+          <IconPencil size={11} className="mt-[3px] shrink-0 text-amber" />
+          <div className="min-w-0 flex-1">
+            <p className={cn("text-[12px] leading-[1.55] text-ink-2", resolved && "text-ink-4 line-through")}>{thread.text}</p>
+            <div className="mt-1 font-mono text-[9.5px] text-ink-4">you · just now{resolved && <span className="text-mint"> · resolved</span>}</div>
+          </div>
+          <Button variant="ghost" size="xs" onClick={() => setResolved((r) => !r)} aria-label={resolved ? "Reopen thread" : "Resolve thread"}>{resolved ? "Reopen" : "Resolve"}</Button>
+        </div>
+        <div className="mt-1.5 flex items-center gap-1.5 border-t border-amber/20 pt-1.5">
+          {queued ? (<>
+            <IconCheck size={10} className="shrink-0 text-mint" /><span className="font-mono text-[10px] text-mint">Aro queued fix · patch incoming</span>
+          </>) : (<>
+            <i className="size-[5px] shrink-0 animate-breathe rounded-full bg-amber" /><span className="font-mono text-[10px] text-ink-4">Aro will address this before the next checkpoint</span>
+          </>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ReviewView() {
   const { toast } = useApp();
   const [active, setActive] = useState(0);
   const [staged, setStaged] = useState<string[]>([REVIEW_FILES[0].path]);
   const [layout, setLayout] = useState<"unified" | "split">("split");
+  const [verdicts, setVerdicts] = useState<Record<string, HunkVerdict>>({});
+  const [commenting, setCommenting] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [threads, setThreads] = useState<HunkThreadData[]>([]);
   const file = REVIEW_FILES[active];
+  const hunks = REVIEW_HUNKS[file.path];
+  const hkey = (i: number) => `${file.path}#${i}`;
+  const fAcc = hunks.reduce((n, _, i) => n + (verdicts[hkey(i)] === "accepted" ? 1 : 0), 0);
+  const fRej = hunks.reduce((n, _, i) => n + (verdicts[hkey(i)] === "rejected" ? 1 : 0), 0);
+  const gAcc = Object.values(verdicts).filter((v) => v === "accepted").length;
+  const gRej = Object.values(verdicts).filter((v) => v === "rejected").length;
+  const fileThreads = threads.filter((t) => t.hunkKey.startsWith(`${file.path}#`));
+  const setVerdict = (key: string, v: HunkVerdict) => setVerdicts((s) => {
+    if (s[key] === v) { const next = { ...s }; delete next[key]; return next; }
+    return { ...s, [key]: v };
+  });
+  const resetVerdict = (key: string) => setVerdicts((s) => {
+    if (!(key in s)) return s;
+    const next = { ...s }; delete next[key]; return next;
+  });
+  const toggleComposer = (key: string) => { setDraft(""); setCommenting((c) => (c === key ? null : key)); };
+  const sendComment = (key: string) => {
+    const text = draft.trim();
+    if (!text) return;
+    setThreads((ts) => [...ts, { id: `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, hunkKey: key, text }]);
+    setDraft("");
+    setCommenting(null);
+  };
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <PageHeader eyebrow="changes" title="Review changes" sub="Agent edits, editor edits and cloud runs all land here as one reviewable diff — with a checkpoint behind every change."
-        right={<div className="flex flex-wrap items-center gap-2"><Segmented value={layout} onChange={setLayout} items={[{ value: "unified", label: "Unified" }, { value: "split", label: "Side by side" }]} /><Button variant="secondary" icon={IconUndo}>Restore checkpoint</Button><Button variant="danger">Request changes</Button><Button variant="primary" icon={IconCheck} onClick={() => toast(`Accepted ${staged.length} file(s)`, "mint")}>Accept {staged.length}</Button></div>} />
+        right={<div className="flex flex-wrap items-center gap-2"><Segmented value={layout} onChange={setLayout} items={[{ value: "unified", label: "Unified" }, { value: "split", label: "Side by side" }]} /><Button variant="secondary" icon={IconUndo}>Restore checkpoint</Button><Button variant="danger" onClick={() => toast(`Changes requested — Aro is rewriting ${gRej} hunk${gRej === 1 ? "" : "s"}`, "amber")}>Request changes</Button><Button variant="primary" icon={IconCheck} onClick={() => toast(`Accepted ${gAcc}/${REVIEW_TOTAL_HUNKS} hunks · ${gRej} rejected · ${threads.length} commented`, "mint")}>Accept {gAcc}/{REVIEW_TOTAL_HUNKS} hunks</Button></div>} />
       <div className="flex min-h-0 flex-1">
         <div className="flex w-[300px] shrink-0 flex-col border-r border-line-soft bg-sunken">
-          <div className="flex items-center gap-2 border-b border-line-soft px-3 py-2.5"><span className="font-mono text-[9.5px] tracking-[.14em] text-ink-4 uppercase">changed</span><span className="font-mono text-[10px] text-mint">+64</span><span className="font-mono text-[10px] text-rose">−14</span><span className="ml-auto font-mono text-[9.5px] text-ink-4">3 files</span></div>
+          <div className="flex items-center gap-2 border-b border-line-soft px-3 py-2.5"><span className="font-mono text-[9.5px] tracking-[.14em] text-ink-4 uppercase">changed</span><span className="font-mono text-[10px] text-mint">+{REVIEW_FILES.reduce((a, f) => a + f.adds, 0)}</span><span className="font-mono text-[10px] text-rose">−{REVIEW_FILES.reduce((a, f) => a + f.dels, 0)}</span><span className="ml-auto font-mono text-[9.5px] text-ink-4">{REVIEW_FILES.length} files</span></div>
           <div className="scroll-thin flex-1 overflow-y-auto p-1.5">
             {REVIEW_FILES.map((f, i) => { const on = i === active; const s = staged.includes(f.path); return (
               <div key={f.path} onClick={() => setActive(i)} className={cn("flex cursor-pointer items-start gap-2 rounded-[8px] px-2 py-2 transition-colors", on ? "bg-raise shadow-e1" : "hover:bg-raise/60")}>
-                <button onClick={(e) => { e.stopPropagation(); setStaged((x) => x.includes(f.path) ? x.filter((p) => p !== f.path) : [...x, f.path]); }} className={cn("mt-[2px] flex size-[15px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border", s ? "border-iris bg-iris text-on-iris" : "border-line-strong")}>{s && <IconCheck size={9} />}</button>
+                <button onClick={(e) => { e.stopPropagation(); setStaged((x) => x.includes(f.path) ? x.filter((p) => p !== f.path) : [...x, f.path]); }} aria-label={s ? `Unstage ${f.path}` : `Stage ${f.path}`} className={cn("mt-[2px] flex size-[15px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border", s ? "border-iris bg-iris text-on-iris" : "border-line-strong")}>{s && <IconCheck size={9} />}</button>
                 <div className="min-w-0 flex-1"><p className="truncate font-mono text-[11px] text-ink-2">{f.path.split("/").pop()}</p><p className="truncate font-mono text-[9.5px] text-ink-4">{f.path.split("/").slice(0, -1).join("/")}</p></div>
                 <div className="text-right font-mono text-[9.5px]"><div className="text-mint">+{f.adds}</div><div className="text-rose">−{f.dels}</div></div>
               </div>); })}
@@ -189,9 +273,39 @@ export function ReviewView() {
           </div>
         </div>
         <div className="scroll-thin flex-1 overflow-y-auto bg-base">
-          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-line-soft bg-base/90 px-4 py-2.5 backdrop-blur-xl"><IconFile size={12} className="text-ink-4" /><span className="font-mono text-[11.5px] text-ink">{file.path}</span><span className="font-mono text-[10px] text-mint">+{file.adds}</span><span className="font-mono text-[10px] text-rose">−{file.dels}</span><div className="ml-auto flex gap-1.5"><Button variant="ghost" size="xs">Comment</Button><Button variant="ghost" size="xs">Ask agent to fix</Button><Button variant="ghost" size="xs">Open in editor</Button></div></div>
+          <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-line-soft bg-base/90 px-4 py-2.5 backdrop-blur-xl"><IconFile size={12} className="text-ink-4" /><span className="font-mono text-[11.5px] text-ink">{file.path}</span><span className="font-mono text-[10px] text-mint">+{file.adds}</span><span className="font-mono text-[10px] text-rose">−{file.dels}</span><div className="ml-auto flex gap-1.5"><Button variant="ghost" size="xs" onClick={() => hunks.length > 0 && toggleComposer(hkey(0))}>Comment</Button><Button variant="ghost" size="xs" onClick={() => { const r = hunks.findIndex((_, i) => verdicts[hkey(i)] === "rejected"); toggleComposer(hkey(r === -1 ? 0 : r)); }}>Ask agent to fix</Button><Button variant="ghost" size="xs">Open in editor</Button></div></div>
           <div className="p-4">
-            <DiffView key={layout + active} file={file} maxLines={80} mode={layout} />
+            <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px]">
+              <span className="text-ink-3">{hunks.length} hunk{hunks.length === 1 ? "" : "s"}</span><span className="text-ink-4">·</span>
+              <span className="text-mint">{fAcc} accepted</span><span className="text-ink-4">·</span>
+              <span className="text-rose">{fRej} rejected</span><span className="text-ink-4">·</span>
+              <span className="text-ink-4">{hunks.length - fAcc - fRej} pending</span>
+              {fileThreads.length > 0 && (<><span className="text-ink-4">·</span><span className="text-amber">{fileThreads.length} thread{fileThreads.length === 1 ? "" : "s"}</span></>)}
+            </div>
+            {hunks.map((h, i) => { const key = hkey(i); const v = verdicts[key]; return (
+              <div key={key} className={cn("group/hunk mb-2 overflow-clip rounded-[8px] border bg-well transition-all", v === "accepted" ? "border-mint/30" : v === "rejected" ? "border-rose/25 opacity-60" : "border-line-soft hover:border-line-strong")}>
+                <div className="sticky top-[45px] z-10 flex items-center gap-2 border-b border-line-soft bg-well/80 px-2.5 py-[5px] backdrop-blur">
+                  <span className="shrink-0 font-mono text-[9px] tracking-[.14em] text-ink-4 uppercase">hunk {i + 1}</span>
+                  <span className="shrink-0 font-mono text-[9.5px]"><span className="text-mint">+{h.adds}</span> <span className="text-rose">−{h.dels}</span></span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-3">{h.header}</span>
+                  {v && <button onDoubleClick={() => resetVerdict(key)} title="Double-click to reset" aria-label={`Reset hunk ${i + 1}`} className={cn("inline-flex shrink-0 cursor-pointer items-center rounded-full px-1.5 py-[1px] font-mono text-[9.5px] transition-opacity hover:opacity-75", v === "accepted" ? "bg-mint-tint text-mint" : "bg-rose-tint text-rose")}>{v === "accepted" ? "accepted ✓" : "rejected"}</button>}
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5 opacity-0 transition-opacity duration-150 group-hover/hunk:opacity-100 group-focus-within/hunk:opacity-100">
+                    <Button variant="success" size="xs" icon={IconCheck} aria-label={`Accept hunk ${i + 1}`} onClick={() => setVerdict(key, "accepted")}>Accept</Button>
+                    <Button variant="danger" size="xs" icon={IconX} aria-label={`Reject hunk ${i + 1}`} onClick={() => setVerdict(key, "rejected")}>Reject</Button>
+                    <Button variant="ghost" size="xs" icon={IconPencil} aria-label={`Comment on hunk ${i + 1}`} onClick={() => toggleComposer(key)}>Comment</Button>
+                  </div>
+                </div>
+                <div className="[&>div]:rounded-none [&>div]:border-0 [&>div>div:first-child]:hidden">
+                  <DiffView key={layout + key} file={{ path: file.path, adds: h.adds, dels: h.dels, lang: file.lang, lines: h.lines }} maxLines={40} mode={layout} />
+                </div>
+                {commenting === key && (
+                  <div className="flex items-center gap-1.5 border-t border-line-soft bg-well px-2.5 py-2">
+                    <Input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); sendComment(key); } else if (e.key === "Escape") setCommenting(null); }} placeholder="Comment on this hunk — ⏎ to send" aria-label={`Comment on hunk ${i + 1}`} className="h-[26px] flex-1 text-[12px]" />
+                    <Button variant="primary" size="xs" onClick={() => sendComment(key)}>Ask agent to fix</Button>
+                  </div>
+                )}
+                {threads.filter((t) => t.hunkKey === key).map((t) => <HunkThread key={t.id} thread={t} />)}
+              </div>); })}
             <div className="mt-3 rounded-[10px] border border-line-soft bg-raise p-3"><div className="flex items-center gap-2"><IconSpark size={12} className="text-iris-soft" /><span className="text-[12.5px] font-medium text-ink">Why this change</span><Badge tone="iris" mono className="text-[9.5px]">claude-code</Badge></div><p className="mt-1.5 text-[12px] leading-[1.6] text-ink-3">Replaces the one-shot snapshot with a streaming <code className="font-mono text-cyan">SessionChannel</code>. Editor sockets negotiate capabilities and every editor-originated patch enters the same reviewer, so review, checkpoint and rewind behave identically regardless of who made the edit.</p></div>
           </div>
         </div>

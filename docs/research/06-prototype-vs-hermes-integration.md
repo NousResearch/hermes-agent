@@ -1,14 +1,27 @@
 # 06 — Aro Workbench Prototype vs. Hermes/SamAgent: Comparison & Integration Plan
 
 Status: **Decision document** — read with `03-redesign-plan.md` (the P0–P7 plan this supersedes in part).
-Date: Oct 2026 · Prototype: `prototype/src/workbench/` (repo root) (the attached coding-agent-design-system, rebranded **Aro Workbench**, live AI wired).
+Date: Oct 2026 · Prototype: `prototype/src/workbench/` (the attached coding-agent-design-system, rebranded **Aro Workbench**, live AI wired).
+
+> **Update — round 2 (Oct 2026).** All §5 decisions resolved per recommendation and executed:
+> **§5.1 Integration target = Option A confirmed** → **R1 shipped** (additive design-system port into
+> `apps/desktop/src/aro/`: namespaced 5-theme token layer, UI primitive kit, `/aro-design` reference page
+> registered through the host's contribution registry; 5 lines total touched in existing files).
+> **§5.2 fleet direction = (b) core first** — fleet UI stays as the R5 target over delegate_task.
+> **§5.3 voice = browser engine default**, Hermes daemon engine when attached (settings row models it).
+> **§5.4 naming** — prototype already uses `aro`/`aro.*` keys; deep rebrand sequencing stays ahead of R2.
+> §4 backlog **P-A…P-F all shipped** in the prototype (see §7 verification log): Automations view
+> (cron schedules + 14 messaging channels — the moat surfaces), Memory graph ("what Aro learned this
+> week", clustered node graph, pin/forget, provider switch), hunk-level review (per-hunk
+> accept/reject/comment → agent follow-up), live-backend toggle (demo ⇄ any OpenAI-compatible endpoint
+> incl. the real agent's :8642), onboarding/doctor strip, artifacts view.
 
 ---
 
 ## 1. What the prototype is now
 
 The attached design system ("Conductor — Agent Workbench") was ported into this Next.js
-project as `prototype/src/workbench/` (repo root) and merged with the best of the previous Aro prototype:
+project as `prototype/src/workbench/` and merged with the best of the previous Aro prototype:
 
 | Kept from old prototype | Replaced by design system |
 | --- | --- |
@@ -139,3 +152,36 @@ Priority order — each is scoped to days, not weeks:
   is in settings, and it updates the theme store…"), ⌘K palette → Review/Tasks, Settings → design
   system reference, Agent product switch, theme switch (obsidian/daylight), mobile drawer
 - VLM scores: desktop 9/10 (no defects), mobile drawer 8/10, main chat 6/10 at 390px (dense by nature)
+
+---
+
+## 7. Verification log (round 2 — P-A…P-F + R1)
+
+All checks run on the live dev server (1440×900 desktop + 390×844 mobile), agent-browser + VLM:
+
+- **P-A Automations**: nav ⌘3 + palette entry; schedules list (8 jobs, toggles, cron chips, agent
+  marks, channel badges, next-run, cost-vs-cap bars, overflow menu), Channels tab (14 platform
+  cards, continuity demo, approval chips), New-automation modal (NL schedule → cron parse).
+  VLM 9/10. Screenshots `p-all-03/04/19`.
+- **P-C Memory**: digest strip + learned-this-week chips (click → select node), clustered SVG node
+  graph (keyboard-accessible nodes), detail panel (recall meta, confidence ring, source session,
+  associations), Pin/Forget (18→17 nodes verified), provider switch. Fixed a short-viewport
+  collapse (graph row now `min-h` + scrollable root). Screenshots `p-all-05..09`.
+- **P-D Hunk review**: per-hunk Accept/Reject (verdict chips, double-click reset), inline comment →
+  thread ("Aro queued fix · patch incoming" after 1.2s) + Resolve, live accounting
+  ("Accept 1/6 hunks" button, per-file pending/accepted/rejected/thread counts).
+  Screenshots `p-all-11..14`.
+- **P-B Backend toggle**: Settings → Backend; Demo ⇄ Live segmented (persists to `aro.backend`),
+  Base URL / model / API-key inputs, Test connection pill (subagent-verified against a mock
+  OpenAI-compatible server: reachable/unreachable + live chat round-trip + auto-fallback to demo
+  when the live endpoint dies). Screenshots `p-all-15/16`.
+- **P-E Onboarding**: first-run strip (localStorage-gated), doctor sweep (runtime → providers →
+  workspace), Pick-folder flips step, dismiss persists. VLM 9/10. Screenshots `p-all-01/02`.
+- **P-F Artifacts**: 9 cards across 5 kinds with CSS mini-previews, kind filter + search, pin
+  toggle + regenerate counters, stats row. Screenshot `p-all-10`.
+- **Wiring**: nav 1–8 keys, ⌘K entries, ContextPane "learned this week" card → memory graph link,
+  Sheet titles, onboarding mount above chat.
+- **R1 (apps/desktop)**: 4 TSX files parse (Bun.Transpiler), tokens.css balanced (5 themes),
+  registration via the host's contribution registry, only 5 lines changed in existing files.
+- **Regression**: lint clean, tsc clean in `src/`, no page errors, mobile 390px zero horizontal
+  overflow, live AI still streams (POST /api/chat 200).

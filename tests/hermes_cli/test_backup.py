@@ -1440,7 +1440,7 @@ class TestSafeCopyDb:
     def test_aborts_when_source_remains_busy_past_deadline(
         self, tmp_path, monkeypatch
     ):
-        from hermes_cli import backup as backup_mod
+        from hermes_cli import backup_sqlite as backup_sqlite_mod
 
         src = tmp_path / "locked.db"
         dst = tmp_path / "copy.db"
@@ -1478,15 +1478,53 @@ class TestSafeCopyDb:
             connect_calls.append((args, kwargs))
             return next(connections)
 
-        monkeypatch.setattr(backup_mod.sqlite3, "connect", fake_connect)
-        monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(backup_sqlite_mod.sqlite3, "connect", fake_connect)
+        monkeypatch.setattr(backup_sqlite_mod.time, "monotonic", lambda: next(clock))
         monkeypatch.setattr(Path, "unlink", assert_closed_before_unlink)
 
-        assert backup_mod._safe_copy_db(src, dst, timeout_seconds=1.0) is False
+        assert backup_sqlite_mod._safe_copy_db(src, dst, timeout_seconds=1.0) is False
         assert connect_calls[0][1]["timeout"] == 0.0
         assert not dst.exists()
 
 
+
+
+    def test_aborts_when_progress_keeps_extending_past_deadline(
+        self, tmp_path, monkeypatch
+    ):
+        """Progress callbacks must not extend the total backup deadline (#120888)."""
+        from hermes_cli import backup_sqlite as backup_sqlite_mod
+
+        src = tmp_path / "active.db"
+        dst = tmp_path / "copy.db"
+        src.touch()
+
+        # The second nonterminal callback is after the original one-second
+        # deadline, but the first SQLITE_OK callback reset it when buggy.
+        clock = iter((100.0, 100.5, 101.1))
+
+        class FakeSourceConnection:
+            def backup(self, _destination, *, pages, progress, sleep):
+                assert pages > 0
+                assert sleep > 0
+                progress(sqlite3.SQLITE_OK, 1, 2)
+                progress(sqlite3.SQLITE_OK, 1, 2)
+
+            def close(self):
+                pass
+
+        class FakeDestinationConnection:
+            def close(self):
+                pass
+
+        connections = iter((FakeSourceConnection(), FakeDestinationConnection()))
+        monkeypatch.setattr(
+            backup_sqlite_mod.sqlite3, "connect", lambda *args, **kwargs: next(connections)
+        )
+        monkeypatch.setattr(backup_sqlite_mod.time, "monotonic", lambda: next(clock))
+
+        assert backup_sqlite_mod._safe_copy_db(src, dst, timeout_seconds=1.0) is False
+        assert not dst.exists()
 
 
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):

@@ -346,7 +346,8 @@ def test_execute_code_gateway_uses_selected_transport(monkeypatch):
 
     assert result["approved"] is True
     assert len(seen) == 1
-    assert seen[0].pattern_key == "execute_code"
+    # Content-addressed key (GHSA-g29c-57jh-8xcf): the digest of this exact script, not the tool name.
+    assert seen[0].pattern_key == approval.execute_code_approval_key("print('ok')", "local")
     assert seen[0].surface == "gateway"
 
 

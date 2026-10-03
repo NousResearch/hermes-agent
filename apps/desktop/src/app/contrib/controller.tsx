@@ -118,6 +118,7 @@ import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
+import { RouteHeading } from '../shell/route-heading'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
@@ -812,6 +813,7 @@ export function ContribController() {
     return (
       <ContribWiring>
         <AppContextMenu />
+        <RouteHeading />
         <HudShell />
       </ContribWiring>
     )
@@ -833,6 +835,7 @@ export function ContribController() {
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
+        <RouteHeading />
         <AppContextMenu />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"

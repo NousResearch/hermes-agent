@@ -446,6 +446,46 @@ class SessionMessagesMixin:
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
+    def release_caller_history_deliveries(self, session_id: str, row_ids: List[int]) -> int:
+        """Undo a claim whose consumer could not use the rows, so the next claim sees them again."""
+        lineage = self._resume_lineage_ids(session_id)
+        ids = [int(i) for i in row_ids]
+        if not ids:
+            return 0
+
+        def _do(conn):
+            return conn.execute(
+                "UPDATE messages SET display_metadata = json_remove(display_metadata, '$.caller_history_consumed')"
+                f" WHERE id IN ({_placeholders(ids)}) AND session_id IN ({_placeholders(lineage)})"
+                " AND json_extract(display_metadata, '$.caller_history_consumed') IS NOT NULL",
+                (*ids, *lineage)).rowcount
+
+        return self._execute_write(_do)
+
+    def claim_caller_history_deliveries(self, session_id: str) -> List[Dict[str, Any]]:
+        """Claim the lineage's detached delegation rows no caller-history run has consumed yet.
+
+        Check and stamp (``display_metadata.caller_history_consumed``) share one writer txn, so
+        concurrent runs each fold a row at most once. Rows stay visible to transcript readers.
+        """
+        lineage = self._resume_lineage_ids(session_id)
+
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT id, content, display_metadata FROM messages WHERE session_id IN ({_placeholders(lineage)})"
+                " AND role = 'user' AND display_kind IN ('async_delegation_complete', 'hidden')"
+                " AND json_extract(display_metadata, '$.delegation_id') IS NOT NULL"
+                " AND json_extract(display_metadata, '$.caller_history_consumed') IS NULL ORDER BY id",
+                tuple(lineage)).fetchall()
+            for row in rows:
+                conn.execute("UPDATE messages SET display_metadata = json_set(display_metadata, "
+                             "'$.caller_history_consumed', 1) WHERE id = ?", (row["id"],))
+            return [{"id": row["id"], "content": self._decode_content(row["content"]),
+                     "display_metadata": self._decode_display_metadata(row["display_metadata"]) or {}}
+                    for row in rows]
+
+        return self._execute_write(_do)
+
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None,

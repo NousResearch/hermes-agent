@@ -244,7 +244,8 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
     """Detached result target: empty for push, a resumable API id, or None for inline.
 
     API completion only persists a row; this does not authorize a model wake. The
-    continuation must read that row, not an authoritative caller-owned snapshot."""
+    continuation must read that row: a session-history reload, or a caller-history
+    /v1/runs turn that folds unconsumed rows in at run start."""
     from gateway.session_context import get_session_env
 
     # Finite chat owns no later turn to consume a detached result. Reuse its

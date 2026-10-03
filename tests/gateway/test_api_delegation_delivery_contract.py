@@ -43,9 +43,16 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
     assert sum(m["content"] == "DELIVERY_RESULT" for m in result["resumed_history"]) == 1
     runs = {r["name"]: r for r in result["runs"]}
     assert all(r["status"] == 202 for r in runs.values())
-    for name in ("caller_history", "response_chain"):
+    snapshot = [{"role": "user", "content": "caller snapshot"}]
+    for name in ("caller_history_no_session", "response_chain"):
         assert runs[name]["runtime"]["target"] is None
-        assert runs[name]["runtime"]["history"] == [{"role": "user", "content": "caller snapshot"}]
+        assert runs[name]["runtime"]["history"] == snapshot
+    # Caller history + session id consumes the delivery row once, alternation preserved.
+    assert runs["caller_history"]["runtime"]["target"] == "child"
+    assert runs["caller_history"]["runtime"]["history"] == [
+        {"role": "user", "content": "caller snapshot\n\nDELIVERY_RESULT"}]
+    assert runs["caller_history_again"]["runtime"]["target"] == "child"
+    assert runs["caller_history_again"]["runtime"]["history"] == snapshot
     assert runs["session"]["runtime"]["target"] == "child"
     assert runs["session"]["runtime"]["history"] == result["resumed_history"]
     assert runs["declared_key"]["runtime"]["target"] == "declared"
@@ -87,4 +94,48 @@ async def test_delivery_replay_is_atomic_across_continuation_and_busy_turn(tmp_p
         assert db.get_messages("other") == []
     finally:
         peer.close()
+        db.close()
+
+
+def _fold_adapter(db):
+    async def ensure():
+        return db
+    return SimpleNamespace(_ensure_session_db_async=ensure)
+
+
+def _launch(history, session_id="s1"):
+    from gateway.platforms.api_server_runs import _RunLaunch
+    return _RunLaunch(None, "run", None, session_id, None, False, "next", history, True,
+                      agent_kwargs={}, request_profile=None, browser_control_principal=None,
+                      browser_control_transport_family=None, fold_deliveries=True)
+
+
+@pytest.mark.asyncio
+async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
+    from gateway.platforms.api_server_runs import _fold_caller_history_deliveries
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s1", source="api_server")
+        db.append_message("s1", "user", "go")
+        db.append_message("s1", "assistant", "dispatched")
+        adapter = SimpleNamespace(_ensure_session_db=lambda: db)
+        await persist_delegation_delivery(adapter, text="RESULT-A", session_id="s1",
+                                          evt={"type": "async_delegation", "delegation_id": "a"})
+        await persist_delegation_delivery(adapter, text="RESULT-B", session_id="s1",
+                                          evt={"type": "async_delegation", "delegation_id": "b"})
+        caller = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "dispatched"},
+                  {"role": "user", "content": "RESULT-B"}]  # caller already stored B
+        run = _launch(list(caller))
+        await _fold_caller_history_deliveries(_fold_adapter(db), run)
+        history = run.conversation_history
+        assert sum("RESULT-A" in m["content"] for m in history) == 1
+        assert sum("RESULT-B" in m["content"] for m in history) == 1
+        assert all(a["role"] != b["role"] for a, b in zip(history, history[1:]))
+        again = _launch(list(caller))
+        await _fold_caller_history_deliveries(_fold_adapter(db), again)
+        assert again.conversation_history == caller  # both rows already consumed
+        # Rows stay in the transcript for pollers and session-history continuations.
+        contents = [m["content"] for m in db.get_messages_as_conversation("s1")]
+        assert contents.count("RESULT-A") == 1 and contents.count("RESULT-B") == 1
+    finally:
         db.close()

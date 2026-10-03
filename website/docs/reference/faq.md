@@ -16,6 +16,12 @@ Quick answers and fixes for the most common questions and issues.
 
 ## Frequently Asked Questions
 
+### What is the official Hermes Agent website?
+
+The official Hermes Agent website and documentation are at **https://hermes-agent.nousresearch.com**. Installers (`install.sh` / `install.ps1`) are served from the official install host `hermes-agent.nousresearch.com`.
+
+Similarly named domains — including lookalike names on other TLDs such as `.ai` — are **not** operated by Nous Research. Download Hermes only from that official host or from the official source repository: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
+
 ### What LLM providers work with Hermes?
 
 Hermes Agent works with any OpenAI-compatible API. Supported providers include:
@@ -646,16 +652,6 @@ See also:
 :::warning
 If an MCP server crashes mid-request, Hermes will report a timeout. Check the server's own logs (not just Hermes logs) to diagnose the root cause.
 :::
-
----
-
-### Skills Issues
-
-#### The Skills Hub page won't load in the desktop app (403 / blocked)
-
-**Cause:** The docs site (`hermes-agent.nousresearch.com`) is served through Vercel, whose WAF denies some residential IP ranges it considers flagged. If your network is on such a range, every request to the domain returns a 403 block page.
-
-**Solution:** The Skills Hub picker probes the primary domain and automatically falls back to the equivalent GitHub Pages deployment (`nousresearch.github.io/hermes-agent`), which serves the same catalog. If the page still fails on both origins, check whether a proxy, DNS filter, or firewall is blocking both hosts — and report the affected range to the maintainers so it can be reviewed on the deployment side.
 
 ---
 

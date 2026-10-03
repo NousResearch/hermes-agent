@@ -12,6 +12,7 @@ import sys
 from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
+from urllib.parse import urlparse
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
@@ -487,12 +488,10 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
 
 
 def find_node_executable(command: str) -> str | None:
-    """Read PM's selected Node/npm/npx; ``None`` when PM has not installed it.
+    """Read PM's selected Node/npm/npx, then a user-owned PATH toolchain.
 
-    Never falls back to the user's PATH copy (callers ``pm.ensure`` on ``None``):
-    mixing toolchains breaks native-addon ABIs and npm caches. Explicit
-    executable paths remain caller-owned. Discovery never installs, probes,
-    repairs, or activates the retired ``HERMES_HOME/node`` layout.
+    Explicit executable paths remain caller-owned. Discovery never installs,
+    probes, repairs, or activates the retired ``HERMES_HOME/node`` layout.
     """
     command = str(command)
     if any(sep in command for sep in ("/", "\\")):
@@ -507,15 +506,14 @@ def find_node_executable(command: str) -> str | None:
         from pm import installed_package
 
         installed = installed_package(package_name)
-        if installed is None or installed.binary is None:
+        if installed is not None and installed.binary is not None:
+            if base != "npx":
+                return str(installed.binary)
+            for name in _candidate_node_command_names("npx"):
+                candidate = installed.binary.parent / name
+                if candidate.is_file():
+                    return str(candidate)
             return None
-        if base != "npx":
-            return str(installed.binary)
-        for name in _candidate_node_command_names("npx"):
-            candidate = installed.binary.parent / name
-            if candidate.is_file():
-                return str(candidate)
-        return None
     if sys.platform != "win32":
         return shutil.which(command)
     directories = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
@@ -1390,6 +1388,29 @@ def emit_partial_update_hint(exc: BaseException, *, file=None) -> bool:
     return True
 
 
+_OFFICIAL_HERMES_WEB_DOMAIN = "nousresearch.com"
+
+
+def is_official_hermes_web_host(url_or_host) -> bool:
+    """True when the hostname is exactly ``nousresearch.com`` or a subdomain.
+
+    Identity-only: empty, ``None``, or unparseable input returns False and
+    never raises. Lookalike hosts on other TLDs and suffix/path spoofs are
+    not official. Does not block browsing of unknown third-party sites.
+    """
+    try:
+        raw = ("" if url_or_host is None else str(url_or_host)).strip()
+        if not raw:
+            return False
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return hostname == _OFFICIAL_HERMES_WEB_DOMAIN or hostname.endswith(
+        "." + _OFFICIAL_HERMES_WEB_DOMAIN
+    )
+
+
 def normalize_scope(scope: str | Path | None) -> str | None:
     """Normalize a WRITE-side registry scope key, preserving ``None``.
 
@@ -1408,4 +1429,3 @@ def normalize_scope(scope: str | Path | None) -> str | None:
     normcase on Windows) so writes and reads agree on the key.
     """
     return hermes_home_key(scope) if scope is not None else None
-

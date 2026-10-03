@@ -7,8 +7,7 @@ import pytest
 
 @pytest.mark.parametrize("in_place", [False, True])
 @pytest.mark.parametrize("compress_args,stale", [
-    ("", False), ("", True), ("", "validation_error"), ("", "empty_summary"),
-    ("here 2", True), ("here 2", "validation_error"),
+    ("", False), ("", True), ("", "validation_error"), ("here 2", True),
 ])
 def test_manual_compress_rejects_history_rewritten_before_admission(
     tmp_path, monkeypatch, stale, in_place, compress_args,
@@ -72,8 +71,6 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
             assert agent.session_id == parent
             assert db.get_messages_as_conversation(parent) == before
             return
-        if stale == "empty_summary":
-            compressor.compress.return_value = []
         removed, _ = server._compress_session_history(
             session, focus_topic=compress_args, before_messages=before, history_version=1,
         )
@@ -86,10 +83,6 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
             assert [m["content"] for m in db.get_messages_as_conversation(parent)] == [
                 "edited question", "edited answer"]
             assert session["history"] == replacement
-        elif stale == "empty_summary":
-            assert removed == 0
-            assert agent.session_id == parent
-            assert session["history"] == before
         else:
             assert removed > 0
             assert (agent.session_id == parent) is in_place

@@ -17,6 +17,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli.active_sessions import MAX_CONCURRENT_SESSIONS, SESSION_COORDINATION_UNAVAILABLE
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER, exit_single_query
 
 
@@ -35,6 +36,14 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
     """Claim ``tid`` for a worker that already exited ``rc`` and wrote its log — never reaped here."""
+    _dead_worker_with_custom_log(
+        conn, tid, pid,
+        f"the model said something\n\nResume this session with:\n  hermes --resume x\n\n{KANBAN_WORKER_EXIT_TRAILER}{rc}\n",
+    )
+
+
+def _dead_worker_with_custom_log(conn, tid: str, pid: int, body: str) -> None:
+    """Claim ``tid`` for a dead worker and write an exact log body."""
     host = kb._claimer_id().split(":", 1)[0]
     kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
     conn.execute(
@@ -45,7 +54,7 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
     log = kb.worker_log_path(tid)
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a", encoding="utf-8") as f:
-        f.write(f"the model said something\n\nResume this session with:\n  hermes --resume x\n\n{KANBAN_WORKER_EXIT_TRAILER}{rc}\n")
+        f.write(body)
 
 
 @pytest.mark.parametrize(
@@ -81,6 +90,111 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert KANBAN_WORKER_EXIT_TRAILER not in (run["error"] or "")
         else:
             assert run["outcome"] == "rate_limited"
+
+
+def test_active_session_capacity_refusal_defers_without_counting_failure(kanban_home):
+    """A worker refused by ``MAX_CONCURRENT_SESSIONS`` is host capacity: requeue,
+    cooldown, and do not spend the card's failure budget."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="capacity", assignee="a")
+        _dead_worker_with_custom_log(
+            conn, tid, 72001,
+            f"hermes-refusal-reason: {MAX_CONCURRENT_SESSIONS}\n"
+            "Hermes is at the active session limit (4/4). Held by: desktop x3, cli.\n"
+            f"\n{KANBAN_WORKER_EXIT_TRAILER}1\n",
+        )
+
+        assert kbd.detect_crashed_workers(conn) == []
+
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        run = conn.execute(
+            "SELECT outcome, error, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,)).fetchone()
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        metadata = kb._json_dict(run["metadata"])
+        assert ev["kind"] == "capacity_deferred"
+        assert run["outcome"] == "capacity_deferred"
+        assert metadata.get("refusal_reason") == MAX_CONCURRENT_SESSIONS
+        assert metadata.get("exit_code") == 1
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert getattr(kbd.detect_crashed_workers, "_last_capacity_deferred") == [tid]
+        assert kbd.check_respawn_guard(conn, tid) == "session_capacity_cooldown"
+
+
+def test_stale_capacity_refusal_marker_does_not_hide_later_crash(kanban_home):
+    """Append-only logs must classify the latest run, not reuse a prior capacity refusal."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale-capacity", assignee="a")
+        _dead_worker_with_custom_log(
+            conn,
+            tid,
+            72011,
+            f"hermes-refusal-reason: {MAX_CONCURRENT_SESSIONS}\n"
+            "Hermes is at the active session limit (4/4).\n"
+            f"\n{KANBAN_WORKER_EXIT_TRAILER}1\n",
+        )
+        assert kbd.detect_crashed_workers(conn) == []
+
+        _dead_worker_with_custom_log(
+            conn,
+            tid,
+            72012,
+            f"ordinary crash from a later run\n\n{KANBAN_WORKER_EXIT_TRAILER}1\n",
+        )
+
+        assert kbd.detect_crashed_workers(conn) == [tid]
+
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id", (tid,)
+        ).fetchall()
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        event_kinds = [row["kind"] for row in events]
+        assert "capacity_deferred" in event_kinds
+        assert event_kinds[-1] == "crashed"
+        assert run["outcome"] == "crashed"
+        metadata = kb._json_dict(run["metadata"])
+        assert metadata.get("refusal_reason") is None
+        assert metadata.get("exit_code") == 1
+        assert "MAX_CONCURRENT_SESSIONS" not in metadata.get("worker_output", "")
+        assert "ordinary crash" in metadata.get("worker_output", "")
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+
+def test_non_capacity_active_session_refusal_remains_a_crash(kanban_home):
+    """Ownership/registry refusals are correctness failures, not capacity; the
+    dispatcher must not bypass them by treating every refusal as retryable."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="registry-error", assignee="a")
+        _dead_worker_with_custom_log(
+            conn, tid, 72002,
+            f"hermes-refusal-reason: {SESSION_COORDINATION_UNAVAILABLE}\n"
+            "Hermes could not read the active-session registry.\n"
+            f"\n{KANBAN_WORKER_EXIT_TRAILER}1\n",
+        )
+
+        assert kbd.detect_crashed_workers(conn) == [tid]
+
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,)).fetchone()
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert ev["kind"] == "crashed"
+        assert run["outcome"] == "crashed"
+        assert kb._json_dict(run["metadata"]).get("exit_code") == 1
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
 
 
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):

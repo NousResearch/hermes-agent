@@ -8,7 +8,7 @@ import sys
 import threading
 import weakref
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -23,20 +23,96 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 _STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
 
 
-def _real_platform_state_root() -> Optional[Path]:
-    """The REAL platform-default Hermes root. Avoids ``Path.home()`` /
-    ``hermes_constants`` (tests monkeypatch Path.home to a tempdir); ``expanduser``
-    reads HOME/passwd, which the conftest never rewrites."""
+def _hermes_root_for_home(home: Path) -> Path:
+    """Platform-correct Hermes root for an OS-user home directory *home*.
+
+    Not a fixed suffix under *home* on Windows, where the root is
+    ``%LOCALAPPDATA%\\hermes``. Hardcoding ``~/.hermes`` disarmed this guard on
+    Windows once already (#82770). Shared with the kanban live-board guard so
+    both stores classify roots with one rule.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        if base:
+            return Path(base) / "hermes"
+        return home / "AppData" / "Local" / "hermes"
+    return home / ".hermes"
+
+
+def _hermes_roots_for_home(home: Path) -> List[Path]:
+    """Every Hermes root reachable from OS-user home directory *home*.
+
+    A profile home is ``{HERMES_HOME}/home`` (``hermes_constants._profile_home_path``),
+    so a remapped ``HOME`` ending in ``home`` means its PARENT is a Hermes root.
+    That covers the default profile, whose ``HERMES_HOME`` is the root itself and
+    whose home is therefore ``<root>/home`` with no ``profiles`` segment. Named
+    profiles nest as ``<root>/profiles/<name>``, so each ``profiles/<name>`` level
+    is stripped in turn and every intermediate root is a candidate.
+
+    Matching a fixed ``profiles/<name>/home`` suffix instead misses the default
+    profile entirely, which is the most common deployment.
+    """
+    roots: List[Path] = [_hermes_root_for_home(home)]
+    if home.name != "home":
+        return roots
+    candidate = home.parent
+    # Never treat the filesystem root as a Hermes root: it would deny every path.
+    while len(candidate.parts) > 1:
+        roots.append(candidate)
+        if candidate.parent.name != "profiles" or len(candidate.parent.parts) <= 1:
+            break
+        candidate = candidate.parent.parent
+    return roots
+
+
+def _real_platform_state_roots() -> List[Path]:
+    """Every real Hermes root a test must never open a ``state.db`` under.
+
+    Must not resolve through ``Path.home()`` or ``hermes_constants``: tests
+    monkeypatch ``Path.home`` to a tempdir, so the guard would deny the sandbox
+    and allow production. ``HERMES_REAL_HOME`` and the passwd entry survive
+    that; the hermetic conftest scrubs the former, so it is absent exactly
+    where it would mislead.
+
+    Returns a list because a remapped ``HOME`` makes any single signal wrong.
+    In a dispatched worker ``HOME`` is the profile home, so
+    ``expanduser("~")/.hermes`` is a directory that does not exist and a
+    deny-list built from it protects nothing. Candidates, in trust order:
+    ``HERMES_REAL_HOME``, then every root that home layout maps back to, then
+    ``expanduser("~")``. Callers deny on any match, so a stale candidate costs
+    nothing.
+    """
+    roots: List[Path] = []
+
+    def _add(candidate: Path) -> None:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    real_home = os.environ.get("HERMES_REAL_HOME", "").strip()
+    if real_home:
+        for candidate in _hermes_roots_for_home(Path(real_home)):
+            _add(candidate)
+
     try:
         home = Path(os.path.expanduser("~"))
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA", "").strip()
-            root = Path(base) / "hermes" if base else home / "AppData" / "Local" / "hermes"
-        else:
-            root = home / ".hermes"
-        return root.resolve()
     except Exception:
-        return None
+        return roots
+    for candidate in _hermes_roots_for_home(home):
+        _add(candidate)
+    return roots
+
+
+def _real_platform_state_root() -> Optional[Path]:
+    """The single most-trusted real Hermes root, or ``None``.
+
+    Kept because several tests use it as "the root the guard denies".
+    """
+    roots = _real_platform_state_roots()
+    return roots[0] if roots else None
 
 
 #: Exported by the hermetic conftest alongside the HERMES_HOME redirect. Unlike

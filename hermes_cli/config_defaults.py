@@ -2236,7 +2236,7 @@ DEFAULT_CONFIG = {
             # stored history is cumulative, so a few large tool outputs can make one
             # response_store.db write several hundred KB. 0 = store tool outputs verbatim
             # (default: the capped text is what the model is replayed on the next turn).
-            "history_tool_output_max_chars": 0,
+            "history_tool_output_max_chars": 1000,
         },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by

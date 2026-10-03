@@ -1,8 +1,8 @@
-"""Opt-in byte cap on tool outputs in the stored /v1/responses conversation history.
+"""Default byte cap on tool outputs in the stored /v1/responses conversation history.
 
 The persisted snapshot embeds the cumulative transcript with every tool output verbatim, so a
-few large tool outputs made one response_store.db write ~677 KB (#82513). The cap is opt-in
-(``gateway.api_server.history_tool_output_max_chars``, 0 = verbatim) because the stored
+few large tool outputs made one response_store.db write ~677 KB (#82513). The cap applies by default (``gateway.api_server.history_tool_output_max_chars``); an explicit 0
+keeps the legacy verbatim behavior because the stored
 history is what the model is replayed on the next chained turn.
 """
 
@@ -31,12 +31,13 @@ def _result():
 def test_default_stores_tool_outputs_verbatim():
     with patch("hermes_cli.config.load_config", return_value={}):
         adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"port": 0}))
-    assert adapter._history_tool_output_max_chars == 0
+    assert adapter._history_tool_output_max_chars == 1000
     result = _result()
     history = adapter._build_response_conversation_history(
         PRIOR, "read it", result, "done", tool_output_max_chars=adapter._history_tool_output_max_chars)
-    assert history[4]["content"] == BIG
-    assert json.loads(history[3]["tool_calls"][0]["function"]["arguments"])["content"] == BIG
+    assert history[4]["content"].startswith("x" * 1000)
+    assert history[4]["content"].endswith("...[19000 more chars]")
+    assert json.loads(history[3]["tool_calls"][0]["function"]["arguments"])["content"].endswith("...[19000 more chars]")
 
 
 def test_cap_trims_only_tool_rows_and_leaves_agent_transcript_intact():

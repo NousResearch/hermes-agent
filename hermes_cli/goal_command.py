@@ -193,9 +193,9 @@ def dispatch_goal_command(
     rest = tokens[1].strip() if len(tokens) > 1 else ""
     prefix = "Invalid goal"
     try:
-        if arg.startswith("--"):
+        if verb == "--":
             # Verbatim goal text for goals that start with a control word (`/goal -- pause the cron`).
-            return _set(mgr, arg[2:].strip(), drafting=False, last_user_message=last_user_message,
+            return _set(mgr, rest, drafting=False, last_user_message=last_user_message,
                         render=render, progress=progress)
         if handler := _EXACT_HANDLERS.get(arg.lower()):
             return handler(mgr, "", render)

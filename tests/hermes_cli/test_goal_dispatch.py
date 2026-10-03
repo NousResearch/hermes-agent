@@ -148,3 +148,5 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     mgr.clear()
     fresh = goals.GoalManager(session_id=mgr.session_id)  # gateway/TUI reload per command
     assert 'replaced' not in _dispatch(fresh, 'fresh objective').output
+    _dispatch(fresh, '--dry-run the migration')
+    assert goals.load_goal(mgr.session_id).goal == '--dry-run the migration'

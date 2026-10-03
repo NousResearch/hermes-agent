@@ -131,8 +131,10 @@ def _kick_managed_boot(config: dict | None) -> None:
         finally:
             _KICK_LOCK.release()
 
-    threading.Thread(target=_boot, daemon=True,
-                     name="lr-on-demand-boot").start()
+    from agent.memory_provider import spawn_context_thread
+
+    # The caller's profile scope: ``config=None`` resolves (and the boot prices) under it.
+    spawn_context_thread(_boot, name="lr-on-demand-boot").start()
 
 
 def _boot_in_flight(config: dict | None) -> bool:

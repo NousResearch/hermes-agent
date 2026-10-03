@@ -35,6 +35,7 @@ from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
 )
+from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint
@@ -268,7 +269,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
             job["status"] = "running"
             job["error"] = None
         try:
-            threading.Thread(target=_run, daemon=True, name=name).start()
+            spawn_context_thread(_run, name=name).start()
         except Exception:
             _RUNNING.pop(job["job_id"], None)
             if on_exit is not None:
@@ -742,8 +743,8 @@ async def local_models_delete(model_id: str):
         path.unlink(missing_ok=True)
     # Growth state dies with the model: a re-download starts back at its zero-spill window, not a stale grown one.
     _quiet(lambda: growth.clear_window_override(model_id), None, debug="window-override clear skipped")
-    threading.Thread(target=_refresh_runtime, args=("post-delete runtime refresh skipped",), daemon=True,
-                     name="lr-post-delete").start()
+    spawn_context_thread(_refresh_runtime, args=("post-delete runtime refresh skipped",),
+                         name="lr-post-delete").start()
     return {"ok": True}
 
 

@@ -696,7 +696,9 @@ class HostedRoomRuntime:
                 self._mark_ambiguous(binding, attempt)
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
             else:
-                self._settle_failure_if_current(attempt, exc)
+                self._settle_failure_if_current(attempt, exc, unsubmitted=(
+                    task.get("status") == "queued"
+                    and task.get("execution_generation") == attempt.execution_generation - 1))
         finally:
             with self._status_lock:
                 self._current_tasks.pop(binding.room_id, None)
@@ -971,12 +973,15 @@ class HostedRoomRuntime:
             return transport.create(**coords) if create else None
         return transport.resume(**_session_kw(profile, _session_id(session)))
 
-    def _settle_failure_if_current(self, attempt: state.TaskAttempt, exc: Exception) -> None:
+    def _settle_failure_if_current(self, attempt: state.TaskAttempt, exc: Exception, *, unsubmitted=False) -> None:
         with suppress(state.DriverStateError, state.RoomUnavailableError):
-            state.settle_task(
-                self.db_path, attempt,
-                settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}",
-                status="failed", result={"error": str(exc)}, clock=self.clock)
+            if unsubmitted:
+                state.settle_unsubmitted_task(self.db_path, attempt, error=str(exc), clock=self.clock)
+            else:
+                state.settle_task(
+                    self.db_path, attempt,
+                    settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}",
+                    status="failed", result={"error": str(exc)}, clock=self.clock)
         self._record_task_error(attempt, f"failed: {exc}")
 
     def _record_task_error(self, attempt: state.TaskAttempt, message: str) -> None:

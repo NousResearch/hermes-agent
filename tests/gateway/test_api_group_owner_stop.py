@@ -155,7 +155,7 @@ async def test_owner_stops_real_scoped_run_and_blocks_new_work_without_its_home(
         fresh = await invite(cli)
         refused = await submit(cli, fresh, dispatch(fresh, task="task-after-freeze"))
         refusal = await refused.json()
-        assert refused.status == 409, refusal
+        assert refused.status == 403, refusal
         assert refusal["error"]["code"] == "group_work_frozen"
         assert create.call_count == 1
         replay = await submit(cli, fresh, dispatch(fresh))

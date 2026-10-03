@@ -648,6 +648,17 @@ cannot use this operation.
 Stop.** Other participants, other groups and ordinary API conversations are not
 stopped. There is no unfreeze or takeover endpoint.
 
+Group-host succession is designed in [#104601](https://github.com/NousResearch/hermes-agent/pull/104601)
+(`website/docs/developer-guide/group-chat-host-loss.md`) and built in
+[#105197](https://github.com/NousResearch/hermes-agent/pull/105197). A successor
+needs a verified succession proof and scoped participant-owner permission, and
+preserves the original Run identities and permanent freezes. This endpoint
+supplies neither that proof nor permission to retry unknown work; the fence
+below is the participant's side of that proof. The legacy
+[manual recovery procedure](../bot-mode.md#transferring-hosted-room-authority)
+(`groups.promote` and `groups.demote`) stays disabled: a group changes host only
+through the verified succession calls of #105197.
+
 To find the participant, send `GET /v1/group-participants` with the same owner
 credentials. It lists the default-profile group scopes this gateway's Runs store
 holds, most recently admitted first:
@@ -712,10 +723,17 @@ for another participant. Read back the current result with
 `GET /v1/group-participants/stop/{command_id}` and the same owner credentials.
 
 `admissions_frozen: true` confirms the persistent barrier: that old participant
-scope cannot admit new work, including after restart. An exact retry of a retained
-run receipt can still return its original run ID, but cannot relaunch it. The
-existing local interruption path stops known work; another updated listener
-sharing that store picks up the intent through its existing periodic sweep.
+scope cannot admit new work, including after restart. New work in a frozen scope is
+refused with `403 group_work_frozen`, which a group's home reads as proof the turn
+was not admitted. An exact retry of a retained run receipt can still return its
+original run ID, but cannot relaunch it. The existing local interruption path stops
+known work; another updated listener sharing that store picks up the intent through
+its existing periodic sweep.
+
+The freeze outlives a change of the group's host. The same Bot in the same group
+(room, member and profile on this gateway) stays frozen at the frozen epoch and every
+later one, whichever computer hosts the group then: a successor's new work is refused
+the same way, its runs stop, and the list shows its scopes as frozen.
 
 Interpret `work_state` separately from the admission barrier:
 
@@ -740,6 +758,51 @@ at most 128 outstanding records and explicitly reports truncation. If durable
 storage is unavailable, owner Stop and new scoped group admissions return `503`;
 ordinary API conversations retain their existing behavior. No control request
 changes a Bot's approval defaults.
+
+### Succession fences
+
+When a Group Chat's home is lost, a candidate successor asks each participant
+to fence the room's current authority epoch and promise the next epoch to it
+(Group Chat succession, #105197). The participant keeps one durable record per
+room in the same Runs store as the owner freezes: the highest fenced epoch, its
+latest promise, and the latest verified successor it learned. Each epoch is
+promised once, to one installation, and never revoked; a later candidate can
+only ask for a later epoch, which fences the earlier one too.
+
+Once an epoch is fenced here:
+
+- New group work stamped with that epoch or an older one is refused with
+  `409 room_authority_fenced`, including after restart and for other listeners
+  sharing the store. Exact replays of runs this gateway already accepted still
+  return their original run IDs.
+- Runs it already accepted keep executing, and their status stays readable.
+- Approvals and clarify answers from a fenced epoch are refused with the same
+  code; denying an approval and Stop still work, because they only reduce work.
+- The promised successor, presenting its own group grant for the promised epoch
+  and the same room member, can read the status of the room's existing runs
+  here and stop them. Once this gateway learns a verified successor for that
+  epoch or a later one, control passes to that successor instead, so a candidate
+  that lost never gains it. Neither can approve those runs or start them again.
+
+In a group that moves automatically, a voting computer also grants the group's
+host a short **lease** with each heartbeat. While it runs, this gateway promises
+no later epoch to anyone (`409 room_lease_active`), so a successor can gather a
+majority of promises only once the host's majority of leases has run out.
+- A lease goes only to the host of an epoch this gateway hasn't fenced, promised
+  or learned past. A renewal never shortens it, and a planned restart can extend
+  it by at most five minutes.
+- It is measured on a clock that keeps counting while the computer sleeps
+  (`CLOCK_BOOTTIME` on Linux, `CLOCK_MONOTONIC` on macOS, interrupt time on
+  Windows).
+- It survives restarts. That clock starts again at boot, so after a reboot (told
+  apart by the operating system's boot id) a lease counts as running its full
+  length less the time since boot; the wall clock, which can be stepped, never
+  shortens it.
+- It ends early only for the host's own signed handover (#105197), and only when
+  the host last asked for it before signing, in the same boot.
+
+The owner freeze above is a separate record and behaves exactly as described:
+a frozen scope stays frozen, whatever its room's fence.
 
 With the canonical gateway owner, `GET /v1/runs/{run_id}` exposes
 `pending_controls`, using the same `prompt_id` and `execution_generation` as

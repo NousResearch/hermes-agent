@@ -68,6 +68,7 @@ import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { openRouteTile } from '@/store/route-tiles'
 import {
   $activeSessionStoredIdRotation,
   $connection,
@@ -157,7 +158,13 @@ import type {
   UsageStats
 } from '@/types/hermes'
 
-import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
+import {
+  isContributedRoute,
+  navigateToWorkspacePage,
+  NEW_CHAT_ROUTE,
+  sessionRoute,
+  SETTINGS_ROUTE
+} from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
@@ -1063,6 +1070,15 @@ export function useSessionActions({
       }
 
       if (item.route) {
+        if (isContributedRoute(item.route)) {
+          // A plugin page is a TAB in the workspace strip (center), the same
+          // dock a sidebar session gets — not a split beside main. The row's
+          // right-click "Open in split" submenu is the explicit edge path.
+          openRouteTile(item.route, 'center')
+
+          return
+        }
+
         navigateToWorkspacePage(navigate, item.route)
       }
     },

@@ -64,6 +64,8 @@ import {
   $sessions,
   $workspaceCwdOwner,
   clearReadBaseline,
+  getRememberedSessionId,
+  getRememberedSessionOwner,
   getSessionOwnerHint,
   knownSessionOwner,
   lineageAliases,
@@ -72,9 +74,13 @@ import {
   migrateSessionOwnerHintsForProfile,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
+  setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setMessages,
+  setRememberedSessionOwner,
+  setSelectedStoredSessionId,
   setSessions,
   setTileSessionFocusStartedAt,
   setTurnStartedAt
@@ -119,6 +125,22 @@ const sessionScopeByRuntimeId = new Map<string, string>()
 // (approval.respond) when every durable binding (tile / hint / row) is absent
 // — while durable stored identity keeps outranking it (#97511).
 const sessionOwnerByRuntimeId = new Map<string, SessionOwnerScope>()
+
+// Exact owner currently claimed by the ordinary main chat surface. Kept
+// separately from the multi-owner hint set because duplicate bare ids can make
+// the latter intentionally ambiguous.
+let ordinaryMainSessionOwner: null | { ownerRoute: SessionOwnerRoute; storedSessionId: string } = null
+
+export function mainSessionOwnerRoute(storedSessionId: string): SessionOwnerRoute | undefined {
+  return ordinaryMainSessionOwner?.storedSessionId === storedSessionId
+    ? { ...ordinaryMainSessionOwner.ownerRoute }
+    : undefined
+}
+
+export function clearMainSessionOwner(): void {
+  ordinaryMainSessionOwner = null
+  setRememberedSessionOwner(null, undefined, $activeGatewayProfile.get())
+}
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
   if (!event.session_id) {
@@ -1086,6 +1108,7 @@ export function clearAllSessionStates() {
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
   forgetPendingRuntimeTabs()
+  ordinaryMainSessionOwner = null
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }
@@ -1822,6 +1845,31 @@ export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRout
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
 }
 
+/** Admit a source-qualified runtime event only when it matches the durable
+ * exact owner of that stored session. A sidebar retarget can leave owner A's
+ * last session.info event in flight after owner B has claimed the same bare
+ * id; that late event must not replace B's stored->runtime cache entry. Legacy
+ * untagged/profile-only sessions remain permissive because they have no exact
+ * connection identity to compare. */
+export function acceptsSessionRuntimeSource(storedSessionId: string, sourceOwner: SessionOwnerRoute): boolean {
+  const mainOwner =
+    $selectedStoredSessionId.get() === storedSessionId && ordinaryMainSessionOwner?.storedSessionId === storedSessionId
+      ? ordinaryMainSessionOwner.ownerRoute
+      : undefined
+
+  const owner = sessionTileOwnerRoute(storedSessionId) ?? mainOwner ?? getSessionOwnerHint(storedSessionId)
+
+  if (!owner || typeof owner === 'string') {
+    return true
+  }
+
+  return (
+    owner.connectionId.trim() === sourceOwner.connectionId.trim() &&
+    normalizeProfileKey(owner.targetProfile ?? owner.profile) ===
+      normalizeProfileKey(sourceOwner.targetProfile ?? sourceOwner.profile)
+  )
+}
+
 function sessionTileOwner(storedSessionId: string): SessionOwnerScope {
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
 
@@ -2126,19 +2174,25 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   rememberBotChatScope(storedSessionId, scope)
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const sameMode = (tile?.workspaceMode ?? 'sessions') === scope.workspaceMode
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
+
   // Sessions-mode re-opens (sidebar click on an already-tiled session) pass no
   // route; that is absence of information, not a revocation — keep the exact
   // owner the tile was opened with (a branch child's parent connection) so a
   // plain re-open can't unpin the owning socket. Bot scopes stay authoritative
   // both ways: they always name their route explicitly.
-  const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : (scope.ownerRoute ?? tile?.ownerRoute)
-  const ownerProfile = scope.workspaceMode === 'bots' ? undefined : (scope.ownerProfile ?? tile?.ownerProfile)
+  const ownerRoute =
+    scope.workspaceMode === 'bots' ? scope.ownerRoute : (scope.ownerRoute ?? (sameMode ? tile?.ownerRoute : undefined))
+
+  const ownerProfile =
+    scope.workspaceMode === 'bots' ? undefined : (scope.ownerProfile ?? (sameMode ? tile?.ownerProfile : undefined))
+
   const workspaceTabTitle = scope.workspaceMode === 'bots' ? scope.workspaceTabTitle : undefined
 
   if (
     !tile ||
-    ((tile.workspaceMode ?? 'sessions') === scope.workspaceMode &&
+    (sameMode &&
       tile.workspaceOwnerKey === workspaceOwnerKey &&
       tile.ownerProfile === ownerProfile &&
       tile.ownerRoute?.connectionId === ownerRoute?.connectionId &&
@@ -2156,6 +2210,70 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
     workspaceOwnerKey,
     workspaceTabTitle
   })
+
+  return true
+}
+
+function sessionOwnerRoutesEqual(a: SessionOwnerRoute | undefined, b: SessionOwnerRoute | undefined): boolean {
+  // `mode` is informational, and an omitted target means the route's own
+  // profile. Neither representational difference is an owner change.
+  return (
+    a?.connectionId === b?.connectionId &&
+    a?.profile === b?.profile &&
+    (a?.targetProfile || a?.profile) === (b?.targetProfile || b?.profile)
+  )
+}
+
+/** Retire one stored id's live presentation before an ordinary sidebar open
+ *  moves its sole surface to a different exact owner. The pane id stays stable,
+ *  but the old runtime and warm cache must not satisfy the new owner's open. */
+export function prepareSessionOwnerRetarget(
+  storedSessionId: string,
+  ownerRoute: SessionOwnerRoute | undefined,
+  willUseMain = false
+): boolean {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const selectedInMain = storedSessionId === $selectedStoredSessionId.get()
+
+  const previousMainOwner =
+    selectedInMain && ordinaryMainSessionOwner?.storedSessionId === storedSessionId
+      ? ordinaryMainSessionOwner.ownerRoute
+      : undefined
+
+  const previousOwner = tile?.ownerRoute ?? previousMainOwner ?? getSessionOwnerHint(storedSessionId)
+
+  if (willUseMain) {
+    ordinaryMainSessionOwner = ownerRoute ? { ownerRoute: { ...ownerRoute }, storedSessionId } : null
+    setRememberedSessionOwner(storedSessionId, ownerRoute, $activeGatewayProfile.get())
+  }
+
+  if (sessionOwnerRoutesEqual(previousOwner, ownerRoute) || (!previousOwner && !tile && !selectedInMain)) {
+    return false
+  }
+
+  const invalidatedRuntimeId = sessionTileDelegate()?.invalidateRuntimeBinding?.(storedSessionId)
+  const tileRuntimeId = tile?.runtimeId
+  const mainRuntimeId = selectedInMain ? $activeSessionId.get() : null
+
+  for (const runtimeId of new Set([invalidatedRuntimeId, tileRuntimeId, mainRuntimeId].filter(Boolean) as string[])) {
+    dropSessionState(runtimeId)
+  }
+
+  if (tile) {
+    patchSessionTile(storedSessionId, { error: undefined, ownerRoute, runtimeId: undefined })
+  }
+
+  if (selectedInMain) {
+    setActiveSessionId(null)
+    setAwaitingResponse(false)
+    setBusy(false)
+    setMessages([])
+
+    if (!willUseMain) {
+      ordinaryMainSessionOwner = null
+      setSelectedStoredSessionId(null)
+    }
+  }
 
   return true
 }
@@ -2327,6 +2445,10 @@ export interface SessionTileDelegate {
    *  (`resetRouteOwnedTileRuntimeBindings`). Bindings for every other stored
    *  session, including the main thread, stay warm. */
   dropRuntimeBindings?(storedSessionIds: ReadonlySet<string>): void
+  /** Drop one stored session's warm runtime/cache binding before its surface is
+   *  deliberately retargeted to a different exact owner. Returns the detached
+   *  runtime id so the presentation mirror can be removed too. */
+  invalidateRuntimeBinding?(storedSessionId: string): null | string
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached
@@ -2921,6 +3043,12 @@ export function dropTilesForProfile(
     return (
       (ownerProfile === name || ownerTarget === name) && (ownerConnection || LOCAL_CONNECTION_ID) === ambientConnection
     )
+  }
+
+  const rememberedId = getRememberedSessionId(routeProfile || name)
+  const rememberedOwner = rememberedId ? getRememberedSessionOwner(rememberedId, routeProfile || name) : undefined
+  if (rememberedOwner && ownerMatches(rememberedOwner)) {
+    setRememberedSessionOwner(null, undefined, routeProfile || name)
   }
 
   // The profile's own sessions bucket (Bot tiles live in the shared bucket

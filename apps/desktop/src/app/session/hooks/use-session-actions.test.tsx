@@ -11,6 +11,7 @@ import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { group } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import {
   deleteSession,
   getAllSessionMessages,
@@ -45,6 +46,7 @@ import {
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
+import { $routeTiles, closeRouteTile } from '@/store/route-tiles'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -96,6 +98,7 @@ import { requestForSessionProfile, type SessionProfileRoute } from '@/store/sess
 import {
   $sessionTiles,
   clearAllSessionStates,
+  clearMainSessionOwner,
   dropSessionState,
   knownOwnerForSession,
   publishSessionState,
@@ -109,7 +112,7 @@ import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
-import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
@@ -711,13 +714,14 @@ describe('active stored-session id rotation routing', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
-    setActiveSessionStoredIdRotation(null)
+    clearMainSessionOwner()
     setSelectedStoredSessionId(null)
     setSessions([])
     $sessionTiles.set([])
     $layoutTree.set(null)
     $activeTreeGroup.set(null)
     window.history.pushState({}, '', '/')
+    setActiveSessionStoredIdRotation(null)
     vi.restoreAllMocks()
   })
 
@@ -1721,6 +1725,9 @@ describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    clearMainSessionOwner()
+    setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
     setMessages([])
@@ -3736,6 +3743,9 @@ describe('resumeSession warm-cache mapping integrity', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    clearMainSessionOwner()
+    setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
     setMessages([])
@@ -6386,6 +6396,78 @@ describe('selectSidebarItem', () => {
     expect(navigate).toHaveBeenCalledWith('/capabilities', undefined)
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
+  })
+
+  it('opens route-backed plugin sidebar items as stable closeable route tiles', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    const disposeRoutes = registry.registerMany([
+      {
+        area: ROUTES_AREA,
+        data: { path: '/kanban' },
+        id: 'kanban-page',
+        render: () => null,
+        source: 'plugin:kanban',
+        title: 'Kanban'
+      },
+      {
+        area: ROUTES_AREA,
+        data: { path: '/llm-usage' },
+        id: 'llm-usage-page',
+        render: () => null,
+        source: 'plugin:llm-usage',
+        title: 'LLM Usage'
+      }
+    ])
+
+    let handle: HarnessHandle | null = null
+
+    $routeTiles.set([])
+
+    try {
+      render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+      await waitFor(() => expect(handle).not.toBeNull())
+
+      act(() => {
+        handle!.selectSidebarItem({ icon: (() => null) as never, id: 'kanban', label: 'Kanban', route: '/kanban' })
+        handle!.selectSidebarItem({ icon: (() => null) as never, id: 'kanban', label: 'Kanban', route: '/kanban' })
+        handle!.selectSidebarItem({
+          icon: (() => null) as never,
+          id: 'llm-usage',
+          label: 'LLM Usage',
+          route: '/llm-usage'
+        })
+      })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expect($routeTiles.get()).toEqual([
+        { dir: 'center', path: '/kanban' },
+        { dir: 'center', path: '/llm-usage' }
+      ])
+      expect(revealTreePane).toHaveBeenCalledWith('route-tile:/kanban')
+      expect(revealTreePane).toHaveBeenCalledWith('route-tile:/llm-usage')
+    } finally {
+      disposeRoutes()
+      closeRouteTile('/kanban')
+      closeRouteTile('/llm-usage')
+    }
+  })
+
+  it('falls back to router navigation when a previously contributed route is unloaded', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => {
+      handle!.selectSidebarItem({ icon: (() => null) as never, id: 'kanban', label: 'Kanban', route: '/kanban' })
+    })
+
+    expect(navigate).toHaveBeenCalledWith('/kanban', undefined)
+    expect($routeTiles.get()).toEqual([])
   })
 })
 

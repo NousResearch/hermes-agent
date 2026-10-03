@@ -79,10 +79,7 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
-  forgetSessionOwnerHintsForSession,
-  requestSessionResume,
   sessionMatchesStoredId,
-  sessionOwnerRouteFromRow,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -172,6 +169,8 @@ import { useOnboardingHandoff } from './onboarding-handoff'
 import { useOnboardingKickoff } from './onboarding-kickoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { forgetSessionOwnerHintsForSession, requestSessionResume, sessionOwnerRouteFromRow } from '@/store/session'
+import { openSidebarSession } from './sidebar-session-open'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
@@ -1207,9 +1206,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main. Same owner-aware door every other session
-    // link uses (openStoredSession).
-    onResumeSession: openStoredSession,
+    // otherwise load it into main. Same door every other session link uses.
+    // The clicked ROW is the identity, not its bare id: two profiles can hold
+    // twins with the same stored id (#92454), and an id-only resume resolves
+    // against whichever cached row is found first — the user clicks a row
+    // previewing profile A and the resume dials profile B. Pin the row's own
+    // (connection, profile) as the resume owner before navigating; untagged
+    // rows (single-profile installs and the legacy primary-SSH path) keep the
+    // ambient/id-only path. The helper also clears stale explicit hints before
+    // that fallback so an older local stamp cannot steal a remote session.
+    onResumeSession: (sessionId, session, intent) => openSidebarSession(sessionId, session, navigate, intent),
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSteerHidden: injectHiddenPrompt,

@@ -25,15 +25,19 @@ import {
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
+import { openRouteTile } from '@/store/route-tiles'
 import {
   $selectedStoredSessionId,
   getRememberedRoute,
   getRememberedSessionId,
   resolveComposerSessionKey,
+  getRememberedSessionOwner,
+  requestSessionResume,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
   setRememberedRoute,
-  setRememberedSessionId
+  setRememberedSessionId,
+  setRememberedSessionOwner
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
@@ -149,7 +153,12 @@ export function useDesktopIntegrations({
           return
         }
 
-        const route = getRememberedRoute(activeProfile)
+        const remembered = getRememberedRoute(activeProfile)
+        // A remembered plugin page (legacy: it used to be a router
+        // destination) re-opens as its route TILE, and the chat restore below
+        // still runs so main comes back to the session it was on.
+        const rememberedTile = remembered && appViewForPath(remembered) === 'extension' ? remembered : null
+        const route = rememberedTile ? null : remembered
         const routeSession = route ? routeSessionId(route) : null
         const last = getRememberedSessionId(activeProfile)
 
@@ -174,6 +183,9 @@ export function useDesktopIntegrations({
 
         restoredRef.current = true
 
+        if (rememberedTile) {
+          openRouteTile(rememberedTile, 'center')
+        }
         // A delegate child (source='subagent') is never a restorable
         // destination: it is invisible in the sidebar, so resuming one leaves
         // the app split between the highlighted parent and the child the chat
@@ -195,6 +207,14 @@ export function useDesktopIntegrations({
           // backend was still coming up; the composer moves that draft onto
           // the restored session when its scope swaps (#114122).
           announceNewSessionDraftKey(routeSession && resolveComposerSessionKey(routeSession, sessions))
+          if (routeSession) {
+            const ownerRoute = getRememberedSessionOwner(routeSession, activeProfile)
+
+            if (ownerRoute) {
+              requestSessionResume(routeSession, ownerRoute)
+            }
+          }
+
           navigate(route, { replace: true })
 
           return
@@ -204,6 +224,7 @@ export function useDesktopIntegrations({
         // clear the stale entry so the next cold start won't re-try it.
         if (routeSession) {
           setRememberedRoute(null, activeProfile)
+          setRememberedSessionOwner(null, undefined, activeProfile)
         }
 
         if (last) {
@@ -211,6 +232,8 @@ export function useDesktopIntegrations({
           // as before — no by-id fetch on the common cold start.
           if (rowFor(last)?.source !== 'subagent' && sessionBelongsToProfile(sessions, last, activeProfile)) {
             announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
+            const ownerRoute = getRememberedSessionOwner(last, activeProfile)
+            if (ownerRoute) requestSessionResume(last, ownerRoute)
             navigate(sessionRoute(last), { replace: true })
 
             return
@@ -225,12 +248,15 @@ export function useDesktopIntegrations({
             .then(remembered => {
               if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
                 setRememberedSessionId(null, activeProfile)
+                setRememberedSessionOwner(null, undefined, activeProfile)
 
                 return
               }
 
               announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
               setRememberedSessionId(remembered, activeProfile)
+              const ownerRoute = getRememberedSessionOwner(remembered, activeProfile)
+              if (ownerRoute) requestSessionResume(remembered, ownerRoute)
               navigate(sessionRoute(remembered), { replace: true })
             })
             .catch(() => undefined)
@@ -251,6 +277,7 @@ export function useDesktopIntegrations({
     // persistence effect re-runs on every session-list refresh while its
     // deps are unchanged — without the barrier the dead id outlives every
     // restart and the window boots into the resume-error screen each time.
+    const view = appViewForPath(locationPathname)
     const exhausted = routedSessionId !== null && routedSessionId === resumeExhaustedSessionId
 
     if (routedSessionId && !exhausted && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
@@ -271,8 +298,9 @@ export function useDesktopIntegrations({
           activeProfile
         )
       }
-    } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
+    } else if (!routedSessionId && !isOverlayView(view) && view !== 'extension') {
       setRememberedRoute(locationPathname, activeProfile)
+      setRememberedSessionOwner(null, undefined, activeProfile)
     }
   }, [
     activeProfile,
@@ -293,10 +321,12 @@ export function useDesktopIntegrations({
 
     if (getRememberedSessionId(activeProfile) === resumeExhaustedSessionId) {
       setRememberedSessionId(null, activeProfile)
+      setRememberedSessionOwner(null, undefined, activeProfile)
     }
 
     if (routeSessionId(getRememberedRoute(activeProfile) ?? '') === resumeExhaustedSessionId) {
       setRememberedRoute(null, activeProfile)
+      setRememberedSessionOwner(null, undefined, activeProfile)
     }
   }, [activeProfile, profileReady, resumeExhaustedSessionId])
 

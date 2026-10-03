@@ -299,6 +299,15 @@ def _check_bubblewrap_backend(issues: list[str]) -> None:
     if probe_failure:
         _fail_and_issue("bwrap sandbox probe failed", f"({probe_failure})",
                         "Allow unprivileged user namespaces for this user or change TERMINAL_ENV", issues)
+        return
+    try:
+        from tools.environments.bubblewrap import run_process_limit_probe
+        scoped = run_process_limit_probe(bwrap_path, _safe_which("prlimit") or "prlimit")
+    except Exception:
+        scoped = False
+    if not scoped:
+        check_warn("bwrap process limit is not available on this kernel",
+                   "(needs Linux 5.14 or later; terminal.bubblewrap_max_procs is not applied, memory and CPU limits are)")
 
 
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:

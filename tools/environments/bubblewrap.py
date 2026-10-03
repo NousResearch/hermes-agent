@@ -810,6 +810,54 @@ def probe_bwrap() -> str:
     return _probed_bwrap_path
 
 
+# The process limit the probe sets inside its sandbox: room for bwrap's
+# init, the shell and the one child the shell forks, and far below what a
+# uid runs on any host that has a Hermes process on it.
+PROCESS_LIMIT_PROBE_VALUE = 4
+
+# Whether RLIMIT_NPROC set inside a sandbox counts that sandbox alone on
+# this kernel. Probed once per process; None until then.
+_process_limit_scoped: bool | None = None
+
+
+def run_process_limit_probe(bwrap_path: str, prlimit_path: str) -> bool:
+    """True when a process limit set inside a sandbox is counted for that sandbox alone.
+
+    Linux counts RLIMIT_NPROC per user namespace from 5.14 on (with
+    enforcement fixes up to 5.17). Before that the count is every thread
+    of the uid on the host, and a limit set inside a sandbox would stop
+    every fork. The kernel exposes no flag for this, and a version check
+    cannot see a distribution backport, so the probe measures it: inside
+    a sandbox it sets a limit of PROCESS_LIMIT_PROBE_VALUE, well below the
+    host count, and has the shell fork once. The fork passes only where
+    the count is the sandbox's own. Any other outcome counts as not
+    scoped, so a doubtful kernel gets no limit instead of a broken sandbox.
+    """
+    argv = [
+        bwrap_path, "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "--",
+        prlimit_path, f"--nproc={PROCESS_LIMIT_PROBE_VALUE}", "sh", "-c", "( : ) && exit 0",
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def process_limit_is_scoped(bwrap_path: str, prlimit_path: str) -> bool:
+    """run_process_limit_probe, run once per process; warns once when the limit cannot be applied."""
+    global _process_limit_scoped
+    if _process_limit_scoped is None:
+        _process_limit_scoped = bool(run_process_limit_probe(bwrap_path, prlimit_path))
+        if not _process_limit_scoped:
+            logger.warning(
+                "bubblewrap: this kernel does not count the process limit per sandbox (that needs "
+                "Linux 5.14 or later), so terminal.bubblewrap_max_procs is not applied. The memory "
+                "and CPU limits still apply."
+            )
+    return _process_limit_scoped
+
+
 # The wrapper's own processes that exist beside the command for its whole
 # run: bwrap's pid-1 init and the shell that runs the command. They count
 # against the same limit, so they come on top of max_procs.
@@ -959,6 +1007,10 @@ class BubblewrapEnvironment(LocalEnvironment):
         resolve_profile(self._config.profile)
         self._bwrap_path = probe_bwrap()
         self._prlimit_path = shutil.which("prlimit") or "prlimit"
+        # Probed once per process, and only when the limit is asked for.
+        self._process_limit_scoped = bool(self._config.max_procs) and process_limit_is_scoped(
+            self._bwrap_path, self._prlimit_path,
+        )
         # The OS user's home anchors the sensitive set even when this process
         # runs with HOME pointed at the profile home. Every mount path is
         # taken through realpath: bwrap resolves a mount destination inside
@@ -1348,7 +1400,7 @@ class BubblewrapEnvironment(LocalEnvironment):
     def _process_limit_prefix(self) -> list[str]:
         """prlimit after bwrap's separator: the process limit, set inside the sandbox."""
         limit = rlimit_values(self._config).get(resource.RLIMIT_NPROC)
-        if not limit:
+        if not limit or not self._process_limit_scoped:
             return []
         return prlimit_args({resource.RLIMIT_NPROC: limit}, self._prlimit_path)
 

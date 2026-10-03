@@ -34,6 +34,7 @@ def env_cls(request, tmp_path_factory, monkeypatch):
         # These tests never exec bwrap - Popen is faked and only the argv is
         # read - so short-circuit the probe and run on hosts without it.
         monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
+        monkeypatch.setattr(bubblewrap, "_process_limit_scoped", True)
     return request.param
 
 

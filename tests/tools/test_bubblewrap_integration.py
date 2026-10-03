@@ -77,6 +77,7 @@ def isolated_tool(tmp_path, work_dir, monkeypatch):
 
 def _no_spawn(monkeypatch):
     monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
+    monkeypatch.setattr(bubblewrap, "_process_limit_scoped", True)
     return patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None)
 
 

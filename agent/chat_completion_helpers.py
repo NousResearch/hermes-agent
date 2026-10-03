@@ -543,6 +543,58 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     return 0.0
 
 
+def codex_event_idle_timeout_default(est_tokens: int) -> float:
+    """Parsed-event idle default for Codex Responses, by estimated context.
+
+    Independent of ``providers.*.stale_timeout_seconds`` and of the auxiliary
+    compression 300s floor. A legitimate gap below this value must not abort;
+    a silent gap above it is a dead stream, not long reasoning.
+    """
+    if est_tokens > 100_000:
+        return 180.0
+    if est_tokens > 50_000:
+        return 120.0
+    if est_tokens > 10_000:
+        return 60.0
+    return 12.0
+
+
+def resolve_codex_event_idle_timeout(
+    est_tokens: int,
+    env_value: float | None = None,
+) -> float | None:
+    """Return Codex parsed-event idle seconds, or ``None`` when disabled.
+
+    Precedence: explicit ``env_value`` / ``HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS``
+    (0 disables) → token-bucket default. Provider ``stale_timeout_seconds`` is
+    intentionally not consulted; that knob is the generic non-Codex detector.
+    """
+    if env_value is None:
+        raw = os.getenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS")
+        if raw is None or str(raw).strip() == "":
+            return codex_event_idle_timeout_default(est_tokens)
+        try:
+            env_value = float(raw)
+        except (TypeError, ValueError):
+            return codex_event_idle_timeout_default(est_tokens)
+    if env_value <= 0:
+        return None
+    return float(env_value)
+
+
+def resolve_codex_hard_timeout(env_value: float | None = None) -> float | None:
+    """Return the Codex Responses absolute hard ceiling, or ``None`` if disabled.
+
+    Default 1500s sits above the maximum openai-codex stale floor (1200s).
+    ``0`` preserves the operator override that disables the ceiling.
+    """
+    if env_value is None:
+        env_value = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    if env_value <= 0:
+        return None
+    return float(env_value)
+
+
 def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     """Return a normalized OpenRouter provider.sort value or None."""
     if not isinstance(raw_sort, str):
@@ -1513,17 +1565,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # stream phase, and this ceiling is the final absolute-from-start bound.
     # The default remains above the maximum openai-codex stale floor (1200s).
     # Set to 0 to preserve the existing operator override that disables it.
-    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    _codex_hard_timeout = resolve_codex_hard_timeout() or 0.0
     _codex_hard_enabled = _codex_watchdog_enabled and _codex_hard_timeout > 0
 
-    if _est_tokens_for_codex_watchdog > 100_000:
-        _codex_idle_timeout_default = 180.0
-    elif _est_tokens_for_codex_watchdog > 50_000:
-        _codex_idle_timeout_default = 120.0
-    elif _est_tokens_for_codex_watchdog > 10_000:
-        _codex_idle_timeout_default = 60.0
-    else:
-        _codex_idle_timeout_default = 12.0
+    _codex_idle_timeout_default = codex_event_idle_timeout_default(
+        _est_tokens_for_codex_watchdog
+    )
 
     # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
     # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
@@ -1569,13 +1616,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             _ttfb_timeout = _ttfb_cap
 
-    _codex_idle_enabled = _codex_watchdog_enabled
-    _codex_idle_timeout = _env_float(
-        "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
-        _codex_idle_timeout_default,
+    _codex_idle_timeout = resolve_codex_event_idle_timeout(
+        _est_tokens_for_codex_watchdog
     )
-    if _codex_idle_timeout <= 0:
-        _codex_idle_enabled = False
+    _codex_idle_enabled = _codex_watchdog_enabled and _codex_idle_timeout is not None
+    if _codex_idle_timeout is None:
+        _codex_idle_timeout = 0.0
 
     if _codex_watchdog_enabled:
         # Reset before the worker starts so a marker left over from a previous

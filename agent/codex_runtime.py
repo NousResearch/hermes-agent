@@ -1592,6 +1592,29 @@ def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
     return bypassed
 
 
+def _codex_request_client_aborted(agent, client) -> bool:
+    """True when this request client was stranger-thread aborted / poisoned.
+
+    Inner ``run_codex_stream`` retries must not call ``responses.create``
+    again on a client whose sockets were already shut down. That reuse is
+    the Broken-pipe path after a parsed-event idle kill. Outer retry after
+    ``TimeoutError`` builds a fresh client instead.
+    """
+    if client is None:
+        return False
+    cache = getattr(agent, "_request_client_cache", None)
+    if isinstance(cache, dict) and cache.get("client") is client and cache.get("poisoned"):
+        return True
+    is_closed = getattr(agent, "_is_openai_client_closed", None)
+    if callable(is_closed):
+        try:
+            if is_closed(client):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1700,7 +1723,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             _httpx.ConnectError,
             ConnectionError,
         ) as exc:
-            if attempt < max_stream_retries:
+            if attempt < max_stream_retries and not _codex_request_client_aborted(
+                agent, active_client
+            ):
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); "
                     "retrying. %s error=%s",
@@ -1747,7 +1772,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     interrupt_check=_interrupt_or_superseded,
                 )
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
-                if attempt < max_stream_retries:
+                if attempt < max_stream_retries and not _codex_request_client_aborted(
+                    agent, active_client
+                ):
                     logger.debug(
                         "Codex Responses stream transport failed mid-iteration "
                         "(attempt %s/%s); retrying. %s error=%s",

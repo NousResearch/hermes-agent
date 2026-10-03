@@ -252,8 +252,12 @@ def _managed_cache_dirs() -> set[Path]:
     side effect. Doctor should inspect state, not initialize package storage.
     """
     from hermes_constants import get_default_hermes_root
+    from pm.paths import partials_root
 
-    return {get_default_hermes_root() / "cache" / "uv"}
+    return {
+        get_default_hermes_root() / "cache" / "uv",
+        partials_root(),
+    }
 
 
 def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN_BYTES) -> list[tuple[str, int]]:

@@ -73,3 +73,15 @@ def test_drain_progress_reporter_prints_holder_and_config_knob(tmp_path, monkeyp
     out.clear()
     tick()
     assert out and out[0].strip()
+
+
+def test_fmt_elapsed_rolls_minutes_into_hours():
+    """A long drain must not print "284m41s" for a >1h holder."""
+    from hermes_cli.update_cmd_drain_report import _fmt_elapsed
+
+    assert _fmt_elapsed(42) == "42s"
+    assert _fmt_elapsed(421) == "7m01s"
+    assert _fmt_elapsed(3599) == "59m59s"
+    assert _fmt_elapsed(3600) == "1h00m"
+    assert _fmt_elapsed(17081) == "4h44m"
+    assert _fmt_elapsed("nope") == "?"

@@ -145,11 +145,19 @@ class TurnSummaryCollector:
 
 
 def format_elapsed(seconds: float) -> str:
-    """``12.4s`` / ``2m05s``."""
+    """``12.4s`` / ``2m05s`` / ``1h05m``.
+
+    Past an hour the minutes roll into hours; the old ``divmod(_, 60)`` grew
+    ``minutes`` without bound and rendered ``60m01s`` / ``284m41s`` for a long
+    turn."""
     seconds = max(seconds, 0.0)
     if seconds < 60:
         return f"{seconds:.1f}s"
-    minutes, rest = divmod(int(round(seconds)), 60)
+    total = int(round(seconds))
+    hours, rem = divmod(total, 3600)
+    if hours:
+        return f"{hours}h{rem // 60:02d}m"
+    minutes, rest = divmod(total, 60)
     return f"{minutes}m{rest:02d}s"
 
 

@@ -63,12 +63,18 @@ def resolve_footer_config(user_config: dict[str, Any] | None, platform_key: str 
 
 
 def _format_latency(seconds: float) -> str:
-    """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
+    """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``, ``1h05m``.
+
+    Past an hour the minutes roll into hours; the old ``divmod(total, 60)`` grew
+    minutes without bound (``60m01s`` / ``284m41s``)."""
     if seconds < 1:
         return "<1s"
     total = int(round(seconds))
     if total < 60:
         return f"{total}s"
+    hours, rem = divmod(total, 3600)
+    if hours:
+        return f"{hours}h{rem // 60:02d}m"
     m, sec = divmod(total, 60)
     return f"{m}m{sec:02d}s"
 

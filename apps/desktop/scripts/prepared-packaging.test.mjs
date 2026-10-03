@@ -6,6 +6,7 @@ import { afterEach, test } from 'vitest'
 import * as prepared from './prepared-packaging.mjs'
 import { validatePreparedBuilderArgs } from './run-electron-builder.mjs'
 import { spawnSync } from 'node:child_process'
+import { copyIconsToolset } from './prepare-packaging-tools.mjs'
 
 /** @type {string[]} */
 const roots = []
@@ -40,6 +41,20 @@ test('a failed preparation invalidates an earlier completion claim before loadin
   assert.notEqual(result.status, 0)
   assert.equal(fs.existsSync(manifest), false)
   assert.match(result.stderr, /lock|install|pinned/i)
+})
+
+test('a relocated CommonJS icon tool runs below the desktop ES module scope', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-icons-'))
+  roots.push(root)
+  fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}\n')
+  const supplier = path.join(root, 'supplier')
+  fs.mkdirSync(supplier)
+  fs.writeFileSync(path.join(supplier, 'icon-tool.js'), 'require("node:fs").writeFileSync(process.argv[2], "ran")\n')
+  const relocated = copyIconsToolset(supplier, path.join(root, 'build', 'prepared-packaging-tools', 'icons'))
+  const marker = path.join(root, 'icon-tool-ran')
+  const result = spawnSync(process.execPath, [path.join(relocated, 'icon-tool.js'), marker], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'ran')
 })
 
 test('prepared inputs are path-bound and reject changed or missing bytes without repair', async () => {

@@ -42,6 +42,13 @@ function copyTool(from, to) {
   return to
 }
 
+/** @param {string} from @param {string} to @returns {string} */
+export function copyIconsToolset(from, to) {
+  const icons = copyTool(from, to)
+  fs.writeFileSync(path.join(icons, 'package.json'), '{"type":"commonjs"}\n')
+  return icons
+}
+
 /**
  * Acquire bytes without signing credentials. Builder modules are loaded only
  * after the explicit cache root has been selected, before their lazy state runs.
@@ -94,7 +101,7 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
   /** @type {import('./prepared-packaging.mjs').PackagingToolsets} */
   const toolsets = {
     sevenZip: copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip')),
-    icons: copyTool(iconTools, path.join(out, 'icons')),
+    icons: copyIconsToolset(iconTools, path.join(out, 'icons')),
   }
   let windows = null
   if (process.platform === 'win32') {

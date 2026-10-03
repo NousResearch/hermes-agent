@@ -34,7 +34,14 @@ export interface KanbanTask {
   /** Unblock-loop counter — how many times this task re-blocked for the same
    *  reason after a human unblock. 0/absent on legacy payloads. */
   block_recurrences?: number
-}
+  /** Per-card runtime cap (seconds); null/absent = no cap. */
+  max_runtime_seconds?: null | number
+  /** Board-computed "needs triage": the card was unblocked and re-blocked, or
+   *  its worker failed repeatedly — a loop only a human can break. */
+  triage_signal?: boolean
+  /** Last event time (epoch seconds) — the payload's "last touched" clock
+   *  (the tasks table has no updated_at); drives the stale-blocked dot. */
+  last_event_at?: null | number}
 
 export interface KanbanColumn {
   name: string

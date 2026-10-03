@@ -3956,6 +3956,10 @@ export const ru = defineLocale({
     thread: {
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
+      showLater: 'Показать следующие сообщения',
+      jumpToLatest: 'К последним сообщениям',
+      historyLoadFailed: 'Не удалось загрузить историю. Попробуйте ещё раз.',
+      historyPagingUnavailable: 'Обновите бэкенд для перехода между страницами истории.',
       loadingResponse: 'Hermes загружает ответ',
       resumeWhenBackgroundDone: count =>
         count === 1

@@ -5470,6 +5470,10 @@ export const frOverrides = {
     thread: {
       loadingSession: 'Chargement de la session',
       showEarlier: 'Afficher les messages précédents',
+      showLater: 'Afficher les messages suivants',
+      jumpToLatest: 'Aller aux derniers messages',
+      historyLoadFailed: 'Impossible de charger l’historique. Réessayez.',
+      historyPagingUnavailable: 'Mettez à jour le backend pour parcourir les pages de l’historique.',
       loadingResponse: 'Hermes charge une réponse',
       loadingLocalModel: model => `Chargement de ${model} en mémoire`,
       processingPrompt: "Traitement de l'invite",

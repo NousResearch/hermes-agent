@@ -165,9 +165,9 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
 // Match the compact terminal/log viewers rather than the full thread's slack.
 const PREVIEW_RELOCK_THRESHOLD_PX = 24
 
-type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
+type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number; sourceRowId?: number }
 
-const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => {
+const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp, sourceRowId }) => {
   const { text } = useMessagePartText()
 
   // assistant-ui adds an empty continuation after a tool starts. It is not
@@ -177,10 +177,10 @@ const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestam
   }
 
   return (
-    <>
+    <div data-history-anchor={sourceRowId === undefined ? undefined : `text-${sourceRowId}`}>
       <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
       <MarkdownText />
-    </>
+    </div>
   )
 }
 
@@ -429,6 +429,12 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   )
 }
 
+const AnchoredToolFallback: FC<TimelineToolCallProps> = props => (
+  <div className="empty:hidden" data-history-anchor={`tool-${props.toolCallId}`}>
+    <ChainToolFallback {...props} />
+  </div>
+)
+
 // Module-level constant so the `components` prop on `MessagePrimitive.Parts`
 // has a stable identity across renders. Without this every AssistantMessage
 // render would create a fresh `components` object, invalidating the memo on
@@ -441,5 +447,5 @@ export const MESSAGE_PARTS_COMPONENTS = {
   ReasoningGroup: ReasoningAccordionGroup,
   Text: TimelineMarkdownText,
   ToolGroup: ToolGroupSlot,
-  tools: { Fallback: ChainToolFallback }
+  tools: { Fallback: AnchoredToolFallback }
 } as const

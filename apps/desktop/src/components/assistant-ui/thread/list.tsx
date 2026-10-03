@@ -46,6 +46,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
+import { captureHistoryScroll, type HistoryScrollAnchor, holdHistoryScroll } from './history-scroll'
 import { responseMessageRole, ResponseMessages } from './response-group'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
@@ -444,6 +445,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
         'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
         virtualized && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
       )}
+      data-history-anchor={`group-${group.id}`}
       data-slot="aui_message-group"
     >
       <MessageRenderBoundary resetKey={resetKey}>
@@ -520,7 +522,25 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     [scrollRef, scrollToBottom]
   )
 
-  const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
+  const {
+    olderAvailable,
+    expandWindow,
+    isHistorical,
+    returnToLatest,
+    newerAvailable,
+    revealNewer,
+    currentMessages,
+    expectedRuntimeIds,
+    historyError
+  } = useTranscriptWindow()
+
+  const runtimeMessageIds = useAuiState(s =>
+    isHistorical ? s.thread.messages.map(message => message.id).join('\n') : ''
+  )
+
+  const historyAnchorRef = useRef<HistoryScrollAnchor[]>([])
+  const historyHoldRef = useRef<(() => void) | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   useEffect(() => {
     $mountedTranscriptPanes.set($mountedTranscriptPanes.get() + 1)
@@ -654,7 +674,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // clamp looks like a user scroll-up to use-stick-to-bottom.
   const fullPage = renderBudget >= paneBudget
 
-  const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
+  // Historical retention is capped at three raw pages. A tail-only paint cut
+  // would discard the visible head on append, before its anchor can be restored.
+  // Keep that bounded window addressable without changing the live-tail budget.
+  const hiddenCount = isHistorical
+    ? 0
+    : firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this
   // array, and an inline slice handed it a fresh array every render — so the
@@ -1310,6 +1335,115 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }, [anchorBeforePrepend, expandWindow, paneBudget, paneVisible, releaseParkedRestore, structuralSignature])
 
+  const clearHistoryAnchor = useCallback(() => {
+    historyHoldRef.current?.()
+    historyHoldRef.current = null
+    historyAnchorRef.current = []
+  }, [])
+
+  useLayoutEffect(() => {
+    clearHistoryAnchor()
+    setHistoryLoading(false)
+
+    return clearHistoryAnchor
+  }, [clearHistoryAnchor, isHistorical, paneVisible, sessionKey])
+
+  // Cursor pages can append AND evict. A from-bottom restore is invalid for
+  // that operation; hold a visible durable part through the runtime commit.
+  const growHistoryWindow = useCallback(
+    async (older: boolean) => {
+      if (!paneVisible || !isHistorical || windowRequestRef.current) {
+        return
+      }
+
+      const request = {}
+      windowRequestRef.current = request
+      setHistoryLoading(true)
+
+      try {
+        await (older ? expandWindow : revealNewer)(() => {
+          const el = scrollRef.current
+
+          if (!el || windowRequestRef.current !== request) {
+            return
+          }
+
+          cancelRestoreRef.current?.()
+          applyRestoreRef.current = null
+          restoreFromBottomRef.current = null
+          loadSettledRef.current = true
+          stopScroll()
+          clearHistoryAnchor()
+          historyAnchorRef.current = captureHistoryScroll(el)
+        })
+      } finally {
+        if (windowRequestRef.current === request) {
+          windowRequestRef.current = null
+          setHistoryLoading(false)
+        }
+      }
+    },
+    [clearHistoryAnchor, expandWindow, isHistorical, paneVisible, revealNewer, scrollRef, stopScroll]
+  )
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+
+    // Context selects the source before the external-store runtime publishes
+    // its rows. Spending the two-frame restore on that old DOM loses the
+    // reading anchor before an eviction actually commits.
+    if (
+      !el ||
+      !historyAnchorRef.current.length ||
+      (expectedRuntimeIds !== null && runtimeMessageIds !== expectedRuntimeIds)
+    ) {
+      return
+    }
+
+    const content = contentRef.current
+
+    if (!content) {
+      return
+    }
+
+    const release = holdHistoryScroll(el, content, historyAnchorRef.current, stopScroll)
+    historyHoldRef.current = release
+
+    return () => {
+      release()
+
+      if (historyHoldRef.current === release) {
+        historyHoldRef.current = null
+      }
+    }
+  }, [contentRef, currentMessages, expectedRuntimeIds, runtimeMessageIds, structuralSignature, weightSignature, scrollRef, stopScroll])
+
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el || !isHistorical) {
+      return
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      clearHistoryAnchor()
+
+      if (event.deltaY > 0 && newerAvailable && el.scrollHeight - el.clientHeight - el.scrollTop <= 48) {
+        void growHistoryWindow(false)
+      }
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('pointerdown', clearHistoryAnchor)
+    el.addEventListener('keydown', clearHistoryAnchor)
+
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('pointerdown', clearHistoryAnchor)
+      el.removeEventListener('keydown', clearHistoryAnchor)
+    }
+  }, [clearHistoryAnchor, growHistoryWindow, isHistorical, newerAvailable, scrollRef])
+
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and
   // won't fight this manual restore. Spend the already-materialized DOM page
@@ -1323,12 +1457,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     if (action === 'window') {
-      void growWindow()
+      if (isHistorical) {
+        void growHistoryWindow(true)
+      } else {
+        void growWindow()
+      }
     } else {
       anchorBeforePrepend()
       setRenderBudget(budget => budget + paneBudget)
     }
-  }, [anchorBeforePrepend, growWindow, hiddenCount, olderAvailable, paneBudget])
+  }, [anchorBeforePrepend, growHistoryWindow, growWindow, hiddenCount, isHistorical, olderAvailable, paneBudget])
 
   useTimelineReveal({
     viewport: scrollRef,
@@ -1340,6 +1478,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     sessionKey,
     revealBudget: budget => setRenderBudget(current => Math.max(current, budget)),
     prepare: () => {
+      clearHistoryAnchor()
       cancelRestoreRef.current?.()
       applyRestoreRef.current = null
       restoreFromBottomRef.current = null
@@ -1361,6 +1500,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           return
         }
 
+        clearHistoryAnchor()
+
+        if (direction > 0 && isHistorical && newerAvailable && el.scrollHeight - el.clientHeight - el.scrollTop <= 48) {
+          void growHistoryWindow(false)
+
+          return
+        }
+
         // A no-op PageDown at the bottom must not escape sticky follow: the
         // browser will clamp the write and emit no scroll event to re-lock it.
         if (direction > 0 && threadScrollStateFromMetrics(el).kind === 'bottom') {
@@ -1377,7 +1524,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           direction < 0 &&
           shouldAutoShowEarlier({
             action: resolveShowEarlierAction(hiddenCount, olderAvailable),
-            isAtBottom,
+            isAtBottom: isAtBottom && !isHistorical,
             loadSettled: loadSettledRef.current,
             restorePending: restoreFromBottomRef.current != null,
             scrollTop: el.scrollTop,
@@ -1391,7 +1538,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
         el.scrollTop += direction * el.clientHeight
       }, sessionKey ?? null),
-    [hiddenCount, isAtBottom, olderAvailable, scrollRef, sessionKey, showEarlier, stopScroll]
+    [
+      clearHistoryAnchor,
+      growHistoryWindow,
+      hiddenCount,
+      isAtBottom,
+      isHistorical,
+      newerAvailable,
+      olderAvailable,
+      scrollRef,
+      sessionKey,
+      showEarlier,
+      stopScroll
+    ]
   )
 
   // Scroll/wheel at the top edge pages older turns through the same showEarlier
@@ -1408,7 +1567,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       if (
         shouldAutoShowEarlier({
           action: resolveShowEarlierAction(hiddenCount, olderAvailable),
-          isAtBottom,
+          isAtBottom: isAtBottom && !isHistorical,
           loadSettled: loadSettledRef.current,
           restorePending: restoreFromBottomRef.current != null,
           scrollTop: el.scrollTop,
@@ -1419,7 +1578,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
     }
 
-    const onScroll = () => tryShowEarlier()
+    // Timeline jumps and anchor restores emit scroll too. They are not a
+    // request to fetch another historical page (or to undo the selected jump).
+    const onScroll = () => {
+      if (!isHistorical) {
+        tryShowEarlier()
+      }
+    }
+
     const onWheel = (event: WheelEvent) => tryShowEarlier(event.deltaY)
 
     el.addEventListener('scroll', onScroll, { passive: true })
@@ -1429,7 +1595,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
     }
-  }, [hiddenCount, isAtBottom, olderAvailable, scrollRef, showEarlier])
+  }, [hiddenCount, isAtBottom, isHistorical, olderAvailable, scrollRef, showEarlier])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -1574,6 +1740,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           {!renderEmpty && (hiddenCount > 0 || olderAvailable) && (
             <button
               className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+              disabled={historyLoading}
               onClick={showEarlier}
               type="button"
             >
@@ -1586,6 +1753,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             </div>
           ) : (
             rows
+          )}
+          {isHistorical && newerAvailable && (
+            <button
+              className="mx-auto my-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+              disabled={historyLoading}
+              onClick={() => void growHistoryWindow(false)}
+              type="button"
+            >
+              {t.assistant.thread.showLater}
+            </button>
+          )}
+          {isHistorical && historyError && (
+            <p className="text-center text-xs text-muted-foreground" role="status">
+              {historyError === 'unavailable'
+                ? t.assistant.thread.historyPagingUnavailable
+                : t.assistant.thread.historyLoadFailed}
+            </p>
           )}
           <PendingApprovalStack />
           {!renderEmpty && loadingIndicator}

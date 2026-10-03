@@ -101,3 +101,54 @@ def test_three_consecutive_runs_signal_nothing(converged_host, capsys):
     assert converged_host.signals == [], f"a converged host was signalled: {converged_host.signals}"
     assert "Half-migrated" not in out and "SIGTERM" not in out
     assert "already multiplexing" in out
+
+
+def test_a_bootstrap_launched_host_gateway_is_identified_by_the_host_record(converged_host, monkeypatch, capsys):
+    """#123151: the bootstrap launcher's shim runs the gateway as inline source (``python -I -c
+    <src> gateway run``) — the one start shape the strict argv matcher rejects (#121635, which
+    guards the restart watcher's trailing argv). Without the host-record salvage, every consumer
+    keyed on ``live_default_gateway_pid()`` reads "no multiplexer": the migration confirmation
+    polls ``served_profiles`` through that gate, never converges, and ``gateway_migration.json``
+    stays on disk forever."""
+    import gateway.status as status
+    from gateway import host_attach
+    monkeypatch.setattr(
+        status, "_read_process_cmdline",
+        lambda p: "python3 -I -c '<bootstrap source>' gateway run")
+    host_attach.invalidate_host_gateway_cache()
+    root = converged_host.root
+    for name in ("coder", "ops"):
+        assert gm._live_gateway_pid(root / "profiles" / name) == converged_host.pid
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    assert recorded_served_profiles() == converged_host.served
+    from types import SimpleNamespace
+    gm.maybe_auto_migrate_after_update()
+    gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))  # returns, never exits
+    out = capsys.readouterr().out
+    assert "has not confirmed serving" not in out
+    assert converged_host.signals == [], f"a converged host was signalled: {converged_host.signals}"
+
+
+def test_inline_source_the_host_record_does_not_own_still_reads_as_no_gateway(converged_host, monkeypatch):
+    """The salvage must not widen #107002: an inline-source process the host record does NOT own —
+    the detached restart watcher's shape — is still refused, because the record pins the owner's
+    PID and the watcher is not it."""
+    import subprocess
+
+    import gateway.status as status
+    from gateway import host_attach
+    watcher = subprocess.Popen(["sleep", "30"])
+    try:
+        root = converged_host.root
+        (root / "gateway_state.json").write_text(json.dumps({
+            "pid": watcher.pid, "hermes_home": str(root), "gateway_state": "running",
+            "served_profiles": converged_host.served}))
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda p: "python3 -I -c '<watcher source>' 14980 -m hermes_cli.main gateway run")
+        host_attach.invalidate_host_gateway_cache()
+        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        assert recorded_served_profiles() is None
+    finally:
+        watcher.terminate()
+        watcher.wait()

@@ -386,6 +386,32 @@ class TestLegacyCloudMigration:
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:1" in result["output"]
 
+    _PROFILE = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+    def test_configured_profile_starts_the_cloud_browser_on_it(self, tmp_path, monkeypatch):
+        cfg = {"browser": {"cloud_provider": "browser-use", "browser_use": {"profile_id": self._PROFILE}}}
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: cfg)
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        log = tmp_path / "calls.log"
+        cli = _fake_cli(tmp_path, f'cat >> {log}\necho "autospawn:[$BU_AUTOSPAWN]"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        # The harness's autospawn would create a profileless browser, so it must stay off.
+        assert "autospawn:[]" in result["output"]
+        calls = log.read_text()
+        assert calls.index(f"profileId='{self._PROFILE}'") < calls.index("print(1)")
+
+    def test_failed_profiled_start_never_falls_back_to_profileless(self, tmp_path, monkeypatch):
+        cfg = {"browser": {"cloud_provider": "browser-use", "browser_use": {"profile_id": self._PROFILE}}}
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: cfg)
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        log = tmp_path / "calls.log"
+        cli = _fake_cli(tmp_path, f'cat >> {log}\necho "HTTP Error 404: profile not found" >&2\nexit 1\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert "404" in result["error"]
+        assert "print(1)" not in log.read_text()
+
     def test_explicit_backend_does_not_set_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",

@@ -53,6 +53,17 @@ Get your API key at [browser-use.com](https://browser-use.com).
 
 Browser Use Cloud runs managed Chromium with [stealth](https://docs.browser-use.com/cloud/browser/stealth) and [residential proxies](https://docs.browser-use.com/cloud/browser/proxies) enabled by default, includes CAPTCHA solving, and supports [persistent profiles](https://docs.browser-use.com/cloud/guides/authentication) for cookies, localStorage, and saved passwords.
 
+To start every Browser Use cloud browser already signed in, create a profile in the Browser Use dashboard and set its UUID:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  browser_use:
+    profile_id: 00000000-0000-0000-0000-000000000000
+```
+
+With a profile set, a browser that cannot start on that profile reports an error instead of falling back to a clean browser. Leave it unset for ephemeral browsers. The Nous Tool Gateway path does not use your Browser Use profiles.
+
 ### Browserbase cloud mode
 
 To use Browserbase-managed cloud browsers, add:

@@ -580,6 +580,40 @@ def _kill_cli_process_group(proc) -> None:
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
 
 
+_PROFILE_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def configured_browser_use_profile_id() -> str:
+    """``browser.browser_use.profile_id``: the Browser Use cloud profile (cookies, localStorage, saved
+    logins) every direct-API cloud browser starts with. "" = not configured (ephemeral browsers)."""
+    bu = _read_browser_cfg().get("browser_use")
+    return str(bu.get("profile_id") or "").strip() if isinstance(bu, dict) else ""
+
+
+def _start_profiled_cloud_browser(cmd, env: dict, timeout: float, profile_id: str) -> Optional[str]:
+    """Start this session's cloud browser on *profile_id* unless its daemon is already alive.
+
+    The harness's own BU_AUTOSPAWN creates a profileless browser, so a configured profile must be
+    started explicitly — and a failed start is an error, never a silent profileless fallback.
+    Returns an error string, or None when the browser is running."""
+    if not _PROFILE_ID_RE.match(profile_id):
+        return (f"browser.browser_use.profile_id {profile_id!r} is not a Browser Use profile UUID. "
+                "Fix it in config.yaml (or remove it for ephemeral browsers).")
+    # The harness treats code starting with "start_remote_daemon(" as a cloud-admin call (no autospawn).
+    boot = f"start_remote_daemon(NAME, profileId={profile_id!r}) if not daemon_alive(NAME) else None\n"
+    try:
+        proc = _run_cli_killing_process_group(cmd, boot, {**env, "BH_OPEN_LIVE_URL": "0"}, min(timeout, 120))
+    except subprocess.TimeoutExpired:
+        return "Starting the Browser Use cloud browser with the configured profile timed out."
+    except OSError as e:
+        return f"Failed to launch browser-use CLI: {e}"
+    if proc.returncode != 0:
+        from agent.redact import redact_sensitive_text
+        tail = redact_sensitive_text((proc.stderr or "").strip(), force=True)[-600:]
+        return f"Could not start the Browser Use cloud browser with profile {profile_id}: {tail}"
+    return None
+
+
 def _run_cli_killing_process_group(cmd, code, env, timeout):
     """Run the CLI in its own process group and kill the whole group on timeout.
 
@@ -662,12 +696,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
 
-    # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no local
-    # Chrome/CDP endpoint is reachable (their API key authenticates it)
-    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
-        env["BU_AUTOSPAWN"] = "1"
-
     timeout = _clamp_timeout(timeout_s)
+    if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        profile_id = configured_browser_use_profile_id()
+        if profile_id and not _has_cdp_env(env):
+            env.pop("BU_AUTOSPAWN", None)
+            boot_err = _start_profiled_cloud_browser(cmd, env, timeout, profile_id)
+            if boot_err:
+                return tool_error(boot_err)
+        elif "BU_AUTOSPAWN" not in env:
+            # BU_AUTOSPAWN makes the CLI start an ephemeral Browser Use cloud browser when no local
+            # Chrome/CDP endpoint is reachable (their API key authenticates it)
+            env["BU_AUTOSPAWN"] = "1"
     started = time.time()
 
     def dispatch() -> Dict[str, Any]:

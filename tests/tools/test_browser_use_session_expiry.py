@@ -43,6 +43,23 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
     assert session["expires_at"] == "2030-01-01T00:05:00Z"
 
 
+def test_direct_session_uses_configured_profile(monkeypatch):
+    provider = browser_use_provider.BrowserUseBrowserProvider()
+    response = Mock(ok=True, headers={})
+    response.json.return_value = {"id": "browser-session-1", "cdpUrl": "ws://browser-use.example/1"}
+    monkeypatch.setattr(provider, "_get_config", lambda: {
+        "api_key": "test-key", "base_url": "https://api.browser-use.example/api/v3", "managed_mode": False})
+    post = Mock(return_value=response)
+    monkeypatch.setattr(browser_use_provider.requests, "post", post)
+    profile_id = "0f1e2d3c-4b5a-4968-8776-655443322110"
+    monkeypatch.setattr("hermes_cli.config.read_raw_config",
+                        lambda: {"browser": {"browser_use": {"profile_id": profile_id}}})
+
+    provider.create_session("task-1")
+
+    assert post.call_args.kwargs["json"]["profileId"] == profile_id
+
+
 def test_live_cloud_session_is_reused(monkeypatch):
     _isolate_browser_state(monkeypatch)
     existing = {

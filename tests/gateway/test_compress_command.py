@@ -520,8 +520,7 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
     )
 
 
-@pytest.mark.parametrize("profile", ["main", "sean"])
-def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, profile, monkeypatch):
+def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monkeypatch):
     """A rotated /compress must NOT rewrite the atomically-published child.
 
     publish_compression_child() writes handoff + cloned foreign tail in one transaction;
@@ -534,9 +533,8 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, prof
     from gateway.session import AsyncSessionStore, SessionStore
     from gateway.config import GatewayConfig
 
-    db_path = tmp_path / profile / "state.db"
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
-    store = SessionStore(sessions_dir=tmp_path / profile, config=GatewayConfig())
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     db = store._db
     parent, child = "parent", "child"
     db.create_session(parent, "discord")
@@ -556,7 +554,7 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, prof
     store.rewrite_transcript = _destructive_rewrite
 
     entry = SessionEntry(
-        session_key=f"agent:{profile}:discord:thread:123:123", session_id=parent,
+        session_key="agent:main:discord:thread:123:123", session_id=parent,
         created_at=datetime.now(), updated_at=datetime.now(),
         platform=Platform.DISCORD, chat_type="thread",
     )

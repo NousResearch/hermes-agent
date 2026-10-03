@@ -147,6 +147,13 @@ class CorroborationEngine:
         self.decay = decay or DecayConfig()
         self._clock = clock
         self._state = Candidate(id=id, label=label)
+        # Per-engine thresholds. Default to the module constants; callers
+        # (tools.taste_tool.get_engine) overwrite them from config so the
+        # taste block knobs take effect instead of being silently ignored.
+        self.min_observations_for_write = MIN_OBSERVATIONS_FOR_WRITE
+        self.staleness_days = STALENESS_DAYS
+        self.conflict_epsilon = CONFLICT_EPSILON
+        self.auto_ack_observations = AUTO_ACK_OBSERVATIONS
 
     # -- clock access (injectable, default real time) ------------------------
     @property
@@ -184,8 +191,8 @@ class CorroborationEngine:
             raw_weight=c.weight,
             decayed_weight=score_out,
             score=round(score_out, 4),
-            established=c.n_obs >= MIN_OBSERVATIONS_FOR_WRITE,
-            auto_ack=c.n_obs >= AUTO_ACK_OBSERVATIONS,
+            established=c.n_obs >= self.min_observations_for_write,
+            auto_ack=c.n_obs >= self.auto_ack_observations,
             escalated=escalation,
             conflict=conflict,
             n_obs=c.n_obs,
@@ -235,7 +242,7 @@ class CorroborationEngine:
         escalation = None
         if c.n_obs >= 2:
             prev_score = c.history[-2][1]  # history entries are (epoch, raw_score)
-            if abs(prev_score - score) > CONFLICT_EPSILON:
+            if abs(prev_score - score) > self.conflict_epsilon:
                 conflict = True
                 c.conflicts += 1
                 c.last_conflict_epoch = self.now
@@ -273,7 +280,7 @@ class CorroborationEngine:
         if self._state.n_obs < 2:
             return False
         age_days = (self.now - self._state.last_obs_epoch) / 86400.0
-        return age_days > STALENESS_DAYS
+        return age_days > self.staleness_days
 
     def is_conflicting(self):
         return self._state.conflicts > 0
@@ -288,7 +295,7 @@ class CorroborationEngine:
         """
         if self.is_conflicting() or self.is_stale():
             return False
-        return self._state.n_obs >= MIN_OBSERVATIONS_FOR_WRITE
+        return self._state.n_obs >= self.min_observations_for_write
 
     def snapshot(self):
         """Return a serialisable dict for the in-memory cache / disk sidecar."""
@@ -320,8 +327,8 @@ class CorroborationEngine:
             raw_weight=self._state.weight,
             decayed_weight=score_out,
             score=round(score_out, 4),
-            established=self._state.n_obs >= MIN_OBSERVATIONS_FOR_WRITE,
-            auto_ack=self._state.n_obs >= AUTO_ACK_OBSERVATIONS,
+            established=self._state.n_obs >= self.min_observations_for_write,
+            auto_ack=self._state.n_obs >= self.auto_ack_observations,
             escalated=(
                 Escalation.staleness(self._state, age_days, self.now)
                 if self.is_stale() else None

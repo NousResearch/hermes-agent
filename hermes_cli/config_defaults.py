@@ -793,7 +793,7 @@ DEFAULT_CONFIG = {
             # at near-zero marginal cost; fail-open (taste errors never break the review pass).
             "taste": {
                 "enabled": True,                 # master switch; fail-open = True
-                "half_life_days": 14.0,          # decay; None disables (0 raises ValueError)
+                "half_life_days": 14.0,          # decay half-life in days
                 "escalate_stale_after_days": 21, # staleness escalation threshold
                 "conflict_epsilon": 0.15,        # disagreement that escalates
                 "min_observations_for_write": 3,

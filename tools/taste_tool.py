@@ -118,6 +118,13 @@ def get_engine(
                         exc_info=True,
                     )
             _ENGINES[preference_id] = engine
+        # Apply the config knobs on every lookup so config changes take
+        # effect without a restart (previously these were accepted but
+        # never read, so only the defaults were ever in force).
+        engine.min_observations_for_write = int(cfg["min_observations_for_write"])
+        engine.staleness_days = float(cfg["escalate_stale_after_days"])
+        engine.conflict_epsilon = float(cfg["conflict_epsilon"])
+        engine.auto_ack_observations = int(cfg["auto_ack_observations"])
         return engine
 
 
@@ -401,8 +408,6 @@ def taste_write(taste_dir: Optional[str] = None,
                 taste_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Flush all established, escalation-free candidates to ``taste.md``."""
     try:
-        cfg = _merged_cfg(taste_cfg)
-        _ = cfg
         written: List[str] = []
         with _ENGINES_LOCK:
             engines = list(_ENGINES.items())

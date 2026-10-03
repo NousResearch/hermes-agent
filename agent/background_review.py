@@ -834,11 +834,8 @@ def _get_taste_engine(preference_id: str, label: str,
 
     Delegates to :func:`tools.taste_tool.get_engine` so the hook and the
     ``taste`` tool share a single candidate-keyed registry (and a single
-    ``_save_state`` persistence path). Previously this kept a private
-    ``_TASTE_ENGINES`` registry while persisting via the tool's
-    ``_save_state`` (which serializes the tool's ``_ENGINES``), so hook
-    observations never reached the sidecar and every restart reset
-    corroboration to zero.
+    ``_save_state`` persistence path); a private hook-side registry would
+    reset corroboration to zero on every restart.
     """
     try:
         from tools.taste_tool import get_engine

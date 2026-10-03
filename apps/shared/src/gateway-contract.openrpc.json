@@ -37386,6 +37386,21 @@
             "default": null,
             "title": "Has Otp"
           },
+          "allowed_origins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allowed Origins"
+          },
           "backend": {
             "title": "Backend",
             "type": "string"

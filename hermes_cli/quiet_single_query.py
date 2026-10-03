@@ -207,6 +207,7 @@ def continue_quiet_notify_completions(
     """
     from tools.process_registry import process_registry
     from tools.async_delegation import claim_event_delivery, complete_event_delivery
+    from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 
     last: Any = None
     key = session_id or ""
@@ -217,6 +218,8 @@ def continue_quiet_notify_completions(
         wait = process_registry.wait_for_pending_completions(None, timeout=max(deadline - time.monotonic(), 0.0))
         drained = []
         for event, text in process_registry.drain_notifications(session_key=key, owns_event=owns_event):
+            if CLIProcessNotificationsMixin._process_heartbeat_is_stale(event, process_registry):
+                continue
             # Durable async_delegation events carry a delivery ledger: without the
             # claim/complete handshake the row stays delivery_state='pending' and
             # restore_undelivered_completions re-queues it on the next process start,

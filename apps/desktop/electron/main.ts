@@ -19677,11 +19677,13 @@ function registerChatWindow(window: BrowserWindow) {
     // window-all-closed is blocked. Keyed on quitInProgress, not appQuitting:
     // an ordinary primary-window close sets appQuitting for overlay pop-in
     // suppression before `closed` fires, which must not suppress this quit.
+    // Popped-out Browser windows (browserWindows registry) are user-visible
+    // surfaces too, so they keep the app alive.
     if (
       shouldQuitOnLastChatClosed({
         platform: process.platform,
         isQuittingForHandoff,
-        remainingChatWindows: chatWindows.size,
+        remainingChatWindows: chatWindows.size + browserWindows.size,
         quitInProgress
       })
     ) {

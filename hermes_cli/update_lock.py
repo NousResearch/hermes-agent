@@ -253,12 +253,14 @@ class UpdateHolder:
     age_seconds: float
 
 
-def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
+def read_live_update(*, path: Path | None = None, reap_stale: bool = True) -> UpdateHolder | None:
     """Return the live update holding the lock, or ``None``.
 
     Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent, unreadable,
     malformed, dead-pid, and past-the-ceiling all mean "no live update", and a stale marker
-    file is deleted so it can't strand future runs. Never raises.
+    file is deleted so it can't strand future runs. Never raises. Callers that already
+    lost an exclusive create must pass ``reap_stale=False``: the unparseable states they
+    re-read are usually the winner mid-write, and unlinking them would destroy a live claim.
     """
     marker = path or update_marker_path()
     try:
@@ -276,8 +278,9 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
 
     age = time.time() - started_at
     if not _pid_alive(pid) or age > UPDATE_MARKER_MAX_AGE_SECONDS:
-        with suppress(OSError):
-            marker.unlink()
+        if reap_stale:
+            with suppress(OSError):
+                marker.unlink()
         return None
     return UpdateHolder(pid=pid, age_seconds=age)
 
@@ -328,12 +331,40 @@ class UpdateLock:
                 return True
             self.holder = existing
             return False
+        if existing is not None:
+            with suppress(OSError):
+                self.path.unlink()
         try:
+            # Separate from the marker create: mkdir raises FileExistsError when the
+            # parent exists as a file, and that must degrade like any unwritable
+            # location, not be mistaken for a lost create race below.
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
         except OSError as exc:
             # Best-effort, like the Rust guard: an unwritable marker must not block the
             # update itself (worse than the race it prevents). Degrade to pre-lock behavior.
+            logger.debug("Could not create marker dir %s: %s", self.path.parent, exc)
+            return True
+        try:
+            # O_EXCL (the pattern _early_recovery and the cron scheduler already use)
+            # closes the read-to-write race: a second updater that read "no live lock"
+            # in the same window loses the create instead of overwriting the winner.
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as marker_file:
+                marker_file.write(f"{os.getpid()}\n{int(time.time())}\n")
+        except FileExistsError:
+            # Fail closed: re-read to name the holder for the refusal message. The
+            # re-read must not reap — a marker that cannot (yet) parse as live is
+            # exactly the winner mid-write state (the Rust and Electron writers are
+            # not atomic), and unlinking it would hand the claim to a third updater.
+            # None means mid-write or already released; either way the earlier side
+            # keeps it, except a marker that has vanished outright, which means the
+            # winner finished between our lost create and the re-read — claim fresh
+            # rather than refuse with a holderless "already running" message.
+            self.holder = read_live_update(path=self.path, reap_stale=False)
+            if self.holder is None and not self.path.exists():
+                return self.acquire()
+            return False
+        except OSError as exc:
             logger.debug("Could not write update marker %s: %s", self.path, exc)
             return True
         self.acquired = True

@@ -87,13 +87,15 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
 
     mock_result = MagicMock(returncode=0, stdout="5\n")
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
-        result = check_for_updates()
+    # Release lookup unavailable → falls back to the main-tip comparison.
+    with patch("hermes_cli.banner._fetch_latest_release_sha", return_value=None):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+            result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    # exact-match describe + git fetch + git rev-list
+    assert mock_run.call_count == 3
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
@@ -246,3 +248,202 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+# =========================================================================
+# Tag-pinned checkout: compare against the latest GitHub release, not main
+# =========================================================================
+
+_HEAD_SHA = "f" * 39 + "0"
+_RELEASE_SHA = "f" * 39 + "1"
+
+
+def _make_git_run(head_sha):
+    """Build a subprocess.run dispatcher whose rev-parse reports ``head_sha``."""
+    def _git_run_by_argv(argv, **kwargs):
+        """Dispatch patched subprocess.run calls by command shape."""
+        if argv[:3] == ["git", "describe", "--tags"]:
+            return MagicMock(returncode=0, stdout="v2026.9.24\n")
+        if argv[:2] == ["git", "fetch"]:
+            raise AssertionError("git fetch must not run in the release-tag path")
+        if argv[:2] == ["git", "rev-parse"]:
+            return MagicMock(returncode=0, stdout=head_sha + "\n")
+        if argv[:2] == ["git", "rev-list"]:
+            return MagicMock(returncode=0, stdout="7000\n")
+        raise AssertionError(f"unexpected subprocess call: {argv}")
+    return _git_run_by_argv
+
+
+def test_check_for_updates_tag_pinned_at_latest_release(tmp_path, monkeypatch):
+    """HEAD exactly at a tag whose SHA matches the latest release → 0, not N behind.
+
+    A tag-pinned editable checkout (HEAD exactly at release tag v2026.9.24) is
+    thousands of commits behind main by construction, but that is not an
+    available update: the comparison target must be the latest GitHub release
+    tag's commit SHA instead.
+    """
+    import hermes_cli.banner as banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    cache_file = tmp_path / ".update_check"
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_make_git_run(_RELEASE_SHA)) as mock_run, \
+         patch("hermes_cli.banner._fetch_latest_release_sha", return_value=_RELEASE_SHA):
+        result = banner.check_for_updates()
+
+    assert result == 0
+    # Passive behavior preserved: GitHub API only, never a git fetch.
+    for call in mock_run.call_args_list:
+        assert call.args[0][:2] != ["git", "fetch"]
+    # The tag is recorded so a moved HEAD tag invalidates the cached verdict.
+    written = json.loads(cache_file.read_text())
+    assert written["head"] == "v2026.9.24"
+    assert written["behind"] == 0
+
+
+def test_check_for_updates_tag_pinned_older_release(tmp_path, monkeypatch):
+    """HEAD at a tag that is not the latest release → UPDATE_AVAILABLE_NO_COUNT."""
+    import hermes_cli.banner as banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_make_git_run(_HEAD_SHA)), \
+         patch("hermes_cli.banner._fetch_latest_release_sha", return_value=_RELEASE_SHA):
+        result = banner.check_for_updates()
+
+    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
+
+
+def test_check_for_updates_no_exact_tag_falls_back_to_main(tmp_path, monkeypatch):
+    """When HEAD is not exactly at a tag, keep the origin/main commit count."""
+    import hermes_cli.banner as banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+
+    def no_tag_run(argv, **kwargs):
+        if argv[:3] == ["git", "describe", "--tags"]:
+            return MagicMock(returncode=128, stdout="", stderr="no tag exactly on HEAD")
+        return _make_git_run(_HEAD_SHA)(argv, **kwargs)
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=no_tag_run) as mock_run, \
+         patch("hermes_cli.banner._fetch_latest_release_sha") as mock_release:
+        result = banner.check_for_updates()
+
+    assert result == 7000
+    # HEAD is not at a tag → no release lookup at all.
+    mock_release.assert_not_called()
+    commands = [call.args[0][:2] for call in mock_run.call_args_list]
+    assert ["git", "fetch"] in commands and ["git", "rev-list"] in commands
+
+
+def test_check_for_updates_release_info_unavailable_falls_back(tmp_path, monkeypatch):
+    """Tag at HEAD but GitHub release lookup fails → main-tip comparison."""
+    import hermes_cli.banner as banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_make_git_run(_HEAD_SHA)) as mock_run, \
+         patch("hermes_cli.banner._fetch_latest_release_sha", return_value=None):
+        result = banner.check_for_updates()
+
+    assert result == 7000
+    commands = [call.args[0][:2] for call in mock_run.call_args_list]
+    assert ["git", "fetch"] in commands and ["git", "rev-list"] in commands
+
+
+def test_check_for_updates_tag_cache_invalidated_on_tag_move(tmp_path, monkeypatch):
+    """A fresh cache stamped with a different HEAD tag must be re-checked."""
+    import hermes_cli.banner as banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 0, "rev": None,
+                    "ver": banner.VERSION, "head": "v2026.9.23"})
+    )
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_make_git_run(_RELEASE_SHA)), \
+         patch("hermes_cli.banner._fetch_latest_release_sha", return_value=_RELEASE_SHA):
+        result = banner.check_for_updates()
+
+    # HEAD has since moved to v2026.9.24 → cached verdict for the old tag is stale.
+    assert result == 0
+    assert json.loads(cache_file.read_text())["head"] == "v2026.9.24"
+
+
+def test_check_for_updates_tag_cache_hit(tmp_path, monkeypatch):
+    """Fresh cache with a matching HEAD tag returns the cached verdict."""
+    import hermes_cli.banner as banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 0, "rev": None,
+                    "ver": banner.VERSION, "head": "v2026.9.24"})
+    )
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_make_git_run(_HEAD_SHA)) as mock_run, \
+         patch("hermes_cli.banner._fetch_latest_release_sha") as mock_release:
+        result = banner.check_for_updates()
+
+    assert result == 0
+    # Tag matches the cached one → no fresh check, no release lookup.
+    mock_release.assert_not_called()
+    commands = [call.args[0][:2] for call in mock_run.call_args_list]
+    assert ["git", "fetch"] not in commands and ["git", "rev-list"] not in commands
+
+
+def test_fetch_latest_release_sha_prefers_target_commitish_sha():
+    """target_commitish carrying a full SHA is used directly."""
+    import hermes_cli.banner as banner
+
+    with patch.object(
+        banner, "_github_api_json",
+        return_value={"tag_name": "v2026.9.24", "target_commitish": _RELEASE_SHA},
+    ) as api:
+        assert banner._fetch_latest_release_sha() == _RELEASE_SHA
+        # Single API call — no tag peeling needed.
+        assert api.call_count == 1
+
+
+def test_fetch_latest_release_sha_peels_annotated_tag():
+    """target_commitish naming a branch → resolve and peel the tag via the API."""
+    import hermes_cli.banner as banner
+
+    def api_json(path):
+        if path == "releases/latest":
+            return {"tag_name": "v2026.9.24", "target_commitish": "main"}
+        if path == "git/ref/tags/v2026.9.24":
+            return {"object": {"sha": "a" * 40, "type": "tag"}}
+        if path == "git/tags/" + "a" * 40:
+            return {"object": {"sha": _RELEASE_SHA, "type": "commit"}}
+        raise AssertionError(f"unexpected API path: {path}")
+
+    with patch.object(banner, "_github_api_json", side_effect=api_json):
+        assert banner._fetch_latest_release_sha() == _RELEASE_SHA
+
+
+def test_fetch_latest_release_sha_returns_none_without_release():
+    """API failure or missing tag_name → None (caller falls back to main tip)."""
+    import hermes_cli.banner as banner
+
+    with patch.object(banner, "_github_api_json", return_value=None):
+        assert banner._fetch_latest_release_sha() is None
+
+    with patch.object(banner, "_github_api_json", return_value={"tag_name": ""}):
+        assert banner._fetch_latest_release_sha() is None
+
+
+def test_git_exact_tag_requires_exact_match():
+    """describe --exact-match failing (HEAD not on a tag) returns None."""
+    import hermes_cli.banner as banner
+
+    with patch("hermes_cli.banner.subprocess.run",
+               return_value=MagicMock(returncode=128, stdout="")):
+        assert banner._git_exact_tag(Path("/tmp/fake-repo")) is None

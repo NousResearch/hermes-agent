@@ -168,6 +168,102 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _is_full_sha(value: str) -> bool:
+    """True when ``value`` is a 40-character lowercase git SHA-1."""
+    return len(value) == 40 and all(c in "0123456789abcdef" for c in value.lower())
+
+
+def _github_api_json(path: str) -> Optional[dict]:
+    """GET a JSON document from the GitHub API. Returns None on failure."""
+    try:
+        import urllib.request
+        url = f"https://api.github.com/repos/nousresearch/hermes-agent/{path}"
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
+def _fetch_latest_release_sha() -> Optional[str]:
+    """Return the commit SHA of the latest GitHub release tag, or None.
+
+    Passive — talks only to the GitHub API, never ``git fetch``.
+    ``target_commitish`` is usually the commit the release targets, but for
+    tag-creation flows it can name a branch instead, so peel the tag object
+    through ``/git/ref/tags`` / ``/git/tags`` when needed.
+    """
+    release = _github_api_json("releases/latest")
+    if not release:
+        return None
+    tag = release.get("tag_name")
+    if not tag:
+        return None
+    target = release.get("target_commitish")
+    if isinstance(target, str) and _is_full_sha(target):
+        return target
+    # target_commitish named a branch (or was absent) — resolve the tag's commit.
+    ref = _github_api_json(f"git/ref/tags/{tag}")
+    obj = (ref or {}).get("object") or {}
+    sha = obj.get("sha")
+    if not sha:
+        return None
+    if obj.get("type") == "tag":  # annotated tag object — peel to the commit
+        peeled = _github_api_json(f"git/tags/{sha}")
+        sha = (peeled or {}).get("object", {}).get("sha")
+        if not sha:
+            return None
+    return sha
+
+
+def _git_exact_tag(repo_dir: Path) -> Optional[str]:
+    """Return the tag HEAD sits exactly on, or None if HEAD isn't at a tag."""
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
+
+def _check_via_release_tag(repo_dir: Path, head_tag: str) -> Optional[int]:
+    """Compare a tag-pinned checkout against the latest GitHub release.
+
+    A checkout sitting exactly on a release tag is "at" a release, not
+    ``N commits behind main`` — counting against origin/main reports a
+    permanent misleading warning for every tag-pinned editable install.
+    ``head_tag`` is the tag HEAD sits exactly on (from ``_git_exact_tag``).
+    Returns 0 when HEAD matches the latest release's commit SHA,
+    ``UPDATE_AVAILABLE_NO_COUNT`` when a newer release exists, or ``None``
+    when HEAD isn't exactly at a tag or release info is unavailable
+    (the caller then falls back to the main-tip comparison).
+    """
+    release_sha = _fetch_latest_release_sha()
+    if not release_sha:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode != 0:
+            return None
+        head_sha = (result.stdout or "").strip()
+    except Exception:
+        return None
+    if not head_sha:
+        return None
+    return 0 if head_sha == release_sha else UPDATE_AVAILABLE_NO_COUNT
+
+
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
     parts = []
@@ -215,7 +311,10 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    git checkout and count commits behind ``origin/main``. When HEAD sits
+    exactly on a release tag, compare against the latest GitHub release
+    instead of main so tag-pinned editable installs don't report a
+    permanent "N commits behind" warning.
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -250,6 +349,7 @@ def check_for_updates() -> Optional[int]:
     # changes VERSION but leaves rev unchanged (both None), and without this
     # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
     now = time.time()
+    head_tag: Optional[str] = None
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
@@ -258,7 +358,21 @@ def check_for_updates() -> Optional[int]:
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
             ):
-                return cached.get("behind")
+                # A tag-pinned checkout compares against the latest release,
+                # so a moved HEAD tag must invalidate the cached verdict.
+                # Only probe when the cached entry involved a tag — keeps the
+                # plain (no-head) cache semantics of main-tip checks unchanged.
+                cached_head = cached.get("head")
+                if cached_head:
+                    repo_dir = _resolve_repo_dir()
+                    if repo_dir is not None:
+                        head_tag = _git_exact_tag(repo_dir)
+                    if head_tag != cached_head:
+                        pass  # stale tag — fall through to a fresh check
+                    else:
+                        return cached.get("behind")
+                else:
+                    return cached.get("behind")
     except Exception:
         pass
 
@@ -274,11 +388,28 @@ def check_for_updates() -> Optional[int]:
         if not (repo_dir / ".git").exists():
             behind = check_via_pypi()
         else:
+            # HEAD exactly at a release tag (pip install -e from a tag
+            # checkout): compare against the latest GitHub release instead
+            # of counting commits behind origin/main, which reports a
+            # permanent "N commits behind" for every tag-pinned install.
+            head_tag = _git_exact_tag(repo_dir)
+            if head_tag:
+                behind = _check_via_release_tag(repo_dir, head_tag)
+                if behind is not None:
+                    cache_file.write_text(
+                        json.dumps(
+                            {"ts": now, "behind": behind, "rev": embedded_rev,
+                             "ver": VERSION, "head": head_tag}
+                        )
+                    )
+                    return behind
+            # No tag at HEAD, or release info unavailable — main-tip check.
             behind = _check_via_local_git(repo_dir)
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
+                        "head": head_tag})
         )
     except Exception:
         pass

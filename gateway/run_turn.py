@@ -1916,7 +1916,7 @@ class GatewayTurnMixin:
 
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
-        agent_result, agent_messages, response, _footer_line, _intentional_silence,
+        agent_result, agent_messages, response, _footer_line, _intentional_silence, media_history,
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
@@ -1943,7 +1943,15 @@ class GatewayTurnMixin:
             # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
             # would upload every file a second time.
             if response and adapter and not agent_result.get("media_already_delivered"):
-                await self._deliver_media_from_response(response, event, adapter)
+                from gateway.turn_media import collect_turn_media_text, select_turn_messages
+                # Collect every assistant segment only when the turn boundary is
+                # trustworthy. Compaction can rebase it to zero while retaining
+                # prior-turn clips; that case keeps final-response-only delivery.
+                turn_messages = select_turn_messages(
+                    agent_messages, agent_result.get("history_offset"), media_history,
+                )
+                media_text = collect_turn_media_text(turn_messages, response)
+                await self._deliver_media_from_response(media_text, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
                 try:
@@ -2190,6 +2198,9 @@ class GatewayTurnMixin:
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
                 session_key, event.channel_prompt, source, internal=event.internal,
             )
+            # Preserve the incoming boundary even if the run or persistence mutates
+            # history in place. Only its pre-turn emptiness decides whether zero is safe.
+            media_history = list(history)
             if not event.internal:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
@@ -2262,7 +2273,7 @@ class GatewayTurnMixin:
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
-                agent_result, agent_messages, response, _footer_line, _intentional_silence,
+                agent_result, agent_messages, response, _footer_line, _intentional_silence, media_history,
             )
 
         except Exception as e:

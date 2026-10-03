@@ -591,7 +591,13 @@ import {
   windowOpacityOptions
 } from './translucency'
 import { waitForUpdateClearance } from './update-gate'
-import { markerPath, readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import {
+  cachedCreateTimeProbe,
+  markerPath,
+  readLiveUpdateMarker,
+  updateHandoffConflict,
+  writeUpdateMarker
+} from './update-marker'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -2990,12 +2996,16 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // wrapper exits 0 before the real PowerShell script claims the marker, and
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps(onLiveMarker?: (marker: { startedAt: number | null }) => void) {
+  // One creation-time probe per pid for this wait: on Windows each probe is a
+  // powershell spawn and the gate polls every second.
+  const createTime = cachedCreateTimeProbe()
+
   return {
     // Owner liveness (pid + creation time) only: a failed receipt never
     // outranks a live marker — `latest.json` is written at finalize, so a retry
     // after a failed update still reads "failed" while the new one runs (V2).
     hasLiveMarker: async () => {
-      const marker = await readLiveUpdateMarker(HERMES_HOME)
+      const marker = await readLiveUpdateMarker(HERMES_HOME, { createTime })
 
       if (marker) {
         onLiveMarker?.(marker)

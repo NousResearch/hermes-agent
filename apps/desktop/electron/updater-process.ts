@@ -498,6 +498,67 @@ export function spawnUpdaterProcess(
   return child
 }
 
+/**
+ * Stop a hand-off the Desktop has given up on (C2 timeout), so a script that
+ * starts late cannot run an update the UI already reported as "did not start".
+ * POSIX: the detached launcher leads its own process group — kill the group.
+ * Windows: the `cmd start /b` wrapper exits at once and PowerShell outlives it,
+ * so stop the wrapper's recorded children that carry this Desktop's
+ * `-DesktopPid` (a reused pid never matches both), then the wrapper's tree if
+ * it is still running. Best effort; the script is adopt-only besides (A4).
+ */
+export function killHandoffTree(
+  child: UpdaterChild & { exitCode?: number | null; signalCode?: string | null },
+  {
+    isWindows = process.platform === 'win32',
+    desktopPid = process.pid,
+    kill = process.kill.bind(process),
+    spawnProcess = spawn
+  }: {
+    isWindows?: boolean
+    desktopPid?: number
+    kill?: typeof process.kill
+    spawnProcess?: typeof spawn
+  } = {}
+): void {
+  const pid = child.pid
+
+  if (!Number.isInteger(pid) || !pid || pid <= 0) {
+    return
+  }
+
+  if (!isWindows) {
+    try {
+      kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        kill(pid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+
+    return
+  }
+
+  const wrapperRunning = child.exitCode == null && child.signalCode == null
+
+  const command =
+    `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | ` +
+    `Where-Object { $_.CommandLine -match '-DesktopPid\\s+${desktopPid}(\\s|$)' } | ` +
+    `ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }` +
+    (wrapperRunning ? `; taskkill.exe /PID ${pid} /T /F | Out-Null` : '')
+
+  try {
+    spawnProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      stdio: 'ignore',
+      windowsHide: true
+    }).on('error', () => {})
+  } catch {
+    // Best effort.
+  }
+}
+
 export interface UpdaterHandoffOutcome {
   ok: boolean
   /** Set when ok is false. */

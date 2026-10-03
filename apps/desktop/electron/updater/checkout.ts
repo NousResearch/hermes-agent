@@ -14,6 +14,7 @@ import {
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
+  killHandoffTree,
   observeUpdaterHandoff,
   resolveInstallationLauncher,
   resolvePosixScriptHandoff,
@@ -153,9 +154,22 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
     deps.rememberLog(`[updates] hand-off not viable, aborting quit: ${failure}`)
 
-    if (bridgeBody) {
-      compareAndDeleteMarker(deps.hermesHome, bridgeBody)
+    // Withdraw the bridge first: an adopt-only script that starts late then
+    // finds nothing to adopt (A4). If the compare-and-delete misses because
+    // the script took the marker at the deadline, the update IS running.
+    if (bridgeBody && !compareAndDeleteMarker(deps.hermesHome, bridgeBody)) {
+      const late = await waitForHandoffClaim(deps.hermesHome, process.pid, { timeoutMs: 0 })
+
+      if (late.taken) {
+        deps.rememberLog(`[updates] hand-off script took the update marker at the deadline (pid ${late.pid})`)
+
+        return null
+      }
     }
+
+    // MINOR-3: and stop the script tree we spawned, so nothing the UI just
+    // reported as "did not start" can go on to run.
+    killHandoffTree(child)
 
     return failure
   }
@@ -406,7 +420,9 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       // can reconnect into an update still replacing application files.
       // By writing the marker ourselves the renderer's
       // waitForUpdateToFinish() gate sees a live update and parks instead.
-      // The updater overwrites this with its own PID later; same format.
+      // The marker names the updater's pid AND creation time (v2): the updater
+      // adopts it as its own claim, so no age ceiling applies to a slow update
+      // and the `hermes update` it runs can add its delegate line.
       //
       // SKIPPED for pre-#74782 staged updaters: those have no self-PID
       // exclusion, so they read this very marker as a foreign live owner and

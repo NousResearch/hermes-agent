@@ -17,14 +17,17 @@ import path from 'path'
 import { afterEach, test } from 'vitest'
 
 import {
+  cachedCreateTimeProbe,
   claimBridgeMarker,
   compareAndDeleteMarker,
+  EMPTY_MARKER_GRACE_MS,
   formatCreateTime,
   isPidAlive,
   markerPath,
   parseUpdateMarker,
   posixProcessState,
   processCreateTime,
+  psCreateTime,
   readLiveUpdateMarker,
   UPDATE_MARKER_MAX_AGE_MS,
   updateHandoffConflict,
@@ -90,6 +93,25 @@ test('parses v1, v2 and the delegate line; garbage is null', () => {
   assert.equal(parseUpdateMarker('not-a-pid\nnonsense'), null)
 })
 
+// A2: one positional parse in every language (Python, Rust, PowerShell, bash, TS).
+test.each([
+  ['BOM + CRLF v2', '\uFEFF42\r\n100\r\nct:5.250\r\n', { pid: 42, startedAt: 100, ct: 5.25, delegate: null }],
+  ['fractional started_at is MALFORMED', '42\n100.5\nct:5.000\n', null],
+  ['missing started_at is MALFORMED', '42\n', null],
+  ['garbled started_at is MALFORMED', '42\nsoon\n', null],
+  ['garbage ct => v1', '42\n100\nct:abc\n', { pid: 42, startedAt: 100, ct: null, delegate: null }],
+  ['delegate on line 3 is ignored', '42\n100\ndelegate:77 ct:1.000\n', { pid: 42, startedAt: 100, ct: null, delegate: null }],
+  ['space after delegate: is ignored', '42\n100\nct:1.000\ndelegate: 77 ct:1.000\n', { pid: 42, startedAt: 100, ct: 1, delegate: null }],
+  ['delegate without ct is ignored', '42\n100\nct:1.000\ndelegate:77\n', { pid: 42, startedAt: 100, ct: 1, delegate: null }],
+  [
+    'empty ct line (Python probe failure) + delegate on line 4',
+    '42\n100\n\ndelegate:77 ct:2.500\n',
+    { pid: 42, startedAt: 100, ct: null, delegate: { pid: 77, ct: 2.5 } }
+  ]
+])('A2 parse: %s', (_name, body, expected) => {
+  assert.deepEqual(parseUpdateMarker(body), expected)
+})
+
 // ---------------------------------------------------------------------------
 // Liveness against REAL processes (C1 rule 3, desktop V3/V22)
 // ---------------------------------------------------------------------------
@@ -127,6 +149,67 @@ test('a v1 marker (no creation time) keeps the legacy 20-minute ceiling', async 
 
   assert.equal(await readLiveUpdateMarker(home), null, 'v1 pid reuse must still self-heal')
   assert.ok(!fs.existsSync(markerPath(home)))
+})
+
+// A1: Windows refuses creation-time queries for SYSTEM/elevated/other-user
+// pids. A live pid whose ct cannot be read must not be live forever: a reused
+// pid would park every Desktop boot. It is live only inside the v1 ceiling.
+test('a v2 owner whose creation time is UNREADABLE is live only inside the 20-minute ceiling (A1)', async () => {
+  const home = tmpHome('v2-unreadable')
+  const owner = await liveOwner()
+  const accessDenied = () => null
+
+  fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(5)}\nct:1700000000.000\n`)
+  assert.ok(await readLiveUpdateMarker(home, { createTime: accessDenied }), 'young: unknown ct + live pid reads live')
+
+  fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(25)}\nct:1700000000.000\n`)
+  assert.equal(await readLiveUpdateMarker(home, { createTime: accessDenied }), null, 'past the ceiling it is dead')
+  assert.ok(!fs.existsSync(markerPath(home)), 'and compare-deleted, so boot is never parked forever')
+})
+
+test('a gate wait probes each pid creation time ONCE (A1: no powershell spawn per poll)', async () => {
+  const home = tmpHome('ct-cache')
+  const owner = await liveOwner()
+  const ct = await processCreateTime(owner.pid)
+  let probes = 0
+
+  const createTime = cachedCreateTimeProbe(pid => {
+    probes += 1
+
+    return processCreateTime(pid)
+  })
+
+  fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(1)}\nct:${formatCreateTime(ct ?? 0)}\n`)
+
+  for (let poll = 0; poll < 5; poll++) {
+    assert.ok(await readLiveUpdateMarker(home, { createTime }))
+  }
+
+  assert.equal(probes, 1)
+})
+
+// A1 (macOS source): `ps -o lstart` is local time. Parsed by a different TZ
+// engine (or in the DST fall-back hour) a live owner reads hours off its own
+// record and is judged a reused pid. Printed and parsed as UTC it cannot drift.
+test.skipIf(process.platform === 'win32')('ps lstart creation time is TZ-independent (A1)', async () => {
+  const owner = await liveOwner()
+  const savedTz = process.env.TZ
+
+  try {
+    // glibc honours this POSIX offset; V8's ICU does not and falls back.
+    process.env.TZ = '<+0530>-5:30'
+    const viaPs = psCreateTime(owner.pid)
+    const reference = process.platform === 'linux' ? await processCreateTime(owner.pid) : Date.now() / 1000
+
+    assert.ok(viaPs !== null && reference !== null)
+    assert.ok(Math.abs(viaPs - reference) <= 2, `ps says ${viaPs}, the kernel says ${reference}`)
+  } finally {
+    if (savedTz === undefined) {
+      delete process.env.TZ
+    } else {
+      process.env.TZ = savedTz
+    }
+  }
 })
 
 test('a dead owner with a LIVE delegate keeps the marker live (C1 rule 6)', async () => {
@@ -218,6 +301,55 @@ test('the bridge claim refuses a LIVE foreign owner and reclaims a dead one', as
 
   fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\n`)
   assert.ok((await claimBridgeMarker(home, { startedAt: 2 })).ok, 'a dead claim is reclaimed')
+})
+
+// r1 M1: the staged Tauri updater path pre-writes the marker for the spawned
+// updater. As v1 it stayed under the 20-minute ceiling (a live 25-minute
+// update was aged out and deleted) and blocked the delegate line.
+test.skipIf(!HAS_CT_PROBE)('writeUpdateMarker names the spawned updater with its creation time (v2)', async () => {
+  const home = tmpHome('write-v2')
+  const updater = await liveOwner()
+
+  await writeUpdateMarker(home, updater.pid, { startedAt: minutesAgo(25) })
+
+  const marker = parseUpdateMarker(fs.readFileSync(markerPath(home), 'utf8'))!
+  assert.equal(marker.pid, updater.pid)
+  assert.ok(marker.ct !== null && Math.abs(marker.ct - (await processCreateTime(updater.pid))!) <= 2)
+  assert.ok(await readLiveUpdateMarker(home), 'a 25-minute-old live updater is still running')
+  assert.ok(fs.existsSync(markerPath(home)))
+})
+
+// A3: a claim is never visible half-written, and a 0-byte claim being written
+// by an O_EXCL-only writer is not mistaken for garbage and deleted.
+test('a fresh 0-byte marker reads LIVE and survives; a stale one is reclaimed (A3)', async () => {
+  const home = tmpHome('empty')
+  const file = markerPath(home)
+  fs.writeFileSync(file, '')
+
+  assert.ok(await readLiveUpdateMarker(home), 'a claim being written blocks')
+  assert.ok(fs.existsSync(file), 'and is never deleted')
+  assert.equal((await claimBridgeMarker(home, { startedAt: 1 })).ok, false, 'no claim races past it')
+
+  const old = (Date.now() - EMPTY_MARKER_GRACE_MS - 5000) / 1000
+  fs.utimesSync(file, old, old)
+  assert.equal(await readLiveUpdateMarker(home), null)
+  assert.ok(!fs.existsSync(file))
+})
+
+test('claims publish by hard link and leave no tmp litter; a dead writer tmp is reclaimed (A3)', async () => {
+  const home = tmpHome('link')
+  const deadTmp = path.join(home, `.hermes-update-in-progress.${await deadPid()}.tmp`)
+  fs.writeFileSync(deadTmp, 'half')
+
+  const claim = await claimBridgeMarker(home, { startedAt: 7 })
+
+  assert.ok(claim.ok)
+  assert.equal(fs.readFileSync(markerPath(home), 'utf8'), claim.body)
+  assert.deepEqual(
+    fs.readdirSync(home).filter(name => name !== '.hermes-update-in-progress'),
+    [],
+    'no tmp sibling survives the claim'
+  )
 })
 
 test('writeUpdateMarker (staged updater) never overwrites a live claim', async () => {

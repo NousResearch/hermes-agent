@@ -80,9 +80,12 @@ export interface WaitForUpdateClearanceOptions {
  * Returns 'clear' when the gate was already open (no wait happened),
  * 'finished' when it opened during the wait, and 'timeout' when the deadline
  * expired with an in-process signal (in-flight / hand-off) still set. A LIVE
- * marker owner has no deadline: owner liveness, never age, decides when an
- * update is over (C1 rule 3) — booting into a half-replaced runtime at minute
- * 21 of a slow Windows update is exactly the failure the gate exists for.
+ * marker has no deadline here: owner liveness decides when an update is over
+ * (C1 rule 3) — booting into a half-replaced runtime at minute 21 of a slow
+ * Windows update is exactly the failure the gate exists for. The marker reader
+ * still bounds the wait: an owner whose creation time cannot be read stops
+ * reading live at the 20-minute ceiling (A1), so a reused pid never parks
+ * boot forever.
  */
 export async function waitForUpdateClearance(
   deps: UpdateGateDeps,

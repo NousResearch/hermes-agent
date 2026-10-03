@@ -186,6 +186,32 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 # --- Identifier / source resolution ---
 
+def _slug_key(text: str) -> str:
+    """Separator-insensitive comparison key ("Blender Bpy Enhanced" == "blender-bpy-enhanced")."""
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+
+def _identifier_slug(identifier: str) -> str:
+    """Trailing path segment of an identifier ("skills-sh/org/repo/blender-animation" -> the slug)."""
+    return str(identifier or "").split("/")[-1]
+
+
+def _exact_name_hits(results, name: str):
+    """Results that ARE `name`: display name as written first, then — only when that finds nothing —
+    the separator-insensitive form of the display name or of the identifier's trailing slug. Catalogs
+    that carry a prettified title (ClawHub rows read "Blender Bpy Enhanced") or a path-shaped
+    identifier ("@org/my-skill") match by neither, so `hermes skills install my-skill` refused with
+    "No exact match" while printing that very slug on the suggestion line."""
+    query = str(name or "").strip().lower()
+    hits = [r for r in results if str(r.name or "").strip().lower() == query]
+    if hits:
+        return hits
+    key = _slug_key(query)
+    if not key:
+        return []
+    return [r for r in results if key in (_slug_key(r.name), _slug_key(_identifier_slug(r.identifier)))]
+
+
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """Short name -> full identifier via search; "" when ambiguous/missing (one exact match wins,
     several -> the single official one, else they are listed)."""
@@ -193,7 +219,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     c = console or _console
     c.print(f"[dim]Resolving '{name}'...[/]")
     results = unified_search(name, sources, source_filter="all", limit=20)
-    exact = [r for r in results if r.name.lower() == name.lower()]
+    exact = _exact_name_hits(results, name)
 
     if len(exact) == 1:
         c.print(f"[dim]Resolved to: {exact[0].identifier}[/]")
@@ -688,13 +714,18 @@ def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere.
 
     A first install is recorded once as an extension install; updates and ``--force`` reinstalls
-    of an installed skill run through here too and are not installs, nor is a cancelled prompt."""
+    of an installed skill run through here too and are not installs, nor is a cancelled prompt.
+
+    Returns True when the skill was installed, False when the install failed (unresolved name,
+    fetch, scan block, bad path), None for a no-op the user owns (already installed, declined).
+    The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
+    exit code, so an exit-0 failure reads as "the button did nothing" (only the action log)."""
     from tools.skills_hub import HubLockFile
     fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
     try:
@@ -706,6 +737,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         raise
     if fresh and outcome:
         _record_skill_install(identifier, bundle, outcome)
+    return {"success": True, "failed": False, None: None}[outcome]
 
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
@@ -1412,7 +1444,11 @@ def skills_command(args) -> None:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
-    handler(args)
+    # A handler reporting a real failure (do_install's False) must exit non-zero: the Desktop Hub
+    # reads the spawned action's exit code to decide whether to toast, so an exit-0 failure renders
+    # as "the button did nothing" while the reason sits unread in the action log.
+    if handler(args) is False:
+        sys.exit(1)
 
 
 # --- Slash command entry point (/skills in chat) ---

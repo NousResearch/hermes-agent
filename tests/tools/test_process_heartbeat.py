@@ -8,6 +8,7 @@ heartbeats stop at exit, and the normal completion notice still fires.
 import json
 import queue
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -84,6 +85,28 @@ def test_a_tick_with_no_new_output_queues_nothing():
 
     registry._emit_heartbeat(session, now=400.0)
     assert _drain(registry.completion_queue) == []
+
+
+def test_due_heartbeat_is_dropped_when_session_becomes_terminal(monkeypatch):
+    """A due tick selected before exit must not publish after the completion notice.
+
+    The timer thread picks a session under the registry lock, then emits outside it. If
+    the terminal transition is not serialized with publication, the reader can publish
+    completion first and the precomputed heartbeat lands afterwards — the agent then sees
+    "still running" for a process that is already gone.
+    """
+    registry = ProcessRegistry()
+    session = pr.ProcessSession(id="proc_terminal_race", command="sleep 1", notify_on_complete=True)
+    session.append_output("progress\n")  # a tick with new output WOULD be delivered
+    registry._running[session.id] = session
+    with patch.object(registry, "_write_checkpoint"), patch.object(registry, "_release_finished_handles"):
+        session.mark_exited(0)
+        registry._move_to_finished(session)
+        registry._emit_heartbeat(session, now=100.0)
+
+    events = _drain(registry.completion_queue)
+    assert [event["type"] for event in events] == ["completion"]
+    assert events[0]["exit_code"] == 0
 
 
 def test_schema_minimum_heartbeat_is_disabled_for_foreground(monkeypatch):

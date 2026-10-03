@@ -915,6 +915,20 @@ The keyword mode supports standard FTS5 query syntax:
 - `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
+### Shared gateways: who may see which session
+
+Session search reads one `state.db` that holds everyone's conversations. On a gateway shared by a team, a plugin decides which sessions each reader may see:
+
+```yaml
+session_search:
+  require_visibility: true        # nothing is visible unless a plugin's judgement shows it
+  visibility_timeout_seconds: 10  # a slower judgement hides its session and the rest of that call
+```
+
+The plugin registers one judgement with `ctx.register_session_visibility(...)` (see `agent/session_visibility.py`). Before any session's messages or metadata reach a result, it is asked about that session. That covers discovery hits and their lineage roots, title matches, browse entries, and read and scroll targets, including a scroll that rebinds into a child session and sessions read from another profile. The judgement only gets where the session happened: its id, source, user, chat, chat type, thread and parent. It never sees message content. It can also withhold single tool results inside a visible session.
+
+The judgement fails closed. Only a literal `True` shows a session. An exception, any other answer, or a timeout hides it, and a hidden session gets the same answer as one that doesn't exist. With `require_visibility` on and no plugin registered, every session is hidden.
+
 ### When It's Used
 
 The agent is prompted to use session search automatically:

@@ -992,6 +992,19 @@ prompt_caching:
 #     model: ""
 
 # =============================================================================
+# Session Search
+# =============================================================================
+# Recall over past sessions. On a gateway shared by many people, a plugin can
+# register a session visibility judgement (ctx.register_session_visibility)
+# that decides which sessions each reader may see; it fails closed.
+#
+session_search:
+  # Hide every session unless a registered judgement shows it to this reader.
+  require_visibility: false
+  # A judgement slower than this hides its session and the rest of that call.
+  visibility_timeout_seconds: 10
+
+# =============================================================================
 # Persistent Memory
 # =============================================================================
 # Bounded curated memory injected into the system prompt every session.

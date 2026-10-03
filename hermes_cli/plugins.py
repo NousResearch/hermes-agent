@@ -735,6 +735,26 @@ class PluginContext:
         logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
         return handle
 
+    def register_session_visibility(self, provider) -> Optional[PluginRegistration]:
+        """Register the (single) :class:`agent.session_visibility.SessionVisibility` that decides which
+        past sessions ``session_search`` shows this turn's reader; a second registration is rejected
+        with a warning."""
+        if self._manager._session_visibility is not None:
+            logger.warning("Plugin '%s' tried to register a session visibility provider, but one is "
+                           "already registered. Only one is allowed.", self.manifest.name)
+            return None
+        from agent.session_visibility import SessionVisibility
+        if self._wrong_type(provider, SessionVisibility, "session visibility provider"):
+            return None
+        self._manager._session_visibility = provider
+        handle = self._track_replacement(
+            "session_visibility", provider.name,
+            slot=("manager_value", id(self._manager), "_session_visibility"), current=provider, previous=None,
+            restore=lambda replacement: self._manager._restore_value("_session_visibility", provider, replacement),
+        )
+        logger.info("Plugin '%s' registered session visibility: %s", self.manifest.name, provider.name)
+        return handle
+
     def register_context_reference(self, provider) -> None:
         """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix``
         defines ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are
@@ -1244,6 +1264,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._session_visibility = None  # Set by a plugin via register_session_visibility()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
@@ -2245,6 +2266,11 @@ def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
     return _ensure_plugins_discovered()._context_engine
+
+
+def get_plugin_session_visibility():
+    """Return the plugin-registered session visibility provider, or None."""
+    return _ensure_plugins_discovered()._session_visibility
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:

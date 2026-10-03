@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from agent.session_visibility import WITHHELD_TOOL_RESULT, VisibilityGate
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
 
@@ -41,6 +42,8 @@ _READ_MAX_CONTENT = 2000
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
+# Browse candidates scanned when a visibility gate may hide some of the most recent sessions.
+_GATED_BROWSE_SCAN = 200
 # exclude_session_ids: ids already inspected this task; capped so a runaway list can't fan out lineage walks.
 _EXCLUDE_SESSION_IDS_CAP = 20
 # Relative time bounds: "7d" / "24h" / "2w" = now minus N hours/days/weeks.
@@ -273,7 +276,8 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
+def _title_match_result(db, query: str, current_lineage_root: Optional[str],
+                        gate: Optional[VisibilityGate] = None) -> Optional[Dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
     session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
@@ -284,6 +288,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     # Same-lineage title hits are in-context only while the session is live;
     # /new-reset and compression-ended parents are not.
     if current_lineage_root and lineage_root == current_lineage_root and not _session_left_live_context(db, session_id):
+        return None
+    if gate is not None and not gate.sees_all(db, session_id, lineage_root):
         return None
     session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
                           "get_session failed for title match %s", session_id) or {}
@@ -297,8 +303,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     title = session_meta.get("title") or title_query
     # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
     def shape(key, fallback, anchor=None, max_content_len=1200):
-        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
-                for m in (view.get(key) or fallback)]
+        return _withheld(gate, db, session_id, [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
+                                                for m in (view.get(key) or fallback)])
     return {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
         source=session_meta.get("source", "unknown"), model=session_meta.get("model") or "unknown",
@@ -309,6 +315,11 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
         messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
         "_lineage_root": lineage_root}
+
+
+_NO_MATCH_MESSAGE = ("No matching sessions found. FTS5 ANDs all terms by default — "
+                     "broaden with OR (`alpha OR beta`), exact-match with quoted "
+                     "phrases, exclude with NOT, or prefix-match with `deploy*`.")
 
 
 def _discover_payload(db, query: str, detail: str, results: list, **extra) -> str:
@@ -322,12 +333,26 @@ def _discover_payload(db, query: str, detail: str, results: list, **extra) -> st
     return _ok(mode="discover", query=query, detail=detail, results=results, count=len(results), **extra, **rebuild)
 
 
+def _withheld(gate: Optional[VisibilityGate], db, session_id: str, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return entries if gate is None else gate.withhold_tool_results(db, session_id, entries)
+
+
+def _hit_snippet(gate: Optional[VisibilityGate], db, session_id: str, match_info: Dict[str, Any],
+                 view: Dict[str, Any]) -> str:
+    snippet = match_info.get("snippet") or ""
+    if gate is None or not gate.redacts or match_info.get("role") != "tool":
+        return snippet
+    anchor = next((m for m in view.get("window") or [] if m.get("id") == match_info.get("id")), None)
+    return snippet if anchor is not None and gate.shows_tool_result(db, session_id, anchor) else WITHHELD_TOOL_RESULT
+
+
 def _bookend(view: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
     return [_shape_message(m, max_content_len=1200) for m in (view.get(key) or [])
             if not _is_compaction_summary(m.get("content", ""))]
 
 
-def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detail: str) -> Optional[Dict[str, Any]]:
+def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detail: str,
+                 gate: Optional[VisibilityGate] = None) -> Optional[Dict[str, Any]]:
     """Discovery result from a surviving FTS row; None (dropped) if the view can't load."""
     hit_sid, msg_id = match_info.get("session_id") or lineage_root, match_info.get("id")
     try:
@@ -342,11 +367,11 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
         source=session_meta.get("source") or match_info.get("source", "unknown"),
         model=session_meta.get("model") or match_info.get("model") or "unknown",
         title=session_meta.get("title") or None, matched_role=match_info.get("role"),
-        match_message_id=msg_id, snippet=match_info.get("snippet") or "",
-        bookend_start=_bookend(view, "bookend_start") if full else [],
-        messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000)
-                  for m in (view.get("window") or []) if full or m.get("id") == msg_id],
-        bookend_end=_bookend(view, "bookend_end") if full else [],
+        match_message_id=msg_id, snippet=_hit_snippet(gate, db, hit_sid, match_info, view),
+        bookend_start=_withheld(gate, db, hit_sid, _bookend(view, "bookend_start")) if full else [],
+        messages=_withheld(gate, db, hit_sid, [_shape_message(m, anchor_id=msg_id, max_content_len=4000)
+                                               for m in (view.get("window") or []) if full or m.get("id") == msg_id]),
+        bookend_end=_withheld(gate, db, hit_sid, _bookend(view, "bookend_end")) if full else [],
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
         detail=result_detail)
 
@@ -354,11 +379,11 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[List[str]] = None) -> str:
+              exclude_session_ids: Optional[List[str]] = None, gate: Optional[VisibilityGate] = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, gate)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
     if title_result:
@@ -378,10 +403,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
     # See #19434.
     if not raw_results and not title_result:
-        return _discover_payload(db, query, detail, [], message=(
-            "No matching sessions found. FTS5 ANDs all terms by default — "
-            "broaden with OR (`alpha OR beta`), exact-match with quoted "
-            "phrases, exclude with NOT, or prefix-match with `deploy*`."))
+        return _discover_payload(db, query, detail, [], message=_NO_MATCH_MESSAGE)
     seen_sessions: Dict[str, Dict[str, Any]] = {}
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
@@ -413,14 +435,19 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
+        if gate is not None and resolved_sid not in seen_sessions and not gate.sees_all(db, raw_sid, resolved_sid):
+            continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue
         # Adaptive: only the top-ranked result is fully hydrated.
-        entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
+        entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact",
+                             gate)
         if entry is not None:
             results.append(entry)
+    if gate is not None and not results:
+        return _discover_payload(db, query, detail, [], message=_NO_MATCH_MESSAGE)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
@@ -444,16 +471,17 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None,
+                  gate: Optional[VisibilityGate] = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
-    if not meta:
+    if not meta or (gate is not None and not gate.sees(db, session_id)):
         return tool_error(f"session_id not found: {session_id}", success=False)
     rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
                       session_id)
     if err:
         return err
-    shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
+    shaped = _withheld(gate, db, session_id, [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows])
     total, truncated = len(shaped), len(shaped) > head + tail
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
@@ -462,7 +490,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
 
-def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
+def _read_scoped(db, sid: str, profile: Optional[str], gate: Optional[VisibilityGate] = None) -> str:
     """Read shape scoped to ONE store: the caller's profile, or the profile it named.
 
     A miss is a miss. Profiles are isolated islands, so a bare id never falls through to
@@ -470,14 +498,15 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
     transcript to any caller holding the id (#106761). The hint tells the model how to
     ask properly: ``@session:<profile>/<id>`` or ``profile=``.
     """
-    result = _read_session(db, sid, link_profile=profile)
+    result = _read_session(db, sid, link_profile=profile, gate=gate)
     if json.loads(result).get("success") is not False or profile:
         return result
     return tool_error(f"session_id not found in this profile: {sid}. If it belongs to another "
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None,
+                          gate: Optional[VisibilityGate] = None) -> str:
     """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
     def _browse():
         # Never use list_sessions_rich(order_by_last_active=True) here: it walks every
@@ -490,7 +519,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
         if bounded_list is None:
             raise RuntimeError("session database does not support bounded recent-session browse")
         sessions = bounded_list(
-            limit=limit + 15,  # extra so we can skip current / compression roots
+            limit=limit + 15 if gate is None else _GATED_BROWSE_SCAN,  # extra to skip current / compression roots
             exclude_sources=list(_HIDDEN_SESSION_SOURCES), timeout_seconds=3.0)
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id) if current_session_id else (None, False))
@@ -501,13 +530,23 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             "session_id": s.get("id", ""), "link": _session_link(s.get("id", ""), link_profile),
             "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
             "message_count": s.get("message_count", 0), "preview": s.get("preview", "")}
-            for s in [x for x in sessions if x.get("id", "") not in hidden][:limit]]
+            for s in _first_shown(gate, db, (x for x in sessions if x.get("id", "") not in hidden), limit)]
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "
             "or session_id+around_message_id to scroll."))
 
     out, err = _loud(_browse, "Error listing recent sessions: %s", "Failed to list recent sessions")
     return err or out
+
+
+def _first_shown(gate: Optional[VisibilityGate], db, sessions, limit: int) -> List[Dict[str, Any]]:
+    shown = []
+    for s in sessions:
+        if len(shown) >= limit:
+            break
+        if gate is None or gate.sees(db, s.get("id", "")):
+            shown.append(s)
+    return shown
 
 
 def _clamp_int(value, default: int, lo: int, hi: int) -> int:
@@ -529,7 +568,7 @@ def _anchor_in_live_context(db, anchor_state, anchor_sid: str, current_session_i
 
 
 def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
-            current_session_id: str = None) -> str:
+            current_session_id: str = None, gate: Optional[VisibilityGate] = None) -> str:
     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
     try:
         around_message_id = int(around_message_id)
@@ -542,7 +581,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     if current_session_id and _anchor_in_live_context(db, anchor_state, owning or session_id, current_session_id):
         return tool_error("scroll rejected: anchor lives in the current session lineage (already in your active context)", success=False)
     session_meta = _get_session_meta(db, session_id)
-    if not session_meta:
+    if not session_meta or (gate is not None and not gate.sees(db, session_id)):
         return tool_error(f"session_id not found: {session_id}", success=False)
     view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window),
                       "get_messages_around failed: %s", "failed to load messages")
@@ -553,7 +592,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     if not messages and owning and owning != session_id:
         # Lineage rebind: the caller paired a parent session_id with a message id
         # living in a descendant — serve the owner's window transparently.
-        rebind_view = _same_lineage(db, session_id, owning) and _quiet(
+        rebind_view = _same_lineage(db, session_id, owning) and (gate is None or gate.sees(db, owning)) and _quiet(
             lambda: db.get_messages_around(owning, around_message_id, window=window),
             None, "rebind get_messages_around failed: %s", with_exc=True)
         if rebind_view and rebind_view.get("window"):
@@ -566,7 +605,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
+        messages=_withheld(gate, db, session_id, [_shape_message(m, anchor_id=around_message_id) for m in messages]),
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "
@@ -578,7 +617,20 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail, owned_dbs,
               after=None, before=None, exclude_session_ids=None) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
-    Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
+    Profile DBs opened here are appended to *owned_dbs* for the caller to close. Every shape runs
+    through this call's visibility gate when one is configured (agent/session_visibility.py)."""
+    gate = VisibilityGate.for_call()
+    try:
+        return _dispatch_shape(query, role_filter, limit, db, current_session_id, session_id, around_message_id,
+                               window, sort, profile, detail, owned_dbs, after, before, exclude_session_ids, gate)
+    finally:
+        if gate is not None:
+            gate.finish()
+
+
+def _dispatch_shape(query, role_filter, limit, db, current_session_id, session_id, around_message_id, window,
+                    sort, profile, detail, owned_dbs, after, before, exclude_session_ids,
+                    gate: Optional[VisibilityGate]) -> str:
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
     # split on it and adopt the embedded profile only when none was passed.
     if isinstance(session_id, str) and "/" in session_id:
@@ -598,11 +650,11 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         owned_dbs.append(profile_db)
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(db, session_id.strip(), profile)
+            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, gate)
+        return _read_scoped(db, session_id.strip(), profile, gate)
     limit = _clamp_int(limit, 3, 1, 10)
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile, gate=gate)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
@@ -613,7 +665,7 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
-        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
+        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids), gate=gate)
 
 
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,

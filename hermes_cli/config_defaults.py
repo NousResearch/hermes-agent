@@ -1311,6 +1311,13 @@ DEFAULT_CONFIG = {
             "info_log_min_delta_mb": 0.0,
         },
     },
+    "session_search": {  # Recall over past sessions (tools/session_search_tool.py)
+        # Gateways shared by many people: hide every session unless a plugin's session visibility
+        # judgement shows it to this turn's reader (agent/session_visibility.py).
+        "require_visibility": False,
+        # A judgement slower than this hides its session and the rest of that call.
+        "visibility_timeout_seconds": 10,
+    },
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,

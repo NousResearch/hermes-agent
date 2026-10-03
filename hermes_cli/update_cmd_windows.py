@@ -877,7 +877,6 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
         try:
             # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
             # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
@@ -888,7 +887,10 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             ack = pause_gateway_for_update(Path(proc.path))
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
+            else:
+                _write_update_planned_stop_marker(Path(proc.path), int(pid))
         except Exception as exc:
+            _write_update_planned_stop_marker(Path(proc.path), int(pid))
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
     return profiles, mapped_pids, socket_acks
 

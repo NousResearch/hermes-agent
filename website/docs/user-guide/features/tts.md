@@ -369,6 +369,40 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{model}`        | `tts.providers.<name>.model`                         |
 | `{speed}`        | Resolved speed multiplier (provider or global)       |
 
+### Plain-text speech cues for command providers
+
+For a local engine that does not interpret SSML (for example a configured
+`kokoro-local` command), set `tts.providers.<name>.speech_cues: true` in
+`config.yaml`. This opt-in applies to `text_to_speech` requests selecting that
+command provider, before the shared spoken-text cleanup and chunking.
+
+```yaml
+tts:
+  provider: kokoro-local
+  providers:
+    kokoro-local:
+      type: command
+      command: "your-existing-command {input_path} {output_path}"
+      speech_cues: true
+```
+
+Keep your existing command; the example is not a Kokoro installer.
+`Hello<break time="800ms"/>world` becomes `Hello, world`: the documented
+fallback is punctuation, **not an 800 ms silence guarantee**. `<emphasis
+level="strong">important</emphasis>` becomes `important`, without promised
+pitch, speed, or volume changes. Other complete XML-style tags are removed
+while their text remains. `[pause]` and `[break]` also become commas; known
+bracket cues (`emphasis`, `whisper`, `whispers`, `laugh`, `laughs`, `sigh`,
+`sighs`, `excited`, `excitedly`, `slow`, `very slow`, `fast`) are removed,
+including closing forms. Unrecognized bracketed prose and malformed markup
+are not interpreted as cues.
+
+Plain text still uses the existing normalization pipeline. The default is
+`false`; built-in and plugin providers retain their own behavior. This is not
+an SSML renderer and does not add timed audio stitching or streaming cue
+parsing. If cue preprocessing fails, synthesis returns an error rather than
+sending raw cue markup to the command.
+
 Use `{{` and `}}` for literal braces.
 
 #### Optional keys

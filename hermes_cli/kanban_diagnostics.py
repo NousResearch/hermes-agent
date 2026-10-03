@@ -695,6 +695,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if not assignee.strip():
         return []
 
+    events = list(events)
     # Most recent event that put the task into ready; with none (old task /
     # truncated events) fall back to created_at — over-flagging an ancient
     # task beats missing a stranded one.
@@ -705,6 +706,10 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         return []
 
     age_seconds = now - last_ready_ts
+    # Guard events explain why an earlier spawn was skipped, but are historical;
+    # they cannot establish that a time-bound or state-dependent guard applies now.
+    latest_guard = next((ev for ev in reversed(events)
+                         if _event_kind(ev) == "respawn_guarded"), None)
     if age_seconds < threshold_seconds:
         return []
 
@@ -722,6 +727,12 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
                          payload={"current_assignee": assignee}),
         _cli_hint("Check dispatcher status", "hermes kanban diagnostics"),
     ]
+    data = {"ready_since": last_ready_ts, "age_seconds": int(age_seconds),
+            "assignee": assignee, "threshold_seconds": int(threshold_seconds)}
+    if latest_guard is not None:
+        payload = _parse_payload(latest_guard)
+        data.update({"guard_reason": str(payload.get("reason") or "unknown"),
+                     "guard_recorded_at": _event_ts(latest_guard)})
     return [Diagnostic(
         kind="stranded_in_ready", severity=severity,
         title=f"Ready for {age_str} with no worker",
@@ -731,8 +742,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
                f"actually polling for it.",
         actions=actions,
         first_seen_at=last_ready_ts, last_seen_at=last_ready_ts, count=1,
-        data={"ready_since": last_ready_ts, "age_seconds": int(age_seconds),
-              "assignee": assignee, "threshold_seconds": int(threshold_seconds)},
+        data=data,
     )]
 
 

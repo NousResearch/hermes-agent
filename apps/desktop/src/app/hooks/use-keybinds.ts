@@ -80,9 +80,10 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSessionId,
+  slotSession,
   switcherActive,
-  switcherJustClosed
+  switcherJustClosed,
+  type SwitcherTarget
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestThreadPageScroll } from '@/store/thread-scroll'
@@ -97,7 +98,7 @@ import {
 } from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
-import { openSession } from '../open-session'
+import { openSessionFromRow } from '../open-session'
 import {
   $workspaceIsPage,
   AGENTS_ROUTE,
@@ -168,9 +169,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
-  const goToSession = (sessionId: null | string) => {
-    if (sessionId) {
-      openSession(sessionId, navigate)
+  // The switcher hands back a ROW: stored ids are only unique per profile
+  // (#92454), so a bare id cannot say which twin the user picked, and an
+  // id-only open resumes against the ambient backend (#82527).
+  const goToSession = (target: null | SwitcherTarget) => {
+    if (target) {
+      openSessionFromRow(target, navigate)
     }
   }
 
@@ -180,7 +184,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   for (let slot = 1; slot <= SESSION_SLOT_COUNT; slot += 1) {
     sessionSlotHandlers[`session.slot.${slot}`] = () => {
       closeSwitcher()
-      goToSession(slotSessionId(slot))
+      goToSession(slotSession(slot))
     }
   }
 

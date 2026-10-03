@@ -5,11 +5,11 @@ import { useNavigate } from 'react-router'
 
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
-import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
+import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher, switcherRowKey } from '@/store/session-switcher'
 
 import { SessionStatusDot } from './chat/session-status-dot'
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
-import { openSession } from './open-session'
+import { openSessionFromRow } from './open-session'
 
 // Compact session-switcher HUD — keyboard-driven from `use-keybinds`, rows
 // clickable via mousedown (Ctrl+click on macOS). No Dialog: Tab stays global.
@@ -29,9 +29,14 @@ export function SessionSwitcher() {
     return null
   }
 
-  const pick = (sessionId: string) => {
+  // The row is the identity: stored ids are only unique per profile (#92454),
+  // so this surface opens the ROW the user clicked, pinning that row's own
+  // (connection, profile) as the resume owner exactly as the Sessions sidebar
+  // row does. With twins sharing one id, an id-only open could not say which
+  // chat it picked.
+  const pick = (row: (typeof sessions)[number]) => {
     closeSwitcher()
-    openSession(sessionId, navigate)
+    openSessionFromRow(row, navigate)
   }
 
   return createPortal(
@@ -62,10 +67,13 @@ export function SessionSwitcher() {
                 HUD_TEXT,
                 selected ? 'bg-accent text-accent-foreground' : 'text-(--ui-text-secondary)'
               )}
-              key={session.id}
+              // Key by (profile, id): twins with the same stored id in two
+              // profiles are distinct rows (#92454), and a bare-id key collapses
+              // them so the highlighted row renders another twin's state.
+              key={switcherRowKey(session)}
               onMouseDown={e => {
                 e.preventDefault()
-                pick(session.id)
+                pick(session)
               }}
               ref={selected ? activeRef : undefined}
             >

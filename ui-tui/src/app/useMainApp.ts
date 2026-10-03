@@ -30,7 +30,7 @@ import type {
   SessionCloseResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
-import { useGitBranch } from '../hooks/useGitBranch.js'
+import { shouldPollGitBranch, useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
@@ -1430,7 +1430,8 @@ export function useMainApp(gw: GatewayClient) {
   const appProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
-  const gitBranch = useGitBranch(cwd)
+  const branchIsVisible = shouldPollGitBranch(ui.statusBar, ui.sessionTitle, ui.statusBarFields)
+  const gitBranch = useGitBranch(cwd, branchIsVisible)
 
   const appStatus = useMemo(
     () => ({

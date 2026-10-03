@@ -342,6 +342,17 @@ def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) ->
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
+def query_gateway_admission(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+    """Fresh fail-closed admission snapshot from the gateway serving ``home`` (#127611).
+
+    Read-only and non-force: the gateway answers from live counters without
+    draining or mutating anything. None when no gateway answers, it predates
+    the verb, or the answer is malformed — callers fall back fail-closed to
+    ``unknown``.
+    """
+    return query_gateway_control(home, "admission", timeout=timeout)
+
+
 def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to drain and exit for an update. Returns the ACK ``{"pausing",
     "already_stopping", "pid", "drain_timeout"}`` or None when no gateway answers (old gateway without

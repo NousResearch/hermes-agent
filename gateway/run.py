@@ -5671,8 +5671,20 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _admission_handler() -> dict:
+            """Fresh fail-closed admission snapshot (#127611): read-only live
+            counters, never a drain. Runs on the socket executor thread and
+            only reads thread-safe counters / durable state."""
+            try:
+                from gateway.admission_snapshot import build_gateway_admission
+
+                return build_gateway_admission(runner)
+            except Exception as exc:  # noqa: BLE001 - verb must never raise
+                return {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
+                           "admission": _admission_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),

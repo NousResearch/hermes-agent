@@ -2434,7 +2434,25 @@ def _update_preflight_handled(args) -> bool:
             print_update_plan,
         )
 
-        print_update_plan(collect_runtime_inventory())
+        plan = collect_runtime_inventory()
+        if getattr(args, "json", False):
+            import json as _json
+
+            from hermes_cli.update_admission import (
+                collect_admission_snapshot,
+                plan_and_admission_payload,
+            )
+
+            admission = collect_admission_snapshot(plan)
+            print(_json.dumps(plan_and_admission_payload(plan, admission), indent=2))
+            return True
+        print_update_plan(plan)
+        from hermes_cli.update_admission import (
+            collect_admission_snapshot,
+            print_admission_summary,
+        )
+
+        print_admission_summary(collect_admission_snapshot(plan))
         return True
 
     if getattr(args, "list_venv_holders", False):

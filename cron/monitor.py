@@ -39,6 +39,8 @@ class MonitorOutcome:
     first_run: bool = False
     context_block: Optional[str] = None
     error: Optional[str] = None
+    output_hash: str = ""
+    output: str = ""
 
 
 def hash_monitor_output(output: str) -> str:
@@ -123,12 +125,12 @@ def job_has_monitor(job: dict) -> bool:
     return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
 
 
-def check_monitor(job: dict) -> MonitorOutcome:
+def check_monitor(job: dict, *, persist: bool = True) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
     On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
     time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
-    On failure nothing is persisted.
+    On failure nothing is persisted. ``persist=False`` defers the write to :func:`commit_monitor`.
     """
     job_id = str(job.get("id") or "")
     ok, output = _run_monitor_source(job)
@@ -164,8 +166,18 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
-    _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
+    if persist:
+        _persist_monitor_state(job_id, new_hash, output)
+    return MonitorOutcome(
+        ok=True, changed=True, first_run=first_run, context_block=context_block,
+        output_hash=new_hash, output=output,
+    )
+
+
+def commit_monitor(job: dict, outcome: MonitorOutcome) -> None:
+    """Persist a changed outcome whose write ``check_monitor(persist=False)`` deferred."""
+    if outcome.changed:
+        _persist_monitor_state(str(job.get("id") or ""), outcome.output_hash, outcome.output)
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

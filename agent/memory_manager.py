@@ -142,6 +142,8 @@ def inject_memory_provider_tools(agent: Any) -> int:
     if getattr(agent, "valid_tool_names", None) is None:
         agent.valid_tool_names = set()
     existing_tool_names = {_tool_name(tool) for tool in tools if isinstance(tool, dict)}
+    from model_tools import disabled_function_names
+    disabled_names = disabled_function_names()
     added = 0
     for raw_schema in get_schemas():
         schema = normalize_tool_schema(raw_schema)
@@ -150,7 +152,7 @@ def inject_memory_provider_tools(agent: Any) -> int:
                 "Memory provider returned a tool schema with no resolvable "
                 "name; skipping to avoid poisoning the request (%r)", raw_schema,
             )
-        elif schema["name"] not in existing_tool_names:
+        elif schema["name"] not in existing_tool_names and schema["name"] not in disabled_names:
             tools.append({"type": "function", "function": schema})
             agent.valid_tool_names.add(schema["name"])
             existing_tool_names.add(schema["name"])

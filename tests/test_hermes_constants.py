@@ -208,11 +208,17 @@ class TestParseReasoningEffort:
 
     @pytest.mark.parametrize(
         "value",
-        ["bogus", "very-high", "0", "off", "true", "default"],
+        ["bogus", "very-high", "0", "true", "default"],
     )
     def test_unknown_levels_return_none(self, value):
         """Unrecognized strings fall back to the caller default (None)."""
         assert parse_reasoning_effort(value) is None
+
+    @pytest.mark.parametrize("value", ["none", "off", "false", "disabled", False])
+    def test_disable_words_return_enabled_false(self, value):
+        """Disable words (and YAML False) all resolve to the same disabled state — ``off`` means
+        disabled here exactly as it does unquoted in config.yaml (#90431)."""
+        assert parse_reasoning_effort(value) == {"enabled": False}
 
 
 

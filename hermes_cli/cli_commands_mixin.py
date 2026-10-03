@@ -195,10 +195,12 @@ _FAST_TIERS = {
     "ultrafast": ("ultrafast", "ultrafast")}
 
 # /reasoning display toggles: arg -> (attr, value, headline key, follow-up note key or None);
-# the keys resolve under ``cli.commands.reasoning.*`` at call time.
+# the keys resolve under ``cli.commands.reasoning.*`` at call time. ``off`` is NOT a display
+# alias: it falls through to the effort parser as reasoning-disabled, matching its config meaning
+# (#90431); ``hide`` is the only hide-thinking word.
 _REASONING_TOGGLES = {
     **dict.fromkeys(("show", "on"), ("show_reasoning", True, "headline_on", "note_show")),
-    **dict.fromkeys(("hide", "off"), ("show_reasoning", False, "headline_off", None)),
+    **dict.fromkeys(("hide",), ("show_reasoning", False, "headline_off", None)),
     **dict.fromkeys(("full", "all"), ("reasoning_full", True, "headline_full", "note_full")),
     **dict.fromkeys(("clamp", "collapse", "short"), ("reasoning_full", False, "headline_clamped", None)),
 }

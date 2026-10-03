@@ -10089,6 +10089,24 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert cfg_clamp["display"]["reasoning_full"] is False
     assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
 
+    # #90431: ``off`` is an effort-disable word (parity with config.yaml's unquoted
+    # ``reasoning_effort: off``), NOT the hide alias — the display projection the
+    # words above set (show_reasoning False, thinking collapsed) must survive ``off``
+    # untouched, proving effort and display are independent projections.
+    resp_off = server.handle_request(
+        {
+            "id": "8",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "off"},
+        }
+    )
+    assert resp_off["result"]["value"] == "off"
+    assert agent.reasoning_config == {"enabled": False}
+    assert server._sessions["sid"]["create_reasoning_override"] == {"enabled": False}
+    assert server._sessions["sid"]["show_reasoning"] is False  # untouched by off
+    cfg_off = server._load_cfg()
+    assert cfg_off["display"]["sections"]["thinking"] == "collapsed"  # untouched by off
+
 
 def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)

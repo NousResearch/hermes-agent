@@ -121,7 +121,7 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats, "onlyMainContent": False})  # noqa: E731
+    scrape = lambda self, *, url, formats, only_main_content=False: self._post("/v2/scrape", {"url": url, "formats": formats, "onlyMainContent": only_main_content})  # noqa: E731
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -258,7 +258,15 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _get_firecrawl_client().scrape,
+                    url=url,
+                    formats=formats,
+                    only_main_content=False,
+                ),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)

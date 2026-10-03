@@ -9,6 +9,7 @@ Coverage:
   check_web_api_key() — unified availability check across all web backends.
 """
 
+import asyncio
 import importlib
 import json
 import os
@@ -188,9 +189,34 @@ class TestFirecrawlClientConfig:
 
         assert result["success"] is True
         assert captured["url"] == "https://api.firecrawl.dev/v2/scrape"
-        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"]}
+        assert captured["json"] == {
+            "url": "https://example.com",
+            "formats": ["markdown"],
+            "onlyMainContent": False,
+        }
         assert captured["headers"] == {"Content-Type": "application/json"}
         assert "Authorization" not in captured["headers"]
+
+    def test_sdk_firecrawl_scrape_preserves_headers(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Client:
+            def scrape(self, **kwargs):
+                captured.update(kwargs)
+                return {"data": {"markdown": "# ok", "metadata": {"sourceURL": "https://example.com"}}}
+
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: _Client())
+
+        result = asyncio.run(firecrawl_provider._scrape_one("https://example.com", ["markdown"], "markdown"))
+
+        assert result["content"] == "# ok"
+        assert captured == {
+            "url": "https://example.com",
+            "formats": ["markdown"],
+            "only_main_content": False,
+        }
 
 
 class TestBackendSelection:

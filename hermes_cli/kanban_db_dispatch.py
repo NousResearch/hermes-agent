@@ -2491,7 +2491,34 @@ def _rotate_worker_log(
 
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``sys.executable`` alone is NOT enough. When the dispatcher runs on a
+    managed Hermes runtime, that interpreter is launched with ``-I`` (isolated
+    mode) and no installed ``hermes_cli`` — the package exists only as a source
+    checkout under the repo root. A worker spawned with
+    ``[sys.executable, "-m", "hermes_cli.main"]`` and ``cwd=workspace`` (never
+    the repo root) therefore dies instantly with
+    ``ModuleNotFoundError: No module named 'hermes_cli'``; the circuit breaker
+    then blocks the card and it surfaces as "worker crashed" rather than
+    "runtime cannot import the package".
+
+    The published launcher at ``.hermes/bin/hermes`` is the supported entry
+    point: it is a ``-I`` shim that strips ``PYTHONPATH`` (so an inherited or
+    poisoned value cannot leak in) and inserts the repo root on ``sys.path``
+    itself. Preferring it makes the worker independent of both cwd and the
+    caller's environment. Falls back to the interpreter form only when no
+    launcher is published (e.g. isolated test fixtures).
+
+    POSIX-only: the extensionless shim is what this prefers, and Windows
+    publishes ``hermes.exe``/``hermes.cmd`` instead.
+    """
+    launcher = Path(__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
+    # ``X_OK`` is POSIX-only: CPython answers Windows from file attributes, so
+    # there it is an existence check and a non-executable file would be handed
+    # to Popen as argv[0]. Windows has no extensionless launcher to find.
+    if not _kb._IS_WINDOWS and launcher.is_file() and os.access(launcher, os.X_OK):
+        return [str(launcher)]
     return [sys.executable, "-m", "hermes_cli.main"]
 
 

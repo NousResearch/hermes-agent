@@ -6079,7 +6079,8 @@ def _provider_accepts_literal_auto_model(provider: Optional[str]) -> bool:
 
     FreeLLM's catalog id is the literal string ``auto`` (the cheap router). Hermes otherwise
     deletes that word and substitutes the live chat model, which 404s when the chat model
-    is not in the FreeLLM catalog.
+    is not in the FreeLLM catalog. The writer stores that id as ``default_model``. The
+    provider loader copies it onto the returned entry's ``model`` field, so either key counts.
     """
     name = (provider or "").strip().lower()
     if name.startswith("custom:"):

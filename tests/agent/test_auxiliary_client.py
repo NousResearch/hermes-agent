@@ -242,15 +242,21 @@ class TestResolveTaskProviderModel:
 
     def test_freellm_auto_is_a_real_model_id(self, monkeypatch):
         """FreeLLM's catalog id is the word auto. Stripping it substitutes the
-        chat model (GLM-5.3-Flash, grok-4.7) and the router returns 404."""
+        chat model (GLM-5.3-Flash, grok-4.7) and the router returns 404.
+
+        The loader copies ``default_model`` onto ``model``. Both shapes keep the word.
+        """
         monkeypatch.setattr(
             "agent.auxiliary_client._get_auxiliary_task_config",
             lambda task: {"provider": "freellmapi", "model": "auto"},
         )
-        monkeypatch.setattr(
-            "agent.auxiliary_client._provider_accepts_literal_auto_model",
-            lambda provider: (provider or "").strip().lower() == "freellmapi",
-        )
+
+        def _lookup(name):
+            if name == "freellmapi":
+                return {"model": "auto", "default_model": "auto"}
+            return None
+
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_named_custom_provider", _lookup)
 
         resolved_provider, model, _base_url, _api_key, _api_mode = _resolve_task_provider_model(
             task="compression",
@@ -260,16 +266,29 @@ class TestResolveTaskProviderModel:
         assert model == "auto"
 
     def test_unset_aux_model_prefers_provider_auto_over_chat_model(self, monkeypatch):
+        """``default_model: auto`` keeps the catalog id. A concrete default, or a
+        ``model: auto`` entry whose ``default_model`` is empty, inherits the chat model.
+        The loader copies only ``default_model`` into ``model``, so an empty default
+        arrives as ``model: ""``.
+        """
         monkeypatch.setattr("agent.auxiliary_client._get_aux_model_for_provider", lambda provider: "")
-        monkeypatch.setattr(
-            "agent.auxiliary_client._provider_accepts_literal_auto_model",
-            lambda provider: provider == "freellmapi",
-        )
         monkeypatch.setattr("agent.auxiliary_client._read_main_model_for_aux", lambda: "GLM-5.3-Flash")
+
+        def _lookup(name):
+            if name == "freellmapi":
+                return {"default_model": "auto"}
+            if name == "anthropic":
+                return {"default_model": "gpt-4o-mini"}
+            if name == "model-only":
+                return {"model": ""}
+            return None
+
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_named_custom_provider", _lookup)
         from agent.auxiliary_client import _model_when_aux_model_unset
 
         assert _model_when_aux_model_unset("freellmapi") == "auto"
         assert _model_when_aux_model_unset("anthropic") == "GLM-5.3-Flash"
+        assert _model_when_aux_model_unset("model-only") == "GLM-5.3-Flash"
 
 
 class TestMoaAggregatorSharedResolution:

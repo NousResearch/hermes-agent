@@ -2013,7 +2013,11 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.auxiliary_client import (
+        _to_openai_base_url,
+        _validate_base_url,
+        _validate_proxy_env_urls,
+    )
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
     # leaks into later requests (a torn-down httpx transport got reused).
@@ -2024,6 +2028,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    if client_kwargs.get("base_url"):
+        client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
         from providers import get_provider_profile
 

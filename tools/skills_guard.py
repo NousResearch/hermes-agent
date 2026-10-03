@@ -10,7 +10,9 @@ destination; future coverage belongs as a fourth "mechanical" tier next to agent
 import re
 import fnmatch
 import hashlib
+import io
 import json
+import tokenize
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v8"
+SCANNER_VERSION = "skills-guard-v9"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -535,17 +537,27 @@ def _unicode_char_name(char: str) -> str:
     return _INVISIBLE_CHAR_NAMES.get(char, f"U+{ord(char):04X}")
 
 
+# A STRING token opens a triple-quoted block after at most a two-char prefix (r/b/f combos).
+_TRIPLE_QUOTE_OPEN_RE = re.compile(r'^[A-Za-z]{0,2}(?:"""|\'\'\')')
+# 3.12+ splits f-strings into FSTRING_START/MIDDLE/END tokens; only the quote delimiters are prose.
+_FSTRING_BOUNDARY_TYPES = {t for t in (getattr(tokenize, "FSTRING_START", None),
+                                       getattr(tokenize, "FSTRING_END", None)) if t is not None}
+
+
 def _compute_docstring_lines(lines: list) -> set:
     """1-indexed lines inside or on the boundary of triple-quoted strings (opening, interior, closing, and
-    one-line docstrings), so ``os.environ`` in prose is not scored. Heuristic: a triple quote inside a string
-    literal is miscounted, but the common false-positive shapes are covered."""
+    one-line docstrings), so ``os.environ`` in prose is not scored. Computed structurally from Python-lexer
+    tokens rather than quote counting: one unbalanced triple quote used to toggle the counter and let a
+    bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
+    exempted, so every pattern still runs."""
     doc_lines: set = set()
-    inside = False
-    for i, line in enumerate(lines, start=1):
-        was_in, counts = inside, [line.count(marker) for marker in ('"""', "'''")]
-        inside ^= sum(counts) % 2 == 1  # each odd marker count toggles; two odd counts cancel
-        if was_in or inside or any(counts):
-            doc_lines.add(i)
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
+            if ((tok.type == tokenize.STRING or tok.type in _FSTRING_BOUNDARY_TYPES)
+                    and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)):
+                doc_lines.update(range(tok.start[0], tok.end[0] + 1))
+    except Exception:  # malformed/unparsable input must never silence the pattern passes
+        return set()
     return doc_lines
 
 
@@ -622,10 +634,20 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
     try:
-        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
-    except (UnicodeDecodeError, OSError):
+        raw = file_path.read_bytes()
+    except OSError:
         return []
-    findings = []
+    try:
+        text = raw.decode('utf-8-sig')
+        findings = []
+    except UnicodeDecodeError as exc:
+        # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
+        # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
+        text = raw.decode('utf-8-sig', errors='replace')
+        bad_line = raw[:exc.start].count(b'\n') + 1
+        findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
+                            "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
+    lines = text.split('\n')
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion

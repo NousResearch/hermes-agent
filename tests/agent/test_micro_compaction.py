@@ -18,6 +18,7 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -952,3 +953,66 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
     live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation
+
+
+@pytest.mark.parametrize("successful_passes", [1, 2])
+def test_rejected_supersede_preserves_held_messages_and_compressor_state(tmp_path, successful_passes):
+    """Dropping an old marker must not merge into the history returned on abort,
+    including an earlier merge's identity witness and persistence bookkeeping."""
+    db, cc, held = _held_session(tmp_path, "micro")
+    try:
+        for _ in range(successful_passes):
+            result = cc._micro_compact(held)
+            assert result is not held
+            held = result
+        # A successful retry must only clear these counters once it commits.
+        cc._micro_compact_consecutive_failures = 1
+        cc._micro_compact_last_failure_cursor = cc._micro_compact_cursor
+        before = deepcopy(held)
+        state_fields = (
+            "_micro_compact_cursor", "_micro_compact_rolling_summary",
+            "_micro_compact_consecutive_failures", "_micro_compact_last_failure_cursor",
+            "_flush_scan_cursor_invalidated",
+        )
+        state = deepcopy({key: getattr(cc, key) for key in state_fields})
+
+        def competing_summary(_text):
+            db.archive_and_compact("s", [{"role": "assistant", "content": "winner"}])
+            return "rejected summary"
+
+        cc._micro_summarize_one = competing_summary
+        assert cc._micro_compact(held) is held
+        assert held == before
+        assert {key: getattr(cc, key) for key in state_fields} == state
+    finally:
+        db.close()
+
+
+def test_rejected_supersede_flush_preserves_archived_inputs_and_winner(tmp_path):
+    """The real flush must not rewrite an archived user row from a rejected merge."""
+    from tests.agent.test_compression_closed_adoption import _flush_agent
+
+    db, cc, held = _held_session(tmp_path, "micro")
+    try:
+        held = cc._micro_compact(held)
+        assert len(_summary_markers(held)) == 1
+        winner = [{"role": "assistant", "content": "winning generation"}]
+        archived = None
+
+        def competing_summary(_text):
+            nonlocal archived
+            db.archive_and_compact("s", winner)
+            archived = deepcopy(db.get_messages("s", include_compacted=True))
+            return "rejected summary"
+
+        cc._micro_summarize_one = competing_summary
+        result = cc._micro_compact(held)
+        assert result is held
+        agent = _flush_agent(db, "s")
+        assert agent._flush_messages_to_session_db(result, []) is True
+        assert db.get_messages("s", include_compacted=True) == archived
+        assert [m["content"] for m in db.get_messages_as_conversation("s")] == [
+            m["content"] for m in winner
+        ]
+    finally:
+        db.close()

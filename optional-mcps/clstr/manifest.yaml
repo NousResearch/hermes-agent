@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: clstr
+description: News situations with timelines, deduplicated across outlets.
+source: https://clstr.news/developers
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Streamable HTTP, protocol 2025-06-18. Verified
+# live 2026-09-16: initialize and tools/list succeed; the server publishes
+# RFC 9728 protected-resource metadata and OAuth 2.1 AS metadata with
+# Dynamic Client Registration (client_id_metadata_document_supported: true,
+# PKCE S256), so Hermes's native OAuth flow works end to end.
+
+transport:
+  type: http
+  url: https://mcp.clstr.news/mcp
+
+auth:
+  type: oauth
+
+# All four tools are read-only (readOnlyHint: true, destructiveHint: false,
+# openWorldHint: false on every one) and there is no meta-gateway, code-mode,
+# vendor tool_search, feedback or telemetry tool to prune. Nothing excluded.
+tools:
+  default_enabled:
+    - search_situations
+    - get_top_situations
+    - get_situation_timeline
+    - get_cluster
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - clstr
+    - news situation
+  hosts:
+    - clstr.news
+
+post_install: |
+  Sign in when prompted (a free CLSTR account is created if you do not have
+  one). All four tools are then available: search coverage
+  by topic, company or country; list what is developing now; follow one
+  situation's full timeline; inspect one event's sources.

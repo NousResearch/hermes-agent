@@ -215,6 +215,23 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   })
 })
 
+describe('stopped reply marker', () => {
+  it('marks a reply the user stopped', async () => {
+    const base = assistantMessage()
+    const stopped = { ...base, metadata: { ...base.metadata, custom: { interrupted: true } } } as ThreadMessage
+    render(<Harness assistant={stopped} />)
+
+    expect(await screen.findByText(en.assistant.thread.responseStopped)).toBeTruthy()
+  })
+
+  it('leaves a finished reply unmarked', async () => {
+    render(<Harness />)
+    await screen.findByText('done')
+
+    expect(screen.queryByText(en.assistant.thread.responseStopped)).toBeNull()
+  })
+})
+
 describe('ownership refusal recovery (#106217)', () => {
   it('offers Start new session and suppresses Retry for live-owner refusals', async () => {
     render(<Harness assistant={ownershipRefusalMessage()} />)

@@ -535,6 +535,37 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
+            # Header-less deliveries in the same millisecond must not collide on a fallback id.
+            with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000.0):
+                bare = [await cli.post("/webhooks/idem", json={"a": 2}) for _ in range(2)]
+            assert [r.status for r in bare] == [202, 202]
+
+    @pytest.mark.asyncio
+    async def test_delivery_id_is_scoped_to_authenticated_route(self):
+        """Provider IDs deduplicate retries for one route, not unrelated authenticated routes."""
+        routes = {
+            "alpha": {"secret": _INSECURE_NO_AUTH, "prompt": "alpha"},
+            "beta": {"secret": _INSECURE_NO_AUTH, "prompt": "beta"},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        headers = {"X-GitHub-Delivery": "provider-delivery-1"}
+        async with TestClient(TestServer(app)) as cli:
+            alpha = await cli.post("/webhooks/alpha", json={"route": "alpha"}, headers=headers)
+            beta = await cli.post("/webhooks/beta", json={"route": "beta"}, headers=headers)
+            alpha_retry = await cli.post("/webhooks/alpha", json={"route": "alpha"}, headers=headers)
+
+            assert (alpha.status, (await alpha.json())["status"]) == (202, "accepted")
+            assert (beta.status, (await beta.json())["status"]) == (202, "accepted")
+            assert (alpha_retry.status, (await alpha_retry.json())["status"]) == (200, "duplicate")
+
+        await asyncio.sleep(0)
+        assert adapter.handle_message.await_count == 2
+        sources = {call.args[0].source.user_id for call in adapter.handle_message.await_args_list}
+        assert sources == {"webhook:alpha", "webhook:beta"}
+
 
 # ===================================================================
 # Rate limiting
@@ -657,6 +688,43 @@ class TestSessionIsolation:
         assert len(captured_events) == 2
         ids = {ev.source.chat_id for ev in captured_events}
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
+
+    @pytest.mark.asyncio
+    async def test_delivery_tuple_is_an_unambiguous_session_identity(self):
+        """Route, provider delivery ID, and profile form one collision-free identity."""
+        adapter = _make_adapter()
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        def _spawn(prompt, delivery_id, route, profile, deliver, chat_id, now):
+            return adapter._spawn_agent_run(
+                {},
+                prompt,
+                delivery_id,
+                now,
+                route_config={"deliver": deliver, "deliver_extra": {"chat_id": chat_id}},
+                route_name=route,
+                profile=profile,
+                event_type="push",
+            )
+
+        adapter.handle_message = _capture
+        await asyncio.gather(
+            _spawn("high prompt", "external:d1", "build", "shared-profile", "telegram", "high-chat", 100.0),
+            _spawn("low prompt", "d1", "build:external", "shared-profile", "discord", "low-chat", 101.0),
+            _spawn("other prompt", "external:d1", "build", "other-profile", "slack", "other-chat", 102.0),
+        )
+
+        events = {event.text: event for event in captured_events}
+        high, low, other = (events[prompt] for prompt in ("high prompt", "low prompt", "other prompt"))
+        assert len({high.source.chat_id, low.source.chat_id, other.source.chat_id}) == 3
+        assert (high.source.profile, high.source.user_id) == ("shared-profile", "webhook:build")
+        assert (low.source.profile, low.source.user_id) == ("shared-profile", "webhook:build:external")
+        assert (other.source.profile, other.source.user_id) == ("other-profile", "webhook:build")
+        assert [adapter._delivery_info[e.source.chat_id]["deliver_extra"]["chat_id"] for e in (high, low, other)] == [
+            "high-chat", "low-chat", "other-chat"]
 
 
 # ===================================================================
@@ -896,9 +964,9 @@ class TestCrossPlatformDeliveryMirror:
                 resp = await cli.post(f"/webhooks/{route}", json={"a": 1}, headers={"X-Request-ID": route})
                 assert resp.status == 202
         self._attach_target(adapter)
+        deliveries = {delivery["route"]: delivery for delivery in adapter._delivery_info.values()}
         for route in routes:
-            delivery = adapter._delivery_info[f"webhook:{route}:{route}"]
-            assert (await adapter._deliver_cross_platform("telegram", "hi", delivery)).success is True
+            assert (await adapter._deliver_cross_platform("telegram", "hi", deliveries[route])).success is True
         assert self._transcript(default_home, "dm-default") == []
 
 

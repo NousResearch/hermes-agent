@@ -56,6 +56,8 @@ declare global {
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
       getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
+      // Loopback origin serving the YouTube player wrapper (packaged file:// renderer).
+      getEmbedHostOrigin?: () => Promise<string>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -405,6 +407,8 @@ declare global {
         }) => void
       ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
+      /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
+      setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** One-shot loopback callback listener for MCP OAuth against remote

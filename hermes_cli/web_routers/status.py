@@ -703,19 +703,22 @@ async def get_learning_node(id: str, profile: Optional[str] = None):
 
 
 @router.delete("/api/learning/node")
-async def delete_learning_node(body: LearningNodeRef):
-    """Delete a journey node — skills are archived (restorable), memories removed."""
+async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = None):
+    """Delete a journey node — skills are archived (restorable), memories removed.
+
+    ``?profile=`` is honoured too: a shared-backend Desktop scopes this call by query only, and
+    ignoring it archived the same-named skill of the launch profile instead."""
     from agent.learning_mutations import delete_node
     return await _learning_mutation(
-        body.profile, lambda: delete_node(body.id), 400, "delete failed")
+        body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
 
 
 @router.put("/api/learning/node")
-async def update_learning_node(body: LearningNodeEdit):
-    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
+    """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
     from agent.learning_mutations import edit_node
     return await _learning_mutation(
-        body.profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
+        body.profile or profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
 
 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).

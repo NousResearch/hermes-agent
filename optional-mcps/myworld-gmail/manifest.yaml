@@ -1,0 +1,53 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-gmail
+description: Safe Gmail practice world for testing agents before they touch real inboxes.
+source: https://github.com/shashank-yadav/myworld
+
+# myworld is published on PyPI. Hermes can launch it directly with uvx; no
+# repository clone or local bootstrap step is required.
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - gmail
+
+auth:
+  type: none
+
+# All mail is simulated inside a resettable myworld practice mailbox. The
+# default set is enough for realistic email triage/reply workflows without
+# enabling destructive cleanup tools by default.
+tools:
+  default_enabled:
+    - search_emails
+    - read_email
+    - send_email
+    - draft_email
+    - modify_email
+    - list_email_labels
+
+suggest:
+  keywords:
+    - myworld
+    - gmail
+    - practice world
+    - agent evaluation
+
+post_install: |
+  myworld runs a local, simulated Gmail MCP server over stdio:
+    uvx myworld stdio gmail
+
+  Nothing is sent to a real inbox. The server starts with seeded practice mail
+  and records every tool call so you can inspect how an agent handled the task.
+
+  The default tool set supports search, read, send, draft, label changes and
+  label listing. More Gmail-shaped tools are available; enable them with:
+    hermes mcp configure myworld-gmail
+
+  Start a new Hermes session, or run /reload-mcp, so the tools are loaded.
+

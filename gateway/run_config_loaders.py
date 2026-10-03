@@ -345,12 +345,58 @@ class GatewayConfigLoadersMixin:
                 name = ""
         return name or None
 
+    def _default_busy_config_stamp(self) -> Optional[tuple]:
+        """Cheap freshness stamp (mtime_ns, size) for the active config.yaml.
+
+        Used to keep the hot path a single ``stat()``: the YAML is only re-read
+        when the file actually changed.
+        """
+        try:
+            from gateway.run import _gateway_config_home
+            st = (_gateway_config_home() / "config.yaml").stat()
+        except Exception:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def _refresh_default_busy_modes_from_config(self) -> None:
+        """Hot-refresh the DEFAULT profile's busy modes when config.yaml changed.
+
+        ``/busy`` persists to config.yaml, and users also edit it by hand, but the
+        startup values were latched in ``start()`` — so a changed mode did not
+        take effect until a full gateway restart. Reads the persisted YAML so it
+        wins over the stale ``HERMES_GATEWAY_BUSY_INPUT_MODE`` startup bridge
+        that ``_load_busy_input_mode`` would otherwise keep honoring.
+
+        Multiplexed (routed-profile) lookups intentionally keep using their
+        startup snapshot; only the default path refreshes here.
+        """
+        stamp = self._default_busy_config_stamp()
+        if stamp is not None and stamp == self.__dict__.get("_busy_modes_config_stamp"):
+            return
+        self.__dict__["_busy_modes_config_stamp"] = stamp
+        try:
+            from gateway.run import _load_gateway_config
+            config = _load_gateway_config()
+        except Exception:
+            return
+        if not isinstance(config, dict) or not config:
+            return
+        input_mode, text_mode = self._busy_modes_from_config(
+            config,
+            fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
+            fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
+        )
+        self._busy_input_mode = input_mode
+        self._busy_text_mode = text_mode
+
     def _effective_busy_mode(self, source: SessionSource, attr: str) -> str:
         """Busy mode from the routed profile snapshot (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``)."""
-        fallback = getattr(self, attr, "interrupt")
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
-            return fallback
+            # Default (non-multiplexed) path: pick up config.yaml edits live.
+            self._refresh_default_busy_modes_from_config()
+            return getattr(self, attr, "interrupt")
+        fallback = getattr(self, attr, "interrupt")
         modes = getattr(self, attr + "s_by_profile", None)
         return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
 

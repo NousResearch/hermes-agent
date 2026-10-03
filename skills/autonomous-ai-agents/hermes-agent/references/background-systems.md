@@ -63,7 +63,7 @@ so nothing is lost.
   **off by default** — opt in with `curator.consolidate: true` or
   `hermes curator run --consolidate`. Routine background curation costs
   zero tokens.
-- **Telemetry:** sidecar at `~/.hermes/skills/.usage.json` holds
+- **Telemetry:** sidecar at `${HERMES_HOME:-~/.hermes}/skills/.usage.json` holds
   per-skill `use_count`, `view_count`, `patch_count`,
   `last_activity_at`, `state`, `pinned`.
 

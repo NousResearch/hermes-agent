@@ -18299,7 +18299,35 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
         )
 
-    assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
+    assert {k: resp["result"][k] for k in ("connected", "url")} == {"connected": True, "url": "http://lan:9222"}
+
+
+def test_browser_manage_use_swaps_the_profiles_browser_tools_for_new_agents(monkeypatch, tmp_path):
+    """Desktop/TUI ``/browser use [off]``: the target profile's ``browser.backend`` flips, ``status``
+    reports it, and the tool surface a NEW agent resolves swaps (stale check_fn verdicts dropped).
+    ``profile`` scopes the write: the launch profile's config stays untouched."""
+    from hermes_cli.config import read_raw_config
+    from hermes_constants import get_hermes_home
+    from tools import browser_use_cli
+    import model_tools
+    import hermes_yaml as yaml
+
+    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
+    manage = lambda **p: server.handle_request({"id": "1", "method": "browser.manage", "params": p})["result"]
+    exec_offered = lambda: "browser_exec" in {
+        t["function"]["name"] for t in model_tools.get_tool_definitions(enabled_toolsets=["browser", "terminal"])}
+
+    assert manage(action="use", enabled=False)["browser_use"] is False
+    assert manage(action="status")["browser_use"] is False and not exec_offered()
+    assert manage(action="use")["browser_use"] is True
+    assert read_raw_config()["browser"]["backend"] == "browser-use" and exec_offered()
+
+    other_home = tmp_path / "profiles" / "other"
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
+    manage(action="use", enabled=False, profile="other")
+    backend = lambda home: yaml.safe_load((home / "config.yaml").read_text())["browser"]["backend"]
+    assert (backend(other_home), backend(get_hermes_home())) == ("off", "browser-use")
 
 
 

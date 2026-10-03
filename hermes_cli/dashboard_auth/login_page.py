@@ -409,7 +409,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch('__BASE__/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -417,7 +417,7 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            window.location.assign((data && data.next) || '__BASE__/');
           });
         }
         var msg = resp.status === 429
@@ -439,16 +439,38 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def _apply_prefix(html_out: str, prefix: str) -> str:
+    """Rewrite root-anchored URLs in rendered login HTML to sit under ``prefix``.
+
+    ``prefix`` must be a normalised ``X-Forwarded-Prefix`` value (``/hermes`` form
+    or ``""``; validation lives in ``prefix.normalise_prefix``). The static
+    template carries only ``url('/fonts/...`` styles and ``href="/auth/login...``
+    provider links, plus the ``__BASE__`` placeholders in the password-form
+    script; replacing the distinct roots is enough and keeps the unprefixed
+    render byte-identical (empty prefix = no-op).
+    """
+    if not prefix:
+        return html_out.replace("__BASE__", "")
+    html_out = html_out.replace("url('/fonts/", f"url('{prefix}/fonts/")
+    html_out = html_out.replace('href="/auth/login', f'href="{prefix}/auth/login')
+    return html_out.replace("__BASE__", prefix)
+
+
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
     trip carries it end-to-end. The caller validates it same-origin; it is
     HTML-escaped here as defence in depth.
+
+    ``prefix`` is the normalised ``X-Forwarded-Prefix`` of the request so the
+    page works when the dashboard is mounted under a reverse-proxy sub-path:
+    font URLs, provider links and the password form's fetch/landing targets
+    are all rewritten to stay inside the prefix.
     """
     providers = list_session_providers()
     if not providers:
-        return _EMPTY_HTML
+        return _apply_prefix(_EMPTY_HTML, prefix)
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
@@ -460,10 +482,10 @@ def render_login_html(*, next_path: str = "") -> str:
         for p in providers
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
-    return _LOGIN_HTML_TEMPLATE.format(
+    return _apply_prefix(_LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
-    )
+    ), prefix)
 
 
 def render_native_provider_choice_html(

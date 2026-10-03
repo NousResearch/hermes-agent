@@ -8,8 +8,15 @@ import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $clarifyRequests, setClarifyRequest, stageClarifyAnswer } from '@/store/clarify'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  $composerDraft,
+  type ComposerAttachment,
+  setComposerDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
@@ -5792,6 +5799,45 @@ describe('usePromptActions cancelRun', () => {
     await handle!.cancelRun()
 
     expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+  })
+
+  it('salvages a mid-answer clarify draft when Stop interrupts the turn (never auto-sending)', async () => {
+    // Stop clears this session's pending clarify before session.interrupt fires
+    // (#58783 / review on #61431): without the shared recovery, an answer the
+    // user was mid-typing when they pressed Stop was destroyed. cancelRun must
+    // route that clear through recoverClarifyDrafts — the staged answer lands
+    // back in the session's composer draft, and nothing is auto-sent.
+    setClarifyRequest({
+      questions: [{ choices: ['yes', 'no'], multiSelect: false, qid: 'q1', question: 'Proceed?' }],
+      requestId: 'req-stop-1',
+      sessionId: RUNTIME_SESSION_ID
+    })
+    stageClarifyAnswer('req-stop-1', RUNTIME_SESSION_ID, 'q1', { choices: [], draft: 'was mid-answer' })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.cancelRun()
+
+    // The pending request is gone (Stop ended the turn)…
+    expect($clarifyRequests.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+    // …but the typed answer survives in the session-scoped composer draft.
+    const draft = takeSessionDraft(RUNTIME_SESSION_ID).text
+    expect(draft).toContain('was mid-answer')
+    expect(draft).toContain('Proceed?')
+    // Never auto-sent: the turn was interrupted, not submitted. The recovery
+    // offers the text as a draft only — no prompt.submit went out.
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: expect.stringContaining('was mid-answer') })
+    )
+    expect(requestGateway).toHaveBeenCalledTimes(1)
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
   })
 })

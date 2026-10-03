@@ -1,5 +1,6 @@
 import type { BillingBlock } from '@hermes/shared'
 
+import { recoverClarifyDrafts } from '@/app/session/clarify-draft-recovery'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
@@ -338,7 +339,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // session so a background turn finishing can't wipe the active chat's
     // prompt, and vice versa.
     clearAllPrompts(sessionId)
-    clearSettledClarifyRequest(sessionId)
+    // The clarify may be mid-answer when the turn unwinds (Operation
+    // interrupted, timeout, error frame). Salvage the user's staged answer
+    // into the session draft instead of destroying it with the request
+    // (#58783); answered requests carry no staging, so this is a no-op on
+    // the normal path.
+    recoverClarifyDrafts(clearSettledClarifyRequest(sessionId), deps.activeSessionIdRef)
     // Turn ended without a final `todo` update — drop a still-unfinished
     // list so "Tasks N/M" doesn't stay pinned above the composer with the
     // last item stuck pending/in_progress. Finished lists keep their linger.

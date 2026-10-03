@@ -2,6 +2,7 @@ import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } 
 
 import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
 import { abortPreviewTyping } from '@/app/chat/right-rail/preview-typing-abort'
+import { recoverClarifyDrafts } from '@/app/session/clarify-draft-recovery'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
@@ -117,7 +118,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   if ($clarifyRequests.get()[key]?.requestId === id) {
     const request = $clarifyRequests.get()[key]
 
-    clearClarifyRequest(id, sessionId)
+    // Expiry / interrupt: the server gave up on the question, but the user's
+    // in-progress answer is their work — salvage it into the session draft
+    // instead of destroying it with the parked request (#58783).
+    recoverClarifyDrafts(clearClarifyRequest(id, sessionId), deps.activeSessionIdRef)
 
     if (sessionId && request) {
       deps.updateSessionState(sessionId, state => {

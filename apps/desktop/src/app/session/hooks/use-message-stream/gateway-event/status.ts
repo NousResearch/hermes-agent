@@ -1,3 +1,4 @@
+import { recoverClarifyDrafts } from '@/app/session/clarify-draft-recovery'
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
 import { runtimeTranslations, translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
@@ -311,7 +312,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // the failed turn (same intent as the message.complete clear).
     if (sessionId) {
       clearAllPrompts(sessionId)
-      clearSettledClarifyRequest(sessionId)
+      // Salvage a mid-answer clarify draft before the settled clear drops it (#58783).
+      recoverClarifyDrafts(clearSettledClarifyRequest(sessionId), deps.activeSessionIdRef)
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)

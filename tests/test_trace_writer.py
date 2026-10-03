@@ -39,6 +39,7 @@ from trace_writer import (
     SCHEMA_VERSION,
     TornRecordWarning,
     TraceWriteError,
+    _segment_sort_key,
     append_trace,
     default_trace_root,
     iter_records,
@@ -114,6 +115,7 @@ def _read_lines(segment: Path) -> list[bytes]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("posix")  # 0o600 file / 0o700 dir semantics are POSIX
 def test_append_creates_root_and_segment_with_restrictive_perms(tmp_path):
     root = tmp_path / "nested" / "traces"
     segment = append_trace(make_record(1), root, now=DAY_ONE)
@@ -222,6 +224,7 @@ def test_refuses_directory_target(tmp_path):
         append_trace(make_record(1), root, now=DAY_ONE)
 
 
+@pytest.mark.platforms("posix")  # os.mkfifo is POSIX-only
 def test_refuses_fifo_target(tmp_path):
     root = tmp_path / "traces"
     root.mkdir()
@@ -371,6 +374,7 @@ def test_concurrent_processes_no_interleaving(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("posix")  # signal.SIGKILL / kill -9 semantics are POSIX-only
 def test_sigkill_mid_append_prior_records_survive(tmp_path):
     root = tmp_path / "traces"
     n_good = 20
@@ -469,8 +473,31 @@ def test_list_segments_skips_non_regular_and_non_segment_names(tmp_path):
     link.symlink_to(a)
     segs = list_segments(root)
     assert set(segs) == {a, b}
-    assert segs == sorted(segs)
+    # (date, suffix) order: the primary segment precedes its own .NNN
+    # rollovers — lexical order would shuffle them (see _segment_sort_key).
+    assert segs == [a, b]
+    assert segs == sorted(segs, key=_segment_sort_key)
 
 
 def test_list_segments_missing_root_is_empty(tmp_path):
     assert list_segments(tmp_path / "does-not-exist") == []
+# ---------------------------------------------------------------------------
+# Replay ordering across rollover segments (regression: lexical sort placed
+# the primary segment after its own .NNN rollovers — "." 0x2E < "j" 0x6A —
+# so list_segments() replay order diverged from write order).
+# ---------------------------------------------------------------------------
+
+
+def test_replay_order_matches_write_order_across_rollovers(tmp_path):
+    root = tmp_path / "traces"
+    cap = 20  # forces a new suffix segment per record
+    n = 6
+    written = [append_trace(make_record(i), root, now=DAY_ONE, max_segment_bytes=cap)
+               for i in range(n)]
+    replayed = [rec["run_id"] for seg in list_segments(root)
+                for _, rec in iter_records(seg)]
+    assert replayed == list(range(n))
+    # And the primary segment sorts before its own rollovers.
+    names = [p.name for p in list_segments(root)]
+    assert names[0] == written[0].name
+    assert names[1].startswith(written[1].stem[: len("traces-2026-09-29")] + ".002")

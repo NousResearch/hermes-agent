@@ -320,12 +320,14 @@ def is_todo_tool_call(tool_call: Any) -> bool:
 from tools.registry import registry, tool_error
 
 # Schema-declared parameters only. A plausible-but-wrong call shape ({action, list}) used to
-# have its keys dropped here, fall through to a read, and return an empty success-shaped
-# payload — the caller believed its plan had saved (#126656).
+# have its keys dropped by every dispatch wrapper (registry handler and the inline executor's
+# arg mapping alike), fall through to a read, and return an empty success-shaped payload —
+# the caller believed its plan had saved (#126656).
 _TODO_ALLOWED_ARGS = frozenset(("todos", "merge"))
 
 
-def _todo_dispatch(args: Any, **kw: Any) -> str:
+def _reject_unexpected_todo_args(args: Any) -> Optional[str]:
+    """Shared strictness for both dispatch paths: name unexpected keys, or return None."""
     if isinstance(args, dict):
         unexpected = sorted(k for k in args if k not in _TODO_ALLOWED_ARGS)
         if unexpected:
@@ -333,6 +335,13 @@ def _todo_dispatch(args: Any, **kw: Any) -> str:
                 "todo_list: unexpected parameter(s): " + ", ".join(unexpected)
                 + ". Expected 'todos' (list of items) and optional 'merge' (bool); "
                 "call with no parameters to read the current list.")
+    return None
+
+
+def _todo_dispatch(args: Any, **kw: Any) -> str:
+    rejection = _reject_unexpected_todo_args(args)
+    if rejection is not None:
+        return rejection
     return todo_tool(todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store"))
 
 

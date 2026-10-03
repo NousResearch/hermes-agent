@@ -693,6 +693,43 @@ def settle_task(
         sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
 
 
+
+def settle_unsubmitted_task(db_path: DbPath, attempt: TaskAttempt, *, error: str, clock: Clock) -> dict[str, Any]:
+    """Fail a fresh attempt before submit, retaining exact durable evidence for output publication."""
+    lease = attempt.lease
+    proof = {
+        "identity": dataclasses.asdict(attempt.identity),
+        "execution_generation": attempt.execution_generation, "cancel_generation": attempt.cancel_generation,
+        "authority_epoch": lease.authority_epoch, "run_gateway_id": lease.gateway_id,
+        "run_process_generation": lease.process_generation, "run_lease_generation": lease.lease_generation,
+    }
+    return settle_task(db_path, attempt,
+        settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}", status="failed",
+        result={"error": error, "pre_dispatch_failure": proof}, clock=clock)
+
+
+def is_proven_unsubmitted(task: Mapping[str, Any], *, gateway_id: str, authority_epoch: int) -> bool:
+    """Only the exact failed attempt's local evidence can rule out unreported output.
+
+    This is not the deferred nonadmission proof that authorizes Retry. Peer receipts
+    cannot supply it: terminal result normalization retains only declared output fields.
+    """
+    result = task.get("result")
+    proof = result.get("pre_dispatch_failure") if isinstance(result, dict) else None
+    if task.get("status") != "failed" or not isinstance(proof, dict):
+        return False
+    expected = {"identity": dataclasses.asdict(task["identity"]), "authority_epoch": authority_epoch,
+                **{key: task.get(key) for key in ("execution_generation", "cancel_generation",
+                   "run_gateway_id", "run_process_generation", "run_lease_generation")}}
+    if proof != expected or proof["run_gateway_id"] != gateway_id:
+        return False
+    return (all(type(proof[key]) is int and proof[key] >= low for key, low in (
+                ("execution_generation", 1), ("cancel_generation", 0), ("authority_epoch", 1),
+                ("run_lease_generation", 1)))
+            and all(isinstance(proof[key], str) and proof[key] for key in (
+                "run_gateway_id", "run_process_generation")))
+
+
 def settle_stopping_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock

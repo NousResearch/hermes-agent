@@ -304,8 +304,10 @@ class CanonicalHostedOutput:
                 home_install_id=room['authority_gateway_id'], target_install_id=target['installation_id'],
                 authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch']))
             consent = stored_consent(self.db_path, scope.as_mapping())
-            from gateway.hosted_room_driver import is_proven_nonadmission
-            if is_proven_nonadmission(task) or (task.get('result') or {}).get('peer_output_empty') == scope.as_mapping():
+            from gateway.hosted_room_driver import is_proven_nonadmission, is_proven_unsubmitted
+            if (is_proven_unsubmitted(task, gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch'])
+                    or is_proven_nonadmission(task)
+                    or (task.get('result') or {}).get('peer_output_empty') == scope.as_mapping()):
                 return None
             if task['status'] == 'cancelled' and consent is not None and ((consent.get('dispatched') is False and consent.get('provenance') == 'capabilities-v1')
                     or consent.get('unreceived_cancel_generation') == task['cancel_generation']):

@@ -8,6 +8,7 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -465,23 +466,68 @@ class HermesProviderMixin:
         from mcp.shared.auth import OAuthToken
         from pydantic import ValidationError
         try:
-            token_response = OAuthToken.model_validate_json(await response.aread())
-        except (HTTPError, ValidationError):
-            self._hermes_logger.warning("Invalid refresh response: %s", response.status_code)
+            body = await response.aread()
+        except HTTPError:
+            category = "read_error"
+        else:
+            try:
+                payload = json.loads(body)
+            except (ValueError, UnicodeError):
+                category = "invalid_json"
+            else:
+                # An OAuth error wins even if a broken server includes an
+                # access_token alongside it. Log only a fixed protocol code;
+                # error_description and Pydantic errors can carry secrets.
+                if isinstance(payload, dict) and "error" in payload:
+                    code = payload["error"]
+                    known = {
+                        "invalid_grant", "invalid_client", "unauthorized_client",
+                        "invalid_request", "invalid_scope", "unsupported_grant_type",
+                        "server_error", "temporarily_unavailable",
+                    }
+                    category = code if isinstance(code, str) and code in known else "unrecognized_oauth_error"
+                else:
+                    try:
+                        token_response = OAuthToken.model_validate_json(body)
+                    except ValidationError:
+                        if not isinstance(payload, dict):
+                            category = "invalid_json_shape"
+                        elif "access_token" not in payload:
+                            category = "missing_access_token"
+                        else:
+                            category = "invalid_token_shape"
+                    else:
+                        # RFC 6749 §6: a refresh response may omit refresh_token
+                        # (AS does not rotate) and scope (unchanged).
+                        prior = self.context.current_tokens
+                        if prior is not None:
+                            if token_response.refresh_token is None:
+                                token_response.refresh_token = prior.refresh_token
+                            if token_response.scope is None:
+                                token_response.scope = prior.scope
+                        await self._store_tokens(token_response)
+                        return True
+
+        # An external process may have rotated the grant while this request was
+        # in flight. Prefer its valid pair even when the server sent a malformed
+        # success response.
+        if await self._hermes_reload_tokens_after_refresh_failure():
+            self._hermes_logger.info("Recovered a peer-rotated refresh token")
+            return True
+        if category in {"invalid_grant", "invalid_client", "unauthorized_client"}:
             self.context.clear_tokens()
+            self._hermes_logger.warning(
+                "Refresh response requires reauthorization (%s, HTTP %s); "
+                "run `hermes mcp login <server>` interactively",
+                category, response.status_code,
+            )
             return False
-        # RFC 6749 §6: a refresh response may omit refresh_token (AS does not rotate) and scope
-        # (unchanged). The SDK's own _handle_refresh_response carries both forward; this override
-        # must too, or every non-rotating refresh erases the stored refresh_token and the server
-        # dies at the NEXT expiry with a forced browser re-auth (#62333).
-        prior = self.context.current_tokens
-        if prior is not None:
-            if token_response.refresh_token is None:
-                token_response.refresh_token = prior.refresh_token
-            if token_response.scope is None:
-                token_response.scope = prior.scope
-        await self._store_tokens(token_response)
-        return True
+        self._hermes_logger.warning(
+            "Invalid refresh response (%s, HTTP %s); retained refresh state for retry. "
+            "If it persists, check the authorization server or run `hermes mcp login <server>` interactively",
+            category, response.status_code,
+        )
+        return False
 
     async def _hermes_reload_tokens_after_refresh_failure(self) -> bool:
         """Re-read tokens from disk after a rejected refresh.

@@ -371,50 +371,72 @@ async def test_manager_token_read_error_does_not_expose_body(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_manager_malformed_201_refresh_response_clears_tokens(
+async def test_manager_unclassified_refresh_failure_preserves_tokens(
     tmp_path, monkeypatch, caplog
 ):
     import logging
+    import httpx
+
+    from mcp.shared.auth import OAuthToken
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     provider = _provider_with_token_endpoint(
         tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
-    provider.context.current_tokens = object()
+    prior = OAuthToken(access_token="access-secret", refresh_token="refresh-secret")
+    provider.context.current_tokens = prior
+
+    class _ReadErrorResponse:
+        status_code = 201
+
+        async def aread(self):
+            raise httpx.ReadError("access-secret refresh-secret")
+
+    for response, category in (
+        (_fake_response(201, "https://idp.example.com/oauth/token",
+                        b'{"refresh_token": "refresh-secret"}'), "missing_access_token"),
+        (_ReadErrorResponse(), "read_error"),
+    ):
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth_manager"):
+            result = await provider._handle_refresh_response(response)
+
+        assert result is False
+        assert provider.context.current_tokens is prior
+        assert category in caplog.text
+        assert "access-secret" not in caplog.text
+        assert "refresh-secret" not in caplog.text
+        caplog.clear()
+
+
+@pytest.mark.asyncio
+async def test_manager_200_invalid_grant_requires_reauth_without_logging_body(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+    from mcp.shared.auth import OAuthToken
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = OAuthToken(
+        access_token="access-secret", refresh_token="refresh-secret"
+    )
 
     response = _fake_response(
-        201,
-        "https://idp.example.com/oauth/token",
-        b'{"refresh_token": "refresh-secret"}',
+        200, "https://idp.example.com/oauth/token",
+        b'{"access_token":"access-secret","error":"invalid_grant",'
+        b'"error_description":"refresh-secret leaked"}',
     )
     with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth_manager"):
         result = await provider._handle_refresh_response(response)
 
     assert result is False
     assert provider.context.current_tokens is None
+    assert "invalid_grant" in caplog.text
+    assert "hermes mcp login" in caplog.text
     assert "refresh-secret" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_manager_refresh_read_error_clears_tokens(tmp_path, monkeypatch):
-    import httpx
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
-    )
-    provider.context.current_tokens = object()
-
-    class _ReadErrorResponse:
-        status_code = 201
-
-        async def aread(self):
-            raise httpx.ReadError("body read failed")
-
-    result = await provider._handle_refresh_response(_ReadErrorResponse())
-
-    assert result is False
-    assert provider.context.current_tokens is None
+    assert "access-secret" not in caplog.text
 
 
 @pytest.mark.asyncio

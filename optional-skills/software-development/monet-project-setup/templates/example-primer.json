@@ -1,0 +1,103 @@
+{
+  "kind": "iammonet.project-primer",
+  "schema_version": 1,
+  "generated_by": {
+    "name": "Hermes",
+    "version": "replace-with-hermes-version"
+  },
+  "project": {
+    "slug": "example-site",
+    "name": "Example Site",
+    "kind": "website",
+    "live_url": "https://example.com",
+    "dev_url": "https://example-preview.vercel.app",
+    "local_url": null,
+    "description": "Website prepared by Hermes for Monet review.",
+    "known_facts": null,
+    "design_markdown": null,
+    "repository": {
+      "provider": "github",
+      "repository": "owner/repository",
+      "branch": "main",
+      "subdirectory": null,
+      "design_paths": ["DESIGN.md"]
+    }
+  },
+  "stack": {
+    "frameworks": ["Next.js"],
+    "languages": ["TypeScript"],
+    "package_manager": "pnpm",
+    "rendering": "hybrid",
+    "hosting": ["Vercel"]
+  },
+  "capture": {
+    "preferred_source": "dev",
+    "viewport": "desktop",
+    "color_scheme": "light",
+    "max_depth": 2,
+    "max_pages": 50,
+    "extra_wait_ms": 750,
+    "template_page_cap": 3,
+    "open_menus": false,
+    "wait_for_fonts": true,
+    "wait_for_dom_stability": true,
+    "additional_paths": [],
+    "include_patterns": [],
+    "exclude_patterns": [],
+    "representative_url": "https://example-preview.vercel.app"
+  },
+  "connectors": [
+    {
+      "id": "github-primary",
+      "kind": "github",
+      "name": "GitHub repository",
+      "required": true,
+      "purpose": "Read DESIGN.md and give the coding agent the repository reference.",
+      "url": "https://github.com/owner/repository",
+      "resources": [
+        { "key": "repository", "value": "owner/repository", "label": "Repository" },
+        { "key": "branch", "value": "main", "label": "Branch" }
+      ],
+      "auth": {
+        "mode": "oauth",
+        "scopes": ["contents:read"],
+        "secret_slots": [
+          {
+            "id": "github-access",
+            "label": "GitHub access",
+            "purpose": "Read the selected repository and DESIGN.md.",
+            "source_environment_variable": "GITHUB_TOKEN",
+            "required": true
+          }
+        ]
+      },
+      "validation": {
+        "kind": "github-repository",
+        "target": "owner/repository"
+      }
+    },
+    {
+      "id": "vercel-preview",
+      "kind": "vercel",
+      "name": "Vercel preview",
+      "required": false,
+      "purpose": "Capture the selected preview deployment.",
+      "url": "https://example-preview.vercel.app",
+      "resources": [],
+      "auth": {
+        "mode": "none",
+        "scopes": [],
+        "secret_slots": []
+      },
+      "validation": {
+        "kind": "vercel-deployment",
+        "target": "https://example-preview.vercel.app"
+      }
+    }
+  ],
+  "setup": {
+    "recommended_surface": "ipad",
+    "offer_desktop_when_local": true,
+    "notes": ["Test the preview source before starting the first crawl."]
+  }
+}

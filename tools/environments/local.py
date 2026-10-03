@@ -963,6 +963,8 @@ _FOREGROUND_DEGRADED_CONSEQUENCE = (
     "messaging control plane down with it. Give this user a session bus "
     "(`loginctl enable-linger <user>`) or install systemd-run.")
 _foreground_degraded_warned = False
+# Set once this process wraps a foreground command; gates the exit-time sweep below.
+_foreground_scope_issued = False
 
 
 def _warn_foreground_scope_degraded(detail: str) -> None:
@@ -1020,7 +1022,23 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     if "DBUS_SESSION_BUS_ADDRESS" not in bus_env:
         _warn_foreground_scope_degraded("user D-Bus session is gone")
         return args, None, run_env
+    global _foreground_scope_issued
+    _foreground_scope_issued = True
     return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", bus_env
+
+
+def stop_foreground_scopes() -> None:
+    """Stop every foreground scope this process issued (host-exit funnel).
+
+    A command that exits normally can leave a daemonized descendant (``tmux new -d``,
+    ``ssh-agent``) holding its scope; that unit is no longer in the gateway cgroup, so the
+    gateway's ``KillMode`` stops reaping it and it would outlive every restart. One glob
+    ``systemctl stop`` matches only units still loaded, so no per-command record is kept
+    (nothing grows with the number of commands) and collected scopes cost nothing.
+    """
+    if _foreground_scope_issued:
+        from tools.process_registry import _stop_systemd_unit
+        _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope")
 
 
 class LocalEnvironment(BaseEnvironment):

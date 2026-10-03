@@ -1880,6 +1880,18 @@ class TestRetryAfterCap:
         assert f"Retrying in {expected_wait}s" in status
         assert surface == expected_surface
 
+    def test_rate_limit_reset_past_the_cap_is_not_slept_out(self, agent):
+        """A 429 whose Retry-After lies past the cap names a spent quota window (e.g. a weekly
+        plan limit, ~1.9 days). Sleeping the 600s cap cannot reach it, so the loop takes the
+        short backoff instead of stalling the turn — unlike a 5xx, whose over-cap value stays
+        capped (see ``over-cap-is-capped``)."""
+        error = self._retryable_error(429, {"retry-after": "164160"})
+        status, _ = self._drive_once(agent, error, "Waiting")
+        assert status, "the rate-limit wait status must still be reported"
+        assert "Waiting 600.0s" not in status
+        # jittered_backoff is patched to 0.0 by the conftest fast-backoff fixture.
+        assert "Waiting 0.0s" in status
+
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""

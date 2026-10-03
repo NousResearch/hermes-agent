@@ -956,7 +956,9 @@ export function rootRow(): SplitNode | null {
   const hasMain = (node: LayoutNode): boolean => {
     if (node.type === 'group') {
       return node.panes.some(
-        id => (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+        id =>
+          id === 'workspace' ||
+          (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
       )
     }
 

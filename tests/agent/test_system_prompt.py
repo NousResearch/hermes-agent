@@ -278,10 +278,12 @@ def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(cwd))
         agent = _make_agent(platform="cli")
         parts = build_system_prompt_parts(agent)
-        full = "\n\n".join(parts.values())
+        full = "\n\n".join(
+            part for part in (parts["stable"], parts["context"], parts["volatile"]) if part
+        )
         assert full.index("Shared project instructions.") < full.index("Current working directory:")
         assert str(cwd) not in parts["stable"]
-        assert full == "\n\n".join(build_system_prompt_parts(agent).values())
+        assert full == build_system_prompt(agent)
         prompts.append(full)
     common = os.path.commonprefix(prompts)
     assert "Shared project instructions." in common
@@ -303,7 +305,9 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
         _memory_store=SimpleNamespace(format_for_system_prompt=lambda _: decoy),
     )
     parts = build_system_prompt_parts(agent)
-    full = "\n\n".join(parts.values())
+    full = "\n\n".join(
+        part for part in (parts["stable"], parts["context"], parts["volatile"]) if part
+    )
     assert _stored_prompt_matches_runtime(agent, full)
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     assert not _stored_prompt_matches_runtime(agent, full)
@@ -500,7 +504,7 @@ def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
     assert tiers[0] == tiers[1]
 
 
-def test_build_system_prompt_records_stable_prefix():
+def test_build_system_prompt_records_cacheable_context_prefix():
     agent = _make_agent()
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),
@@ -510,7 +514,23 @@ def test_build_system_prompt_records_stable_prefix():
         prompt = build_system_prompt(agent)
 
     assert prompt.startswith(agent._cached_system_prompt_static)
-    assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
+    assert "context" in agent._cached_system_prompt_static
+    assert agent._cached_system_prompt_static.stable_prefix != agent._cached_system_prompt_static
+
+
+def test_build_system_prompt_records_context_cache_boundary():
+    agent = _make_agent()
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="context files"),
+    ):
+        prompt = build_system_prompt(agent)
+
+    cache_prefix = agent._cached_system_prompt_static
+    assert cache_prefix.startswith(cache_prefix.stable_prefix)
+    assert "context files" in cache_prefix
+    assert prompt.startswith(cache_prefix)
 
 
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
@@ -569,7 +589,8 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:6])
+    assert agent._cached_system_prompt_static.stable_prefix == "\n\n".join(expected.split("\n\n")[:4])
 
 
 class TestTelegramRichMessagesHint:

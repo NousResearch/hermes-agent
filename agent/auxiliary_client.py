@@ -3422,6 +3422,18 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     # surface cannot express. Same remedy: one retry without the format.
     if _contains_any(err_lower, ("response mime type", "response_schema", "response_json_schema")):
         return True
+    # OpenCode Zen/Go relays pin a conversation to one upstream endpoint (``x-opencode-session``), and an
+    # endpoint that lacks the field answers with an OPAQUE 400 whose whole body is the model id --
+    # ``{"model": "<id>"}``, no ``error`` object, no message, no param. Nothing names the field, so no
+    # phrasing matcher above can see it; the wire shape plus the relay host is the whole signal. Its other
+    # 400s (unsupported model, unparsable body) carry an ``error`` object, so requiring a model-only body
+    # keeps this branch from swallowing them.
+    if status == 400:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict) and set(body) == {"model"}:
+            from agent.opencode_affinity import is_opencode_target
+            if is_opencode_target(None, str(getattr(getattr(exc, "request", None), "url", "") or "")):
+                return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
 

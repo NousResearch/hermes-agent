@@ -3092,6 +3092,54 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         client, _ = resolve_provider_client("commandcode-anthropic", model="claude-haiku-4-5-20251001")
         assert isinstance(client, AnthropicAuxiliaryClient)
 
+    def test_demoted_messages_wire_strips_private_reasoning_kwarg_at_boundary(self, monkeypatch):
+        # Regression for #123194: a declared anthropic_messages provider reached at its
+        # OpenAI-compatible base_url is demoted to chat_completions by _fallback_api_mode
+        # (#76836), but _build_call_kwargs still attaches the private _reasoning_config on the
+        # declared wire. The plain OpenAI client then raises TypeError on every call — observed
+        # as a silent, permanent title-generation failure. The resolved-client boundary must
+        # drop a kwarg the real SDK rejects, while keeping it for Messages-wrapped adapters.
+        from openai import OpenAI
+
+        from agent.auxiliary_wire import prepare_chat_messages
+
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-test-" + "x" * 20)
+        client, _ = resolve_provider_client(
+            "minimax", model="MiniMax-M3", explicit_base_url="https://api.minimax.io/v1")
+        assert isinstance(client, OpenAI)  # demoted wire: no Messages wrap
+        raw = _build_call_kwargs(
+            "minimax", "MiniMax-M3", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False}, base_url="https://api.minimax.io/v1",
+            task="title_generation",
+        )
+        assert "_reasoning_config" in raw  # the producer-side leak this test pins
+        # The bug verbatim: the real SDK rejects the private kwarg at signature-binding
+        # time (no network needed).
+        with pytest.raises(TypeError, match="_reasoning_config"):
+            client.chat.completions.create(**raw)
+        prepared = prepare_chat_messages(client, raw)
+        assert "_reasoning_config" not in prepared
+        assert prepared["messages"] and prepared["model"] == "MiniMax-M3"
+
+    def test_messages_wrapped_client_keeps_private_reasoning_kwarg_at_boundary(self):
+        # The sidecar's only consumer is AnthropicAuxiliaryClient.create(); the boundary
+        # keeps it for wrapped (non-plain-OpenAI) clients, so MoA per-slot reasoning still
+        # overrides extra_body.reasoning on a genuinely Messages-wrapped transport.
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+        from agent.auxiliary_wire import prepare_chat_messages
+
+        wrapped = AnthropicAuxiliaryClient(
+            SimpleNamespace(base_url="https://api.minimax.io/anthropic"), "MiniMax-M3",
+            "sk-test", base_url="https://api.minimax.io/anthropic")
+        raw = _build_call_kwargs(
+            "minimax", "MiniMax-M3", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False}, base_url="https://api.minimax.io/anthropic",
+            task="title_generation",
+        )
+        assert "_reasoning_config" in raw
+        prepared = prepare_chat_messages(wrapped, raw)
+        assert prepared["_reasoning_config"] == {"enabled": False}
+
 
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""

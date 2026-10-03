@@ -41,7 +41,10 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
 
     assert not handle.is_alive()
     critical.assert_called_once()
-    dump.assert_called_once_with(all_threads=True)
+    # #120356: the dump now lands in the shutdown-watchdog dump file *and* on stderr, because a
+    # gateway launched without a usable console discards stderr and used to keep no stack at all.
+    assert any(c.kwargs.get("all_threads") and "file" not in c.kwargs for c in dump.call_args_list)
+    assert any("file" in c.kwargs for c in dump.call_args_list)
     assert exit_codes == []
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
@@ -336,3 +339,31 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
         "the loop made only %d tick(s) while the heartbeat was writing — "
         "the write is blocking the loop again" % ticks
     )
+
+def test_liveness_death_writes_a_stack_dump_to_disk(tmp_path, monkeypatch):
+    """Regression for #120356: a liveness death must leave a stack somewhere on disk.
+
+    The gateway is routinely launched with no usable console (a Windows Startup-folder .vbs
+    allocates a hidden console), so the stderr-only dump reached nobody and the process died
+    with no explanation. The dump file is the copy that survives.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    exit_codes = []
+
+    with (
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+        )
+        assert handle is not None
+        handle.join(timeout=10.0)
+
+    assert exit_codes, "the watchdog never reached its hard exit"
+    dump_file = tmp_path / "logs" / "gateway-shutdown-watchdog.log"
+    assert dump_file.exists(), "no dump file was written for a liveness death"
+    body = dump_file.read_text(encoding="utf-8")
+    assert "loop_liveness_watchdog_fired" in body
+    assert "--- faulthandler dump (all threads) ---" in body

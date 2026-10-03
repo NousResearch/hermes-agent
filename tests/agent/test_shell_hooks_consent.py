@@ -7,6 +7,8 @@ hooks_auto_accept: config key).
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -223,3 +225,97 @@ class TestHooksAutoAcceptParsing:
         ) is False
 
 
+
+# ── Consent prompt on the event loop thread (#120356) ──────────────────────
+
+class TestEventLoopConsentDoesNotBlockForever:
+    """Regression for #120356.
+
+    A launcher that hides a console still leaves stdin a TTY, so ``register_from_config()``
+    reached ``input()`` on the asyncio event loop thread during gateway startup. The loop
+    stopped ticking, the liveness watchdog missed its probes and hard-exited the process.
+    The contract: a prompt raised on the event loop is bounded and fails closed.
+    """
+
+    def test_unanswered_prompt_on_loop_thread_declines_instead_of_hanging(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.setattr(shell_hooks, "_CONSENT_TIMEOUT_S", 0.05)
+
+        async def scenario() -> list:
+            with patch("sys.stdin") as mock_stdin, patch(
+                "builtins.input", lambda *_a, **_k: "y",  # would approve if it were ever reached
+            ):
+                mock_stdin.isatty.return_value = True  # hidden-but-present console
+                # A read that never returns models a console nobody is watching.
+                with patch(
+                    "agent.shell_hooks._read_answer_off_loop", return_value=None,
+                ):
+                    return shell_hooks.register_from_config(
+                        {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                        accept_hooks=False,
+                    )
+
+        registered = asyncio.run(asyncio.wait_for(scenario(), timeout=5.0))
+        assert registered == [], "an unanswered consent prompt must fail closed"
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+
+    def test_answered_prompt_on_loop_thread_still_approves(self, tmp_path, monkeypatch):
+        """The bound must not cost us the prompt: a real answer is still honoured."""
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.setattr(shell_hooks, "_CONSENT_TIMEOUT_S", 5.0)
+
+        async def scenario() -> list:
+            with patch("sys.stdin") as mock_stdin:
+                mock_stdin.isatty.return_value = True
+                return shell_hooks.register_from_config(
+                    {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                    accept_hooks=False,
+                )
+
+        # input() is patched globally so the worker thread reads the same stubbed stream.
+        with patch("builtins.input", return_value="y"):
+            registered = asyncio.run(asyncio.wait_for(scenario(), timeout=10.0))
+        assert len(registered) == 1
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is not None
+
+    def test_loop_thread_prompt_reads_off_the_loop_thread(self, tmp_path, monkeypatch):
+        """The invariant behind the fix: the blocking read never runs on the loop thread.
+
+        ``register_from_config`` is synchronous, so the loop cannot tick while it is on the
+        stack either way. What matters is that the *read* is dispatched to a worker, leaving
+        the loop free to run its own callbacks (the liveness probe) during the wait.
+        """
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.setattr(shell_hooks, "_CONSENT_TIMEOUT_S", 5.0)
+
+        loop_thread = threading.current_thread()
+        read_threads: list = []
+
+        def record_thread(_prompt: str = "") -> str:
+            read_threads.append(threading.current_thread())
+            return "y"
+
+        async def scenario() -> list:
+            with patch("sys.stdin") as mock_stdin:
+                mock_stdin.isatty.return_value = True
+                return shell_hooks.register_from_config(
+                    {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                    accept_hooks=False,
+                )
+
+        with patch("builtins.input", record_thread):
+            asyncio.run(asyncio.wait_for(scenario(), timeout=10.0))
+
+        assert read_threads, "the consent prompt never read an answer"
+        assert loop_thread not in read_threads, (
+            "the consent read ran on the event loop thread — the gateway would freeze there"
+        )

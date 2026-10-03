@@ -20,13 +20,14 @@ COPY_GRANT_RENEWAL_SECONDS = 7 * 24 * 60 * 60
 def ingest_granted_page(
     db_path: Path | str, *, token: str, secret: bytes, target_install_id: str,
     target_profile: str, room_id: str, room_name: str, members: list[dict[str, Any]],
-    page: dict[str, Any], custody: Any = None,
+    page: dict[str, Any], custody: Any = None, fenced: Callable[[str, int], None] | None = None,
     _verify_transition: Callable[[sqlite3.Connection, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Store one history page sent with a ``replicate`` grant this gateway issued.
 
     Copying never confers execution authority. The grant must name this gateway, this
-    profile and the room's member, and it is checked again inside the replica writer.
+    profile and the room's member, and it is checked again inside the replica writer, as is
+    ``fenced``: a page stamped with an epoch this gateway fenced for succession never lands.
     ``custody`` is the authority's protection report sent beside the page;
     ``_verify_transition`` lets the copy follow a verified change of host (``ingest_page``).
 
@@ -42,8 +43,14 @@ def ingest_granted_page(
     authorize = authorize_granted_room(
         token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
         room_id=room_id, members=members, authority=authority, permission="replicate")
+
+    def authorize_unfenced(conn: sqlite3.Connection) -> None:
+        authorize(conn)
+        if fenced is not None:
+            fenced(room_id, int(authority["epoch"]))
+
     result = replicas.ingest_page(
-        db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize,
+        db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize_unfenced,
         custody_report=custody, _verify_transition=_verify_transition)
     reply = {"allowed": custody_records.local_consent(db_path, room_id), "always_on": custody_records.local_always_on()}
     request = custody.get("lease_request") if isinstance(custody, dict) else None

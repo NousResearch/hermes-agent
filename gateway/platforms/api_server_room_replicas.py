@@ -18,6 +18,7 @@ from gateway import hosted_rooms as rooms
 from gateway.platforms.api_server_room_grants import _grant_db
 from gateway import hosted_room_replicas as replicas
 from gateway.hosted_room_peer import HostedRoomGrantError
+from gateway.hosted_room_fence import RoomFenceError
 from gateway.hosted_room_replica_ingress import ingest_granted_page
 
 # Pages are bounded UTF-8 JSON; keep framing and roster headroom.
@@ -46,10 +47,15 @@ def http_routes(adapter):
                 "room_id", "room_name", "members", "page", "custody"}:
             return failure("Invalid Group Chat history page.", "invalid_room_replica", 400)
         try:
+            from gateway.hosted_room_succession import verify_transition_locked
+            from gateway.platforms.api_server_room_succession import fence_check
             result = await asyncio.to_thread(
                 ingest_granted_page, _grant_db(adapter),
                 token=adapter._room_grant_token(request), secret=adapter._room_grant_secret(),
-                target_install_id=installation_id, target_profile=profile, **body)
+                target_install_id=installation_id, target_profile=profile, fenced=fence_check(adapter),
+                _verify_transition=verify_transition_locked, **body)
+        except RoomFenceError as exc:
+            return failure("This Group Chat's authority epoch is fenced on this gateway.", exc.code, exc.status)
         except HostedRoomGrantError as exc:
             return _room_grant_error_response(exc, _openai_error=api_server._openai_error)
         except replicas.ReplicaCapacityError:

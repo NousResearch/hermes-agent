@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -66,7 +66,9 @@ _TERMINAL_FIELDS = {  # kind -> exact payload fields (coordinates + seen_through
     kind: _TURN_COORDINATE_FIELDS | {"seen_through_seq", *extra} for kind, extra in (
         ("turn.settled", ("message_event_id", "passed")), ("turn.failed", ("error",)),
         ("turn.cancelled", ("reason",)), ("turn.deferred", ("execution_generation", "reason")))}
-_TERMINAL_OPTIONAL_FIELDS = {"turn.failed": frozenset({"reason_code"})}
+_TERMINAL_OPTIONAL_FIELDS = {"turn.failed": frozenset({"reason_code"}),
+                             "turn.deferred": frozenset({"resource", "host_name"})}
+WAITING_RESOURCES = frozenset({"bot", "file", "tool", "secret"})
 _TERMINAL_EVENT_KINDS = frozenset(_TERMINAL_FIELDS)
 # Gateway-authored control events: kind -> (exact payload fields, identifier fields).
 _GATEWAY_EVENT_FIELDS = {
@@ -98,12 +100,17 @@ class DiscussionMember:
 
 @dataclass(frozen=True)
 class DiscussionRoom:
-    """Validated policy projection of one active hosted room."""
+    """Validated policy projection of one active hosted room.
+
+    ``lineage`` names the host of each earlier epoch of a room whose host changed (verified
+    transitions); a room that never moved has none, and validates exactly as before.
+    """
     room_id: str
     name: str
     members: tuple[DiscussionMember, ...]
     gateway_id: str
     authority_epoch: int
+    lineage: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -307,7 +314,16 @@ def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoo
     gateway_id = _identifier(value.get("authority_gateway_id"), label="authority_gateway_id")
     authority_epoch = _positive_int(value.get("authority_epoch"), label="authority_epoch")
     members = validate_roster(value.get("members"), local_profiles=local_profiles)
-    return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch)
+    lineage = value.get("authority_lineage") or {}
+    if not isinstance(lineage, Mapping):
+        raise DiscussionValidationError("authority_lineage must be an object")
+    earlier = []
+    for epoch, host in lineage.items():
+        epoch = _positive_int(int(epoch) if isinstance(epoch, str) and epoch.isdigit() else epoch,
+                              label="authority_lineage epoch")
+        if epoch < authority_epoch:
+            earlier.append((epoch, _identifier(host, label="authority_lineage host")))
+    return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch, tuple(sorted(earlier)))
 
 
 def is_pass_text(value: Any) -> bool:
@@ -429,6 +445,12 @@ def _validate_terminal_event(kind: str, payload: Payload, actor: Payload, room: 
         raise DiscussionValidationError(f"{kind} {field} must be non-empty")
     if kind == "turn.deferred":
         _positive_int(payload.get("execution_generation"), label="execution_generation")
+        if {"resource", "host_name"} & set(payload):
+            host_name = payload.get("host_name")
+            if (payload["reason"] != "waiting_for_host" or payload.get("resource") not in WAITING_RESOURCES
+                    or (host_name is not None and (not isinstance(host_name, str) or not host_name.strip()
+                                                   or len(host_name) > 200))):
+                raise DiscussionValidationError("turn.deferred waits for a resource of a named computer")
     if kind == "turn.failed" and "reason_code" in payload and payload["reason_code"] not in _all_failure_reasons():
         raise DiscussionValidationError("turn.failed reason_code must use the shared failure vocabulary")
     return payload
@@ -466,7 +488,11 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
         if not isinstance(value, expected):
             raise DiscussionValidationError(message)
     if kind in _EPOCH_STAMPED_KINDS and raw.get("authority_epoch") != room.authority_epoch:
-        raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+        # Written under an earlier host of a room that moved: checked against that host.
+        host = dict(room.lineage).get(raw.get("authority_epoch")) if type(raw.get("authority_epoch")) is int else None
+        if host is None:
+            raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+        room = replace(room, gateway_id=host, authority_epoch=raw["authority_epoch"])
     if (validator := _EVENT_VALIDATORS.get(kind)) is not None:
         payload = validator(kind, payload, actor, room)
     return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)
@@ -849,7 +875,12 @@ def _cancelled_effects(result: Any, *, newer_same_thread: bool, **_: Any) -> Eff
 
 def _deferred_effects(result: Any, *, execution_generation: int | None, **_: Any) -> Effects:
     reason = _terminal_text(result, field="reason", fallback="member_unavailable")
-    return {"execution_generation": execution_generation, "reason": reason}, []
+    waiting = {}
+    if reason == "waiting_for_host" and isinstance(result, Mapping) and result.get("resource") in WAITING_RESOURCES:
+        host_name = result.get("host_name")
+        waiting = {"resource": result["resource"],
+                   "host_name": host_name if isinstance(host_name, str) and host_name.strip() else None}
+    return {"execution_generation": execution_generation, "reason": reason, **waiting}, []
 
 
 _TERMINAL_EFFECTS = {

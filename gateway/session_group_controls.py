@@ -31,6 +31,17 @@ GROUP_METHODS = {
     'groups.custody.allow': 'session:operator',
     # The room's owner, or this installation's operator: checked inside (4001 not_owner).
     'groups.custody.automatic': 'session:control',
+    'groups.succession.status': 'session:read',
+    'groups.succession.prepare': 'session:control',
+    'groups.succession.promote': 'session:control',
+    'groups.succession.keep': 'session:control',
+    'groups.succession.branch_log': 'session:read',
+    'groups.succession.learn': 'session:read',
+    'groups.succession.move': 'session:control',
+    'groups.succession.move_now': 'session:control',
+    'groups.succession.continue_anyway': 'session:control',
+    # Each room only for its owner (or the operator): checked inside, the others skipped.
+    'groups.succession.handover_all': 'session:control',
     'groups.peer.register': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
@@ -54,7 +65,7 @@ _FIELDS = {
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
                            'member_id', 'ttl_seconds', 'status_ttl_seconds', 'replication', 'work_records', 'passive_only',
-                           'successor', 'custody_only'},
+                           'successor', 'custody_only', 'continuation'},
     'groups.peer.revoke': {'grant'},
     'groups.replica_state': {'room_id'},
     'groups.replication.prepare': {'room_id', 'target_install_id', 'endpoint', 'enrollment_id',
@@ -67,6 +78,16 @@ _FIELDS = {
     'groups.custody.remove': {'room_id', 'install_id'},
     'groups.custody.allow': {'room_id', 'successor'},
     'groups.custody.automatic': {'room_id', 'enabled'},
+    'groups.succession.status': {'room_id'},
+    'groups.succession.prepare': {'room_id', 'target_install_id'},
+    'groups.succession.promote': {'room_id', 'target_install_id', 'preview_id', 'confirm'},
+    'groups.succession.keep': {'room_id', 'install_id'},
+    'groups.succession.branch_log': {'room_id', 'branch_id', 'after_seq', 'limit'},
+    'groups.succession.learn': {'room_id', 'events'},
+    'groups.succession.move': {'room_id', 'target_install_id'},
+    'groups.succession.move_now': {'room_id'},
+    'groups.succession.continue_anyway': {'room_id'},
+    'groups.succession.handover_all': {'reason'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -96,15 +117,21 @@ async def dispatch_group_control(connection, method, params):
         from gateway.hosted_rooms import HostedRoomError
         from gateway import session_group_peers as peers
         from gateway import session_group_replication as replication
+        from gateway import session_group_succession as succession
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
+                if method in succession.TARGET_METHODS:
+                    return succession.dispatch_target(authority, actor, method, supplied)
                 if method in peers.TARGET_METHODS:
-                    return peers.dispatch_target(authority, method, supplied)
-                if method in replication.TARGET_METHODS:
-                    return replication.dispatch_target(authority, method, supplied)
-                return _group(authority, actor, home, method, supplied)
+                    result = peers.dispatch_target(authority, method, supplied)
+                elif method in replication.TARGET_METHODS:
+                    result = replication.dispatch_target(authority, method, supplied)
+                else:
+                    result = _group(authority, actor, home, method, supplied)
+                succession.record_consent_owner(authority, actor, method, supplied)
+                return result
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:

@@ -1591,6 +1591,186 @@
       }
     },
     {
+      "name": "groups.succession.branch_log",
+      "summary": "Messages this computer wrote while cut off, kept apart after the group moved on (groups.log page shape).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionBranchLogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionBranchLogResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.continue_anyway",
+      "summary": "On a host paused to stay safe, for the owner: continue it here anyway.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionContinueAnywayParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.handover_all",
+      "summary": "Hand every group this computer hosts to its best reachable standby (Desktop's sleep hook).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionHandoverAllParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionHandoverAllResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.keep",
+      "summary": "Resolve a group continued on two computers, from either one.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionKeepParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.learn",
+      "summary": "Hand this computer the chain of later hosts; it verifies it with pinned keys and steps down if replaced.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionLearnParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionLearnResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.move",
+      "summary": "On the host, for the owner: hand the group over to a successor (signed handover), once the replies in progress finish.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionMoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.move_now",
+      "summary": "On the host, for the owner: hand over a group waiting for its replies at once; those show as unknown.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionMoveNowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.prepare",
+      "summary": "On the target computer: what continuing the group there would mean. Changes nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionPrepareParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionPrepareResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.promote",
+      "summary": "On the target computer: continue the group there, for its owner; returns the status (poll while moving).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionPromoteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
+      "name": "groups.succession.status",
+      "summary": "Whether the group's host can be reached from this computer, and what the owner may do.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsSuccessionStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsSuccessionStatusResult"
+        }
+      }
+    },
+    {
       "name": "handoff.fail",
       "summary": "Fail a not-yet-claimed handoff (client poll timeout); CAS against the watcher.",
       "params": [
@@ -15748,6 +15928,18 @@
             ],
             "default": null,
             "title": "Custody Only"
+          },
+          "continuation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -16794,6 +16986,655 @@
           "cancelled"
         ],
         "title": "GroupsStopResult",
+        "type": "object"
+      },
+      "GroupsSuccessionBranchLogParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "branch_id": {
+            "title": "Branch Id",
+            "type": "string"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After Seq"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          }
+        },
+        "required": [
+          "room_id",
+          "branch_id"
+        ],
+        "title": "GroupsSuccessionBranchLogParams",
+        "type": "object"
+      },
+      "GroupsSuccessionBranchLogResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "branch_id": {
+            "title": "Branch Id",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "latest_seq": {
+            "title": "Latest Seq",
+            "type": "integer"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "branch_id",
+          "events",
+          "cursor",
+          "latest_seq",
+          "has_more"
+        ],
+        "title": "GroupsSuccessionBranchLogResult",
+        "type": "object"
+      },
+      "GroupsSuccessionContinueAnywayParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsSuccessionContinueAnywayParams",
+        "type": "object"
+      },
+      "GroupsSuccessionHandoverAllParams": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "enum": [
+              "sleep",
+              "stop",
+              "quit"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "GroupsSuccessionHandoverAllParams",
+        "type": "object"
+      },
+      "GroupsSuccessionHandoverAllResult": {
+        "additionalProperties": false,
+        "properties": {
+          "moved": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Moved",
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionSkipped"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "moved",
+          "skipped",
+          "reason"
+        ],
+        "title": "GroupsSuccessionHandoverAllResult",
+        "type": "object"
+      },
+      "GroupsSuccessionKeepParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "install_id"
+        ],
+        "title": "GroupsSuccessionKeepParams",
+        "type": "object"
+      },
+      "GroupsSuccessionLearnParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "room_id",
+          "events"
+        ],
+        "title": "GroupsSuccessionLearnParams",
+        "type": "object"
+      },
+      "GroupsSuccessionLearnResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "learned": {
+            "title": "Learned",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          }
+        },
+        "required": [
+          "room_id",
+          "learned"
+        ],
+        "title": "GroupsSuccessionLearnResult",
+        "type": "object"
+      },
+      "GroupsSuccessionMoveNowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsSuccessionMoveNowParams",
+        "type": "object"
+      },
+      "GroupsSuccessionMoveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "target_install_id": {
+            "title": "Target Install Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "target_install_id"
+        ],
+        "title": "GroupsSuccessionMoveParams",
+        "type": "object"
+      },
+      "GroupsSuccessionPrepareParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "target_install_id": {
+            "title": "Target Install Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "target_install_id"
+        ],
+        "title": "GroupsSuccessionPrepareParams",
+        "type": "object"
+      },
+      "GroupsSuccessionPrepareResult": {
+        "additionalProperties": false,
+        "properties": {
+          "preview_id": {
+            "title": "Preview Id",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/SuccessionTarget"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/SuccessionOwner"
+          },
+          "behind_by": {
+            "title": "Behind By",
+            "type": "integer"
+          },
+          "at_risk": {
+            "$ref": "#/components/schemas/SuccessionAtRisk"
+          },
+          "work": {
+            "$ref": "#/components/schemas/SuccessionWork"
+          },
+          "unavailable_bots": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionBot"
+            },
+            "title": "Unavailable Bots",
+            "type": "array"
+          },
+          "cautions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Cautions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "preview_id",
+          "target",
+          "owner",
+          "behind_by",
+          "at_risk",
+          "work",
+          "unavailable_bots",
+          "cautions"
+        ],
+        "title": "GroupsSuccessionPrepareResult",
+        "type": "object"
+      },
+      "GroupsSuccessionPromoteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "target_install_id": {
+            "title": "Target Install Id",
+            "type": "string"
+          },
+          "preview_id": {
+            "title": "Preview Id",
+            "type": "string"
+          },
+          "confirm": {
+            "title": "Confirm",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "target_install_id",
+          "preview_id",
+          "confirm"
+        ],
+        "title": "GroupsSuccessionPromoteParams",
+        "type": "object"
+      },
+      "GroupsSuccessionStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsSuccessionStatusParams",
+        "type": "object"
+      },
+      "GroupsSuccessionStatusResult": {
+        "additionalProperties": false,
+        "description": "What this computer knows about the group's host. Codes and parameters only.",
+        "properties": {
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "host": {
+            "$ref": "#/components/schemas/SuccessionHost"
+          },
+          "this_install": {
+            "$ref": "#/components/schemas/SuccessionThisInstall"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/SuccessionOwner"
+          },
+          "backups": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionBackup"
+            },
+            "title": "Backups",
+            "type": "array"
+          },
+          "at_risk": {
+            "$ref": "#/components/schemas/SuccessionAtRisk"
+          },
+          "moving": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionMoving"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "conflict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionConflict"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "moved": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionMoved"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionWork"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "actions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable Reason"
+          },
+          "previous_host": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionPreviousHost"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unavailable_bots": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionBot"
+            },
+            "title": "Unavailable Bots",
+            "type": "array"
+          },
+          "last_attempt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionAttempt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "automatic": {
+            "$ref": "#/components/schemas/SuccessionAutomatic"
+          },
+          "paused": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionPaused"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "moved_in": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionMovedIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "state",
+          "host",
+          "this_install",
+          "owner",
+          "backups",
+          "at_risk",
+          "actions",
+          "unavailable_bots",
+          "automatic"
+        ],
+        "title": "GroupsSuccessionStatusResult",
         "type": "object"
       },
       "HandoffFailParams": {
@@ -28687,6 +29528,22 @@
             ],
             "default": null,
             "title": "Replication"
+          },
+          "tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tasks"
           }
         },
         "required": [
@@ -35976,6 +36833,863 @@
           "ok"
         ],
         "title": "SubscriptionUpgradeResult",
+        "type": "object"
+      },
+      "SuccessionAtRisk": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "SuccessionAtRisk",
+        "type": "object"
+      },
+      "SuccessionAttempt": {
+        "additionalProperties": false,
+        "properties": {
+          "to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionComputer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "At"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "SuccessionAttempt",
+        "type": "object"
+      },
+      "SuccessionAutomatic": {
+        "additionalProperties": false,
+        "description": "Whether the group moves by itself if its host goes offline.",
+        "properties": {
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "standby": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionComputer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "voters": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionComputer"
+            },
+            "title": "Voters",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pending"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "offline": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SuccessionComputer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offline"
+          },
+          "needed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Needed"
+          }
+        },
+        "required": [
+          "mode",
+          "state",
+          "voters",
+          "enabled"
+        ],
+        "title": "SuccessionAutomatic",
+        "type": "object"
+      },
+      "SuccessionBackup": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "successor": {
+            "title": "Successor",
+            "type": "boolean"
+          },
+          "readiness": {
+            "title": "Readiness",
+            "type": "string"
+          },
+          "behind_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Behind By"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Seen"
+          },
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "designated": {
+            "title": "Designated",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operator Name"
+          },
+          "voter": {
+            "title": "Voter",
+            "type": "boolean"
+          },
+          "always_on": {
+            "title": "Always On",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "install_id",
+          "successor",
+          "readiness",
+          "allowed",
+          "designated",
+          "kind",
+          "voter",
+          "always_on"
+        ],
+        "title": "SuccessionBackup",
+        "type": "object"
+      },
+      "SuccessionBot": {
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "on": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionBotPlace"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "SuccessionBot",
+        "type": "object"
+      },
+      "SuccessionBotPlace": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "reachable": {
+            "title": "Reachable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reachable"
+        ],
+        "title": "SuccessionBotPlace",
+        "type": "object"
+      },
+      "SuccessionComputer": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "title": "SuccessionComputer",
+        "type": "object"
+      },
+      "SuccessionConflict": {
+        "additionalProperties": false,
+        "properties": {
+          "hosts": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionConflictHost"
+            },
+            "title": "Hosts",
+            "type": "array"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End"
+          },
+          "running_on": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuccessionComputer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "hosts"
+        ],
+        "title": "SuccessionConflict",
+        "type": "object"
+      },
+      "SuccessionConflictHost": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Since"
+          }
+        },
+        "title": "SuccessionConflictHost",
+        "type": "object"
+      },
+      "SuccessionHost": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "reachable": {
+            "title": "Reachable",
+            "type": "boolean"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Since"
+          },
+          "restarting_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Restarting Until"
+          }
+        },
+        "required": [
+          "reachable"
+        ],
+        "title": "SuccessionHost",
+        "type": "object"
+      },
+      "SuccessionMoved": {
+        "additionalProperties": false,
+        "properties": {
+          "to": {
+            "$ref": "#/components/schemas/SuccessionComputer"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "At"
+          },
+          "separate_events": {
+            "title": "Separate Events",
+            "type": "integer"
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch Id"
+          }
+        },
+        "required": [
+          "to",
+          "separate_events"
+        ],
+        "title": "SuccessionMoved",
+        "type": "object"
+      },
+      "SuccessionMovedIn": {
+        "additionalProperties": false,
+        "description": "On a new host after an automatic move or a handover, until the old host is a copy again.",
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/SuccessionComputer"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "At"
+          },
+          "proof_kind": {
+            "title": "Proof Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "proof_kind"
+        ],
+        "title": "SuccessionMovedIn",
+        "type": "object"
+      },
+      "SuccessionMoving": {
+        "additionalProperties": false,
+        "properties": {
+          "to": {
+            "$ref": "#/components/schemas/SuccessionComputer"
+          },
+          "step": {
+            "title": "Step",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "running": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Running"
+          }
+        },
+        "required": [
+          "to",
+          "step"
+        ],
+        "title": "SuccessionMoving",
+        "type": "object"
+      },
+      "SuccessionOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "title": "SuccessionOwner",
+        "type": "object"
+      },
+      "SuccessionPaused": {
+        "additionalProperties": false,
+        "description": "The host executes and appends nothing, to stay safe.",
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Since"
+          },
+          "waiting_for": {
+            "items": {
+              "$ref": "#/components/schemas/SuccessionComputer"
+            },
+            "title": "Waiting For",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reason",
+          "waiting_for"
+        ],
+        "title": "SuccessionPaused",
+        "type": "object"
+      },
+      "SuccessionPreviousHost": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "offline_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offline Since"
+          }
+        },
+        "title": "SuccessionPreviousHost",
+        "type": "object"
+      },
+      "SuccessionSkipped": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "reason"
+        ],
+        "title": "SuccessionSkipped",
+        "type": "object"
+      },
+      "SuccessionTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operator Name"
+          }
+        },
+        "title": "SuccessionTarget",
+        "type": "object"
+      },
+      "SuccessionThisInstall": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "install_id",
+          "role"
+        ],
+        "title": "SuccessionThisInstall",
+        "type": "object"
+      },
+      "SuccessionWork": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "elsewhere": {
+            "title": "Elsewhere",
+            "type": "integer"
+          },
+          "unknown": {
+            "title": "Unknown",
+            "type": "integer"
+          },
+          "waiting_for_host": {
+            "title": "Waiting For Host",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "completed",
+          "elsewhere",
+          "unknown",
+          "waiting_for_host"
+        ],
+        "title": "SuccessionWork",
         "type": "object"
       },
       "SudoRequestParams": {

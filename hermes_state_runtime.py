@@ -11,8 +11,11 @@ from gateway.session_admission import admission_fingerprint
 
 
 class RuntimeStoreError(ValueError):
-    def __init__(self, reason: str):
+    """A refused runtime request: ``reason`` is its stable code; ``detail`` (rare) names its parameters."""
+
+    def __init__(self, reason: str, detail: dict | None = None):
         self.reason = reason
+        self.detail = dict(detail or {})
         super().__init__(reason)
 
 

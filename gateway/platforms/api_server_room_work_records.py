@@ -26,6 +26,12 @@ def http_routes(adapter):
             profile, installation_id = _local_target(claims, api_server._api_request_profile)
         except Exception as exc:
             return _room_grant_error_response(exc, _openai_error=api_server._openai_error)
+        from gateway.hosted_room_fence import RoomFenceError
+        from gateway.platforms.api_server_room_succession import fence_check
+        try:
+            fence_check(adapter)(claims["room_id"], int(claims["authority_epoch"]))
+        except RoomFenceError as exc:
+            return failure("This Group Chat's authority epoch is fenced on this gateway.", exc.code, exc.status)
         body, error = await adapter._read_json_body((request if request.get("verified_room_grant") else request.clone(client_max_size=records.MAX_BYTES + 1024)))
         if error is not None:
             return error

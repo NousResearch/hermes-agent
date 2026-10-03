@@ -14,6 +14,13 @@ from tui_gateway.hosted_room_service import HostedRoomService
 _OWNER = 'gateway.hosted.owner.v1:'
 
 
+def _held_as_copy(conn, room_id):
+    """Whether this installation keeps ``room_id`` as a copy of another host's room."""
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_replicas'").fetchone()
+    return exists is not None and conn.execute(
+        'SELECT 1 FROM hosted_room_replicas WHERE room_id=?', (room_id,)).fetchone() is not None
+
+
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
@@ -34,12 +41,66 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def start(self):
         super().start()
         self.replication.start()
+        self.succession.start()
 
     def stop(self, *, timeout=5.0):
         deadline = time.monotonic() + max(0.0, timeout)
         self.replication.stop(timeout=0)  # Signal first; the runtime's stop may take the budget.
+        self.succession.stop(timeout=0)
         runtime_stopped = super().stop(timeout=max(0.0, deadline - time.monotonic()))
-        return self.replication.stop(timeout=max(0.0, deadline - time.monotonic())) and runtime_stopped
+        succession_stopped = self.succession.stop(timeout=max(0.0, deadline - time.monotonic()))
+        return (self.replication.stop(timeout=max(0.0, deadline - time.monotonic())) and runtime_stopped
+                and succession_stopped)
+
+    @property
+    def succession(self):
+        """Host-loss upkeep for the groups this computer hosts or keeps a copy of (default profile only)."""
+        upkeep = self.__dict__.get('_succession_upkeep')
+        if upkeep is None:
+            from gateway.hosted_room_succession_status import SuccessionUpkeep
+            upkeep = self.__dict__['_succession_upkeep'] = SuccessionUpkeep(
+                self.succession_context, lease_context=self.lease_context,
+                runner=getattr(self.authority, 'runner', None), loop=self.loop)
+        return upkeep
+
+    def publish_settled(self, room_id):
+        """Publish the outcomes of this room's turns that have settled, and nothing else: no new turn is
+        planned (a host handing its group over drains its running turns this way)."""
+        from gateway import hosted_rooms
+        with self._policy_lock:
+            room = self._room(room_id)
+            self._policy_snapshot(room)  # sync() feeds the publication
+            try:
+                self._publish_terminal_tasks(room)
+            except hosted_rooms.EventCursorConflictError:
+                pass  # published on the next look
+
+    def lease_context(self):
+        """What holding this service's own groups' leases needs: its room store, and its fence store
+        when it has one. A host without the API server or a durable Runs store still holds its leases."""
+        try:
+            context = self.succession_context()
+        except Exception:
+            context = None  # its API server isn't up yet: the room store alone still holds its leases
+        if context is not None:
+            return context
+        from gateway.hosted_room_succession_move import MoveContext
+        return MoveContext(db_path=Path(self.db_path), runs_store=None, service=self, timeout=2.0)
+
+    def succession_context(self, actor=None):
+        """The succession context of this computer, or ``None`` where groups cannot move here."""
+        from gateway.session_authorities import served_profile_name
+        from gateway.session_group_peers import _api_server
+        if served_profile_name(Path(self.authority.profile_id)) != 'default':
+            return None
+        adapter = _api_server(self.authority)
+        store = getattr(adapter, '_run_idempotency_store', None)
+        if store is None or store.durable is not True:
+            return None
+        from gateway.hosted_room_succession_move import MoveContext
+        from gateway.platforms.api_server_room_succession import continuation_minter
+        return MoveContext(db_path=Path(self.db_path), runs_store=store, service=self, timeout=2.0,
+                           mint_grants=continuation_minter(adapter, Path(self.db_path), replace_same_epoch=False))
 
     def _load_stored_links(self):
         super()._load_stored_links()
@@ -173,7 +234,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
                                 ('gateway.peer.retiring.v1:' + room_id,)).fetchone() is not None
 
-    def send(self, *, room_id, **kwargs):
+    def _send_unpaused(self, *, room_id, **kwargs):
         with self.peer_route_lock:
             if self.is_retiring(room_id):
                 raise RuntimeStoreError('room_retiring')
@@ -238,20 +299,68 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def status(self, room_id=None):
         from gateway import session_group_peer_cleanup as cleanup
-        return {**super().status(room_id), 'peer_cleanup': cleanup.status(self.db_path, room_id),
-                'retiring': self.is_retiring(room_id) if room_id is not None else False,
-                'replication': self.replication.status(room_id)}
+        result = {**super().status(room_id), 'peer_cleanup': cleanup.status(self.db_path, room_id),
+                  'retiring': self.is_retiring(room_id) if room_id is not None else False,
+                  'replication': self.replication.status(room_id)}
+        if room_id is not None:
+            from gateway.hosted_room_succession import waiting_tasks
+            result['tasks'] = waiting_tasks(self.db_path, room_id)
+        return result
 
     def _maintain_peer_lifecycle(self):
         from gateway import session_group_peer_cleanup as cleanup
         cleanup.drain(self)
         self._resume_disbands()
+        self._maintain_succession()
+
+    def _maintain_succession(self):
+        """A peer that refused a hosted room's authority makes upkeep ask the group at once."""
+        with self._policy_lock:
+            suspect = {room for (room, _member), status in self._peer_route_status.items()
+                       if status in {'needs_reauthorization', 'unavailable'}}
+        if suspect:
+            self.succession.suspect.update(suspect)
+            self.succession.wakeup()
 
     def bindings(self):
+        from gateway.hosted_room_succession_backup import serving_locked
         with self.authority.db._read_ctx() as conn:
             owned = {r[0][len(_OWNER):] for r in conn.execute(
                 'SELECT key FROM state_meta WHERE key LIKE ?', (_OWNER + '%',))}
-        return tuple(b for b in super().bindings() if b.room_id in owned)
+        # A host that paused (its epoch promised elsewhere, or continued on two) executes nothing.
+        from contextlib import closing
+        from gateway import hosted_rooms
+        with closing(hosted_rooms._read_connection(Path(self.db_path))) as conn:
+            return tuple(b for b in super().bindings() if b.room_id in owned and serving_locked(conn, b.room_id))
+
+    def _room(self, room_id):
+        room = super()._room(room_id)
+        from gateway.hosted_room_succession import authority_lineage
+        lineage = authority_lineage(self.db_path, room_id)
+        return {**room, 'authority_lineage': lineage} if lineage else room
+
+    def send(self, *, room_id, **kwargs):
+        from gateway.hosted_room_succession import paused_reason
+        reason = paused_reason(self.db_path, room_id)
+        if reason is not None:
+            raise RuntimeStoreError(reason)
+        return self._send_unpaused(room_id=room_id, **kwargs)
+
+    def announce_restart(self, until):
+        """A planned restart is not loss: tell every group this computer hosts when it will be back."""
+        from gateway.hosted_room_succession_move import append_state
+        from gateway.hosted_room_succession_status import held_rooms
+        context = self.succession_context()
+        if context is None:
+            return []
+        rooms = held_rooms(context.db_path)['hosted']
+        # In majority mode the voters keep this host's lease through the window, so no one takes over.
+        from gateway.hosted_room_succession_automatic import extend_for_restart
+        extend_for_restart(context, rooms, float(until))
+        for room_id in rooms:
+            append_state(context.db_path, room_id, 'host_restarting', until=float(until))
+        self.replication.wakeup()
+        return rooms
 
     def _turn_lock(self, profile):
         return nullcontext()
@@ -266,6 +375,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             _epoch(conn, self.authority.epoch)
             key = _OWNER + room_id
             row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+            if create and _held_as_copy(conn, room_id):
+                # Its owner row may exist (consent to keep a copy): a hosted room never reuses the id.
+                raise RuntimeStoreError('permission_denied')
             if row is None and create:
                 historical = conn.execute(
                     'SELECT 1 FROM hosted_rooms WHERE room_id=? UNION ALL '
@@ -279,6 +391,21 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             return True
         return self.authority.db._execute_write(write)
 
+    def stop_work(self, room_id, *, cancel_id):
+        """Cancel this room's work without writing to its log, as a host stepping down must: unlike
+        ``stop_room`` it appends no ``room.stop_requested``. Returns how many tasks it cancelled."""
+        from tui_gateway.hosted_room_service import _STOPPABLE_STATUSES
+        cancelled = 0
+        with self._policy_lock:
+            for task in self._list_tasks(room_id, _STOPPABLE_STATUSES):
+                try:
+                    self.runtime.cancel(task['identity'], cancel_id=cancel_id)
+                    cancelled += 1
+                except Exception:
+                    continue  # settled meanwhile, or already stopping
+        self.runtime.wakeup()
+        return cancelled
+
     def _owner(self, room_id):
         with self.authority.db._read_ctx() as conn:
             row = conn.execute('SELECT value FROM state_meta WHERE key=?', (_OWNER + room_id,)).fetchone()
@@ -286,8 +413,24 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             raise RuntimeStoreError('permission_denied')
         return row[0]
 
+    def _policy_profiles(self, room):
+        # A room this gateway holds as a successor keeps its original home's local Bots there.
+        from gateway.hosted_room_succession import inherited_origin
+        from gateway.hosted_room_succession_move import policy_profiles
+        if inherited_origin(self.db_path, str(room['room_id'])) is not None:
+            return policy_profiles(room)
+        return super()._policy_profiles(room)
+
     def _resolve_member_transport(self, binding, task):
-        if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
+        member_id = str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))
+        if not self._member_is_peer(binding.room_id, member_id):
+            from gateway.hosted_room_succession import inherited_origin
+            origin = inherited_origin(self.db_path, binding.room_id)
+            if origin is not None:
+                # Never run the original home's Bot as a same-named profile of this successor:
+                # its turn waits for that computer.
+                return WaitingForHost(self.db_path, binding.room_id, origin)
+        if self._member_is_peer(binding.room_id, member_id):
             from gateway.session_group_peers import refused_peer_turn
             refused = refused_peer_turn(self, binding.room_id, task)
             if refused is not None:
@@ -492,3 +635,39 @@ async def stop_hosted_service(runner, timeout=5):
             result = await asyncio.to_thread(service.stop, timeout=max(0, deadline - loop.time()))
             stopped = result and stopped
     return stopped
+
+
+class WaitingForHost:
+    """The transport of a Bot that runs only on the group's original host: its turns wait for it.
+
+    Nothing is sent anywhere. Each attempt is deferred with proof it never ran, reason
+    ``waiting_for_host`` and the missing resource, so the room's next turn proceeds.
+    """
+
+    def __init__(self, db_path, room_id, origin):
+        from types import SimpleNamespace
+        from gateway import hosted_room_succession as succession
+        from contextlib import closing
+        from gateway import hosted_rooms
+        with closing(hosted_rooms._read_connection(Path(db_path))) as conn:
+            configuration = succession.configuration_locked(conn, room_id)
+        self.host_name = succession.label(configuration, origin)
+        self.ref = SimpleNamespace(session_id='waiting-for-host')
+
+    def _session(self, **_):
+        return {'session_id': 'waiting-for-host'}
+
+    resolve_exact = create = resume = _session
+
+    def submit(self, **_):
+        from gateway.hosted_room_succession import WaitingForHostError
+        raise WaitingForHostError(resource='bot', host_name=self.host_name)
+
+    def info(self, **_):
+        return {'active': False, 'task_id': None}
+
+    def history(self, **_):
+        return ()
+
+    def interrupt(self, **_):
+        return None

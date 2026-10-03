@@ -3,8 +3,13 @@ from gateway.hosted_room_authority_history import at_sequence, read_history_lock
 
 
 def source_prefix_locked(conn, room_id, authority, seq):
+    from gateway.hosted_room_authority_history import AuthorityHistoryError
     from gateway.hosted_room_work_records import WorkRecordPrefixError, digest
-    history = read_history_locked(conn, room_id, gateway_id=authority["gateway_id"], epoch=authority["epoch"])
+    try:
+        history = read_history_locked(conn, room_id, gateway_id=authority["gateway_id"], epoch=authority["epoch"])
+    except AuthorityHistoryError as exc:
+        # A host after a verified succession move (#105197) records no authority claims.
+        raise WorkRecordPrefixError("successor work evidence has no verified lineage") from exc
     if history is None:
         raise WorkRecordPrefixError("successor work evidence has no verified lineage")
     spans = validate_history(history, gateway_id=authority["gateway_id"], epoch=authority["epoch"])

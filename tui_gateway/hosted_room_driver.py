@@ -532,9 +532,19 @@ class HostedRoomRuntime:
             if should_wake:
                 self.wakeup()
 
+    def _served(self, binding: HostedRoomBinding) -> bool:
+        """Whether this gateway still serves the room, read again right before it publishes new work
+        or starts a turn: serving can end within a cycle (a lease ran out, a handover was signed)."""
+        try:
+            return any(other.room_id == binding.room_id for other in tuple(self._rooms_provider()))
+        except Exception:
+            return False
+
     def _process_room(self, binding: HostedRoomBinding) -> None:
         if self._retry_stopping_tasks(binding):
             self._set_blocked(binding.room_id, True)
+            return
+        if not self._served(binding):
             return
         if self.prepare_room is not None:
             self.prepare_room(binding)
@@ -561,6 +571,8 @@ class HostedRoomRuntime:
                 return
             if self.dispatch_ready is not None and not self.dispatch_ready(binding, task):
                 return  # stays queued; the next pass looks again
+            if not self._served(binding):
+                return  # stopped serving during this cycle: the turn stays queued for whoever serves next
             lease = self._renew_lease_if_needed(lease)
             attempt = state.start_task(
                 self.db_path, task["identity"], lease,
@@ -677,8 +689,9 @@ class HostedRoomRuntime:
                 try:
                     if self.defer_not_admitted_members and task["payload"].get("target_member_id"):
                         deferred = state.defer_not_admitted_task(
-                            self.db_path, attempt, reason="member_unavailable", clock=self.clock,
-                            retry_binding=getattr(transport, "nonadmission_retry_binding", None))
+                            self.db_path, attempt, reason=getattr(exc, "defer_reason", None) or "member_unavailable",
+                            clock=self.clock, retry_binding=getattr(transport, "nonadmission_retry_binding", None),
+                            detail=getattr(exc, "defer_detail", None))
                     else:
                         state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

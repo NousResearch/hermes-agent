@@ -161,9 +161,10 @@ class TestExtractCacheBustingConfig:
         assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 
     def test_baked_in_compression_settings_bust_the_cache(self):
-        """`protect_first_n`, `abort_on_summary_failure` and `idle_compact_after_seconds` are read
-        from the compression config and baked into the agent at construction (agent_init passes
-        them to ContextCompressor / sets them on the agent), so a mid-gateway edit must enter the
+        """`protect_first_n`, `abort_on_summary_failure`, `idle_compact_after_seconds` and
+        `max_attempts` are read from the compression config and baked into the agent at
+        construction (agent_init passes them to ContextCompressor / sets them on the agent,
+        e.g. `agent.max_compression_attempts`), so a mid-gateway edit must enter the
         cache-busting signature instead of being silently ignored (#128466)."""
         from gateway.run import GatewayRunner
 
@@ -171,6 +172,7 @@ class TestExtractCacheBustingConfig:
         assert ("compression", "protect_first_n") in listed
         assert ("compression", "abort_on_summary_failure") in listed
         assert ("compression", "idle_compact_after_seconds") in listed
+        assert ("compression", "max_attempts") in listed
 
         base = GatewayRunner._extract_cache_busting_config({})
         edited = GatewayRunner._extract_cache_busting_config({
@@ -178,11 +180,42 @@ class TestExtractCacheBustingConfig:
                 "protect_first_n": (base["compression.protect_first_n"] or 0) + 4,
                 "abort_on_summary_failure": not base["compression.abort_on_summary_failure"],
                 "idle_compact_after_seconds": (base["compression.idle_compact_after_seconds"] or 0) + 60,
+                "max_attempts": (base["compression.max_attempts"] or 0) + 3,
             }
         })
         assert edited["compression.protect_first_n"] != base["compression.protect_first_n"]
         assert edited["compression.abort_on_summary_failure"] != base["compression.abort_on_summary_failure"]
         assert edited["compression.idle_compact_after_seconds"] != base["compression.idle_compact_after_seconds"]
+        assert edited["compression.max_attempts"] != base["compression.max_attempts"]
+
+    def test_every_compression_key_read_at_construction_is_cache_busted(self):
+        """Completeness guard for `_CACHE_BUSTING_CONFIG_KEYS`: every compression key the
+        construction-time parser reads (in `_parse_compression_config` or its sub-parsers
+        `_compression_threshold` / `_compression_codex_settings`, which read the same section
+        dict) must be listed, or a mid-gateway edit is a silent no-op — the exact gap #128466
+        collects. Source-extraction (not a hand-copied list) so a newly added `cfg.get` /
+        `_cfg_flag` read fails here until its cache-busting entry exists."""
+        import inspect
+        import re
+
+        from agent import agent_init
+        from gateway.run import GatewayRunner
+
+        src = (
+            inspect.getsource(agent_init._parse_compression_config)
+            + inspect.getsource(agent_init._compression_threshold)
+            + inspect.getsource(agent_init._compression_codex_settings)
+        )
+        read = set(re.findall(r'cfg\.get\(\s*"([a-z0-9_]+)"', src))
+        read |= set(re.findall(r'_cfg_flag\(\s*cfg\s*,\s*"([a-z0-9_]+)"', src))
+        assert read, "source extraction unexpectedly found no compression reads"
+
+        listed = {key for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS
+                  if section == "compression"}
+        missing = read - listed
+        assert not missing, (
+            f"compression keys read at agent construction but not cache-busted: {sorted(missing)}"
+        )
 
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so

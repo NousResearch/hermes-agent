@@ -198,39 +198,3 @@ async def test_dispatch_progress_rearms_recovery_scheduling(caplog):
     for call in sched.call_args_list:
         (err,) = call.args
         assert isinstance(err, tg_adapter._IngressDispatchStallError)
-
-
-def test_without_running_loop_falls_back_to_diagnostic(caplog):
-    """A direct sync call with no event loop must not raise: the warning is the
-    diagnostic and the next heartbeat with a loop drives recovery. The fallback
-    resets the debounce counter so that promised retry is not blocked by the guard."""
-    adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
-    _receive(adapter, 2)
-    adapter._check_ingress_dispatch_stall()
-    assert _deaf_reports(caplog) == []
-    # Second heartbeat crosses the threshold with no running loop in this sync test.
-    adapter._check_ingress_dispatch_stall()
-    (report,) = _deaf_reports(caplog)
-    assert "2 update(s) fetched" in report
-    # Degraded, but no recovery task yet — and the counter is reset so the guard
-    # cannot swallow the retry the deferred diagnostic promises.
-    assert adapter._send_path_degraded is True
-    assert adapter._polling_error_task is None
-    assert adapter._ingress_stalled_heartbeats == 0
-
-    async def drive_retry():
-        recovery = AsyncMock()
-        with patch.object(adapter, "_handle_polling_network_error", new=recovery):
-            adapter._check_ingress_dispatch_stall()  # arms the debounce again
-            assert adapter._polling_error_task is None
-            adapter._check_ingress_dispatch_stall()  # crosses threshold, schedules
-            task = adapter._polling_error_task
-            assert task is not None
-            await task
-        return recovery
-
-    recovery = asyncio.run(drive_retry())
-    recovery.assert_awaited_once()
-    (err,) = recovery.await_args.args
-    assert isinstance(err, tg_adapter._IngressDispatchStallError)

@@ -3417,7 +3417,7 @@ display:
     bounded: "第 {n}/{max} 輪"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}'（模型 '{task_model}'）無法路由（{error}）；改用 {provider}/{model}"
-    reasoning_effort_warning: "⚠ 當檢閱模型不是主模型時，auxiliary.background_review.reasoning_effort='{effort}' 不會生效"
+    reasoning_effort_warning: "⚠ 當檢閱在主模型上執行時，auxiliary.background_review.reasoning_effort='{effort}' 不會生效"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 技能 '{name}' 已修補：\"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 技能 '{name}' {verb}：{description}"

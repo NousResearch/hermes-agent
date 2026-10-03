@@ -296,10 +296,10 @@ class TestAnnotationCaptureAtDiscovery:
         server.session = MagicMock()
         server._tools = [
             self._make_tool(
-                "list_repos", SimpleNamespace(readOnlyHint=True)
+                "list_repos", SimpleNamespace(read_only_hint=True)
             ),
             self._make_tool(
-                "delete_repo", SimpleNamespace(readOnlyHint=False)
+                "delete_repo", SimpleNamespace(read_only_hint=False)
             ),
             self._make_tool("no_annotations", None),
         ]
@@ -318,8 +318,14 @@ class TestAnnotationCaptureAtDiscovery:
         assert not hints.get("delete_repo")
         assert not hints.get("no_annotations")
 
-    def test_dict_annotations_supported(self):
-        """Cached/JSON annotations arrive as plain dicts."""
+    def test_sdk_and_cached_annotations_supported(self):
+        """MCP 2.x SDK objects use snake_case; cached JSON uses the wire alias."""
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint="yes"))
+        ) is False  # non-bool truthy → NOT read-only (hint must be True)
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations={"readOnlyHint": True})
         ) is True

@@ -4,6 +4,11 @@ Deleting an idle ``cache/scratch/<entry>`` is not enough on its own: a lane's e2
 headless browsers whose cwd was inside the tree (they survived for days with a ``(deleted)``
 cwd), and a repo whose linked worktree lived in the tree keeps a dangling registration until
 someone runs ``git worktree prune``. Both are reaped here, right before ``rmtree``.
+
+Every departure leaves a record: each pruned entry logs its name, its newest mtime, and its
+size where cheap, each reaped process its pid and cmdline, and the boot caller logs the
+summary count instead of dropping it. A delete with no trace was the #132401 lesson: the
+prune itself is policy, the silence was the defect.
 """
 from __future__ import annotations
 
@@ -22,36 +27,99 @@ _REAP_GRACE_SECONDS = 3.0
 _GIT_FILE_MAX_DEPTH = 4
 
 
+def _audit_log_path() -> Path:
+    """Durable audit sink: ``<home>/logs/scratch-prune.log`` — the platform's real
+    hermes home (same resolver as every other hermes path), not a guess."""
+    try:
+        from hermes_constants import get_process_hermes_home  # lazy: avoids import cycle
+
+        return get_process_hermes_home() / "logs" / "scratch-prune.log"
+    except Exception:  # noqa: BLE001 — resolver unavailable: last-resort literal
+        home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        return home / "logs" / "scratch-prune.log"
+
+
+def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
+    """Audit record at INFO with a durable fallback sink (#132401).
+
+    teknium1's ask was that the records "land in ``~/.hermes/logs/``" — but the
+    boot-time prune can fire before ``setup_logging`` installs the file handler,
+    so a bare ``logger.info`` is delivery-by-hope on exactly the path that
+    matters most. This emits through the logger as asked, and when nothing at
+    the root would capture INFO (the early-boot case) it appends the record to
+    ``<home>/logs/scratch-prune.log`` directly: an audit line either reaches
+    ``agent.log`` or the audit file, never nowhere. Never raises — the prune
+    must not fail for want of a log line.
+    """
+    try:
+        log.info(msg, *args)
+        if any(h.level <= logging.INFO for h in logging.getLogger().handlers):
+            return  # the log file sink is live; no fallback duplication
+        text = (msg % args) if args else msg
+        path = _audit_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Appends are one short line per rare event; POSIX O_APPEND makes each
+        # atomic. Windows MSVCRT appends are seek-then-write (weaker under
+        # concurrent prunes) — accepted for now given the event rarity.
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("%s\t%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), text))
+    except Exception:  # noqa: BLE001 — audit must never break the prune
+        pass
+
+
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
     """True when *path* or anything beneath it has an mtime at or after *cutoff*.
 
-    Stops at the first recent entry, so a live tree costs one hit and only a truly idle
-    tree pays for the full walk (once, right before it is deleted). Symlinks are never
-    followed: a link into the repo would make the target's activity keep the entry alive.
-    An unreadable entry is kept: an incomplete scan cannot establish that it is idle.
+    Thin alias for the first element of :func:`_scan_entry_idleness` — one walk is the
+    primitive, the audit fields ride the same stat calls. See there for the exact
+    semantics (early stop, no symlink following, unreadable = kept).
+    """
+    return _scan_entry_idleness(path, cutoff)[0]
+
+
+def _scan_entry_idleness(path: Path, cutoff: float) -> tuple[bool, float | None, int | None]:
+    """One walk, three answers: (touched_since_cutoff, newest_mtime, bytes).
+
+    Early-stops at the first recent mtime — a live tree costs one hit (bytes stay
+    ``None``: untouched entries are not audited). A walk that completes returns the
+    newest mtime seen and the byte total collected from the *same* stat calls — the
+    audit record never costs a second walk of a doomed tree, the #132401 review's
+    boot-cost objection answered by construction. Symlinks are never followed: a link
+    into the repo would make the target's activity keep the entry alive. An unreadable
+    entry reports ``(True, None, None)``: an incomplete scan cannot establish that it
+    is idle, so it is kept (the pinned scan-failure semantics). The bytes figure is
+    approximate by design: file bytes plus the root entry's own inode size.
     """
     try:
-        if os.lstat(path).st_mtime >= cutoff:
-            return True
-        if not path.is_dir() or path.is_symlink():
-            return False
+        st = os.lstat(path)
     except OSError:
-        return True
+        return True, None, None
+    if st.st_mtime >= cutoff:
+        return True, None, None
+    if not path.is_dir() or path.is_symlink():
+        return False, st.st_mtime, st.st_size
+    newest = st.st_mtime
+    total = st.st_size
     stack = [str(path)]
     while stack:
         try:
             with os.scandir(stack.pop()) as it:
                 for child in it:
                     try:
-                        if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return True
+                        cst = child.stat(follow_symlinks=False)
                     except OSError:
-                        return True
+                        return True, None, None
+                    if cst.st_mtime >= cutoff:
+                        return True, None, None
+                    if cst.st_mtime > newest:
+                        newest = cst.st_mtime
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
+                    else:
+                        total += cst.st_size
         except OSError:
-            return True
-    return False
+            return True, None, None
+    return False, newest, total
 
 
 def _under(path: str, root: str) -> bool:
@@ -107,6 +175,14 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path]) -> int:
             victims.append(proc)
     if not victims:
         return 0
+    # Evidence is captured BEFORE the kill: a terminated process's cmdline is gone,
+    # so the audit record reads from this snapshot, not from post-mortem queries.
+    evidence: list[tuple[int, str]] = []
+    for proc in victims:
+        try:
+            evidence.append((proc.pid, " ".join(proc.cmdline() or [])[:200]))
+        except (psutil.Error, OSError):
+            evidence.append((proc.pid, "<unavailable>"))
     for proc in victims:
         try:
             proc.terminate()
@@ -118,7 +194,11 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path]) -> int:
             proc.kill()
         except (psutil.Error, OSError):
             continue
-    logger.info("scratch prune: reaped %d process(es) rooted in pruned entries", len(victims))
+    for pid, cmdline in evidence:
+        audit_info(logger, "scratch prune: reaped pid=%d cmdline=%s", pid, cmdline)
+    audit_info(
+        logger, "scratch prune: reaped %d process(es) rooted in pruned entries", len(victims)
+    )
     return len(victims)
 
 
@@ -167,32 +247,87 @@ def release_git_worktrees(repos: set[str]) -> None:
 def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[str]) -> int:
     """Delete top-level entries of *root* with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and worktree registrations rooted in them first.
-    Returns the count removed."""
+    Returns the count removed.
+
+    Every departure leaves a per-entry record at INFO — name, newest mtime, and size —
+    so a delete is never silent (#132401): the count alone hid five multi-day work
+    products being destroyed with no log, no quarantine, no trace. The reap detail
+    (pid + cmdline) and the boot caller's summary log alongside.
+    """
     cutoff = time.time() - max_idle_hours * 3600
     try:
         entries = [e for e in root.iterdir() if e.name not in skip_names]
     except OSError:
         return 0
-    doomed = [e for e in entries if not subtree_touched_since(e, cutoff)]
+    doomed: list[tuple[Path, float | None, int | None]] = []
+    for e in entries:
+        touched, newest, bytes_ = _scan_entry_idleness(e, cutoff)
+        if not touched:
+            doomed.append((e, newest, bytes_))
     # Runs even with nothing to delete: orphans whose cwd was removed by an earlier pass
-    # (or by hand) are found by the deleted-cwd rule, not by membership in ``doomed``.
+    # (or by hand) are found by the deleted-cwd rule, detail via the reap's own record.
     try:
-        reap_processes_rooted_in(root, doomed)
+        reap_processes_rooted_in(root, [e for e, _, _ in doomed])
     except Exception as exc:  # psutil missing or restricted host: the deletion still proceeds
         logger.debug("scratch prune: process reap skipped: %s", exc)
     if not doomed:
         return 0
     repos: set[str] = set()
     removed = 0
-    for entry in doomed:
+    for entry, newest, bytes_ in doomed:
+        kind = "dir" if (entry.is_dir() and not entry.is_symlink()) else "file"
+        if kind == "dir":
+            repos |= _linked_worktree_repos(entry)
+        # Last-moment re-validation (#132401 C1/F1): the doomed list was snapshotted
+        # before the reap ran, and a resumed writer (cwd outside scratch) can land
+        # fresh work in that window. Anything that became touched since selection is
+        # rescued here, not deleted — the selection snapshot is a candidate list,
+        # never a verdict. Runs after the worktree scan so the re-check sits as
+        # close to the delete as the loop allows.
+        touched, newest, bytes_ = _scan_entry_idleness(entry, cutoff)
+        if touched:
+            if not entry.exists():
+                audit_info(
+                    logger,
+                    "scratch prune: entry=%r vanished since selection",
+                    entry.name,
+                )
+            else:
+                audit_info(
+                    logger,
+                    "scratch prune: rescued entry=%r — touched since selection, kept",
+                    entry.name,
+                )
+            continue
         try:
-            if entry.is_dir() and not entry.is_symlink():
+            if kind == "dir":
                 repos |= _linked_worktree_repos(entry)
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()
-            removed += 1
-        except OSError:
+        except OSError as exc:
+            # Attempted, failed outright (permissions, vanished mid-run): the record
+            # is the audit; the count only ever claims confirmed removals.
+            audit_info(
+                logger,
+                "scratch prune: removal failed entry=%r kind=%s error=%s",
+                entry.name, kind, exc,
+            )
             continue
+        if entry.exists():
+            # ``rmtree(ignore_errors=True)`` can leave residue — a partial removal is
+            # not a removal. Recorded, never counted (#132401 review round 2).
+            audit_info(
+                logger,
+                "scratch prune: removal left residue entry=%r kind=%s bytes=%d newest_mtime=%.0f",
+                entry.name, kind, bytes_ or 0, newest or 0.0,
+            )
+            continue
+        audit_info(
+            logger,
+            "scratch prune: removed entry=%r kind=%s bytes=%d newest_mtime=%.0f",
+            entry.name, kind, bytes_ or 0, newest or 0.0,
+        )
+        removed += 1
     release_git_worktrees(repos)
     return removed

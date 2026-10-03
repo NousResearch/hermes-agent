@@ -725,6 +725,19 @@ def test_bulk_archive(client):
     assert a["id"] not in ids
     assert b["id"] not in ids
 
+def test_restoring_archived_task_whose_idempotency_key_was_reused(client):
+    """Archiving frees a card's idempotency key for reuse; restoring that card after a live
+    one took the key must succeed and leave the key with the live card."""
+    with kbc.connect_closing() as conn:
+        a = kb.create_task(conn, title="a", idempotency_key="k")
+        assert kb.archive_task(conn, a)
+        b = kb.create_task(conn, title="b", idempotency_key="k")
+    r = client.patch(f"/api/plugins/kanban/tasks/{a}", json={"status": "ready"})
+    assert r.status_code == 200, r.text
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, a).status == "ready"
+        assert kb.create_task(conn, title="again", idempotency_key="k") == b
+
 def test_bulk_reassign(client):
     a = client.post("/api/plugins/kanban/tasks",
                     json={"title": "a", "assignee": "old"}).json()["task"]

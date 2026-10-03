@@ -1056,10 +1056,13 @@ DEFAULT_CONFIG = {
             "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
-        # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
-        # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
-        # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
+        # Service-credential token auth (dashboard_auth/drain and dashboard_auth/kanban_api plugins).
+        # The secrets are NOT here: env HERMES_DASHBOARD_DRAIN_SECRET / HERMES_KANBAN_API_SECRET; no-op
+        # when unset, short or obviously structured secrets rejected (fail-closed; the check cannot
+        # measure entropy — provision with secrets.token_urlsafe(32)). scope = capability label;
+        # min_secret_chars in url-safe-b64 chars.
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
+        "kanban_api_auth": {"scope": "kanban", "min_secret_chars": 43},
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
         # trusted by Host/Origin guards and engages the auth gate when non-loopback. For proxies
@@ -1960,6 +1963,9 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Serve worker transcripts (task body, reasoning, tool results, replies — redacted) on
+        # the external REST API's GET /v1/tasks/{id}/transcript. Off: the endpoint 404s.
+        "api_expose_transcripts": False,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

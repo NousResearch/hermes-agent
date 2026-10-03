@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
 import os
 import secrets
@@ -19,7 +20,7 @@ import httpx
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
-    classify_jwks_lookup_error)
+    TokenPrincipal, classify_jwks_lookup_error)
 
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
@@ -244,6 +245,97 @@ class NonInteractiveMixin:
 
     def complete_login(self, *, code: str, state: str, code_verifier: str, redirect_uri: str) -> Session:
         raise NotImplementedError(self._NOT_INTERACTIVE)
+
+
+# ---- Shared-secret service credentials (drain control, kanban REST API) ----
+
+# token_urlsafe(32) produces exactly 43 chars, so a correctly-provisioned
+# secret clears the default bar exactly.
+DEFAULT_MIN_SECRET_CHARS = 43
+# Rejects degenerate values like "aaaa..." / "abab..." that are long but obviously structured.
+_MIN_DISTINCT_CHARS = 16
+
+
+def assess_secret_strength(secret: str, *, min_chars: int = DEFAULT_MIN_SECRET_CHARS) -> Optional[str]:
+    """Human-readable rejection reason if ``secret`` fails the representation checks, else
+    ``None``: length >= ``min_chars``, distinct chars >= ``_MIN_DISTINCT_CHARS``, and not a
+    repetition of a shorter block.
+
+    These only catch obviously degenerate values. Entropy is a property of how the secret
+    was generated, not of one realized string, so passing here is not a strength proof —
+    provisioning must use a CSPRNG (``secrets.token_urlsafe(32)``)."""
+    if not secret:
+        return "secret is empty"
+    if len(secret) < min_chars:
+        return (
+            f"secret too short: {len(secret)} chars (need >= {min_chars}; generate it with "
+            "`python -c \"import secrets; print(secrets.token_urlsafe(32))\"`)")
+    distinct = len(set(secret))
+    if distinct < _MIN_DISTINCT_CHARS:
+        return f"secret has only {distinct} distinct characters (need >= {_MIN_DISTINCT_CHARS}); looks structured"
+    if secret in (secret + secret)[1:-1]:
+        return "secret is a repeated block; looks structured"
+    return None
+
+
+def shared_secret_settings(
+    load_section: Callable[[], dict], *, env: str, default_scope: str, purpose: str,
+) -> dict:
+    """``SharedSecretProvider`` kwargs from ``env`` + the plugin's config section (``scope``,
+    ``min_secret_chars``); raises ``SkipRegistration`` when the secret is unset or fails
+    ``assess_secret_strength``, so a degenerate secret fails CLOSED at load."""
+    secret = os.environ.get(env, "").strip()
+    if not secret:
+        raise SkipRegistration(
+            f"{env} is not set. Set a CSPRNG-generated secret (e.g. `python -c \"import secrets; "
+            f"print(secrets.token_urlsafe(32))\"`) to enable {purpose}; leave it unset to keep it disabled.")
+    section = load_section()
+    scope = str(section.get("scope", default_scope) or default_scope).strip() or default_scope
+    try:
+        min_chars = int(section.get("min_secret_chars", DEFAULT_MIN_SECRET_CHARS))
+    except (TypeError, ValueError):
+        min_chars = DEFAULT_MIN_SECRET_CHARS
+    reason = assess_secret_strength(secret, min_chars=min_chars)
+    if reason is not None:
+        raise SkipRegistration(f"{env} rejected — {reason}. {purpose} stays disabled (fail-closed).", level="warning")
+    return {"secret": secret, "scope": scope}
+
+
+class SharedSecretProvider(NonInteractiveMixin, DashboardAuthProvider):
+    """Non-interactive shared-bearer-secret service credential. Subclasses set ``name``,
+    ``display_name``, ``_principal``, ``_default_scope`` and the ``_NOT_INTERACTIVE`` text."""
+
+    supports_token = True
+    supports_session = False
+    _principal: str = ""
+    _default_scope: str = ""
+
+    def __init__(self, *, secret: str, scope: str = "") -> None:
+        # Construction enforces the same checks, so a caller bypassing register()
+        # still can't build a provider around a degenerate secret.
+        reason = assess_secret_strength(secret)
+        if reason is not None:
+            raise ValueError(f"{self.name} secret rejected: {reason}")
+        self._secret = secret
+        self._scope = scope or self._default_scope
+
+    def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
+        """Constant-time compare; a scoped principal on match, else ``None`` so the generic
+        seam falls through / fails closed."""
+        if token and hmac.compare_digest(token.encode("utf-8"), self._secret.encode("utf-8")):
+            return TokenPrincipal(principal=self._principal, provider=self.name, scopes=(self._scope,))
+        return None
+
+    def verify_session(self, *, access_token: str) -> Optional[Session]:
+        # Never mints a Session, so never recognises a cookie. Return None (don't raise)
+        # so it stacks harmlessly in the cookie-verify loop.
+        return None
+
+    def refresh_session(self, *, refresh_token: str) -> Session:
+        raise NotImplementedError(self._NOT_INTERACTIVE)
+
+    def revoke_session(self, *, refresh_token: str) -> None:
+        return None
 
 
 class JwtOAuthProvider(DashboardAuthProvider):

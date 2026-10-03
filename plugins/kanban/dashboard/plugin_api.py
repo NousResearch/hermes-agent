@@ -1,5 +1,6 @@
 """Kanban dashboard plugin — backend API routes, mounted at /api/plugins/kanban/.
 
+The sanitized external API (``hermes_cli.kanban_api``) is included under ``/v1``.
 Every handler is a thin wrapper around ``hermes_cli.kanban_db`` (the same code paths the CLI
 and gateway ``/kanban`` command use, so the surfaces cannot drift). The ``/events`` WebSocket
 tails the append-only ``task_events`` table on a short poll (WAL reads run alongside the
@@ -28,7 +29,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from hermes_cli import kanban_db
+from hermes_cli import kanban_api, kanban_db
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -747,6 +748,13 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
         # dispatcher spawns a child whose upstream work hasn't completed.
         if effective_status == "ready" and not kanban_db._parents_satisfied(conn, task_id):
             return False
+        if prev["status"] == "archived" and effective_status != "archived":
+            # A live card may have reused this idempotency key since the archive; the restored
+            # card yields it (dedupe marker only) instead of tripping the partial UNIQUE index.
+            conn.execute(
+                "UPDATE tasks SET idempotency_key = NULL WHERE id = ? AND idempotency_key IN "
+                "(SELECT idempotency_key FROM tasks WHERE id != ? AND status != 'archived')",
+                (task_id, task_id))
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = prev["status"] in {"done", "archived"} and effective_status not in {"done", "archived"}
         cur = conn.execute(
@@ -1805,3 +1813,7 @@ async def stream_events(ws: WebSocket):
             pass
     finally:
         await tail.shutdown()
+
+
+# The sanitized external contract lives beside the operator routes, never in place of them.
+router.include_router(kanban_api.router, prefix="/v1")

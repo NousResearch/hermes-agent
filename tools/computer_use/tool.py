@@ -320,6 +320,8 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
     focus_app = _noop_stub("focus_app", "app", "raise_window")
+    clipboard_read = _noop_stub("clipboard_read", result=ActionResult(ok=True, action="clipboard_read", meta={"types": [], "text": None}))
+    clipboard_write = _noop_stub("clipboard_write", "text", "image_path", "file_path")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
@@ -457,8 +459,30 @@ def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
     return f"{action}{where}{fg}"
 
+_CLIPBOARD_PAYLOAD_KEYS = ("text", "image_path", "file_path")
+
+def _clipboard_response(res: ActionResult) -> str:
+    # No verify→escalate verdict: the clipboard has no on-screen effect to re-capture. ``types`` (always) and
+    # ``text`` (read; None when the clipboard holds no plain text) come straight from the driver payload.
+    return json.dumps({"ok": res.ok, "action": res.action, **_present(message=res.message, code=res.code),
+                       **{k: res.meta[k] for k in ("types", "text") if k in res.meta}})
+
+def _do_clipboard_write(backend, action, args, **_):
+    given = {k: args[k] for k in _CLIPBOARD_PAYLOAD_KEYS if args.get(k) is not None}
+    if len(given) != 1:
+        return json.dumps({"error": "clipboard_write takes exactly one of `text`, `image_path` (absolute path), "
+                                    "`file_path` (absolute path)"})
+    return _clipboard_response(backend.clipboard_write(**given))
+
+def _summarize_clipboard_write(action: str, args: Dict[str, Any], fg: str) -> str:
+    if (text := args.get("text")) is not None:
+        return f"replace the clipboard with text {text[:60]!r}" + ("..." if len(text) > 60 else "")
+    return f"replace the clipboard with {args.get('image_path') or args.get('file_path')!r}"
+
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
-# guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).
+# guard). ``destructive``: needs the approval prompt — every action that mutates user-visible state, plus
+# `clipboard_read`: the clipboard routinely holds the password or token the user last copied, so exposing it to
+# the model is a disclosure the user approves, not a free read like capture/list_*.
 # ``summarize(action, args, fg_suffix)`` renders the one-line approval prompt.
 _ActionSpec = namedtuple("_ActionSpec", "handler input destructive summarize",
                          defaults=(False, False, lambda a, args, fg: a + fg))
@@ -487,6 +511,9 @@ _ACTIONS: Dict[str, _ActionSpec] = {
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
+    "clipboard_read": _ActionSpec(lambda backend, action, args, **_: _clipboard_response(backend.clipboard_read()), destructive=True,
+                                  summarize=lambda a, args, fg: "read the clipboard (returns whatever the user last copied)"),
+    "clipboard_write": _ActionSpec(_do_clipboard_write, destructive=True, summarize=_summarize_clipboard_write),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
@@ -495,6 +522,8 @@ _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
 _ACTION_SUGGESTIONS = {
     "hotkey": "key", "press_key": "key", "keypress": "key", "key_combo": "key", "shortcut": "key", "type_text": "type",
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
+    "read_clipboard": "clipboard_read", "get_clipboard": "clipboard_read", "paste_from_clipboard": "clipboard_read",
+    "write_clipboard": "clipboard_write", "set_clipboard": "clipboard_write", "copy_to_clipboard": "clipboard_write",
 }
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], fence: Callable[[], None] = lambda: None,

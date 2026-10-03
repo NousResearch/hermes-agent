@@ -32,12 +32,16 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "clipboard_read",
+            "clipboard_write",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "focus steal). `clipboard_read` returns the system clipboard's types and plain text; "
+            "`clipboard_write` replaces it with one value (`text`, `image_path`, or `file_path`) — "
+            "the fast path for moving long text into an app: write, then `key` the paste shortcut."
         ),
     },
     "mode": {
@@ -140,7 +144,21 @@ _PROPERTIES: Dict[str, Any] = {
             "AXValue-settable elements, pass the numeric or string value."
         ),
     },
-    "text": {"type": "string", "description": "Text to type (respects the current layout)."},
+    "text": {
+        "type": "string",
+        "description": (
+            "For action='type': text to type (respects the current layout). For action='clipboard_write': "
+            "the plain text to place on the clipboard."
+        ),
+    },
+    "image_path": {
+        "type": "string",
+        "description": "For action='clipboard_write': absolute path of a local image to place on the clipboard.",
+    },
+    "file_path": {
+        "type": "string",
+        "description": "For action='clipboard_write': absolute path of a local file to place on the clipboard as a file URL.",
+    },
     "keys": {
         "type": "string",
         "description": (
@@ -188,7 +206,7 @@ _PROPERTIES: Dict[str, Any] = {
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
+        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag, clipboard — on macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "

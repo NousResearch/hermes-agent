@@ -1124,7 +1124,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # A feature that left core for a catalog plugin (Home Assistant) is installed for a home that
     # used it, once per process, before discovery so its tools are in this agent's snapshot.
     from hermes_cli.left_core_migration import recover_at_startup
-    recover_at_startup(say=agent._emit_startup_warning)
+    recover_at_startup(say=getattr(agent, "_emit_startup_warning", None))
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:

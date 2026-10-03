@@ -3706,6 +3706,7 @@ export const en: Translations = {
       waitingForAnswer: 'Waiting for your answer',
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',
+      activity: 'Monitoring',
       draftSession: 'Draft — nothing sent yet',
       handoffOrigin: platform => `Handed off from ${platform}`,
       continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',

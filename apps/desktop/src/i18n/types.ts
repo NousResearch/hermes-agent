@@ -3124,6 +3124,7 @@ export interface Translations {
       waitingForAnswer: string
       finishedUnread: string
       backgroundRunning: string
+      activity: string
       draftSession: string
       handoffOrigin: (platform: string) => string
       continuationOrigin: string

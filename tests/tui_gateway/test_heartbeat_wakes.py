@@ -57,7 +57,8 @@ def test_off_mutes_process_wakes_but_subagent_results_still_land(surface, tmp_pa
         yaml.safe_dump({"display": {"background_process_notifications": "off"}}), encoding="utf-8"
     )
     session = _session(tmp_path)
-    registry = SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda session_id: False)
+    registry = SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda session_id: False,
+                               settle_notification=lambda evt: None)
     completions: list = []
 
     for evt in (HEARTBEAT, COMPLETION):

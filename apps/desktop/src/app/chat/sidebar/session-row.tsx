@@ -51,6 +51,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SidebarSessionActivity } from './session-activity'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
@@ -316,6 +317,9 @@ function SidebarSessionRowImpl({
       onClick={event => event.stopPropagation()}
       onPointerDown={event => event.stopPropagation()}
     >
+      {/* Activity owns a small inline slot before metadata. Keep it outside
+          the tail swap so the age/PR/kebab retain their existing behavior. */}
+      {!session.archived && <SidebarSessionActivity sessionId={session.id} />}
       {trailing.map(({ key, node }, index) => (
         <span
           className={

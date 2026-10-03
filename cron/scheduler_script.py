@@ -406,7 +406,13 @@ def _script_argv(
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
     suffix = path.suffix.lower()
-    if suffix not in {"", ".py", ".sh", ".bash"}:
+    if suffix not in {".py", ".sh", ".bash"}:
+        if not suffix:
+            return None, {}, (
+                f"Cron script {path.name!r} has no extension: "
+                "cron scripts must be named with .py, .sh or .bash; wrap other "
+                "languages in a .sh that execs them."
+            )
         return None, {}, (
             f"Unsupported cron script extension {suffix!r} for {path.name!r}: "
             "cron scripts must be .py, .sh or .bash; wrap other languages in a .sh "

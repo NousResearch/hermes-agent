@@ -4159,6 +4159,7 @@ class GatewayRunner(
         provider: Optional[str]
         base_url: Optional[str]
         api_key: Optional[str]
+        api_mode: Optional[str]
         data: Any
 
     @dataclasses.dataclass

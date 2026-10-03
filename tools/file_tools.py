@@ -36,10 +36,11 @@ from tools.file_tools_write_guards import (
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
-    _file_metadata, _file_version,
+    _file_metadata, _file_version, _in_spans,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+    _record_patch_failure, _record_seen_span, _reset_patch_failures, _returned_line_span,
+    _task_data, _unchanged_seen_spans, _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -499,20 +500,47 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     return json.dumps(result_dict, ensure_ascii=False)
 
 
-def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
-    """Return the "unchanged" stub for a repeated identical read, escalating to a
-    hard BLOCK after 2 stubs so weak tool-followers don't loop forever."""
+def _omit_seen_lines(result_dict: dict, span: tuple, seen_spans: list) -> list:
+    """Drop already-seen lines from a read's numbered content in place; return the
+    omitted spans (``[]`` leaves the result untouched).
+
+    Catches the window-shifting evasion of the exact ``(path, offset, limit)``
+    guard (``2158/15 -> 2158/12 -> 2161/15``) without hiding lines the model has
+    never been shown: only lines in *seen_spans* (actually returned earlier, file
+    unchanged) are omitted, the rest are returned with their line numbers."""
+    first, last = span
+    if not any(start <= last and end >= first for start, end in seen_spans):
+        return []
+    kept, omitted = [], []
+    # Slice to the returned span: drops the phantom empty last line of a sed page.
+    for n, line in enumerate(result_dict["content"].split("\n")[:last - first + 1], start=first):
+        if not _in_spans(n, seen_spans):
+            kept.append(line)
+        elif omitted and omitted[-1][1] == n - 1:
+            omitted[-1] = (omitted[-1][0], n)
+        else:
+            omitted.append((n, n))
+    result_dict["content"] = "\n".join(kept)
+    return omitted
+
+
+def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, overlapping: bool = False) -> str:
+    """Return the "unchanged" stub for a read that would only re-send lines already
+    returned, escalating to a hard BLOCK after 2 stubs so weak tool-followers don't
+    loop forever. *overlapping*: a different window whose lines were all seen, so
+    the BLOCK must not claim an exact repeat nor forbid reading the rest of the file."""
     with _read_tracker_lock:
         hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
         task_data["dedup_hits"][dedup_key] = hits
         _cap_read_tracker_data(task_data)
 
     if hits >= 2:
+        repeat = (f"requested only already-read lines of this file {hits} times in a row"
+                  if overlapping else f"called read_file on this exact region {hits + 1} times")
         return tool_error(
-            f"BLOCKED: You have called read_file on this "
-            f"exact region {hits + 1} times and the file "
+            f"BLOCKED: You have {repeat} and the file "
             "has NOT changed. STOP calling read_file for "
-            "this path — the content from your earlier "
+            f"{'those lines' if overlapping else 'this path'} — the content from your earlier "
             "read_file result in this conversation is "
             "still current. Proceed with your task using "
             "the information you already have.",
@@ -534,31 +562,34 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
+                            returned_span: tuple | None = None,
                             redacted: bool = False, end_line: int | None = None,
                             total_lines=None, version_before=None, snapshot=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
-    mtime for dedup + staleness, page coverage, and the write_file baseline once
-    the task has seen every line UNREDACTED — in one page or by paging
-    contiguously through a file too big for one; a redacted page returned a
-    non-round-trippable ``«redacted:…»`` sentinel, so it must not bless an
-    overwrite that would persist the sentinel into a credential file). Then
-    OUTSIDE our lock (no nested locking): the cross-agent registry, and the
-    background-review read-mark (a FULL read of a skill file counts like
-    skill_view so a follow-up skill_manage(patch) is accepted).
+    mtime for dedup + staleness, lines actually returned, page coverage, and the
+    write_file baseline once the task has seen every line UNREDACTED — in one
+    page or by paging contiguously through a file too big for one; a redacted
+    page returned a non-round-trippable ``«redacted:…»`` sentinel, so it must
+    not bless an overwrite that would persist the sentinel into a credential
+    file). Then OUTSIDE our lock (no nested locking): the cross-agent registry,
+    and the background-review read-mark (a FULL read of a skill file counts
+    like skill_view so a follow-up skill_manage(patch) is accepted).
     """
     version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
     stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
     complete = False
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
+        task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
         task_data["dedup_generation_reads"].add(dedup_key)
         task_data["read_history"].add((path, offset, limit))
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
-            _mtime_now = os.path.getmtime(resolved_str)
-            task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
+            if returned_span:
+                _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]
@@ -681,6 +712,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if (cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
+        # A different window over lines already returned (file unchanged) only
+        # gets its unseen lines; see _omit_seen_lines. Same review-fork exemption as
+        # the exact-key stub above: is_background_review() must always see a real read.
+        seen_spans = [] if is_background_review() else _unchanged_seen_spans(task_data, resolved_str)
 
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
@@ -701,6 +736,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        returned_span = _returned_line_span(result_dict, offset, limit)
+        omitted = _omit_seen_lines(result_dict, returned_span, seen_spans) if returned_span and seen_spans else []
+        if omitted:
+            if not result_dict["content"]:
+                # Per-path key: shifting the window must not restart the escalation.
+                return _dedup_stub_or_block(task_data, (resolved_str, "seen_lines"), path, overlapping=True)
+            result.content = result_dict["content"]
+            ranges = ", ".join(f"{lo}-{hi}" if lo != hi else str(lo) for lo, hi in omitted)
+            result_dict["omitted_lines"] = ranges
+            result_dict["_note"] = (
+                f"Lines {ranges} omitted: unchanged since your earlier read_file result in this "
+                "conversation, which is still current. Only the other lines are shown.")
         redacted = False
         if result.content:
             unredacted = result.content
@@ -733,6 +780,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
+                                        returned_span=returned_span,
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,

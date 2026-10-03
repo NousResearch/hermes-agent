@@ -21,8 +21,11 @@ Two artifacts, one authority each:
 
 from __future__ import annotations
 
+import calendar
 import logging
 import os
+import re
+import secrets
 import subprocess
 import sys
 import time
@@ -38,6 +41,10 @@ UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 
 # Clock skew allowed between a recorded and a probed process creation time (C1 rule 3).
 CREATE_TIME_TOLERANCE_SECONDS = 2.0
+
+# A claim published by create-then-write (filesystems without hard links) is briefly empty; an
+# empty marker this young is a claim in flight, not a dead one (contract A3).
+EMPTY_MARKER_GRACE_SECONDS = 5.0
 
 MARKER_NAME = ".hermes-update-in-progress"
 CHECKOUT_LOCK_NAME = ".hermes-update.lock"
@@ -168,7 +175,7 @@ def _stdlib_create_time(pid: int) -> float | None:
     """Creation time in unix seconds without psutil (``-I -S`` children, early recovery).
 
     Same clock psutil reports: Linux ``starttime / CLK_TCK + btime``, macOS the kernel start
-    time (``ps -o lstart=``, second resolution — inside the 2 s tolerance), Windows the
+    time (``ps -o lstart=`` in UTC, second resolution — inside the 2 s tolerance), Windows the
     ``GetProcessTimes`` creation FILETIME.
     """
     try:
@@ -182,14 +189,15 @@ def _stdlib_create_time(pid: int) -> float | None:
             with open("/proc/stat", "rb") as fh:
                 btime = next(int(line.split()[1]) for line in fh if line.startswith(b"btime "))
             return btime + start_ticks / os.sysconf("SC_CLK_TCK")
+        # UTC wall clock: a local-time lstart is ambiguous in the repeated DST hour.
         out = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
-            env={**os.environ, "LC_ALL": "C"},
+            env={"PATH": os.environ.get("PATH") or "/bin:/usr/bin", "LC_ALL": "C", "TZ": "UTC0"},
         ).stdout.strip()
         if not out:
             return None
-        return time.mktime(time.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y"))
+        return float(calendar.timegm(time.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y")))
     except (OSError, ValueError, IndexError, StopIteration, subprocess.SubprocessError, AttributeError):
         return None
 
@@ -212,14 +220,20 @@ def process_create_time(pid: int | None = None) -> float | None:
         return _stdlib_create_time(target)
 
 
-def _identity_live(pid: int, create_time: float | None) -> bool:
-    """C1 rule 3 for one (pid, ct) identity: alive, not a zombie, and not a reused pid."""
+def _identity_live(pid: int, create_time: float | None, age: float) -> bool:
+    """C1 rule 3 + A1 for one (pid, ct) identity of a marker ``age`` seconds old.
+
+    Alive (not a zombie) and, when a creation time was recorded, the same process: a matching
+    creation time is live however old the marker is. Without that proof — a v1 marker, or a
+    creation time we cannot read (Windows denies it for elevated/other-user pids) — the pid may
+    be a reused one, so only the legacy age ceiling bounds it.
+    """
     if not _pid_alive(pid):
         return False
-    if create_time is None:
-        return True
-    actual = process_create_time(pid)
-    return actual is None or abs(actual - create_time) <= CREATE_TIME_TOLERANCE_SECONDS
+    actual = None if create_time is None else process_create_time(pid)
+    if actual is None:
+        return age <= UPDATE_MARKER_MAX_AGE_SECONDS
+    return abs(actual - create_time) <= CREATE_TIME_TOLERANCE_SECONDS
 
 
 def _identity_line(pid: int | None = None) -> str:
@@ -408,10 +422,11 @@ class UpdateHolder:
 class _Marker:
     raw: bytes
     pid: int
-    started_at: float | None
+    started_at: int | None
     create_time: float | None
     delegate_pid: int | None
     delegate_create_time: float | None
+    in_flight: bool = False  # an empty marker younger than EMPTY_MARKER_GRACE_SECONDS
 
     @property
     def base(self) -> bytes:
@@ -422,49 +437,42 @@ class _Marker:
         return time.time() - self.started_at if self.started_at is not None else float("inf")
 
     def owner_live(self) -> bool:
-        if self.create_time is None and self.age() > UPDATE_MARKER_MAX_AGE_SECONDS:
-            return False  # v1 marker: pid-only, so only a ceiling can expose a reused pid
-        return _identity_live(self.pid, self.create_time)
+        return self.started_at is not None and _identity_live(self.pid, self.create_time, self.age())
 
     def delegate_live(self) -> bool:
-        return self.delegate_pid is not None and _identity_live(self.delegate_pid, self.delegate_create_time)
+        return self.delegate_pid is not None and self.started_at is not None \
+            and _identity_live(self.delegate_pid, self.delegate_create_time, self.age())
 
     def live_pid(self) -> int | None:
+        if self.in_flight:
+            return 0
         if self.owner_live():
             return self.pid
         return self.delegate_pid if self.delegate_live() else None
 
 
-def _parse_ct(text: str) -> float | None:
-    text = text.strip()
-    if not text.startswith("ct:"):
-        return None
-    try:
-        return float(text[3:])
-    except ValueError:
-        return None
+_INT_LINE = re.compile(r"[0-9]+", re.ASCII)
+_CT_LINE = re.compile(r"ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
+_DELEGATE_LINE = re.compile(r"delegate:([0-9]+) ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
 
 
-def _parse_marker(raw: bytes) -> _Marker:
-    lines = raw.decode("utf-8-sig", errors="replace").splitlines()
-
-    def field(index: int, cast):
-        try:
-            return cast(lines[index].strip())
-        except (IndexError, ValueError):
-            return None
-
-    delegate_pid = delegate_ct = None
-    if len(lines) > 3 and lines[3].startswith("delegate:"):
-        head, _, tail = lines[3][len("delegate:"):].partition(" ")
-        with suppress(ValueError):
-            delegate_pid = int(head)
-        delegate_ct = _parse_ct(tail)
-    pid = field(0, int)
+def _parse_marker(raw: bytes, *, mtime: float | None = None) -> _Marker:
+    """Contract A2, positional and identical in every reader (Rust ``marker.rs``, Electron,
+    the hand-off scripts): BOM and CRLF tolerated; line 1 pid and line 2 started_at are
+    integers or the marker is MALFORMED (dead: ``started_at`` None); a bad line 3 makes it v1;
+    a bad line 4 is ignored."""
+    text = raw.decode("utf-8", errors="replace").removeprefix("\ufeff")
+    lines = [line.removesuffix("\r").strip(" \t") for line in text.split("\n")]
+    lines += [""] * (4 - len(lines))
+    pid = int(lines[0]) if _INT_LINE.fullmatch(lines[0]) else -1
+    started_at = int(lines[1]) if pid >= 0 and _INT_LINE.fullmatch(lines[1]) else None
+    ct = _CT_LINE.fullmatch(lines[2])
+    delegate = _DELEGATE_LINE.fullmatch(lines[3])
+    in_flight = not raw and mtime is not None and time.time() - mtime < EMPTY_MARKER_GRACE_SECONDS
     return _Marker(
-        raw=raw, pid=pid if pid is not None else -1, started_at=field(1, float),
-        create_time=_parse_ct(lines[2]) if len(lines) > 2 else None,
-        delegate_pid=delegate_pid, delegate_create_time=delegate_ct,
+        raw=raw, pid=pid, started_at=started_at, create_time=float(ct.group(1)) if ct else None,
+        delegate_pid=int(delegate.group(1)) if delegate else None,
+        delegate_create_time=float(delegate.group(2)) if delegate else None, in_flight=in_flight,
     )
 
 
@@ -473,6 +481,36 @@ def _read_bytes(path: Path) -> bytes | None:
         return path.read_bytes()
     except OSError:
         return None
+
+
+def _read_marker(path: Path) -> _Marker | None:
+    raw = _read_bytes(path)
+    if raw is None:
+        return None
+    mtime = None
+    if not raw:
+        with suppress(OSError):
+            mtime = path.stat().st_mtime
+    return _parse_marker(raw, mtime=mtime)
+
+
+def _tmp_sibling(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+
+
+def _sweep_dead_tmp_siblings(path: Path) -> None:
+    """Reclaim ``<marker>.<pid>[.<token>].tmp`` files whose writer died between write and
+    publish (contract m10): the pid is the first component after the marker name."""
+    prefix = f"{path.name}."
+    with suppress(OSError):
+        for entry in path.parent.iterdir():
+            name = entry.name
+            if not (name.startswith(prefix) and name.endswith(".tmp")):
+                continue
+            owner = name[len(prefix):].split(".", 1)[0]
+            if owner.isdigit() and int(owner) != os.getpid() and not _pid_alive(int(owner)):
+                with suppress(OSError):
+                    entry.unlink()
 
 
 def _compare_and_delete(path: Path, expected: bytes) -> bool:
@@ -488,7 +526,7 @@ def _compare_and_swap(path: Path, expected: bytes, new: bytes) -> bool:
     """Atomically replace ``path`` (tmp + ``os.replace``) only while it still holds ``expected``."""
     if _read_bytes(path) != expected:
         return False
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp = _tmp_sibling(path)
     try:
         with open(tmp, "wb") as fh:
             fh.write(new)
@@ -507,12 +545,15 @@ def _compare_and_swap(path: Path, expected: bytes, new: bytes) -> bool:
 
 
 def _live_partners(marker: _Marker) -> list[int]:
-    """Live identities behind a marker: the owner, then the delegate.
+    """Live identities behind a marker: the owner, then the delegate (``[0]`` for a claim
+    still being written).
 
     A v1 marker naming our own pid is a killed update's claim whose pid this run inherited
     (containers restart pid numbering), not ours: without a creation time it cannot be told
     apart, and nothing pre-writes a v1 marker for this process.
     """
+    if marker.in_flight:
+        return [0]
     partners = []
     if marker.owner_live() and not (marker.pid == os.getpid() and marker.create_time is None):
         partners.append(marker.pid)
@@ -529,13 +570,12 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     compare-and-delete so it can't strand future runs. Never raises.
     """
     marker = path or update_marker_path()
-    raw = _read_bytes(marker)
-    if raw is None:
+    parsed = _read_marker(marker)
+    if parsed is None:
         return None
-    parsed = _parse_marker(raw)
     live = parsed.live_pid()
     if live is None:
-        _compare_and_delete(marker, raw)
+        _compare_and_delete(marker, parsed.raw)
         return None
     return UpdateHolder(pid=live, age_seconds=parsed.age() if parsed.started_at is not None else 0.0)
 
@@ -551,7 +591,7 @@ def describe_holder(holder: UpdateHolder | None) -> str:
         )
     minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-    who = f", process {holder.pid}" if holder else ""
+    who = f", process {holder.pid}" if holder and holder.pid else ""
     return (
         f"✗ Another Hermes update is already running (started {elapsed} ago{who}).\n"
         "\n"
@@ -630,6 +670,23 @@ def _lock_holder(fd_or_path) -> UpdateHolder:
     return UpdateHolder(pid=max(parsed.pid, 0), age_seconds=parsed.age() if parsed.started_at else 0.0)
 
 
+def _open_lock_file(path: Path) -> tuple[int | None, object]:
+    """``(fd, True)`` read-write; ``(fd, False)`` read-only for an existing lock file we may not
+    write (left root-owned by a ``sudo hermes update``: the kernel lock works on a read-only fd,
+    contract A5); ``(None, reason)`` when neither opens."""
+    binary = getattr(os, "O_BINARY", 0)
+    try:
+        return os.open(path, os.O_RDWR | os.O_CREAT | binary, 0o644), True
+    except PermissionError as exc:
+        denied = exc
+    except OSError as exc:
+        return None, exc.strerror or exc
+    try:
+        return os.open(path, os.O_RDONLY | binary), False
+    except OSError:
+        return None, denied.strerror or denied
+
+
 def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
     """Take (or join, when inherited) the checkout lock; the refusal holder, else ``None``."""
     global _HELD
@@ -641,19 +698,18 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
     if inherited is not None:
         _HELD = {"path": str(path), "fd": inherited, "owned": False, "depth": 1}
         return None
-    try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
-    except OSError as exc:
-        return UpdateHolder(pid=0, age_seconds=0.0,
-                            reason=f"{path} is not writable ({exc.strerror or exc})")
+    fd, writable = _open_lock_file(path)
+    if fd is None:
+        return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not writable ({writable})")
     try:
         if not _try_lock(fd):
             os.close(fd)
             return _lock_holder(path)
-        record = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.ftruncate(fd, 0)
-        os.write(fd, record)
+        if writable is True:
+            record = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, record)
     except OSError as exc:
         _unlock(fd)
         os.close(fd)
@@ -772,6 +828,39 @@ def update_in_progress(install_root: Path | str | None = None) -> bool:
 # --- the lock object ---------------------------------------------------------------------
 
 
+def _publish_exclusive(path: Path, body: bytes) -> bool:
+    """Contract A3: publish ``body`` at ``path`` only if nothing is there, never as an empty
+    file a reader could judge dead. Write a private tmp sibling, then hard-link it into place
+    (fails if the marker exists); a filesystem without hard links falls back to an exclusive
+    create (readers grant a young empty marker EMPTY_MARKER_GRACE_SECONDS). False = taken."""
+    tmp = _tmp_sibling(path)
+    try:
+        with open(tmp, "xb") as fh:
+            fh.write(body)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+            return True
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            logger.debug("No hard link for the update marker (%s); exclusive create instead", exc)
+    finally:
+        with suppress(OSError):
+            tmp.unlink()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, body)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return True
+
+
 class UpdateLock:
     """Context manager owning the shared update marker (and, with ``install_root``, the
     checkout lock) for this process.
@@ -813,32 +902,27 @@ class UpdateLock:
         except OSError as exc:
             self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path.parent} is not writable ({exc})")
             return False
+        _sweep_dead_tmp_siblings(self.path)
         body = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
         for attempt in range(2):
             try:
-                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
-            except FileExistsError:
-                raw = _read_bytes(self.path)
-                if raw is None:
-                    continue  # vanished between create and read: retry the create
-                existing = _parse_marker(raw)
-                if _live_partners(existing):
-                    return self._adopt_or_refuse(existing)
-                if attempt == 0 and _compare_and_delete(self.path, raw):
-                    continue
-                self.holder = UpdateHolder(pid=max(existing.pid, 0), age_seconds=0.0)
-                return False
+                published = _publish_exclusive(self.path, body)
             except OSError as exc:
                 self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path} is not writable ({exc})")
                 return False
-            try:
-                os.write(fd, body)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            self._written = body
-            self.acquired = True
-            return True
+            if published:
+                self._written = body
+                self.acquired = True
+                return True
+            existing = _read_marker(self.path)
+            if existing is None:
+                continue  # vanished between publish and read: retry
+            if _live_partners(existing):
+                return self._adopt_or_refuse(existing)
+            if attempt == 0 and _compare_and_delete(self.path, existing.raw):
+                continue
+            self.holder = UpdateHolder(pid=max(existing.pid, 0), age_seconds=0.0)
+            return False
         self.holder = read_live_update(path=self.path) or UpdateHolder(pid=0, age_seconds=0.0)
         return False
 
@@ -846,14 +930,16 @@ class UpdateLock:
         """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under."""
         partners = _live_partners(existing)
         if os.getpid() not in partners and not any(
-                p == _handoff_pid() or _is_ancestor_pid(p) for p in partners):
+                p and (p == _handoff_pid() or _is_ancestor_pid(p)) for p in partners):
             self.holder = UpdateHolder(pid=partners[0], age_seconds=existing.age() if existing.started_at else 0.0)
             return False
+        own = _identity_line()
         if os.getpid() not in partners and existing.delegate_pid not in partners \
-                and existing.create_time is not None:
+                and existing.create_time is not None and own:
             # Rule 6: name ourselves as the delegate so the claim stays visible if the partner
             # (a hand-off script, the Tauri updater) dies while this update still runs.
-            delegated = existing.base + f"delegate:{os.getpid()} {_identity_line()}\n".encode()
+            base = existing.base if existing.base.endswith(b"\n") else existing.base + b"\n"
+            delegated = base + f"delegate:{os.getpid()} {own}\n".encode()
             if _compare_and_swap(self.path, existing.raw, delegated):
                 self._written, self._delegate_base = delegated, existing.base
         return True

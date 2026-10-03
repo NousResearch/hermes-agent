@@ -252,14 +252,83 @@ def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatc
 
 @pytest.mark.parametrize(
     "body",
-    ["", "not-a-pid\n123\n", "\n\n", "12345"],
-    ids=["empty", "garbage-pid", "blank-lines", "no-start-time"],
+    ["", "not-a-pid\n123\n", "\n\n", "12345", "{live}\n{now}.5\n", "1_0\n{now}\n", "{live}\nsoon\n"],
+    ids=["empty", "garbage-pid", "blank-lines", "no-start-time", "fractional-start", "underscore-pid",
+         "garbage-start"],
 )
-def test_malformed_markers_never_block_an_update(marker, body):
-    marker.write_text(body, encoding="utf-8")
+def test_malformed_markers_never_block_an_update(marker, body, other_pid):
+    """Contract A2: line 1 and line 2 are integers or the marker is malformed, i.e. dead, in
+    every reader (a fractional start time used to be live in Python and dead in the others)."""
+    marker.write_text(body.format(live=other_pid, now=int(time.time())), encoding="utf-8")
+    old = time.time() - 60
+    os.utime(marker, (old, old))  # past the empty-file grace (A3)
 
     assert read_live_update(path=marker) is None
     assert UpdateLock(path=marker).acquire() is True
+
+
+def test_marker_parse_follows_the_shared_contract(marker, other_pid):
+    """Contract A2: BOM and CRLF are tolerated; a malformed ct line makes the marker v1 (so the
+    age ceiling applies); only an exact line-4 delegate counts."""
+    now, ct = int(time.time()), process_create_time(other_pid)
+    live = {
+        "bom": f"\ufeff{other_pid}\n{now}\nct:{ct:.3f}\n",
+        "crlf": f"{other_pid}\r\n{now}\r\nct:{ct:.3f}\r\n",
+        "bad-ct-fresh": f"{other_pid}\n{now}\nct:abc\n",
+    }
+    dead = {
+        "bad-ct-aged": f"{other_pid}\n{now - UPDATE_MARKER_MAX_AGE_SECONDS - 300}\nct:abc\n",
+        "spaced-delegate": f"{DEAD_PID}\n{now}\nct:1.000\ndelegate: {other_pid} ct:{ct:.3f}\n",
+        "delegate-on-line-3": f"{DEAD_PID}\n{now}\ndelegate:{other_pid} ct:{ct:.3f}\n",
+    }
+    for name, body in {**live, **dead}.items():
+        marker.write_text(body, encoding="utf-8", newline="")
+        holder = read_live_update(path=marker)
+        assert (holder is not None) == (name in live), name
+
+
+def test_fresh_empty_marker_is_a_claim_in_flight(marker):
+    """Contract A3: a writer without hard links publishes create-then-write; an empty marker that
+    young is someone's claim in progress, so it is neither deleted nor taken over."""
+    marker.write_bytes(b"")
+
+    holder = read_live_update(path=marker)
+    lock = UpdateLock(path=marker)
+    assert holder is not None and holder.pid == 0
+    assert lock.acquire() is False and marker.read_bytes() == b""
+
+
+def test_claim_publishes_whole_and_reclaims_dead_writers_tmp_files(marker):
+    """Contract A3 + litter: the claim lands complete (tmp + exclusive link) and leaves no tmp;
+    a tmp left by a writer that died between write and publish is reclaimed, a live one is kept."""
+    dead_tmp = marker.with_name(f"{marker.name}.{DEAD_PID}.tmp")
+    mine = marker.with_name(f"{marker.name}.{os.getpid()}.ab12.tmp")
+    dead_tmp.write_text("x")
+    mine.write_text("x")
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert marker.read_text(encoding="utf-8").startswith(f"{os.getpid()}\n")
+    leftovers = sorted(p.name for p in marker.parent.iterdir() if p.name.endswith(".tmp"))
+    assert leftovers == [mine.name]
+    lock.release()
+
+
+def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch):
+    """Contract A1: a live pid whose creation time cannot be read (Windows denies it for
+    elevated/other-user pids) is live only within the legacy ceiling: it may be a reused pid."""
+    from hermes_cli import update_lock
+
+    _claim_v2(marker, other_pid)
+    fresh = marker.read_text(encoding="utf-8")
+    monkeypatch.setattr(update_lock, "process_create_time", lambda pid=None: None)
+    assert read_live_update(path=marker) is not None
+    _claim_v2(marker, other_pid, started_at=time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 300)
+    monkeypatch.undo()
+    aged = marker.read_text(encoding="utf-8")
+    assert read_live_update(path=marker) is not None, "a matching creation time is live at any age"
+    monkeypatch.setattr(update_lock, "process_create_time", lambda pid=None: None)
+    assert read_live_update(path=marker) is None and not marker.exists(), (fresh, aged)
 
 
 def test_stale_marker_is_removed_on_read(marker):
@@ -699,3 +768,27 @@ class TestAncestryUnderUnreadableProcesses:
 
         lock.release()
         assert marker.exists(), "the orchestrator still needs its marker"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes any file")
+def test_unwritable_lock_file_still_locks_the_checkout(tmp_path):
+    """Contract A5: a `sudo hermes update` leaves the lock file root-owned; later updates take the
+    kernel lock on a read-only fd instead of refusing forever, and still exclude each other."""
+    root = tmp_path / "install"
+    root.mkdir()
+    lock_file = checkout_lock_path(root)
+    lock_file.write_text("0\n0\n")
+    lock_file.chmod(0o444)
+
+    first = UpdateLock(path=tmp_path / "a" / ".hermes-update-in-progress", install_root=root)
+    assert first.acquire() is True, first.holder
+    second = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from hermes_cli.update_lock import UpdateLock; "
+         "sys.exit(0 if UpdateLock(path=__import__('pathlib').Path(sys.argv[1]), install_root=sys.argv[2]).acquire() else 3)",
+         str(tmp_path / "b" / ".hermes-update-in-progress"), str(root)],
+        cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)}, stdin=subprocess.DEVNULL, timeout=60,
+    )
+    first.release()
+    assert second.returncode == 3, "a second update ran while the read-only-locked checkout was held"

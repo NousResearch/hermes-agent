@@ -25,6 +25,43 @@ if TYPE_CHECKING:
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
 
+# Subscription provenance. "auto" rows are machine-created (kanban_create tool
+# and gateway /kanban create) and follow kanban.auto_subscribe_mode when
+# inherited by linked/child tasks. "user" rows are explicit subscriptions and
+# are copied verbatim. NULL (rows predating provenance) is legacy: verbatim.
+ORIGIN_AUTO = "auto"
+ORIGIN_USER = "user"
+
+
+def configured_auto_subscribe_mode() -> Optional[str]:
+    """``kanban.auto_subscribe_mode`` when explicitly set to a valid delivery
+    mode, else ``None``. Inheritance consults this to re-stamp auto-originated
+    subscriptions; ``None`` keeps the verbatim historical copy.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        mode = str(cfg_get(load_config(), "kanban", "auto_subscribe_mode", default="") or "").strip()
+    except Exception:
+        return None
+    return mode if mode in _NOTIFY_DELIVERY_MODES else None
+
+
+def auto_subscribe_delivery_mode(platform: str = "") -> Optional[str]:
+    """Delivery mode stamped onto auto-created subscriptions.
+
+    Reads ``kanban.auto_subscribe_mode``. An unset or invalid value keeps the
+    historical behavior: ``notify+wake`` on gateway platforms, ``None`` (the
+    DB default ``notify``) for TUI. An explicit valid value applies uniformly
+    to every platform — e.g. ``wake`` swaps the passive chat ping for an
+    agent turn at the subscribed session (#108913). Inherited auto-originated
+    subscriptions re-stamp through :func:`configured_auto_subscribe_mode` in
+    ``_inherit_notify_subs``.
+    """
+    mode = configured_auto_subscribe_mode()
+    if mode is not None:
+        return mode
+    return "notify+wake" if platform != "tui" else None
+
 _SCALAR_TYPES = (str, int, float, bool)
 
 # Subscription primary key predicate; every per-row statement below binds
@@ -77,6 +114,7 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    origin: Optional[str] = ORIGIN_USER,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -87,11 +125,18 @@ def add_notify_sub(
     existing row's value. ``delivery_mode``: ``None`` leaves an existing row
     untouched, an explicit valid value is last-write-wins, unknown falls back
     to ``"notify"``. ``delivery_metadata`` merges supplied routing anchors
-    into an existing row so re-subscribing never discards them. New subs start
+    into an existing row so re-subscribing never discards them. ``origin``:
+    ``"auto"`` marks machine-created subscriptions, which follow
+    ``kanban.auto_subscribe_mode`` when inherited; ``"user"`` (default) marks
+    explicit subscriptions, copied verbatim forever; unknown/``None`` stamps
+    NULL (legacy rows behave like user subs). An auto re-subscribe only fills
+    a missing origin — it never reclaims a user-owned row. New subs start
     caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
+    if origin not in (ORIGIN_AUTO, ORIGIN_USER):
+        origin = None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
@@ -112,18 +157,20 @@ def add_notify_sub(
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                  chat_type, notifier_profile, delivery_mode, delivery_metadata,
-                 created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 origin, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, metadata_json, origin, int(time.time()), task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
         # preserves existing routing fields while supplied fields overwrite them.
         # user_id, user_id_alt and notifier_profile only self-heal legacy rows lacking one.
+        # origin: a user (re)subscribe claims the row last-write-wins; an auto
+        # re-subscribe only fills provenance on legacy rows lacking one.
         for column, value, fill_only in (
             ("chat_type", chat_type, False),
             ("user_id", user_id, True),
@@ -131,6 +178,7 @@ def add_notify_sub(
             ("notifier_profile", notifier_profile, True),
             ("delivery_mode", valid_mode, False),
             ("delivery_metadata", metadata_json, False),
+            ("origin", origin, origin != ORIGIN_USER),
         ):
             if not value:
                 continue

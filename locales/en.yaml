@@ -2188,6 +2188,7 @@ cli:
     placeholder_answer: "type your answer here and press Enter"
     placeholder_processing_command: "Processing command..."
     placeholder_busy: "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
+    placeholder_busy_recall: " · ↑ edit {queued} queued"
     placeholder_voice_idle: "type or {shortcut} to record"
     voice_recording_failed: "Voice recording failed: {error}"
     recording_cancelled: "Recording cancelled."

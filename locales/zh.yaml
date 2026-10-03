@@ -2092,6 +2092,7 @@ cli:
     placeholder_answer: "在此输入你的回答并按 Enter"
     placeholder_processing_command: "正在处理命令..."
     placeholder_busy: "发消息=中断 · /queue · /bg · /steer · Ctrl+C 取消"
+    placeholder_busy_recall: " · ↑ 编辑 {queued} 条排队消息"
     placeholder_voice_idle: "输入文字，或按 {shortcut} 录音"
     voice_recording_failed: "语音录制失败：{error}"
     recording_cancelled: "录音已取消。"

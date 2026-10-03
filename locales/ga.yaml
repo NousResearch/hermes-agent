@@ -2092,6 +2092,7 @@ cli:
     placeholder_answer: "clóscríobh do fhreagra anseo agus brúigh Enter"
     placeholder_processing_command: "Ordú á phróiseáil..."
     placeholder_busy: "tcht=briseadh isteach · /queue · /bg · /steer · Ctrl+C cealaigh"
+    placeholder_busy_recall: " · ↑ cuir {queued} sa scuaine in eagar"
     placeholder_voice_idle: "clóscríobh nó {shortcut} le taifeadadh"
     voice_recording_failed: "Theip ar thaifeadadh gutha: {error}"
     recording_cancelled: "Taifeadadh cealaithe."

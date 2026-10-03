@@ -2109,6 +2109,7 @@ cli:
     placeholder_answer: "írd be ide a válaszodat, és nyomj Entert"
     placeholder_processing_command: "Parancs feldolgozása..."
     placeholder_busy: "üzenet=megszakít · /queue · /bg · /steer · Ctrl+C mégse"
+    placeholder_busy_recall: " · ↑ {queued} sorban álló szerkesztése"
     placeholder_voice_idle: "gépelj, vagy {shortcut} a felvételhez"
     voice_recording_failed: "A hangfelvétel nem sikerült: {error}"
     recording_cancelled: "Felvétel megszakítva."

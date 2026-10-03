@@ -2092,6 +2092,7 @@ cli:
     placeholder_answer: "ここに回答を入力して Enter を押してください"
     placeholder_processing_command: "コマンドを処理中..."
     placeholder_busy: "メッセージ=中断 · /queue · /bg · /steer · Ctrl+C でキャンセル"
+    placeholder_busy_recall: " · ↑ キュー内の{queued}件を編集"
     placeholder_voice_idle: "入力するか {shortcut} で録音"
     voice_recording_failed: "音声の録音に失敗しました: {error}"
     recording_cancelled: "録音をキャンセルしました。"

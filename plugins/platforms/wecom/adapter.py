@@ -34,7 +34,9 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal, get_scoped_secret as _get_scoped_secret, send_error,
+)
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -71,7 +73,9 @@ def check_wecom_requirements() -> bool:
 
 
 def _coerce_list(value: Any) -> List[str]:
-    """Coerce config values (None | "a, b" | iterable | scalar) into a trimmed, non-empty string list."""
+    """Coerce config values (None | "a, b" | '["a","b"]' | iterable | scalar) into a trimmed, non-empty string list."""
+    if isinstance(value, str):
+        value = _decode_json_list_literal(value)
     if isinstance(value, str):
         value = value.split(",")
     elif not isinstance(value, (list, tuple, set)):

@@ -52,3 +52,35 @@ def test_plain_csv_and_yaml_lists_keep_their_meaning():
     assert _whatsapp({"free_response_chats": "a,b"})._whatsapp_free_response_chats() == {"a", "b"}
     # Malformed JSON is not a list: it stays on the legacy comma-split path.
     assert _dingtalk({"allowed_chats": "[not-json"})._dingtalk_allowed_chats() == {"[not-json"}
+
+
+def test_matrix_csv_set_decodes_a_bracket_list_string():
+    from plugins.platforms.matrix.adapter import _csv_set
+
+    assert _csv_set(BRACKET_LIST) == {"-100", "-200"}
+    assert _csv_set("!a:example.org, !b:example.org") == {"!a:example.org", "!b:example.org"}
+    assert _csv_set(["!a:example.org", "!b:example.org"]) == {"!a:example.org", "!b:example.org"}
+    # Malformed JSON is not a list: it stays on the legacy comma-split path.
+    assert _csv_set("[not-json") == {"[not-json"}
+
+
+def test_line_csv_set_decodes_a_bracket_list_string():
+    from plugins.platforms.line.adapter import _csv_set
+
+    assert _csv_set(BRACKET_LIST) == {"-100", "-200"}
+    assert _csv_set("U1234, U5678") == {"U1234", "U5678"}
+    assert _csv_set("") == set()
+    assert _csv_set(None) == set()
+    # Malformed JSON is not a list: it stays on the legacy comma-split path.
+    assert _csv_set("[not-json") == {"[not-json"}
+
+
+def test_wecom_coerce_list_decodes_a_bracket_list_string():
+    from plugins.platforms.wecom.adapter import _coerce_list
+
+    assert _coerce_list(BRACKET_LIST) == ["-100", "-200"]
+    assert _coerce_list("alice, bob") == ["alice", "bob"]
+    assert _coerce_list(["alice", "bob"]) == ["alice", "bob"]
+    assert _coerce_list(None) == []
+    # Malformed JSON is not a list: it stays on the legacy comma-split path.
+    assert _coerce_list("[not-json") == ["[not-json"]

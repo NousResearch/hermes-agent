@@ -1853,10 +1853,10 @@ def _sum_skills_list(name, args, content, content_len, line_count):
     return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
-def _failure_suffix(reason: Any) -> str:
+def _failure_suffix(reason: Any, label: str = "FAILED") -> str:
     """`` FAILED: <reason>`` on one line, or `` FAILED`` when the payload carries no message."""
     preview = " ".join(str(reason).split())[:80] if reason else ""
-    return f" FAILED: {preview}" if preview else " FAILED"
+    return f" {label}: {preview}" if preview else f" {label}"
 
 
 def _skill_result_failure_suffix(content: str) -> str:
@@ -1884,9 +1884,12 @@ def _sum_cronjob_manage(name, args, content, content_len, line_count):
     if not suffix:
         job = _json_dict(content).get("job")
         job = job if isinstance(job, dict) else {}
-        reason = job.get("execution_error") or job.get("execution_skipped")
-        if reason is not None or job.get("execution_success") is False:
-            suffix = _failure_suffix(reason)
+        error, skipped = job.get("execution_error"), job.get("execution_skipped")
+        if error is not None or (skipped is None and job.get("execution_success") is False):
+            suffix = _failure_suffix(error)
+        elif skipped is not None:
+            # Skipped is not failed: the scheduler may be running this very job right now.
+            suffix = _failure_suffix(skipped, "SKIPPED")
     return stub + suffix
 
 
@@ -1900,8 +1903,13 @@ def _sum_process_manage(name, args, content, content_len, line_count):
     stub = f"[process] {args.get('action', '?')} session={args.get('session_id', '?')}"
     suffix = _skill_result_failure_suffix(content)
     if not suffix:
-        exit_code = _json_dict(content).get("exit_code")
-        if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+        payload = _json_dict(content)
+        exit_code = payload.get("exit_code")
+        # A process the agent killed itself exits non-zero by design; that is not a failure.
+        if (
+            isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
+            and payload.get("completion_reason") != "killed"
+        ):
             suffix = f" FAILED: exit code {exit_code}"
     return stub + suffix
 

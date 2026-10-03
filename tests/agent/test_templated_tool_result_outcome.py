@@ -50,6 +50,12 @@ def test_failed_call_stub_is_marked_failed(tool_name, args, payload, reason):
          "[process] poll session=p1"),
         ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "running", "pid": 4242},
          "[process] poll session=p1"),
+        # The agent's own kill and a run the scheduler is already firing are not failures.
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": -15, "completion_reason": "killed"}, "[process] poll session=p1"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_skipped": "Already being fired by the scheduler; not run again."}},
+         "[cronjob] run SKIPPED: Already being fired by the scheduler; not run again."),
     ],
 )
 def test_successful_call_stub_is_not_marked(tool_name, args, payload, expected):

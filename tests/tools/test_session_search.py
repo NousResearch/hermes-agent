@@ -257,6 +257,71 @@ class TestDiscoveryShape:
         ]
         assert len(adaptive_json.encode("utf-8")) < len(full_json.encode("utf-8")) * 0.6
 
+    def test_discovery_hydrates_only_visible_prebounded_payloads(self, db, monkeypatch):
+        """Recall must omit hidden/rewound rows and cap one huge content/tool payload
+        before the SQLite row is decoded into the outer tool result."""
+        db.create_session("visible", source="cli")
+        db.append_message(
+            "visible", role="user", content="HIDDEN_NEIGHBOR_MARKER",
+            display_kind="hidden",
+        )
+        anchor = db.append_message(
+            "visible",
+            role="assistant",
+            content="cobalt hydration needle " + "x" * 80_000,
+            tool_calls=[{
+                "id": "huge-call",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "y" * 80_000},
+            }],
+        )
+        rewound = db.append_message(
+            "visible", role="user", content="REWOUND_NEIGHBOR_MARKER"
+        )
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", (rewound,)
+        )
+        db.append_message("visible", role="assistant", content="visible resolution")
+
+        db.create_session("hidden-session", source="cli")
+        db._conn.execute("UPDATE sessions SET hidden = 1 WHERE id = 'hidden-session'")
+        db.append_message(
+            "hidden-session", role="user",
+            content="cobalt hydration needle PRIVATE_SESSION_MARKER",
+        )
+        db._conn.commit()
+
+        decode_content = db._decode_content
+        decoded_sizes = []
+
+        def assert_prebounded(value):
+            if isinstance(value, str):
+                decoded_sizes.append(len(value))
+                assert len(value) <= 4_000
+            return decode_content(value)
+
+        monkeypatch.setattr(db, "_decode_content", assert_prebounded)
+
+        raw = session_search(
+            query="cobalt hydration needle", limit=10, detail="full", db=db
+        )
+        result = json.loads(raw)
+
+        assert result["success"] is True
+        assert [entry["session_id"] for entry in result["results"]] == ["visible"]
+        assert decoded_sizes and max(decoded_sizes) <= 4_000
+        assert "HIDDEN_NEIGHBOR_MARKER" not in raw
+        assert "REWOUND_NEIGHBOR_MARKER" not in raw
+        assert "PRIVATE_SESSION_MARKER" not in raw
+        assert len(raw) < 30_000
+        message = next(
+            item for item in result["results"][0]["messages"] if item["id"] == anchor
+        )
+        assert message["content_truncated"] is True
+        assert message["original_content_chars"] > 80_000
+        assert message["tool_calls_truncated"] is True
+        assert message["original_tool_calls_chars"] > 80_000
+
 
     def test_current_session_filtered_out(self, db):
         _seed_modpack_sessions(db)
@@ -1208,3 +1273,55 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+class TestDiscoveryRecallContract:
+    """Discovery says whether rows came from FTS or the bounded canonical fallback (and its bounds)."""
+
+    def test_fts_discovery_reports_fts_source(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", db=db))
+        assert result["success"] is True
+        assert result["recall"] == {"source": "fts", "truncated": False, "deadline_hit": False}
+
+    def test_canonical_fallback_discovery_is_labelled(self, db):
+        _seed_modpack_sessions(db)
+        db._fts_enabled = False
+        result = json.loads(session_search(query="modpack", db=db))
+        assert result["success"] is True and result["results"]
+        recall = result["recall"]
+        assert recall["source"] == "canonical_fallback"
+        assert recall["fallback_reason"] == "fts_unavailable"
+        assert recall["truncated"] is False and recall["deadline_hit"] is False
+        assert "not relevance" in recall["note"]
+
+    def test_canonical_fallback_miss_is_labelled_too(self, db):
+        _seed_modpack_sessions(db)
+        db._fts_enabled = False
+        result = json.loads(session_search(query="zzznothingmatches", db=db))
+        assert result["success"] is True and result["results"] == []
+        assert result["recall"]["source"] == "canonical_fallback"
+
+    def test_fallback_row_bound_is_reported(self, db, monkeypatch):
+        import tools.session_search_tool as tool
+
+        _seed_modpack_sessions(db)
+        db._fts_enabled = False
+        monkeypatch.setattr(tool, "_DISCOVER_SCAN_LIMIT", 2)
+        recall = json.loads(session_search(query="modpack", db=db))["recall"]
+        assert recall["truncated"] is True
+        assert "row limit was reached" in recall["note"]
+
+    def test_deadline_hit_is_an_explicit_failure_not_an_empty_success(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+
+        def stopped(*_a, recall_info=None, **_kw):
+            recall_info.update(source="canonical_fallback", fallback_reason="fts_stale", deadline_hit=True)
+            raise TimeoutError("canonical session search exceeded 3s deadline")
+
+        monkeypatch.setattr(db, "search_messages", stopped)
+        result = json.loads(session_search(query="modpack", db=db))
+        assert result["success"] is False
+        assert result["recall"]["deadline_hit"] is True
+        assert result["recall"]["source"] == "canonical_fallback"
+        assert "stopped early" in result["error"]

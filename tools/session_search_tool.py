@@ -38,6 +38,10 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # Bounding message COUNT (head/tail) is not enough when content per message is
 # unbounded; the agent can scroll around a message for detail (#114344).
 _READ_MAX_CONTENT = 2000
+# Discovery/scroll rows are projected through SQLite at these limits before JSON
+# content/tool-call decoding, so one stored payload cannot trigger outer spillover.
+_RECALL_MAX_CONTENT = 4000
+_RECALL_MAX_TOOL_CALLS = 4000
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
@@ -243,11 +247,17 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
         content = strip_ansi(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
     entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
+    entry.update({
+        k: m.get(k) for k in (
+            "content_truncated", "original_content_chars",
+            "tool_calls_truncated", "original_tool_calls_chars",
+        ) if m.get(k) is not None
+    })
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
         entry.update(content=content[:max_content_len] + "…", content_truncated=True,
-                     original_content_chars=len(content))
+                     original_content_chars=m.get("original_content_chars") or len(content))
     return {k: v for k, v in entry.items() if v is not None or k == "content"}
 
 
@@ -285,14 +295,27 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     # /new-reset and compression-ended parents are not.
     if current_lineage_root and lineage_root == current_lineage_root and not _session_left_live_context(db, session_id):
         return None
-    session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
-                          "get_session failed for title match %s", session_id) or {}
-    if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+    hit_meta = _get_session_meta(db, session_id)
+    session_meta = _get_session_meta(db, lineage_root) or hit_meta
+    if any(
+        meta.get("source") in _HIDDEN_SESSION_SOURCES or meta.get("hidden")
+        for meta in (hit_meta, session_meta)
+    ):
         return None
-    messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
+    page = _quiet(
+        lambda: db.get_recall_session_page(
+            session_id, head=5, tail=3, max_content_chars=_RECALL_MAX_CONTENT,
+            max_tool_calls_chars=_RECALL_MAX_TOOL_CALLS,
+        ), {}, "get_recall_session_page failed for title match %s", session_id,
+    )
+    messages = page.get("messages") or []
     anchor_id = messages[0].get("id") if messages else None
     view = {} if anchor_id is None else _quiet(
-        lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
+        lambda: db.get_anchored_view(
+            session_id, anchor_id, window=5, bookend=3, recall_visible=True,
+            max_content_chars=_RECALL_MAX_CONTENT,
+            max_tool_calls_chars=_RECALL_MAX_TOOL_CALLS,
+        ), {},
         "get_anchored_view failed for title match %s/%s", session_id, anchor_id)
     title = session_meta.get("title") or title_query
     # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
@@ -307,8 +330,31 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         bookend_start=shape("bookend_start", messages[:3]),
         messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
-        messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
+        messages_after=view.get("messages_after", max(page.get("message_count", len(messages)) - 5, 0)), detail="full"),
         "_lineage_root": lineage_root}
+
+
+def _recall_block(info: Dict[str, Any]) -> Dict[str, Any]:
+    """How discovery rows were produced (see ``SessionDB.search_messages(recall_info=...)``).
+
+    ``source`` is ``fts`` (ranked index) or ``canonical_fallback`` (bounded, unranked scan of
+    stored messages); ``truncated`` means the scan's row bound was reached, so more matches may
+    exist; ``deadline_hit`` means the bounded scan was stopped by its time budget."""
+    block = {
+        "source": info.get("source") or "fts",
+        "truncated": bool(info.get("truncated")),
+        "deadline_hit": bool(info.get("deadline_hit")),
+    }
+    if info.get("fallback_reason"):
+        block["fallback_reason"] = info["fallback_reason"]
+    if info.get("canonical_gap_rows"):
+        block["canonical_gap_rows"] = info["canonical_gap_rows"]
+    if block["source"] != "fts":
+        block["note"] = ("Results come from a scan of stored messages, not the ranked search index: "
+                         "ordered by time, not relevance"
+                         + ("; the scan's row limit was reached, so further matches may be missing."
+                            if block["truncated"] else "."))
+    return block
 
 
 def _discover_payload(db, query: str, detail: str, results: list, **extra) -> str:
@@ -331,7 +377,11 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
     """Discovery result from a surviving FTS row; None (dropped) if the view can't load."""
     hit_sid, msg_id = match_info.get("session_id") or lineage_root, match_info.get("id")
     try:
-        view = db.get_anchored_view(hit_sid, msg_id, window=5, bookend=3)
+        view = db.get_anchored_view(
+            hit_sid, msg_id, window=5, bookend=3, recall_visible=True,
+            max_content_chars=_RECALL_MAX_CONTENT,
+            max_tool_calls_chars=_RECALL_MAX_TOOL_CALLS,
+        )
     except Exception as e:
         logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
         return None
@@ -366,19 +416,33 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
-    raw_results, err = _loud(lambda: db.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+    recall_info: Dict[str, Any] = {}
+    try:
+        raw_results, err = db.search_messages(
+            query=query, role_filter=role_filter or ["user", "assistant"],
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts, recall_info=recall_info), None
+    except TimeoutError as e:
+        # The bounded canonical scan stopped before it could rank anything: say so, rather than a
+        # generic failure or an empty "no matches" the caller would read as ground truth.
+        logging.warning("session_search canonical fallback hit its deadline: %s", e)
+        return tool_error(
+            f"Search stopped early: {e}. The search index is unavailable, so this ran a bounded scan of "
+            "stored messages and gave up before finishing. Narrow the query (more specific terms, "
+            "after/before dates) and retry.", success=False, recall=_recall_block(recall_info))
+    except Exception as e:
+        logging.error("FTS5 search failed: %s", e, exc_info=True)
+        raw_results, err = None, tool_error(f"Search failed: {e}", success=False)
     if err:
         return err
+    recall = _recall_block(recall_info)
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
     # See #19434.
     if not raw_results and not title_result:
-        return _discover_payload(db, query, detail, [], message=(
+        return _discover_payload(db, query, detail, [], recall=recall, message=(
             "No matching sessions found. FTS5 ANDs all terms by default — "
             "broaden with OR (`alpha OR beta`), exact-match with quoted "
             "phrases, exclude with NOT, or prefix-match with `deploy*`."))
@@ -423,7 +487,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    return _discover_payload(db, query, detail, results, recall=recall, sessions_searched=len(seen_sessions), link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "
@@ -449,15 +513,23 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     meta = _get_session_meta(db, session_id)
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
-    rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
-                      session_id)
+    page, err = _loud(
+        lambda: db.get_recall_session_page(
+            session_id, head=head, tail=tail, max_content_chars=_READ_MAX_CONTENT,
+            max_tool_calls_chars=_RECALL_MAX_TOOL_CALLS,
+        ),
+        "get_recall_session_page failed for %s: %s", "failed to load session", session_id,
+    )
     if err:
         return err
+    if page is None:
+        return tool_error("failed to load session: recall page unavailable", success=False)
+    rows = page["messages"]
     shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
-    total, truncated = len(shaped), len(shaped) > head + tail
+    total, truncated = page["message_count"], page["truncated"]
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
-               messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
+               messages=shaped,
                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
@@ -544,7 +616,10 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     session_meta = _get_session_meta(db, session_id)
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
-    view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window),
+    view, err = _loud(lambda: db.get_messages_around(
+        session_id, around_message_id, window=window, recall_visible=True,
+        max_content_chars=_RECALL_MAX_CONTENT,
+        max_tool_calls_chars=_RECALL_MAX_TOOL_CALLS),
                       "get_messages_around failed: %s", "failed to load messages")
     if err:
         return err
@@ -554,7 +629,10 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
         # Lineage rebind: the caller paired a parent session_id with a message id
         # living in a descendant — serve the owner's window transparently.
         rebind_view = _same_lineage(db, session_id, owning) and _quiet(
-            lambda: db.get_messages_around(owning, around_message_id, window=window),
+            lambda: db.get_messages_around(
+                owning, around_message_id, window=window, recall_visible=True,
+                max_content_chars=_RECALL_MAX_CONTENT,
+                max_tool_calls_chars=_RECALL_MAX_TOOL_CALLS),
             None, "rebind get_messages_around failed: %s", with_exc=True)
         if rebind_view and rebind_view.get("window"):
             extra["warning"] = (f"around_message_id {around_message_id} lives in {owning} "
@@ -566,7 +644,8 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
+        messages=[_shape_message(m, anchor_id=around_message_id, max_content_len=_RECALL_MAX_CONTENT)
+                  for m in messages],
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "

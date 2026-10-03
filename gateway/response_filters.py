@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -38,7 +39,12 @@ _MARKER_LENGTH_CAP = 64
 
 
 def _canonical_silence_candidate(text: str) -> str:
-    return " ".join(text.strip().upper().split())
+    collapsed = " ".join(text.strip().upper().split())
+    # Whitespace hugging the inside of a bracket is not semantic — "[ SILENT ]" is the same
+    # marker as "[SILENT]" (#132388) — while the brackets themselves stay structural so a
+    # malformed "[SILENT" still cannot match.
+    collapsed = re.sub(r"\[\s+", "[", collapsed)
+    return re.sub(r"\s+\]", "]", collapsed)
 
 
 def _is_edge_punctuation(ch: str) -> bool:
@@ -90,8 +96,11 @@ def is_autonomous_silence_response(response: Any) -> bool:
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
-    # be suppressed in chat yet delivered by cron.
-    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
+    # be suppressed in chat yet delivered by cron. The prefix check runs on the canonical
+    # form so "[ SILENT ] No changes" opens like "[SILENT] No changes" (#132388).
+    return _canonical_silence_candidate(stripped).startswith(
+        _BRACKETED_SILENCE_MARKERS
+    ) or any(
         is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
     )
 

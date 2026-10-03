@@ -97,6 +97,17 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             GROUP BY day ORDER BY day
         """, cutoff)
 
+        # Same day bucket and session rows as ``daily`` (model-less sessions included as ""),
+        # so each day's model segments sum to that day's bar.
+        daily_by_model = _rows(db, """
+            SELECT date(started_at, 'unixepoch', 'localtime') as day,
+                   COALESCE(model, '') as model,
+                   SUM(input_tokens) as input_tokens,
+                   SUM(output_tokens) as output_tokens
+            FROM sessions WHERE started_at > ?
+            GROUP BY day, COALESCE(model, '') ORDER BY day
+        """, cutoff)
+
         by_model = _rows(db, """
             SELECT model,
                    SUM(input_tokens) as input_tokens,
@@ -130,6 +141,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
 
         return {
             "daily": daily,
+            "daily_by_model": daily_by_model,
             "by_model": by_model,
             "by_task": _aux_task_summary(aux_rows),  # "what is compression costing me"
             "totals": totals,

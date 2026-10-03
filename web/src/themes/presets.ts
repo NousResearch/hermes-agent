@@ -218,6 +218,13 @@ export const nousBlueTheme: DashboardTheme = {
   seriesColors: {
     inputTokenAccent: "#001934",
     outputTokenAccent: "#0053fd",
+    ioRatioAccent: "#52514e",
+    modelAccent1: "#2a78d6",
+    modelAccent2: "#eb6834",
+    modelAccent3: "#1baf7a",
+    modelAccent4: "#eda100",
+    modelAccent5: "#e87ba4",
+    modelOtherAccent: "#5b6068",
   },
   swatchColors: ["#170d02", "#0053FD", "#E8F2FD"],
 };

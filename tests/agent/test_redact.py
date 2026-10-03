@@ -664,6 +664,15 @@ class TestJWTTokens:
         assert result.startswith("before ")
         assert result.endswith(" after")
 
+    def test_eyj_inside_base64_payload_is_left_alone(self):
+        """``eyJ`` shows up inside ordinary base64 (image bytes, data URIs); masking it there
+        corrupts the payload. A dotted JWT is still masked wherever it appears."""
+        blob = "iVBORw0KGgoAAAANSUhEUgAAQUJDeyJhbGciOiJIUzI1NiJ9xyz0123456789abcdef+/Qm9vaw=="
+        text = f"data:image/png;base64,{blob}"
+        assert redact_sensitive_text(text, code_file=True) == text
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        assert jwt not in redact_sensitive_text(f"https://example.com/cb/{jwt}")
+
 
 
 class TestDiscordMentions:

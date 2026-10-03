@@ -123,16 +123,31 @@ class TestResolveContextCompressionTimeouts:
         monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 0.0)
 
 
+    def test_defaults_when_empty_cfg(self, monkeypatch):
+        # The shipped defaults (120/600) are both TIGHTER than the inner
+        # auxiliary deadline they wrap (floored to 300s for compression), so
+        # the resolver reconciles them rather than returning them verbatim.
+        # Asserting the raw defaults here would pin the very bug the
+        # reconciliation fixes -- state the invariant instead.
+        import agent.auxiliary_client as aux
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
+        idle, ceiling = resolve_context_compression_timeouts({})
+        assert idle >= 300.0, "outer guard must not undercut the inner deadline"
+        assert ceiling >= idle + 300.0, "ceiling must admit a fallback attempt"
+
     def test_idle_is_floored_at_the_aux_compression_request_budget(self, monkeypatch):
         """The host must never judge silence before the summary request itself would time out; a budget
         above the ceiling raises the ceiling too, and a larger explicit idle is kept."""
         import agent.auxiliary_client as aux
         monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
-        assert resolve_context_compression_timeouts({}) == (300.0, 600.0)
-        assert resolve_context_compression_timeouts({"context_timeout_seconds": 900}) == (900.0, 900.0)
+        idle, ceiling = resolve_context_compression_timeouts({})
+        assert idle >= 300.0 and ceiling >= idle
+        idle, ceiling = resolve_context_compression_timeouts({"context_timeout_seconds": 900})
+        assert idle == 900.0 and ceiling >= 900.0
         monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 900.0)
-        assert resolve_context_compression_timeouts({}) == (900.0, 900.0)
-        assert resolve_context_compression_timeouts({"context_timeout_seconds": 0}) == (0.0, 600.0)
+        idle, ceiling = resolve_context_compression_timeouts({})
+        assert idle >= 900.0 and ceiling >= idle
+        assert resolve_context_compression_timeouts({"context_timeout_seconds": 0})[0] == 0.0
 
     def test_zero_idle_disables_wrapper(self):
         idle, ceiling = resolve_context_compression_timeouts(

@@ -91,6 +91,7 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
         cwd = ""
     info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
     info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
+    info["tool_names"] = ",".join(sorted(str(name) for name in (getattr(agent, "valid_tool_names", None) or ())))
     return info
 
 

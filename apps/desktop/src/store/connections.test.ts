@@ -73,6 +73,7 @@ vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
   $freshSessionRequest,
   $newChatProfile,
+  $newChatRoute: atom(null),
   $showAllProfiles,
   captureNewChatSource: vi.fn(),
   ensureGatewayAgent,

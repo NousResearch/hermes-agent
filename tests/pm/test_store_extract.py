@@ -50,15 +50,41 @@ def _portable_git(tmp_path):
     return archive
 
 
-def _fake_run(monkeypatch, returncode=0, calls=None):
+class _FakeProc:
+    """Popen stand-in: ``wait`` returns or hangs, ``kill`` is recorded."""
+
+    def __init__(self, argv, returncode=0, hang=False):
+        self.argv = argv
+        self.returncode = returncode
+        self.hang = hang
+        self.killed = False
+
+    def wait(self, timeout=None):
+        import subprocess
+
+        if self.hang:
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+
+def _fake_popen(monkeypatch, returncode=0, calls=None, hang=False):
+    """Patch ``subprocess.Popen``; returns the fake processes it handed out."""
     import subprocess
 
-    def run(argv, **kwargs):
+    procs = []
+
+    def popen(argv, **kwargs):
+        proc = _FakeProc(argv, returncode=returncode, hang=hang)
+        procs.append(proc)
         if calls is not None:
             calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, returncode)
+        return proc
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return procs
 
 
 def test_git_unpack_executes_a_scratch_copy_never_the_cached_bytes(tmp_path, monkeypatch):
@@ -72,7 +98,7 @@ def test_git_unpack_executes_a_scratch_copy_never_the_cached_bytes(tmp_path, mon
 
     monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
     calls = []
-    _fake_run(monkeypatch, calls=calls)
+    _fake_popen(monkeypatch, calls=calls)
     archive = _portable_git(tmp_path)
     staged = tmp_path / "scratch" / "tree"
     Git().unpack(archive, staged, "win32-x64")
@@ -93,24 +119,42 @@ def test_git_unpack_names_the_extractor_exit_code(tmp_path, monkeypatch):
     from pm.packages import Git
 
     monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
-    _fake_run(monkeypatch, returncode=7)
+    _fake_popen(monkeypatch, returncode=7)
     with pytest.raises(InstallError, match="exited 7"):
         Git().unpack(_portable_git(tmp_path), tmp_path / "scratch" / "tree", "win32-x64")
 
 
 def test_git_unpack_timeout_is_a_package_error(tmp_path, monkeypatch):
-    import subprocess
     import pm.packages
     from pm.package import InstallError
     from pm.packages import Git
 
-    def hang(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-
     monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
-    monkeypatch.setattr(subprocess, "run", hang)
+    _fake_popen(monkeypatch, hang=True)
     with pytest.raises(InstallError, match="did not finish"):
         Git().unpack(_portable_git(tmp_path), tmp_path / "scratch" / "tree", "win32-x64")
+
+
+def test_git_unpack_timeout_tears_down_the_whole_tree(tmp_path, monkeypatch):
+    """A timed-out extractor must not leave its descendants running.
+
+    The stub exits while its RunProgram children keep going, so ``kill()`` on the
+    pid alone leaves them holding the staged tree and the scratch dir. The
+    timeout path therefore routes through the shared portable teardown
+    (``taskkill /F /T`` on Windows), exactly like ``install.ps1``.
+    """
+    import hermes_cli._subprocess_compat as compat
+    import pm.packages
+    from pm.package import InstallError
+    from pm.packages import Git
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    procs = _fake_popen(monkeypatch, hang=True)
+    torn_down = []
+    monkeypatch.setattr(compat, "kill_process_tree", lambda proc: torn_down.append(proc))
+    with pytest.raises(InstallError, match="did not finish"):
+        Git().unpack(_portable_git(tmp_path), tmp_path / "scratch" / "tree", "win32-x64")
+    assert torn_down == procs, "the whole extractor tree must be torn down on timeout"
 
 
 def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
@@ -121,7 +165,7 @@ def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
     from pm.packages import Git
 
     calls = []
-    _fake_run(monkeypatch, calls=calls)
+    _fake_popen(monkeypatch, calls=calls)
     monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", False)
     with pytest.raises(InstallError, match="Windows host") as excinfo:
         Git().unpack(_portable_git(tmp_path), tmp_path / "out", "win32-x64")

@@ -619,6 +619,29 @@ class Npm(BinaryPackage):
 _HOST_IS_WINDOWS = os.name == "nt"
 
 
+def _kill_extractor_tree(proc: subprocess.Popen) -> None:
+    """Tear down the self-extractor *and* its descendants after a timeout.
+
+    ``Popen.kill()`` only reaches the stub. PortableGit's post-install children
+    (``RunProgram``: git.exe, unzip, the AV scan holding the executed PE) outlive
+    that kill and keep the staged tree and the scratch dir handle-held, so a
+    "timed out" install leaves a half-unpacked store entry and a lock behind.
+    Same whole-tree teardown ``install.ps1`` does with ``taskkill /T /F``.
+    Best-effort by contract: it runs on an already-failing path and must never
+    replace the caller's ``InstallError`` with its own.
+    """
+    try:
+        from hermes_cli._subprocess_compat import kill_process_tree
+
+        kill_process_tree(proc)  # taskkill /F /T on Windows; never raises
+    except Exception:
+        LOG.debug("pinned git: process-tree teardown unavailable", exc_info=True)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
@@ -676,17 +699,20 @@ class Git(BinaryPackage):
         ) as work:
             exe = Path(work) / archive.name
             shutil.copy2(archive, exe)
-            # No pipes: RunProgram children would inherit them and hold run()
-            # open past the stub's exit. Under -y the stub prints nothing anyway.
+            # No pipes: RunProgram children would inherit them and hold the
+            # handle open past the stub's exit. Under -y the stub prints
+            # nothing anyway. Popen rather than run(): the timeout path needs
+            # the pid to tear down the whole tree, since the stub exits first.
+            proc = subprocess.Popen(
+                [str(exe), f"-o{staged}", "-y"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             try:
-                proc = subprocess.run(
-                    [str(exe), f"-o{staged}", "-y"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=600,
-                )
+                proc.wait(timeout=600)
             except subprocess.TimeoutExpired:
+                _kill_extractor_tree(proc)
                 raise InstallError(
                     self.name, "PortableGit self-extractor did not finish in 600 s"
                 ) from None

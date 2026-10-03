@@ -1129,6 +1129,9 @@ export const en: Translations = {
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
+      sidebarHoverRevealTitle: 'Reveal Sidebars on Edge Hover',
+      sidebarHoverRevealDesc:
+        'Show hidden sidebars when the pointer reaches a window edge. Turn off to open them only with keyboard shortcuts or sidebar controls.',
       tabStripTitle: 'Tab Strip',
       tabStripDesc:
         'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',

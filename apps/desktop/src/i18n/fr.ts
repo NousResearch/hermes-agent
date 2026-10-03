@@ -1162,6 +1162,9 @@ export const frOverrides = {
       sessionDensityCompact: 'Compacte',
       sessionDensityComfortable: 'Confortable',
       sessionDensityDetailed: 'Détaillée',
+      sidebarHoverRevealTitle: 'Afficher les panneaux latéraux au survol du bord',
+      sidebarHoverRevealDesc:
+        'Affiche les panneaux latéraux masqués lorsque le pointeur atteint un bord de la fenêtre. Désactivez cette option pour les ouvrir uniquement avec les raccourcis clavier ou leurs commandes.',
       tabStripTitle: "Barre d'onglets",
       tabStripDesc:
         "Affiche les onglets au-dessus d'une zone. Le mode automatique les masque lorsqu'une zone ne contient qu'un seul panneau.",

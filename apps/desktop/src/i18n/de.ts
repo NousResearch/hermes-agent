@@ -1157,6 +1157,9 @@ export const deOverrides = {
       sessionDensityCompact: 'Kompakt',
       sessionDensityComfortable: 'Komfortabel',
       sessionDensityDetailed: 'Detailreich',
+      sidebarHoverRevealTitle: 'Seitenleisten beim Zeigen auf den Fensterrand einblenden',
+      sidebarHoverRevealDesc:
+        'Blendet ausgeblendete Seitenleisten ein, wenn der Mauszeiger einen Fensterrand erreicht. Deaktivieren, um sie nur über Tastenkürzel oder die Steuerelemente der Seitenleisten zu öffnen.',
       tabStripTitle: 'Tab-Leiste',
       tabStripDesc:
         'Zeigt Tabs über einer Zone. Blendet sie automatisch aus, wenn eine Zone nur einen einzelnen Bereich enthält.',

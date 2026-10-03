@@ -153,11 +153,11 @@ def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path):
     )
     parent = (
         "import os, subprocess, sys, time\n"
-        f"open({str(marker)!r}, 'w', encoding='utf-8').write(f'{{os.getpid()}}\\n{{int(time.time())}}\\n')\n"
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write(f'{{os.getpid()}}\\n{{int(time.time())}}\\n')\n"  # windows-footgun: ok — a write
         "sys.exit(subprocess.call([sys.executable, '-c', sys.argv[1]]))\n"
     )
-    run = subprocess.run([sys.executable, "-c", parent, tail], capture_output=True, text=True,
-                         encoding="utf-8", timeout=120)
+    run = subprocess.run([sys.executable, "-c", parent, tail], capture_output=True, timeout=120,
+                         text=True, encoding="utf-8", errors="replace")
 
     assert run.returncode == 0 and run.stdout.strip().splitlines()[-1:] == ["true"], run.stdout + run.stderr
     assert marker.exists(), "the parent still owns its claim after our tail"

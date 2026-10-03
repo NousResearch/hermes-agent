@@ -34,7 +34,7 @@ _LIST_SECTIONS = (("platform.teams.summary.key_decisions", "key_decisions"),
                   ("platform.teams.summary.action_items", "action_items"),
                   ("platform.teams.summary.risks", "risks"))
 # Env fallbacks for delivery config keys, applied only where nothing else set the key (access_token is a scoped secret).
-_ENV_KEYS = {"delivery_mode": "TEAMS_DELIVERY_MODE", "incoming_webhook_url": "TEAMS_INCOMING_WEBHOOK_URL",
+_ENV_KEYS = {"delivery_mode": "TEAMS_DELIVERY_MODE", "incoming_webhook_url": "TEAMS_INCOMING_WEBHOOK_URL", "incoming_webhook_urls": "TEAMS_INCOMING_WEBHOOK_URLS",
              "access_token": "TEAMS_GRAPH_ACCESS_TOKEN", "team_id": "TEAMS_TEAM_ID", "channel_id": "TEAMS_CHANNEL_ID", "chat_id": "TEAMS_CHAT_ID"}
 
 
@@ -94,14 +94,20 @@ class TeamsSummaryWriter:
         return merged
 
     async def _write_summary_via_incoming_webhook(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
-        webhook_url = str(config.get("incoming_webhook_url") or "").strip()
-        if not webhook_url:
-            raise ValueError("TEAMS_INCOMING_WEBHOOK_URL is required for incoming_webhook mode.")
+        urls = config.get("incoming_webhook_urls") or config.get("incoming_webhook_url")
+        if isinstance(urls, str):
+            urls = [item.strip() for item in urls.replace("\n", ",").split(",") if item.strip()]
+        urls = [str(url).strip() for url in (urls or []) if str(url).strip()]
+        if not urls:
+            raise ValueError("TEAMS_INCOMING_WEBHOOK_URL or TEAMS_INCOMING_WEBHOOK_URLS is required for incoming_webhook mode.")
         body = {"text": self._render_summary_markdown(payload)}
+        deliveries = []
         async with httpx.AsyncClient(timeout=20.0, transport=self._transport) as client:
-            response = await client.post(webhook_url, json=body)
-            response.raise_for_status()
-        return {"delivery_mode": "incoming_webhook", "webhook_url": webhook_url, "status_code": response.status_code, "delivered": True}
+            for webhook_url in urls:
+                response = await client.post(webhook_url, json=body)
+                response.raise_for_status()
+                deliveries.append({"webhook_url": webhook_url, "status_code": response.status_code})
+        return {"delivery_mode": "incoming_webhook", "deliveries": deliveries, "delivered": True}
 
     async def _write_summary_via_graph(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
         graph_client = self._build_graph_client(config)

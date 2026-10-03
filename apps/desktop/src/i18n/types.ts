@@ -3996,6 +3996,21 @@ export interface Translations {
           system_prompt: string
           tool_definitions: string
         }
+        contextFiles: (count: number) => string
+        contextFileStatuses: {
+          blocked: string
+          empty: string
+          flagged: string
+          loaded: string
+          shadowed: string
+          suppressed: string
+          truncated: string
+          unknown: string
+          unreadable: string
+        }
+        /** `~{amount} full file` — raw size, not this file's share of the totals. */
+        fullFileEstimate: (amount: string) => string
+        fullFileEstimateNote: string
         empty: string
         loading: string
         percentFull: (percent: number) => string

@@ -4443,6 +4443,20 @@ export const zh = defineLocale({
           system_prompt: '系统提示词',
           tool_definitions: '工具定义'
         },
+        contextFiles: count => `上下文文件（${count}）`,
+        contextFileStatuses: {
+          blocked: '未加载 — 被提示词注入扫描拦截',
+          empty: '未加载 — 空文件',
+          flagged: '已加载 — 请检查提示词注入警告',
+          loaded: '已加载',
+          shadowed: '未加载 — 使用了优先级更高的上下文文件',
+          suppressed: '未加载 — Hermes 安装目录',
+          truncated: '已加载 — 已按上下文文件上限截断',
+          unknown: '状态不可用',
+          unreadable: '未加载 — 无法读取文件'
+        },
+        fullFileEstimate: amount => `~${amount} 完整文件`,
+        fullFileEstimateNote: '截断前的完整文件估算，不是上方上下文总量里的用量。',
         empty: '暂无上下文数据',
         loading: '正在加载明细…',
         percentFull: percent => `已用 ${percent}%`,

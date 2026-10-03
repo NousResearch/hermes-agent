@@ -4748,6 +4748,21 @@ export const en: Translations = {
           system_prompt: 'System prompt',
           tool_definitions: 'Tool definitions'
         },
+        contextFiles: count => `Context files (${count})`,
+        contextFileStatuses: {
+          blocked: 'Not loaded — blocked by the prompt-injection scan',
+          empty: 'Not loaded — empty file',
+          flagged: 'Loaded — review the prompt-injection warning',
+          loaded: 'Loaded',
+          shadowed: 'Not loaded — a higher-priority context file won',
+          suppressed: 'Not loaded — Hermes install directory',
+          truncated: 'Loaded — truncated at the context-file limit',
+          unknown: 'Status unavailable',
+          unreadable: 'Not loaded — file could not be read'
+        },
+        fullFileEstimate: amount => `~${amount} full file`,
+        fullFileEstimateNote:
+          'These are full-file estimates before truncation, not tokens used in the context total above.',
         empty: 'No context data yet',
         loading: 'Loading breakdown…',
         percentFull: percent => `${percent}% Full`,

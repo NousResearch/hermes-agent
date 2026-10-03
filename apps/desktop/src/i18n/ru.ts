@@ -3697,6 +3697,20 @@ export const ru = defineLocale({
           system_prompt: 'Системный промпт',
           tool_definitions: 'Определения инструментов'
         },
+        contextFiles: count => `Файлы контекста (${count})`,
+        contextFileStatuses: {
+          blocked: 'Не загружен — заблокирован проверкой на инъекцию промпта',
+          empty: 'Не загружен — пустой файл',
+          flagged: 'Загружен — проверьте предупреждение об инъекции промпта',
+          loaded: 'Загружен',
+          shadowed: 'Не загружен — выбран файл контекста с более высоким приоритетом',
+          suppressed: 'Не загружен — каталог установки Hermes',
+          truncated: 'Загружен — обрезан по лимиту файла контекста',
+          unknown: 'Статус недоступен',
+          unreadable: 'Не загружен — файл не удалось прочитать'
+        },
+        fullFileEstimate: amount => `~${amount} весь файл`,
+        fullFileEstimateNote: 'Оценка всего файла до обрезки, а не токены в итоге контекста выше.',
         empty: 'Данных контекста пока нет',
         loading: 'Загрузка разбивки…',
         percentFull: percent => `${percent}% занято`,

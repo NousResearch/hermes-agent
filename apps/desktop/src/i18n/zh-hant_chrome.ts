@@ -369,6 +369,20 @@ export const zhHantChrome = {
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },
+        contextFiles: count => `上下文檔案（${count}）`,
+        contextFileStatuses: {
+          blocked: '未載入 — 已被提示詞注入掃描阻擋',
+          empty: '未載入 — 空白檔案',
+          flagged: '已載入 — 請檢查提示詞注入警告',
+          loaded: '已載入',
+          shadowed: '未載入 — 使用了優先順序更高的上下文檔案',
+          suppressed: '未載入 — Hermes 安裝目錄',
+          truncated: '已載入 — 已依上下文檔案上限截斷',
+          unknown: '狀態不可用',
+          unreadable: '未載入 — 無法讀取檔案'
+        },
+        fullFileEstimate: amount => `~${amount} 完整檔案`,
+        fullFileEstimateNote: '截斷前的完整檔案估算，不是上方上下文總量裡的用量。',
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,

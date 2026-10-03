@@ -5185,6 +5185,20 @@ export const deOverrides = {
           system_prompt: 'System-Prompt',
           tool_definitions: 'Tool-Definitionen'
         },
+        contextFiles: count => `Kontextdateien (${count})`,
+        contextFileStatuses: {
+          blocked: 'Nicht geladen — von der Prompt-Injection-Prüfung blockiert',
+          empty: 'Nicht geladen — leere Datei',
+          flagged: 'Geladen — Prompt-Injection-Warnung prüfen',
+          loaded: 'Geladen',
+          shadowed: 'Nicht geladen — eine höher priorisierte Kontextdatei wurde verwendet',
+          suppressed: 'Nicht geladen — Hermes-Installationsverzeichnis',
+          truncated: 'Geladen — am Limit für Kontextdateien gekürzt',
+          unknown: 'Status nicht verfügbar',
+          unreadable: 'Nicht geladen — Datei konnte nicht gelesen werden'
+        },
+        fullFileEstimate: amount => `~${amount} ganze Datei`,
+        fullFileEstimateNote: 'Schätzungen der ganzen Datei vor dem Kürzen, nicht die Tokens der Kontext-Summe oben.',
         empty: 'Noch keine Kontext-Daten',
         loading: 'Aufschlüsselung wird geladen…',
         percentFull: percent => `${percent}% voll`,

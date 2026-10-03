@@ -5199,6 +5199,20 @@ export const frOverrides = {
           system_prompt: 'Invite système',
           tool_definitions: "Définitions d'outils"
         },
+        contextFiles: count => `Fichiers de contexte (${count})`,
+        contextFileStatuses: {
+          blocked: "Non chargé — bloqué par l'analyse d'injection de prompt",
+          empty: 'Non chargé — fichier vide',
+          flagged: "Chargé — vérifiez l'avertissement d'injection de prompt",
+          loaded: 'Chargé',
+          shadowed: 'Non chargé — un fichier de contexte plus prioritaire a été retenu',
+          suppressed: "Non chargé — répertoire d'installation de Hermes",
+          truncated: 'Chargé — tronqué à la limite des fichiers de contexte',
+          unknown: 'État indisponible',
+          unreadable: 'Non chargé — impossible de lire le fichier'
+        },
+        fullFileEstimate: amount => `~${amount} fichier entier`,
+        fullFileEstimateNote: 'Estimations du fichier entier avant troncature, pas les jetons du total ci-dessus.',
         empty: 'Aucune donnée de contexte pour le moment',
         loading: 'Chargement du détail…',
         percentFull: percent => `${percent}% plein`,

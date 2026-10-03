@@ -14,6 +14,7 @@ import asyncio
 import contextvars
 import importlib.metadata
 import inspect
+import itertools
 import json
 import logging
 import os
@@ -973,7 +974,16 @@ class PluginContext:
 
     def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
-        return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
+        # Assign a registration token BEFORE appending so suppression keys
+        # (hook_name, token) stay attached to this callback forever: CPython
+        # recycles id() across reloads (#123188) and list removals shift slots,
+        # so neither survives an unload. The lease removes token and callback
+        # together in every order.
+        token = next(self._manager._hook_token_counter)
+        self._manager._hook_registration_tokens[id(callback)] = token
+        return self._track_callback(
+            "hook", hook_name, callback, self._manager._hooks, VALID_HOOKS,
+        )
 
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
@@ -1277,11 +1287,18 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity)
-        # so a stuck policy hook cannot spawn a new abandoned thread on every fire.
+        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, registration
+        # token, call_identity) so a stuck policy hook cannot spawn a new abandoned thread
+        # on every fire. The token (minted per register_hook, see _hook_registration_tokens)
+        # keeps the key stable across CPython id() reuse and list removals (#123188).
         self._hook_running_callbacks: Dict[tuple, object] = {}
         self._hook_abandoned: Dict[tuple, set] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        # Hook-suppression identity: a token minted per register_hook() call, keyed by
+        # id(callback). id() alone is recycled by CPython across reloads and removals
+        # shift list slots (#123188); the token dies with the callback's lease.
+        self._hook_registration_tokens: Dict[int, int] = {}
+        self._hook_token_counter = itertools.count()
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.

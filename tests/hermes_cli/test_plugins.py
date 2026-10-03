@@ -35,6 +35,21 @@ from hermes_cli.middleware import (
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
+
+
+def _seed_hooks(mgr, hook_name, callbacks):
+    """Replace a hook's callbacks via the public register_hook() API.
+
+    register_hook mints a suppression-registration token per callback
+    (#123188), so seeded callbacks exercise the same keying as production
+    code instead of falling back to id(cb). Direct ``mgr._hooks[...] = ...``
+    writes remain valid (tokenless fallback) but are deprecated in tests.
+    """
+    mgr._hooks.pop(hook_name, None)
+    ctx = PluginContext(PluginManifest(name="test-seed", source="user"), mgr)
+    for cb in callbacks:
+        ctx.register_hook(hook_name, cb)
+
 def test_portable_skill_namespace_is_ascii_safe():
     from agent.skill_utils import is_valid_namespace
 
@@ -498,7 +513,7 @@ class TestPluginDiscovery:
         # mark discovery done so force=True takes the clear path (we stub the
         # inner sweep so the test doesn't depend on any on-disk plugins).
         mgr._plugins["p"] = MagicMock()
-        mgr._hooks["pre_tool_call"] = [lambda **_: None]
+        _seed_hooks(mgr, "pre_tool_call", [lambda **_: None])
         mgr._middleware["llm_request"] = [lambda **_: None]
         mgr._plugin_tool_names.add("some_tool")
         mgr._plugin_platform_names.add("irc")
@@ -1179,7 +1194,7 @@ class TestForceReloadSymmetry:
             return {"ok": True}
 
         mgr = PluginManager()
-        mgr._hooks["post_tool_call"] = [blocker, fast]
+        _seed_hooks(mgr, "post_tool_call", [blocker, fast])
 
         t0 = time.monotonic()
         results = mgr.invoke_hook(
@@ -1205,7 +1220,7 @@ class TestForceReloadSymmetry:
             raise RuntimeError("plugin blew up")
 
         mgr = PluginManager()
-        mgr._hooks["post_tool_call"] = [boom, lambda **_kw: "survived"]
+        _seed_hooks(mgr, "post_tool_call", [boom, lambda **_kw: "survived"])
         assert mgr.invoke_hook("post_tool_call") == ["survived"]
 
     def test_system_exit_is_reported_under_timeout_path(self, monkeypatch, caplog):
@@ -1218,7 +1233,7 @@ class TestForceReloadSymmetry:
             raise SystemExit("bounded plugin requested process exit")
 
         mgr = PluginManager()
-        mgr._hooks["post_tool_call"] = [exits, lambda **_kw: "survived"]
+        _seed_hooks(mgr, "post_tool_call", [exits, lambda **_kw: "survived"])
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             assert mgr.invoke_hook("post_tool_call") == ["survived"]
@@ -1237,7 +1252,7 @@ class TestForceReloadSymmetry:
             raise RuntimeError("policy plugin blew up")
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [boom, lambda **_kw: {"action": "approve"}]
+        _seed_hooks(mgr, "pre_tool_call", [boom, lambda **_kw: {"action": "approve"}])
 
         results = mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={})
         assert [r.get("action") for r in results] == ["block", "approve"]
@@ -1272,7 +1287,7 @@ class TestForceReloadSymmetry:
             return "ok"
 
         mgr = PluginManager()
-        mgr._hooks["subagent_stop"] = [capture]
+        _seed_hooks(mgr, "subagent_stop", [capture])
         caller = threading.current_thread()
         assert mgr.invoke_hook("subagent_stop", parent_session_id="p1") == ["ok"]
         assert seen["thread"] is caller
@@ -1287,7 +1302,7 @@ class TestForceReloadSymmetry:
             raise SystemExit("plugin requested process exit")
 
         mgr = PluginManager()
-        mgr._hooks["subagent_stop"] = [exits, lambda **_kw: "survived"]
+        _seed_hooks(mgr, "subagent_stop", [exits, lambda **_kw: "survived"])
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             assert mgr.invoke_hook("subagent_stop", parent_session_id="p1") == ["survived"]
@@ -1304,10 +1319,10 @@ class TestForceReloadSymmetry:
             raise KeyboardInterrupt
 
         mgr = PluginManager()
-        mgr._hooks["subagent_stop"] = [
+        _seed_hooks(mgr, "subagent_stop", [
             interrupts,
             lambda **_kw: later_calls.append(True),
-        ]
+        ])
 
         with pytest.raises(KeyboardInterrupt):
             mgr.invoke_hook("subagent_stop", parent_session_id="p1")
@@ -1342,7 +1357,7 @@ class TestForceReloadSymmetry:
             return "late"
 
         mgr = PluginManager()
-        mgr._hooks["post_tool_call"] = [blocker]
+        _seed_hooks(mgr, "post_tool_call", [blocker])
 
         t0 = time.monotonic()
         assert mgr.invoke_hook("post_tool_call") == []
@@ -1369,7 +1384,7 @@ class TestForceReloadSymmetry:
             return "ok"
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [recorder]
+        _seed_hooks(mgr, "pre_tool_call", [recorder])
 
         def fire(call_id):
             mgr.invoke_hook(
@@ -1410,7 +1425,7 @@ class TestForceReloadSymmetry:
             return "late"
 
         mgr = PluginManager()
-        mgr._hooks["post_tool_call"] = [blocker]
+        _seed_hooks(mgr, "post_tool_call", [blocker])
 
         def fire():
             mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call")
@@ -1448,7 +1463,7 @@ class TestForceReloadSymmetry:
 
         mgr = PluginManager()
         mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
-        mgr._hooks["post_tool_call"] = [blocker]
+        _seed_hooks(mgr, "post_tool_call", [blocker])
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             for i in range(dispatch._HOOK_MAX_ABANDONED_WORKERS + 3):
@@ -1480,7 +1495,7 @@ class TestForceReloadSymmetry:
 
         mgr = PluginManager()
         mgr._hook_timeout_suppression_seconds = 0.2
-        mgr._hooks["pre_tool_call"] = [guard]
+        _seed_hooks(mgr, "pre_tool_call", [guard])
 
         blocked = [{"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
         assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-a") == blocked
@@ -1519,7 +1534,7 @@ class TestForceReloadSymmetry:
 
         mgr = PluginManager()
         mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
-        mgr._hooks["post_tool_call"] = [quick]
+        _seed_hooks(mgr, "post_tool_call", [quick])
 
         assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
         assert mgr._hook_abandoned == {}
@@ -1547,7 +1562,7 @@ class TestForceReloadSymmetry:
             return None
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [hung_policy]
+        _seed_hooks(mgr, "pre_tool_call", [hung_policy])
 
         import hermes_cli.plugins as plugins_mod
 
@@ -1594,7 +1609,7 @@ class TestForceReloadSymmetry:
         monkeypatch.setattr(threading.Thread, "start", fail_once)
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [policy]
+        _seed_hooks(mgr, "pre_tool_call", [policy])
 
         assert mgr.invoke_hook("pre_tool_call") == [
             {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
@@ -1619,7 +1634,7 @@ class TestForceReloadSymmetry:
             return None
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [hung_policy]
+        _seed_hooks(mgr, "pre_tool_call", [hung_policy])
 
         import hermes_cli.plugins as plugins_mod
 

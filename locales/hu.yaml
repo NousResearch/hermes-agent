@@ -209,6 +209,7 @@ gateway:
     header: "📖 **Hermes parancsok**\n"
     skill_header: "\n⚡ **Készségparancsok** ({count} aktív):"
     more_use_commands: "\n... és még {count}. Használd a `/commands` parancsot a teljes, lapozható listához."
+    filtered_by: "\nSzűrve: '{query}'. A teljes listához futtasd a `/help` parancsot."
   insights:
     invalid_days: "Érvénytelen --days érték: {value}"
     error: "Hiba a betekintések generálásakor: {error}"
@@ -1110,6 +1111,7 @@ platform:
         description: "Tokenhasználat megjelenítése ehhez a munkamenethez"
       help:
         description: "Elérhető parancsok megjelenítése"
+        arg_query: "A skills felsorolja a készségeket; szöveggel szűrhetők a parancsok"
       insights:
         arg_days: "Elemzendő napok száma (alapértelmezett: 7)"
       reload_skills:

@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Hermes 명령**\n"
     skill_header: "\n⚡ **스킬 명령** ({count}개 활성):"
     more_use_commands: "\n... 외 {count}개 더. 전체 목록은 `/commands`로 확인하세요."
+    filtered_by: "\n'{query}'(으)로 필터링됨. 전체 목록은 `/help`를 실행하세요."
   insights:
     invalid_days: "잘못된 --days 값: {value}"
     error: "인사이트 생성 중 오류: {error}"
@@ -1093,6 +1094,7 @@ platform:
         description: "이 세션의 토큰 사용량 보기"
       help:
         description: "사용 가능한 명령 보기"
+        arg_query: "skills로 스킬을 나열하거나 텍스트로 명령을 필터링합니다"
       insights:
         arg_days: "분석할 일수 (기본값: 7)"
       reload_skills:

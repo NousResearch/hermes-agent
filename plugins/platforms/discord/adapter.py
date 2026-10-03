@@ -24,6 +24,8 @@ import tempfile
 import threading
 import time
 import traceback
+from .native_commands import _NATIVE_SLASH_COMMAND_SPECS, _REQUIRED
+
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
@@ -93,80 +95,6 @@ _DISCORD_MAX_APP_COMMANDS = 100
 #   (discord name, description, [(arg, type, default-or-_REQUIRED, arg description,
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
-_REQUIRED = object()
-# Text slots hold ``platform.discord.command.*`` / ``slash.*`` catalog keys; ``_native_slash_commands()``
-# resolves them for the active language (a language change re-syncs: the fingerprint carries it).
-_NATIVE_SLASH_COMMAND_SPECS: tuple = (
-    ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
-    ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
-    ("model", "platform.discord.command.model.description",
-     (("name", str, "", "platform.discord.command.model.arg_name", None),),
-     "/model {name}", None),
-    ("reasoning", "platform.discord.command.reasoning.description",
-     (("effort", str, "", "platform.discord.command.reasoning.arg_effort",
-       # One `/reasoning <arg>` handler; Discord has no free-text subcommand, so list every value.
-       # Choice labels are (key-or-literal, value); bare level names are identifiers, not prose.
-       (("platform.discord.command.reasoning.choice_none", "none"), ("minimal", "minimal"), ("low", "low"),
-        ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
-        ("platform.discord.command.reasoning.choice_ultra", "ultra"), ("platform.discord.command.reasoning.choice_reset", "reset"),
-        ("platform.discord.command.reasoning.choice_show", "show"), ("platform.discord.command.reasoning.choice_hide", "hide"))),),
-     "/reasoning {effort}", None),
-    ("personality", "platform.discord.command.personality.description",
-     (("name", str, "", "platform.discord.command.personality.arg_name", None),),
-     "/personality {name}", None),
-    ("retry", "platform.discord.command.retry.description", (), "/retry", "platform.discord.command.retry.followup"),
-    ("undo", "platform.discord.command.undo.description", (), "/undo", None),
-    ("status", "platform.discord.command.status.description", (), "/status", "platform.discord.command.status.followup"),
-    ("sethome", "slash.sethome.description", (), "/sethome", None),
-    ("stop", "platform.discord.command.stop.description", (), "/stop", "platform.discord.command.stop.followup"),
-    ("steer", "platform.discord.command.steer.description",
-     (("prompt", str, _REQUIRED, "platform.discord.command.steer.arg_prompt", None),),
-     "/steer {prompt}", None),
-    ("plan", "platform.discord.command.plan.description",
-     (("task", str, "", "platform.discord.command.plan.arg_task", None),),
-     "/plan {task}", None),
-    ("compress", "platform.discord.command.compress.description", (), "/compress", None),
-    ("title", "platform.discord.command.title.description",
-     (("name", str, "", "platform.discord.command.title.arg_name", None),),
-     "/title {name}", None),
-    ("resume", "slash.resume.description",
-     (("name", str, "", "platform.discord.command.resume.arg_name", None),),
-     "/resume {name}", None),
-    ("usage", "platform.discord.command.usage.description", (), "/usage", None),
-    ("help", "platform.discord.command.help.description", (), "/help", None),
-    ("insights", "slash.insights.description",
-     (("days", int, 7, "platform.discord.command.insights.arg_days", None),),
-     "/insights {days}", None),
-    ("reload-mcp", "slash.reload_mcp.description", (), "/reload-mcp", None),
-    ("reload-skills", "platform.discord.command.reload_skills.description", (), "/reload-skills", None),
-    ("voice", "platform.discord.command.voice.description",
-     (("mode", str, "", "platform.discord.command.voice.arg_mode",
-       # `join` and `channel` both hit _handle_voice_channel_join; expose both to match docs.
-       (("platform.discord.command.voice.choice_join", "join"), ("platform.discord.command.voice.choice_channel", "channel"),
-        ("platform.discord.command.voice.choice_leave", "leave"), ("platform.discord.command.voice.choice_mode_on", "on"),
-        ("platform.discord.command.voice.choice_tts", "tts"), ("platform.discord.command.voice.choice_mode_off", "off"),
-        ("platform.discord.command.voice.choice_status", "status"))),),
-     "/voice {mode}", None),
-    ("update", "slash.update.description", (), "/update", "platform.discord.command.update.followup"),
-    ("restart", "platform.discord.command.restart.description", (), "/restart", "platform.discord.command.restart.followup"),
-    ("approve", "slash.approve.description",
-     (("scope", str, "", "platform.discord.command.approve.arg_scope", None),),
-     "/approve {scope}", None),
-    ("deny", "platform.discord.command.deny.description",
-     (("scope", str, "", "platform.discord.command.deny.arg_scope", None),),
-     "/deny {scope}", None),
-    # /thread: template None -> registered by _register_thread_slash (auth-gated defer).
-    ("thread", "platform.discord.command.thread.description", (), None, None),
-    ("queue", "platform.discord.command.queue.description",
-     (("prompt", str, _REQUIRED, "platform.discord.command.queue.arg_prompt", None),),
-     "/queue {prompt}", "platform.discord.command.queue.followup"),
-    ("bg", "slash.bg.description",
-     (("prompt", str, _REQUIRED, "platform.discord.command.bg.arg_prompt", None),),
-     "/bg {prompt}", "platform.discord.command.bg.followup"),
-    ("btw", "platform.discord.command.btw.description",
-     (("question", str, _REQUIRED, "platform.discord.command.btw.arg_question", None),),
-     "/btw {question}", "platform.discord.command.btw.followup"),
-)
 # Discord rejects the whole bulk sync (error 50035) when ONE description / parameter description /
 # Choice name exceeds 100 UTF-16 units, so every localized slot is cut at the cap.
 _DISCORD_APP_COMMAND_TEXT_LIMIT = 100

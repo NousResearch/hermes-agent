@@ -308,7 +308,14 @@ class PooledCredential:
     @property
     def runtime_base_url(self) -> Optional[str]:
         if self.provider == "nous":
-            return self.inference_base_url or self.base_url
+            # The operator's NOUS_INFERENCE_BASE_URL must win for every reader of the row —
+            # initial resolution AND a 401 recovery rotation (client_lifecycle._swap_credential).
+            # The stored inference_base_url cannot be trusted to carry it: the network-provenance
+            # allowlist heals that field back to production, which would send the freshly rotated
+            # bearer to a host the operator never chose.
+            from hermes_cli.auth_nous import _nous_inference_env_override
+
+            return _nous_inference_env_override() or self.inference_base_url or self.base_url
         if self.provider == "openai-codex":
             # Pool rows keep the canonical ChatGPT URL; the profile-scoped proxy override must win
             # for every reader of the row — initial resolution AND a 401/429 rotation

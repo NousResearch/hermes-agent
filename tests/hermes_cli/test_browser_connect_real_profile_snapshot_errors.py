@@ -74,3 +74,21 @@ def test_snapshot_error_names_databases_and_reason(tmp_path, monkeypatch, reason
         assert fragment in err, err
     assert "database(s) unavailable" not in err
     assert "Cookies" not in err  # only the databases that actually failed are named
+
+
+def test_snapshot_reports_macos_profile_permission_denial_not_lock(tmp_path, monkeypatch):
+    """macOS TCC denial is access guidance, not evidence that Chrome is running (#120396)."""
+    root = tmp_path / "real"
+    _fake_profile(root)
+    monkeypatch.setattr(bc, "_resolve_source_profile", lambda _src: ("Default", None))
+
+    def deny_profile_read(*_args, **_kwargs):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(bc, "open", deny_profile_read, raising=False)
+    dst, err = bc.snapshot_real_profile("chrome", src=str(root))
+
+    assert dst is None
+    assert err is not None
+    assert "Full Disk Access" in err
+    assert not err.startswith(bc._PROFILE_LOCKED_PREFIX)

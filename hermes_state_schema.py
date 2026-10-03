@@ -1179,6 +1179,9 @@ class SessionSchemaMixin:
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
+            # Savepoint: a failure part-way must not leave a half-repaired store for
+            # _init_schema to commit without the index.
+            cursor.execute("SAVEPOINT title_repair")
             try:
                 rows = cursor.execute(
                     "SELECT rowid, title, title_source, started_at FROM sessions WHERE title IN "
@@ -1203,7 +1206,10 @@ class SessionSchemaMixin:
                             cursor.execute("UPDATE sessions SET title = NULL WHERE rowid = ?", (rowid,))
                             logger.warning("Cleared duplicate %s session title %r", source, title)
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+                cursor.execute("RELEASE title_repair")
             except sqlite3.Error:
+                cursor.execute("ROLLBACK TO title_repair")
+                cursor.execute("RELEASE title_repair")
                 logger.exception("Could not repair duplicate session titles; unique title index not created")
         except sqlite3.OperationalError:
             pass  # Index already exists

@@ -43,7 +43,8 @@ class _FakeProc:
         return None
 
 
-@pytest.mark.parametrize("case", ["scoped", "not_the_gateway", "not_systemd", "no_scope", "no_wrapper", "bus_gone"])
+@pytest.mark.parametrize("case", ["scoped", "private_bus", "not_the_gateway", "not_systemd", "no_scope", "no_wrapper",
+                                  "bus_gone"])
 def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, caplog, case):
     seen: dict = {}
     monkeypatch.setattr(local_env.subprocess, "Popen",
@@ -66,6 +67,10 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: (
         None if case == "no_wrapper" else "/usr/bin/systemd-run") if name == "systemd-run" else real_which(name, *a, **k))
     monkeypatch.setattr(local_env, "_foreground_degraded_warned", False)
+    # "private_bus" = this profile's Bot Desktop published its own Xfce session bus (#125830).
+    from tools.bot_desktop import runtime as bot_desktop_runtime
+    published = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/xfce-bus"} if case == "private_bus" else {}
+    monkeypatch.setattr(bot_desktop_runtime, "published_env", lambda: published)
     # No real snapshot bootstrap (it would wait out its timeouts against the fake Popen) and
     # never a real `systemctl --user stop` from the kill path.
     monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
@@ -76,7 +81,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     proc = env._run_bash("true")
 
     argv, kwargs = seen["argv"], seen["kwargs"]
-    if case != "scoped":
+    if case not in ("scoped", "private_bus"):
         assert argv == ["/bin/bash", "-c", "true"]
         assert getattr(proc, "_hermes_scope_unit", None) is None
         assert kwargs["env"] == local_env._make_run_env(env.env)
@@ -84,7 +89,9 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         assert ("share the gateway cgroup" in caplog.text) is (case in ("no_scope", "no_wrapper", "bus_gone"))
         return
     assert argv[0].endswith("systemd-run")
-    assert argv[argv.index("--") + 1:] == ["/bin/bash", "-c", "true"]
+    # systemd-run reaches the user manager, but the command keeps the bus it was given.
+    own_bus = ["env", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/xfce-bus"] if case == "private_bus" else []
+    assert argv[argv.index("--") + 1:] == [*own_bus, "/bin/bash", "-c", "true"]
     properties = [argv[i + 1] for i, token in enumerate(argv) if token == "--property"]
     assert "MemoryAccounting=yes" in properties
     # Own cgroup, but no background-worker cap: a big foreground build must not be OOM-killed.

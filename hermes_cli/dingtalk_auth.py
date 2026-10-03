@@ -25,8 +25,11 @@ def _api_post(path: str, payload: dict) -> dict:
     url = f"{REGISTRATION_BASE_URL}{path}"
     try:
         resp = requests.post(url, json=payload, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+        finally:
+            resp.close()
     except requests.RequestException as exc:
         raise RegistrationError(f"Network error calling {url}: {exc}") from exc
     errcode = data.get("errcode", -1)

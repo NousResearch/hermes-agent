@@ -47,7 +47,8 @@ def _scan_entry_idleness(path: Path, cutoff: float) -> tuple[bool, float | None,
     boot-cost objection answered by construction. Symlinks are never followed: a link
     into the repo would make the target's activity keep the entry alive. An unreadable
     entry reports ``(True, None, None)``: an incomplete scan cannot establish that it
-    is idle, so it is kept (the pinned scan-failure semantics).
+    is idle, so it is kept (the pinned scan-failure semantics). The bytes figure is
+    approximate by design: file bytes plus the root entry's own inode size.
     """
     try:
         st = os.lstat(path)
@@ -232,22 +233,27 @@ def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[
     repos: set[str] = set()
     removed = 0
     for entry, newest, bytes_ in doomed:
+        kind = "dir" if (entry.is_dir() and not entry.is_symlink()) else "file"
         try:
-            if entry.is_dir() and not entry.is_symlink():
+            if kind == "dir":
                 repos |= _linked_worktree_repos(entry)
-                logger.info(
-                    "scratch prune: removed entry=%r kind=dir bytes=%d newest_mtime=%.0f",
-                    entry.name, bytes_ or 0, newest or 0.0,
-                )
                 shutil.rmtree(entry, ignore_errors=True)
             else:
-                logger.info(
-                    "scratch prune: removed entry=%r kind=file bytes=%d newest_mtime=%.0f",
-                    entry.name, bytes_ or 0, newest or 0.0,
-                )
                 entry.unlink()
-            removed += 1
         except OSError:
             continue
+        removed += 1
+        # The record is written only for confirmed departures: ``rmtree(ignore_errors=True)``
+        # can leave residue, and an audit trail must not claim a removal that did not happen.
+        if entry.exists():
+            logger.info(
+                "scratch prune: removal left residue entry=%r kind=%s bytes=%d newest_mtime=%.0f",
+                entry.name, kind, bytes_ or 0, newest or 0.0,
+            )
+        else:
+            logger.info(
+                "scratch prune: removed entry=%r kind=%s bytes=%d newest_mtime=%.0f",
+                entry.name, kind, bytes_ or 0, newest or 0.0,
+            )
     release_git_worktrees(repos)
     return removed

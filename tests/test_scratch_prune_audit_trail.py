@@ -27,10 +27,6 @@ def audit_records(caplog):
     return caplog
 
 
-def _records(what: str, text: str) -> list[str]:
-    return [what, text]
-
-
 def test_prune_writes_per_entry_audit_record(tmp_path, audit_records):
     """Each removed entry leaves an INFO line naming it — with size and newest mtime."""
     scratch = get_scratch_dir(tmp_path, prune=False)
@@ -44,7 +40,7 @@ def test_prune_writes_per_entry_audit_record(tmp_path, audit_records):
     assert not entry.exists()
 
     audit = [r.message for r in audit_records.records if "scratch prune" in r.message]
-    assert any("removed entry='lane-report-draft'" in m for m in audit), audit
+    assert any("removed entry='lane-report-draft'" in m and "kind=dir" in m for m in audit), audit
 
 
 def test_prune_audit_record_carries_bytes_and_mtime(tmp_path, audit_records):
@@ -134,4 +130,5 @@ def test_prune_summary_logged_at_boot_caller(tmp_path, audit_records):
 
     assert prune_scratch_dir(scratch) == 2
     summary = [r.message for r in audit_records.records if "removed 2 idle entry" in r.message]
-    assert summary, audit_records.records and [r.message for r in audit_records.records]
+    all_records = [r.message for r in audit_records.records]
+    assert summary, all_records

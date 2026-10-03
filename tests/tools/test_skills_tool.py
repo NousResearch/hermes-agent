@@ -599,6 +599,18 @@ class TestFindAllSkillsPlatformFiltering:
 
         assert names == {"universal-skill", "cross-plat"}
 
+    def test_platform_gate_applies_to_long_frontmatter(self, tmp_path):
+        # skill_view and the system-prompt index parse the whole header; the
+        # listing must hide the same skills however long the header is.
+        filler = "filler: " + "x" * 5000 + "\n"
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "long-universal", frontmatter_extra=filler)
+            _make_skill(tmp_path, "long-other-only", frontmatter_extra="platforms: [plan9]\n" + filler)
+            skills = {s["name"]: s for s in _find_all_skills()}
+
+        assert set(skills) == {"long-universal"}
+        assert skills["long-universal"]["description"] == "Description for long-universal."
+
 
 # ---------------------------------------------------------------------------
 # _find_all_skills — env-var prerequisites must not change the listing

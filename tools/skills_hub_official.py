@@ -150,6 +150,12 @@ class OptionalSkillSource(SkillSource):
             self._github = GitHubSource(auth=self._auth or GitHubAuth())
         return self._github
 
+    @property
+    def is_rate_limited(self) -> bool:
+        # Live-repo fetches go through a nested GitHubSource; surface its flag so a
+        # rate-limited install is reported as such, not as a missing skill (#130443).
+        return self._github is not None and self._github.is_rate_limited
+
     def _remote_matches(self, name: str) -> List[str]:
         return [d for d in self._list_remote_skill_dirs() if d.rsplit("/", 1)[-1] == name]
 
@@ -306,6 +312,13 @@ class HermesIndexSource(SkillSource):
         if self._github is None:
             self._github = GitHubSource(auth=self.auth)
         return self._github
+
+    @property
+    def is_rate_limited(self) -> bool:
+        # Fetches go through a nested GitHubSource; install failure classification checks each
+        # adapter's flag, and without this proxy a rate-limited fetch gets misreported as a
+        # "stale index entry — files no longer exist upstream" (#130443).
+        return self._github is not None and self._github.is_rate_limited
 
     @property
     def is_available(self) -> bool:

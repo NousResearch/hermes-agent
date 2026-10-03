@@ -287,8 +287,13 @@ class GatewaySlashCommandsMixin(
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
     def _terminal_cwd(self) -> str:
-        from tools.terminal_scope import terminal_env
-        return terminal_env("TERMINAL_CWD", str(Path.home()))
+        """The /rollback and /diff baseline tree: the scope's TERMINAL_CWD, else the launch dir.
+
+        ``Path.home()`` must NOT be the fallback — under a ``hermes -p`` chain it can point at a
+        neighbor named profile's home, and the scope refuses exactly that home as a cwd, so a
+        home default would hand /rollback and /diff the foreign tree right back (#127022)."""
+        from agent.runtime_cwd import resolve_agent_cwd
+        return str(resolve_agent_cwd())
 
     @staticmethod
     def _display_config_target(event: MessageEvent):

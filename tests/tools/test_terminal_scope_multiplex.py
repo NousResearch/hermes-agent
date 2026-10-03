@@ -302,3 +302,35 @@ def test_launch_turn_binds_terminal_scope_once_multiplexing_is_active(
     finally:
         reset_terminal_scope(token)
     assert get_terminal_scope() is None
+
+
+def test_placeholder_cwd_refuses_a_foreign_named_profile_home(tmp_path, monkeypatch):
+    """#127022: ``Path.home()`` is process-global; a gateway launched through a
+    ``hermes -p`` chain can inherit a ``HOME`` that points at ANOTHER profile's
+    home. The routed scope must not adopt it as this profile's ``TERMINAL_CWD``
+    — the placeholder stays unset and ``resolve_agent_cwd()`` falls back to the
+    process cwd, never into a neighbor profile's directory."""
+    from pathlib import Path
+
+    from tools.terminal_scope import build_profile_terminal_scope, install_and_reset_profile_terminal_scope
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    # config.yaml both inside the profile AND at the root: markers make the
+    # profiles/ parent a provable Hermes root for named_profile_home().
+    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    foreign = _profile(tmp_path, "polluted", "terminal:\n  backend: local\n")
+    routed = _profile(tmp_path, "routed", "terminal:\n  backend: local\n")
+
+    monkeypatch.setattr(Path, "home", lambda: foreign)
+    assert "TERMINAL_CWD" not in build_profile_terminal_scope(routed)
+    with install_and_reset_profile_terminal_scope(routed):
+        assert resolve_agent_cwd() == Path(os.getcwd())
+
+    # The installed profile's OWN home as $HOME is a deliberate user choice and resolves.
+    monkeypatch.setattr(Path, "home", lambda: routed)
+    assert build_profile_terminal_scope(routed)["TERMINAL_CWD"] == str(routed)
+
+    # A healthy $HOME keeps resolving exactly as the standalone gateway does.
+    healthy = tmp_path / "healthy-home"
+    monkeypatch.setattr(Path, "home", lambda: healthy)
+    assert build_profile_terminal_scope(routed)["TERMINAL_CWD"] == str(healthy)

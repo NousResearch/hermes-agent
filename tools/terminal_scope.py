@@ -167,11 +167,11 @@ def build_profile_terminal_scope(
             _apply(raw_terminal)
             image_pinned = image_pinned or "docker_image" in raw_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
-    _resolve_scope_cwd_placeholder(scope)
+    _resolve_scope_cwd_placeholder(scope, home)
     return scope
 
 
-def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
+def _resolve_scope_cwd_placeholder(scope: Dict[str, str], hermes_home: Path) -> None:
     """Give a scope with no explicit ``terminal.cwd`` the same resolved ``TERMINAL_CWD`` a standalone
     gateway computes at import (``gateway/run.py``: local backend → ``$HOME``; docker with the
     workspace mount → the host cwd signal; other backends → unset). Without it a routed turn's
@@ -182,12 +182,24 @@ def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
         return
     from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
 
+    home_fallback = str(Path.home())
+    # ``Path.home()`` is process-global: a gateway started through a ``hermes -p`` chain can
+    # inherit a ``HOME`` pointing at ANOTHER profile's home, and adopting it would pin this
+    # profile's cwd, context discovery and terminal into that profile's directory. Only the
+    # installed profile's own home is honored; any other named-profile home is refused and
+    # ``TERMINAL_CWD`` stays unset, so ``resolve_agent_cwd()`` falls back to the process cwd
+    # instead of a neighbor profile (#127022).
+    from hermes_constants import named_profile_home
+
+    stray_profile = named_profile_home(home_fallback)
+    if stray_profile is not None and stray_profile.resolve(strict=False) != hermes_home.resolve(strict=False):
+        home_fallback = ""
     resolved = resolve_placeholder_terminal_cwd(
         configured_cwd="", terminal_backend=scope.get("TERMINAL_ENV", ""),
         messaging_cwd=None,
         docker_mount_cwd_to_workspace=scope.get(
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"true", "1", "yes"},
-        home_fallback=str(Path.home()),
+        home_fallback=home_fallback,
     )
     if resolved:
         scope["TERMINAL_CWD"] = resolved

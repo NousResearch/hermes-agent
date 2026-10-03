@@ -78,6 +78,26 @@ def _parse_service_tier_config(raw: str) -> str | None:
     return tier
 
 
+#: ``--fast`` distinguishes "no fast" (None) from an unrecognized word; the config parser cannot,
+#: because both land on None and only the latter deserves a warning.
+_UNKNOWN_TIER = object()
+
+
+def _parse_cli_service_tier(raw) -> str | None | object:
+    """Parse a ``--fast`` word into a tier. None = normal, ``_UNKNOWN_TIER`` = not a tier word.
+
+    Shares ``agent.fast_mode``'s table with config, ``/fast`` and every other surface, so a new
+    tier word is one edit everywhere.
+    """
+    from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
+
+    word = str(raw or "").strip().lower()
+    if word in NORMAL_TIER_WORDS:
+        return None
+    tier = parse_service_tier(word)
+    return _UNKNOWN_TIER if tier is None else tier
+
+
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
 # singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
 _TERMINAL_ENV_MAPPINGS = {

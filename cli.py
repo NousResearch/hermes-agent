@@ -903,6 +903,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         toolsets: List[str] = None,
         provider: str = None,
         reasoning: str = None,
+        fast: str = None,
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
@@ -914,9 +915,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         pass_session_id: bool = False,
         ignore_rules: bool = False,
     ):
-        """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
+        """CLI args win over config; ``reasoning`` and ``fast`` are per-run only; ``resume`` restores history from SQLite."""
         self._init_display_options(verbose, compact)
-        self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
+        self._init_model_routing(model, toolsets, provider, reasoning, fast, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
         self._init_runtime_state(resume)
 
@@ -1527,7 +1528,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
 
-def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
+def _build_cli_from_args(model, toolsets, provider, reasoning, fast, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
@@ -1556,6 +1557,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             toolsets=toolsets_list,
             provider=provider,
             reasoning=reasoning,
+            fast=fast,
             api_key=api_key,
             base_url=base_url,
             max_turns=max_turns,
@@ -1679,6 +1681,7 @@ def main(
     model: str = None,
     provider: str = None,
     reasoning: str = None,
+    fast: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
@@ -1714,6 +1717,7 @@ def main(
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
+        fast: Fast-mode tier for this run (fast|auto|cold|ultrafast|normal). Overrides agent.service_tier.
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
@@ -1763,7 +1767,7 @@ def main(
         if not query:
             raise ValueError("--format stream-json requires -q/--query")
         quiet = True
-    cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
+    cli = _build_cli_from_args(model, toolsets, provider, reasoning, fast, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.

@@ -129,10 +129,19 @@ class _KanbanDispatcher:
 
     CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
 
+    # A triage card whose decomposition keeps failing must not be retried on
+    # every dispatcher tick forever (#118603): after this many consecutive
+    # failures the tick skips it (without spending per-tick budget) until the
+    # gateway restarts.
+    # ponytail: in-memory per process; persist a marker on the card if
+    # restarts turn the residual ≤N bills/restart into a leak again.
+    _MAX_DECOMPOSE_ATTEMPTS = 3
+
     def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        self._decompose_failures: dict[tuple[str, str], int] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -272,9 +281,17 @@ class _KanbanDispatcher:
                     except Exception as exc:
                         logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
                         triage_ids = []
+                    live = set(triage_ids)
+                    for key in [k for k in self._decompose_failures if k[0] == slug and k[1] not in live]:
+                        del self._decompose_failures[key]
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:
                             break
+                        if self._decompose_failures.get((slug, tid), 0) >= self._MAX_DECOMPOSE_ATTEMPTS:
+                            logger.debug(
+                                "kanban auto-decompose [%s]: %s skipped after %d failed attempts",
+                                slug, tid, self._MAX_DECOMPOSE_ATTEMPTS)
+                            continue
                         attempted += 1
                         successes += self._decompose_one(_decomp, slug, tid)
                 finally:
@@ -284,23 +301,33 @@ class _KanbanDispatcher:
                         os.environ["HERMES_KANBAN_BOARD"] = prev_env
         return successes
 
-    @staticmethod
-    def _decompose_one(_decomp: Any, slug: str, tid: str) -> int:
+    def _decompose_one(self, _decomp: Any, slug: str, tid: str) -> int:
         """Decompose one triage task; returns 1 on success, 0 otherwise."""
         try:
             outcome = _decomp.decompose_task(tid, author="auto-decomposer")
         except Exception:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
+            self._record_decompose_failure(slug, tid)
             return 0
         if not outcome.ok:
-            # Common no-op reasons (no aux client) must not spam logs every tick.
-            logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
+            self._record_decompose_failure(slug, tid)
+            if self._decompose_failures.get((slug, tid), 0) <= 1:
+                logger.warning("kanban auto-decompose [%s]: %s failed: %s", slug, tid, outcome.reason)
+            else:
+                # Common no-op reasons (no aux client) must not spam logs every tick.
+                logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
             return 0
+        self._decompose_failures.pop((slug, tid), None)
         if outcome.fanout and outcome.child_ids:
             logger.info("kanban auto-decompose [%s]: %s → %d children", slug, tid, len(outcome.child_ids))
         else:
             logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)
         return 1
+
+    def _record_decompose_failure(self, slug: str, tid: str) -> None:
+        """Count one more consecutive failure; the tick skips the card at the cap."""
+        key = (slug, tid)
+        self._decompose_failures[key] = self._decompose_failures.get(key, 0) + 1
 
 
 @contextlib.contextmanager

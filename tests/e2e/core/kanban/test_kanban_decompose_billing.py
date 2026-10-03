@@ -44,8 +44,6 @@ _REBILLED = r"doomed card billed \d+ aux decompose calls over >= \d+ dispatcher 
 KNOWN: dict[str, tuple[str, str]] = {
     "malformed": (_REBILLED,
                   "#118872 a triage card whose decompose reply is unusable is re-billed every tick forever"),
-    "http_500": (_REBILLED,
-                 "#118603 a triage card whose decompose call 5xxs is retried every dispatcher tick forever"),
     "test_huge_decompose_reply_is_bounded": (
         r"500-child reply created \d+ child rows \(bound \d+\)",
         "#118607 a 500-child decompose reply creates 500 child rows"),

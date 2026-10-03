@@ -1,11 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
-import { AGENTS_ROUTE } from '@/app/routes'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
@@ -21,9 +19,11 @@ import { type Translations, useI18n } from '@/i18n'
 import { todoTree } from '@/lib/todos'
 import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { toggleAgentsPanel } from '@/store/agents-panel'
 import { $billingBlock } from '@/store/billing-block'
 import {
   $statusItemsBySession,
+  BACKGROUND_POLL_MS,
   type ComposerStatusItem,
   dismissBackgroundProcess,
   groupStatusItems,
@@ -46,10 +46,6 @@ import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
 import { SubagentSection } from './subagent-section'
 import { useSubagentSnapshot } from './use-subagent-snapshot'
-
-// Slow safety-net poll for silent exits (processes without notify_on_complete
-// emit no event when they die). Only armed while a running row is on screen.
-const BACKGROUND_POLL_MS = 5_000
 
 // A localhost/loopback preview is only meaningful while its dev server is up, so
 // we tie it to a live background process rather than persisting dismissals or
@@ -111,7 +107,6 @@ interface ComposerStatusStackProps {
  */
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
-  const navigate = useNavigate()
   const storedSessionId = useStore(useSessionView().$storedId)
   const interfaceMode = useStore($interfaceMode)
   const shown = useMemo(() => shownInMode(interfaceMode), [interfaceMode])
@@ -202,7 +197,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     return () => clearInterval(timer)
   }, [hasRunningBackground, sessionId, paneVisible])
 
-  const openAgents = () => navigate(AGENTS_ROUTE)
+  const openAgents = () => toggleAgentsPanel()
 
   const openSubagent = (item: ComposerStatusItem) =>
     item.sessionId

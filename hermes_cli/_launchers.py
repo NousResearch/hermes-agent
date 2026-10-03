@@ -371,6 +371,59 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
+def _owns_windows_launcher_exe(exe: Path, repo_root: Path) -> bool:
+    """Prove that ``exe`` is a launcher for this source installation."""
+    from hermes_constants import project_venv_dir
+
+    root = Path(repo_root).resolve()
+    venv_dirs = (project_venv_dir(root), root / "venv", root / ".venv")
+    if any(venv is not None and exe_is_venv_bound(exe, venv) for venv in venv_dirs):
+        return True
+
+    import ast
+    import ntpath
+    from zipfile import BadZipFile, ZipFile
+
+    try:
+        with ZipFile(exe) as archive:
+            if archive.namelist() != ["__main__.py"]:
+                return False
+            tree = ast.parse(archive.read("__main__.py").decode("utf-8"))
+    except (OSError, BadZipFile, KeyError, UnicodeDecodeError, SyntaxError):
+        return False
+
+    owns_root = False
+    imports_bootstrap = False
+    expected_root = ntpath.normcase(ntpath.normpath(str(root)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports_bootstrap |= any(alias.name == "hermes_bootstrap" for alias in node.names)
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        method = node.func
+        if not (
+            isinstance(method, ast.Attribute)
+            and method.attr == "insert"
+            and isinstance(method.value, ast.Attribute)
+            and method.value.attr == "path"
+            and isinstance(method.value.value, ast.Name)
+            and method.value.value.id == "sys"
+        ):
+            continue
+        index, value = node.args[:2]
+        if (
+            isinstance(index, ast.Constant)
+            and isinstance(index.value, int)
+            and not isinstance(index.value, bool)
+            and index.value == 0
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            candidate = ntpath.normcase(ntpath.normpath(value.value))
+            owns_root |= candidate == expected_root
+    return owns_root and imports_bootstrap
+
+
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
@@ -378,10 +431,12 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
-            # cmd.exe prefers .exe. An older launcher must not shadow the
-            # newly published command when distlib is unavailable.
+            # cmd.exe prefers .exe. Retire an older launcher only when its
+            # ownership is proven; otherwise preserve it as externally owned.
+            stale = Path(out_dir) / f"{name}.exe"
             try:
-                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
+                if _owns_windows_launcher_exe(stale, repo_root):
+                    stale.unlink(missing_ok=True)
             except OSError:
                 return None
         return path

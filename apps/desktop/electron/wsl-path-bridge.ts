@@ -15,6 +15,34 @@ const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
+let cachedWslAvailability: null | boolean = null
+
+function isWslAvailable(): boolean {
+  if (cachedWslAvailability !== null) {
+    return cachedWslAvailability
+  }
+
+  if (!IS_WINDOWS) {
+    cachedWslAvailability = true
+
+    return cachedWslAvailability
+  }
+
+  try {
+    // Query the WSL registry key instead of invoking wsl.exe. On Windows
+    // without WSL, launching wsl.exe itself displays the install prompt.
+    execFileSync('reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss'], {
+      stdio: 'ignore',
+      timeout: 1000,
+      windowsHide: true
+    })
+    cachedWslAvailability = true
+  } catch {
+    cachedWslAvailability = false
+  }
+
+  return cachedWslAvailability
+}
 
 /**
  * WSL path eligibility belongs to the backend profile that produced the path.
@@ -48,8 +76,16 @@ export function setWslBridgeActive(active: boolean): void {
 
 export function isWslBridgeActive(profile?: null | string): boolean {
   const key = profile == null ? activeWslBridgeProfile : normalizeWslBridgeProfile(profile)
+  const configured = wslBridgeProfiles.get(key)
 
-  return wslBridgeProfiles.get(key) ?? true
+  if (configured !== undefined) {
+    return configured
+  }
+
+  const detected = isWslAvailable()
+  wslBridgeProfiles.set(key, detected)
+
+  return detected
 }
 
 /**

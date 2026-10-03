@@ -20,6 +20,13 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+// Keep long probes out of the remote command line. Windows' default OpenSSH
+// command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
+// SshConnection.exec already supports streaming stdin to the remote command.
+function powerShellStdinCommand() {
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -66,12 +73,17 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
     'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
-  ].join(';')
+  ].join('\r\n')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  const output = await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
+
+  return JSON.parse(String(output || '').trim())
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+// Marker-gate probe script: reads the install-wide update marker fail-closed
+// (missing -> CLEAR, unreadable/malformed -> UNCERTAIN) without following
+// symlinks on any path level, including the marker file itself.
+function windowsUpdateMarkerProbeScript(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
@@ -129,9 +141,16 @@ public static class HermesMarkerNoFollow {
     '}',
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
-  ].join(';')
+  ].join('\r\n')
 
-  return powerShellCommand(script)
+  return script
+}
+
+// The marker probe rides the same stdin transport as the platform probe
+// (powerShellStdinCommand): its script, with the C# no-follow reader, is far
+// over cmd.exe's 8191-char command-line limit.
+function windowsUpdateMarkerProbeStdinData(hermesHome) {
+  return `${encodedPowerShell(windowsUpdateMarkerProbeScript(hermesHome))}\r\n`
 }
 
 /**
@@ -144,7 +163,11 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
 
   try {
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(
+        await ssh.exec(powerShellStdinCommand(), {
+          stdinData: windowsUpdateMarkerProbeStdinData(hermesHome)
+        })
+      )
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)

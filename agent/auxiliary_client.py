@@ -4309,8 +4309,30 @@ def _try_main_agent_model_fallback(
     if _is_provider_unhealthy(main_provider, main_base_url):
         _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
+    # A custom-family main provider has no registry credentials of its own: resolved bare, it falls
+    # through to an unrelated API-key provider and the main model slug is then sent over that
+    # provider's wire format (glm-5.3 on the Gemini native endpoint → guaranteed 404, #131982).
+    # Recover the live main endpoint exactly like the vision auto-route, and skip the fallback when
+    # nothing is recoverable — a mis-routed main model can never succeed.
+    explicit_base: Optional[str] = None
+    explicit_key: Optional[Any] = None
+    api_mode_arg: Optional[str] = None
+    if main_provider == "custom" or main_provider in _LOCAL_SERVER_ALIASES:
+        runtime = _normalize_main_runtime(None)
+        if runtime.get("base_url"):
+            explicit_base = str(runtime["base_url"])
+            explicit_key = runtime.get("api_key") or None
+            api_mode_arg = runtime.get("api_mode") or None
+        else:
+            explicit_base, explicit_key, api_mode_arg = _resolve_custom_runtime()
+        if not explicit_base:
+            logger.info("Auxiliary %s: %s on %s — main agent provider %s has no recoverable "
+                        "endpoint, not falling back", task or "call", reason, failed_provider, main_provider)
+            return None, None, ""
     try:
-        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+        client, resolved_model = resolve_provider_client(
+            provider=main_provider, model=main_model,
+            explicit_base_url=explicit_base, explicit_api_key=explicit_key, api_mode=api_mode_arg)
     except Exception:
         client, resolved_model = None, None
     if client is None:

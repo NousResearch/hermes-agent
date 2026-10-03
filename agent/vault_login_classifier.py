@@ -147,7 +147,8 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
             continue
         if c.type not in ("text", "tel", "number", "password", ""):
             continue
-        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
+        name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", c.name)
+        if _RE_OTP.search(_normalize_text(" ".join(p for p in (name, c.label) if p))):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
     return out
 

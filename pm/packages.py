@@ -637,6 +637,7 @@ class Git(BinaryPackage):
         "linux-arm64": "POSIX uses system git by choice",
         "linux-x64-musl": "POSIX uses system git by choice",
         "linux-arm64-musl": "POSIX uses system git by choice",
+        "linux-arm64-bionic": "POSIX uses system git by choice",
         "darwin-x64": "POSIX uses system git by choice",
         "darwin-arm64": "POSIX uses system git by choice",
     }

@@ -63,7 +63,8 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
-_LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+_MESSAGE_DEDUP_CACHE_SIZE = 2_000
+_WILDCARD_WEBHOOK_HOSTS = {"0.0.0.0", "::"}
 
 
 def _redact(text: str) -> str:
@@ -131,6 +132,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._seen_message_ids: OrderedDict[str, None] = OrderedDict()
 
     # --- API helpers ---
 
@@ -146,6 +148,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     def _message_matches_mention_patterns(self, text: str) -> bool:
         return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _is_duplicate_message_id(self, message_id: str | None) -> bool:
+        """Suppress BlueBubbles' new-message + updated-message copies of one message."""
+        if not message_id:
+            return False
+        if message_id in self._seen_message_ids:
+            self._seen_message_ids.move_to_end(message_id)
+            return True
+        self._seen_message_ids[message_id] = None
+        if len(self._seen_message_ids) > _MESSAGE_DEDUP_CACHE_SIZE:
+            self._seen_message_ids.popitem(last=False)
+        return False
 
     def _clean_mention_text(self, text: str) -> str:
         """Strip a leading wake word only — patterns are regexes, so stripping anywhere later in the
@@ -251,12 +265,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """External webhook URL for BlueBubbles registration (local binds → localhost). In
-        shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
+        """Webhook callback URL. Preserve an explicit loopback family so registration reaches the
+        same socket; wildcard binds register as localhost. Shared-listener mode uses its routed URL."""
         shared = getattr(self, "_shared_ingress_url", None)
         if shared:
             return shared
-        host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
+        host = "localhost" if self.webhook_host in _WILDCARD_WEBHOOK_HOSTS else self.webhook_host
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:
@@ -575,6 +589,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         record = self._extract_payload_record(payload) or {}
         if record.get("isFromMe") or record.get("fromMe") or record.get("is_from_me"):
             return _ok()
+        message_id = self._value(record.get("guid"), record.get("messageGuid"), payload.get("messageGuid"))
+        if self._is_duplicate_message_id(message_id):
+            logger.debug("[bluebubbles] ignoring duplicate message event %s", message_id)
+            return _ok()
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
             return _ok()
@@ -599,7 +617,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                    chat_id_alt=chat_identifier)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
-            message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
+            message_id=message_id or self._value(record.get("id")),
             reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
             media_urls=media_urls, media_types=media_types)
         task = asyncio.create_task(self.handle_message(event))

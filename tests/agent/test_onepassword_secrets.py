@@ -248,12 +248,16 @@ def test_apply_missing_binary_sets_error(monkeypatch):
     assert "op CLI" in result.error
 
 
-def test_apply_sets_env(monkeypatch, tmp_path):
+@pytest.mark.parametrize("existing", [None, ""])
+def test_apply_sets_env(monkeypatch, tmp_path, existing):
     fake_op = tmp_path / "op"
     fake_op.write_text("")
     monkeypatch.setattr(op, "find_op", lambda binary_path="": fake_op)
     monkeypatch.setattr(op.subprocess, "run", lambda *a, **k: _ok("resolved-val"))
-    monkeypatch.delenv("MY_OP_KEY", raising=False)
+    if existing is None:
+        monkeypatch.delenv("MY_OP_KEY", raising=False)
+    else:
+        monkeypatch.setenv("MY_OP_KEY", existing)
 
     result = op.apply_onepassword_secrets(
         enabled=True, env={"MY_OP_KEY": "op://V/I/F"}, cache_ttl_seconds=0,
@@ -263,11 +267,12 @@ def test_apply_sets_env(monkeypatch, tmp_path):
     assert os.environ["MY_OP_KEY"] == "resolved-val"
 
 
-def test_apply_skips_before_fetch_when_not_overriding(monkeypatch, tmp_path):
+@pytest.mark.parametrize("existing", ["from-env", ""])
+def test_apply_skips_before_fetch_when_not_overriding(monkeypatch, tmp_path, existing):
     fake_op = tmp_path / "op"
     fake_op.write_text("")
     monkeypatch.setattr(op, "find_op", lambda binary_path="": fake_op)
-    monkeypatch.setenv("MY_OP_KEY", "from-env")
+    monkeypatch.setenv("MY_OP_KEY", existing)
     calls = {"n": 0}
 
     def fake_run(*a, **k):
@@ -281,7 +286,7 @@ def test_apply_skips_before_fetch_when_not_overriding(monkeypatch, tmp_path):
         override_existing=False, cache_ttl_seconds=0,
     )
     assert "MY_OP_KEY" in result.skipped
-    assert os.environ["MY_OP_KEY"] == "from-env"
+    assert os.environ["MY_OP_KEY"] == existing
     assert calls["n"] == 0  # never even called op for a value we'd discard
 
 

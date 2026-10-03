@@ -1534,13 +1534,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     try:
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
-        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+        from hermes_cli.gitlock import clear_orphaned_pack_indexes, clear_stale_git_locks, clear_stale_tmp_packs
         cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
         if cleared:
             print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        orphaned = clear_orphaned_pack_indexes(_m().PROJECT_ROOT)
+        if orphaned:
+            print("  (removed %d orphaned pack index file(s))" % len(orphaned))
         # A partial clone's on-demand fetches strand one small packfile each and never
         # consolidate on their own (#129712); fold them before this run's fetch adds more.
         _check.fold_lazy_fetch_packs(_m().PROJECT_ROOT)

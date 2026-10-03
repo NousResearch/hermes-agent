@@ -27,6 +27,8 @@ import pytest
 from hermes_cli.gitlock import (
     LOCK_NAMES,
     STALE_LOCK_MIN_AGE_SECONDS,
+    STALE_TMP_PACK_MIN_AGE_SECONDS,
+    clear_orphaned_pack_indexes,
     clear_stale_git_locks,
 )
 
@@ -114,6 +116,72 @@ def test_clear_noop_on_non_repo(tmp_path: Path) -> None:
 
 def test_clear_noop_with_no_locks(repo: Path) -> None:
     assert clear_stale_git_locks(repo) == []
+
+
+# ---- Orphaned pack members a Windows fold leaves behind (#131444) ----
+#
+# A fold's `repack -d` deletes a pack's `.pack`, but on Windows it cannot unlink an `.idx` that a
+# concurrent git process still memory-maps — git warns "unable to unlink ...: Invalid argument"
+# and the index is orphaned. Until something reclaims it, every later git invocation in the
+# checkout warns "no corresponding .pack". These pin the sweep's contract.
+
+
+def _packed(repo: Path) -> Path:
+    """Pack the repo's objects and return the pack file."""
+    subprocess.run(["git", "repack", "-q", "-a", "-d"], cwd=repo, check=True)
+    return next((repo / ".git" / "objects" / "pack").glob("pack-*.pack"))
+
+
+def _plant_orphaned_index(repo: Path, *, age_seconds: float) -> Path:
+    """Copy a real pack index to a name whose pack does not exist, then backdate it."""
+    pack = _packed(repo)
+    orphan = pack.with_name("pack-" + "0" * 40 + ".idx")
+    orphan.write_bytes(pack.with_suffix(".idx").read_bytes())
+    _touch(orphan, age_seconds)
+    return orphan
+
+
+def test_orphaned_pack_indexes_are_swept(repo: Path, no_git_running: None) -> None:
+    orphan = _plant_orphaned_index(repo, age_seconds=STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+    pack = next((repo / ".git" / "objects" / "pack").glob("pack-*.pack"))
+
+    removed = clear_orphaned_pack_indexes(repo)
+
+    assert str(orphan) in removed
+    assert not orphan.exists()
+    assert pack.exists() and pack.with_suffix(".idx").exists(), "a live pack pair must be kept"
+
+
+def test_orphaned_pack_index_sweep_skips_while_git_running(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import hermes_cli.gitlock as gitlock
+
+    monkeypatch.setattr(gitlock, "_git_proc_running", lambda: True)
+    orphan = _plant_orphaned_index(repo, age_seconds=STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+
+    assert clear_orphaned_pack_indexes(repo) == []
+    assert orphan.exists()
+
+
+def test_orphaned_pack_index_sweep_keeps_young_files(repo: Path, no_git_running: None) -> None:
+    """A young orphan may be a live repack mid-delete; the age floor keeps it."""
+    orphan = _plant_orphaned_index(repo, age_seconds=1)
+
+    assert clear_orphaned_pack_indexes(repo) == []
+    assert orphan.exists()
+
+
+def test_update_debris_cleanup_reclaims_orphaned_pack_indexes(
+        repo: Path, no_git_running: None, capfd: pytest.CaptureFixture[str]) -> None:
+    from hermes_cli.update_cmd_check import clear_git_debris
+
+    orphan = _plant_orphaned_index(repo, age_seconds=STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+
+    clear_git_debris(repo)
+
+    out = capfd.readouterr().out
+    assert "1 orphaned pack index file(s)" in out
+    assert not orphan.exists()
 
 
 # ---- Partial-clone pack-objects fetch crash (#124272) ----

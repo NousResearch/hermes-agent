@@ -19,9 +19,30 @@ REPO = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals; Windows cells live in wine2e")
 
 
-def _child(code: str, *argv: str, env: dict | None = None) -> subprocess.Popen:
+# Every child (and its children) locks a private file for THIS repo's checkout, like the
+# conftest fixture does in-process: the real one lives in the git common dir that parallel test
+# files and, from a linked worktree, the live install's `hermes update` share. A held one reads
+# as "another update is live" and recovery correctly defers to it.
+_PRIVATE_CHECKOUT_LOCK = """
+import os
+from pathlib import Path
+from hermes_cli import update_lock as _lock
+_repo, _real = Path(_lock.__file__).resolve().parents[1], _lock.checkout_lock_path
+def checkout_lock_path(install_root=None):
+    root = Path(install_root) if install_root else _repo
+    return Path(os.environ["HERMES_TEST_CHECKOUT_LOCK"]) if root.resolve() == _repo else _real(install_root)
+_lock.checkout_lock_path = checkout_lock_path
+"""
+
+
+def _child(code: str, *argv: str, env: dict) -> subprocess.Popen:
+    shim = Path(env["HERMES_HOME"]) / "checkout-lock-shim"
+    shim.mkdir(exist_ok=True)
+    (shim / "sitecustomize.py").write_text(_PRIVATE_CHECKOUT_LOCK, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(shim), str(REPO))),
+           "HERMES_TEST_CHECKOUT_LOCK": str(shim / "hermes-update.lock"), **env}
     return subprocess.Popen([sys.executable, "-c", textwrap.dedent(code), *argv], cwd=REPO, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, text=True, env={**os.environ, "PYTHONPATH": str(REPO), **(env or {})})
+                            stdout=subprocess.PIPE, text=True, env=env)
 
 
 def _orphaned_profiles(home: Path) -> dict | None:

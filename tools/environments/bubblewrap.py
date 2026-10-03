@@ -80,7 +80,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Iterable, Mapping, Sequence
 
-from hermes_constants import get_hermes_home, get_real_home
+from hermes_constants import get_hermes_home, get_real_home, get_scratch_dir
 from tools.environments import bubblewrap_home
 from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
 from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
@@ -559,6 +559,7 @@ def build_bwrap_args(
     hidden_paths: Sequence[str] | None = None,
     home_root: str | None | object = _UNRESOLVED,
     home_allow: Sequence[str] | None = None,
+    scratch_dir: str | None = None,
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
 
@@ -568,7 +569,9 @@ def build_bwrap_args(
     *home_allow* (the allowlist units) are what BubblewrapEnvironment
     resolved at construction; when omitted they are resolved from *home*
     and *hermes_home* on this call, with no PATH and no operator items,
-    which suits tests of the pure builder only. The listing of the top of
+    which suits tests of the pure builder only. *scratch_dir* is the Hermes
+    scratch directory, bound back on top of the HERMES_HOME overlay; None
+    binds nothing. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
     """
@@ -635,6 +638,14 @@ def build_bwrap_args(
     # (hermes_constants.get_subprocess_home). Both are bound read-write on
     # top of the overlays, so the rest of HERMES_HOME stays hidden.
     late: list[tuple[str, str, str]] = []
+    # The scratch dir is TMPDIR for every command, and the system prompt
+    # tells the model to put temporary files there. It lies under the
+    # hidden HERMES_HOME: left hidden, a write lands in that spawn's own
+    # tmpfs and is gone by the next command, with no error. It follows the
+    # cwd: writable with it, read-only under the restricted profile, where
+    # a write then fails where the command can see it.
+    if scratch_dir:
+        late.append(("--bind-try" if profile.writable_cwd else "--ro-bind-try", scratch_dir, scratch_dir))
     if config.home_mode in PROFILE_HOME_MODES:
         profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
         if os.path.isdir(profile_home):
@@ -965,6 +976,9 @@ class BubblewrapEnvironment(LocalEnvironment):
             self._config,
             binds=tuple(resolve_bind_dests(expand_bind_srcs(filter_binds(self._config.binds, self._hidden_paths)))),
         )
+        # Resolved once, like every other mount path. get_scratch_dir makes
+        # the directory; pruning stays with the process that owns the home.
+        self._scratch_dir = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
         self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
@@ -1269,6 +1283,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             hidden_paths=self._hidden_paths,
             home_root=self._home_root,
             home_allow=self._home_allow,
+            scratch_dir=self._scratch_dir,
         )
 
     def _reset_masked_cwd(self) -> str | None:

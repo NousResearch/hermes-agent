@@ -501,7 +501,9 @@ class TestHermesHomeIntegration:
             assert state_dir.parent == hermes_home / "sandboxes"
             out = env.execute(f"cat {hermes_home}/config.yaml {hermes_home}/.env; ls -A {hermes_home}")["output"]
             assert MARKER not in out
-            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["sandboxes"]
+            # Besides the state dir only the scratch dir shows through the overlay.
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["cache", "sandboxes"]
+            assert env.execute(f"ls -A {hermes_home}/cache")["output"].split() == ["scratch"]
             assert env.execute(f"ls -A {hermes_home}/sandboxes")["output"].split() == [state_dir.name]
         finally:
             env.cleanup()
@@ -522,7 +524,7 @@ class TestHermesHomeIntegration:
             assert MARKER not in out
             # Off the allowlist, so it does not exist in the sandbox at all.
             assert env.execute(f"ls -A {default_home} 2>/dev/null")["output"].split() == []
-            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["sandboxes"]
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["cache", "sandboxes"]
         finally:
             env.cleanup()
         assert (default_home / ".env").read_text() == f"DEFAULT_MARKER={MARKER}\n"
@@ -588,7 +590,7 @@ class TestHomeModeIntegration:
             result = env.execute("touch $HOME/probe")
             assert result["returncode"] == 0, result["output"]
             assert (profile_home / "probe").is_file()
-            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"home", "sandboxes"}
+            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"cache", "home", "sandboxes"}
             out = env.execute(f"cat {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null")["output"]
             assert MARKER not in out
         finally:
@@ -600,7 +602,7 @@ class TestHomeModeIntegration:
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
             assert str(profile_home) not in env._wrap_popen_args(["bash"])
-            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["sandboxes"]
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["cache", "sandboxes"]
             # The dir is absent inside the HERMES_HOME tmpfs; a write there stays in the tmpfs.
             assert env.execute(f"test -e {profile_home}")["returncode"] != 0
             assert env.execute(f"mkdir -p {profile_home} && touch {profile_home}/probe")["returncode"] == 0
@@ -670,7 +672,7 @@ class TestHomeModeIntegration:
             assert env.execute("cd sub")["returncode"] == 0
             assert env.execute("pwd")["output"].strip() == str(work_dir / "sub")
             assert env.execute(f"ls -A {default_home}")["output"].split() == ["profiles"]
-            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"home", "sandboxes"}
+            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"cache", "home", "sandboxes"}
             out = env.execute(
                 f"cat {default_home}/.env {default_home}/auth.json {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null"
             )["output"]
@@ -926,3 +928,49 @@ class TestHomeDefaultDenyIntegration:
             assert MARKER not in env.execute(f"cat {deny_home}/.config/gh/hosts.yml 2>&1")["output"]
         finally:
             env.cleanup()
+
+
+@needs_bwrap
+class TestScratchDirIntegration:
+    """TMPDIR points at HERMES_HOME/cache/scratch, which the overlay would hide:
+    a write there must be on disk for the next command."""
+
+    def test_scratch_file_written_in_one_command_is_read_in_the_next(self, work_dir, hermes_home):
+        scratch = hermes_home / "cache" / "scratch"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            # The test runner sets its own TMPDIR, so the commands name the
+            # scratch path that a Hermes process exports as TMPDIR.
+            result = env.execute(f"printf kept > {scratch}/scratch-probe")
+            assert result["returncode"] == 0, result["output"]
+            assert env.execute(f"cat {scratch}/scratch-probe")["output"].strip() == "kept"
+            made = env.execute(f"TMPDIR={scratch} mktemp")["output"].strip()
+            assert made.startswith(str(scratch) + os.sep)
+            assert env.execute(f"test -f {made}")["returncode"] == 0
+        finally:
+            env.cleanup()
+        assert (scratch / "scratch-probe").read_text() == "kept"
+
+    def test_scratch_is_read_only_under_the_restricted_profile(self, work_dir, hermes_home):
+        scratch = hermes_home / "cache" / "scratch"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(profile="restricted"))
+        try:
+            result = env.execute(f"printf no > {scratch}/scratch-probe")
+            assert result["returncode"] != 0
+            assert "Read-only file system" in result["output"]
+        finally:
+            env.cleanup()
+        assert not (scratch / "scratch-probe").exists()
+
+    def test_scratch_under_the_default_home_survives_the_home_layout(self, sandbox_root, work_dir, fake_home, monkeypatch):
+        hermes_home = fake_home / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            scratch = hermes_home / "cache" / "scratch"
+            assert env.execute(f"printf kept > {scratch}/scratch-probe")["returncode"] == 0
+            assert env.execute(f"cat {scratch}/scratch-probe")["output"].strip() == "kept"
+        finally:
+            env.cleanup()
+        assert (hermes_home / "cache" / "scratch" / "scratch-probe").read_text() == "kept"

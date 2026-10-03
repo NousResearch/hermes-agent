@@ -7,6 +7,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import asyncio
 import concurrent.futures
 import logging
+from contextlib import suppress
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -67,23 +68,33 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
     ``auto_context_length = 0`` ("auto-detected: unknown").
     """
     from agent.model_metadata import get_model_context_length
+    from tools.daemon_pool import DaemonThreadPoolExecutor
 
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
+    # Daemon workers: an abandoned probe must neither block the response nor
+    # pin a non-daemon thread (and its atexit join) until GC (#128969). Same
+    # shape as tools/skills_hub_search.py.
+    pool = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
+    future = pool.submit(
+        get_model_context_length, model=model, base_url=base_url, provider=provider,
+        config_context_length=None
+    )
     try:
-        return pool.submit(
-            get_model_context_length, model=model, base_url=base_url, provider=provider,
-            config_context_length=None
-        ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
+        return future.result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
     except concurrent.futures.TimeoutError:
         _log.warning(
             "GET /api/model/info: context-length probe for %r at %s exceeded %.1fs — returning unknown",
             model, base_url or "<default>", _MODEL_INFO_PROBE_BUDGET_S,
         )
+        with suppress(Exception):
+            future.cancel()
         return 0
     finally:
         # wait=False: never block the response (or interpreter exit) on the
         # abandoned probe.
-        pool.shutdown(wait=False)
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)
 
 
 @router.get("/api/model/info")

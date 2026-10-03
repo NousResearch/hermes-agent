@@ -2008,9 +2008,19 @@ class CLICommandsMixin:
 
         def done():
             self._background_tasks.pop(task_id, None)
-            if not self._agent_running:  # clear spinner only if no foreground agent owns it
-                self._spinner_text = ""
+            try:
+                if not self._agent_running:  # clear spinner only if no foreground agent owns it
+                    self._spinner_text = ""
+            except Exception:
+                pass
+            # Opportunistic sweep: drop any other dead entries left by an
+            # abnormal exit so the dict stays bounded to live threads (#128969).
+            try:
+                self._reclaim_background_tasks()
+            except Exception:
+                pass
 
+        self._reclaim_background_tasks()
         thread = self._side_worker(
             produce, name=f"bg-task-{task_id}", fail_label=_t("background.label", number=task_num),
             header_lines=[f"  {_t('background.complete', number=task_num)}",
@@ -2018,7 +2028,13 @@ class CLICommandsMixin:
             title_suffix=_t("background.title_suffix", number=task_num),
             empty_note=f"  {_t('background.no_response')}", bell=True, on_done=done)
         self._background_tasks[task_id] = thread
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            # start() failure would otherwise leave an unstarted thread
+            # reference behind forever; drop it before propagating (#128969).
+            self._background_tasks.pop(task_id, None)
+            raise
 
     def _side_worker(self, produce, *, name, fail_label, header_lines, title_suffix, empty_note,
                      bell=False, on_done=None, console=None) -> threading.Thread:
@@ -2047,6 +2063,33 @@ class CLICommandsMixin:
                     self._invalidate(min_interval=0)
 
         return threading.Thread(target=run, daemon=True, name=name)
+
+    def _reclaim_background_tasks(self) -> int:
+        """Drop finished ``/bg`` thread references; return the number reclaimed.
+
+        Entries are normally removed by the finishing thread's ``on_done``
+        callback, but a ``start()`` failure, an abnormal exit, or a missed
+        callback would otherwise pin the dead ``Thread`` object until process
+        exit. Only threads that demonstrably ran and died are reaped
+        (``ident is not None and not is_alive()``); never-started stand-ins
+        and live threads are kept. Best-effort: never raises (#128969).
+        """
+        tasks = getattr(self, "_background_tasks", None)
+        if not isinstance(tasks, dict) or not tasks:
+            return 0
+        reclaimed = 0
+        for task_id, thread in list(tasks.items()):
+            try:
+                is_alive = thread.is_alive() if callable(getattr(thread, "is_alive", None)) else None
+            except Exception:
+                continue
+            if is_alive is False and getattr(thread, "ident", None) is not None:
+                try:
+                    tasks.pop(task_id, None)
+                    reclaimed += 1
+                except Exception:
+                    pass
+        return reclaimed
 
     def _handle_login_command(self, cmd_original: str) -> None:
         """Start an in-chat sign-in without blocking the input loop while approval is pending."""

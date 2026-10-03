@@ -68,9 +68,12 @@ def _probe_single_zai_endpoint(api_key: str, endpoint: tuple, timeout: float) ->
 
 def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
     """Probe z.ai endpoints in parallel; first working one in ZAI_ENDPOINTS priority order, or None."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
+    from tools.daemon_pool import DaemonThreadPoolExecutor
     # No `with`: it would join ALL probes on exit, defeating the early return below.
-    pool = ThreadPoolExecutor(max_workers=len(ZAI_ENDPOINTS))
+    # Daemon workers so an abandoned probe never pins a non-daemon thread (and its
+    # atexit join) until GC; pending futures are cancelled on the way out (#128969).
+    pool = DaemonThreadPoolExecutor(max_workers=len(ZAI_ENDPOINTS), thread_name_prefix="zai-probe")
     try:
         futures = {pool.submit(_probe_single_zai_endpoint, api_key, ep, timeout): ep[0] for ep in ZAI_ENDPOINTS}
         by_id = {ep_id: f for f, ep_id in futures.items()}
@@ -98,7 +101,10 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
                 return winner
         return _first_ready(require_done=False)
     finally:
-        pool.shutdown(wait=False)
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)
 
 
 def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:

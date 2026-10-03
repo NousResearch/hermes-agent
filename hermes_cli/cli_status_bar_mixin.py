@@ -266,8 +266,12 @@ class CLIStatusBarMixin:
                 pass
 
         # Live /bg tasks: entries are removed in the task thread's finally block; dict len()
-        # is atomic in CPython, no lock needed.
+        # is atomic in CPython, no lock needed. Opportunistically reap dead
+        # references first so a missed callback can't pin them until exit (#128969).
         try:
+            reclaim = getattr(self, "_reclaim_background_tasks", None)
+            if callable(reclaim):
+                reclaim()
             bg_tasks = getattr(self, "_background_tasks", None)
             if bg_tasks:
                 snapshot["active_background_tasks"] = len(bg_tasks)

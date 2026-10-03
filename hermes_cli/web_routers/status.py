@@ -243,16 +243,28 @@ def _bounded_health_probe():
     """Health probe with the route's blocking-call budget preserved. The resolver only
     reaches this rung when the local PID probe came up empty, so the timeout is paid at
     most once per request and only in the cross-container case that needs it."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_probe_gateway_health)
+    from contextlib import suppress
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+    # Daemon workers + wait=False (never `with`): a hung probe must neither
+    # stall the response past its budget nor pin a non-daemon thread until
+    # GC (#128969). Same shape as tools/skills_hub_search.py.
+    pool = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="gateway-health-probe")
+    future = pool.submit(_probe_gateway_health)
+    try:
+        return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        _log.warning("/api/status gateway health probe exceeded %.2fs; using local status",
+                     _GATEWAY_HEALTH_ROUTE_TIMEOUT)
+        with suppress(Exception):
+            future.cancel()
+        return False, None
+    except Exception:
+        return False, None
+    finally:
         try:
-            return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            _log.warning("/api/status gateway health probe exceeded %.2fs; using local status",
-                         _GATEWAY_HEALTH_ROUTE_TIMEOUT)
-            return False, None
-        except Exception:
-            return False, None
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)
 
 
 def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | None",

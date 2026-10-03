@@ -356,6 +356,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
     _may_retry, _attempts, _backoff = completion_retry_state(root)
+    deferred = False
     if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
         # The tail has failed often enough that every relaunch re-running it
         # does more harm than good (#122206: "every launch burns ~4 minutes").
@@ -387,9 +388,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                     # Relaunching would land back here and sync again, forever.
                     raise RuntimeError("dependency sync left this install out of date")
             else:
-                _finish_source_update(root, current=current, pending=pending)
+                deferred = _finish_source_update(root, current=current, pending=pending)
         finally:
             lock.release()
+    if deferred:
+        return None
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
@@ -410,7 +413,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
-def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
+def _finish_source_update(root: Path, *, current: bool, pending: Path) -> bool:
     """Sync dependencies when they are stale, then run the tail the marker still owes."""
     import sys
     from hermes_cli._early_recovery import _marker_owner_is_live
@@ -436,7 +439,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
                     f"{exc}",
                     file=sys.stderr, flush=True,
                 )
-                return
+                return True
             raise
     else:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
@@ -465,6 +468,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
             "source update completion failed; run `hermes update` to finish it"
         )
     clear_completion(root)
+    return False
 
 
 def _sync_source_dependencies(root: Path, *, arm: bool) -> None:

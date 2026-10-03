@@ -85,3 +85,43 @@ def test_developer_checkout_skips_managed_runtime_warning(tmp_path, monkeypatch)
     (checkout / ".git").mkdir(parents=True)
     monkeypatch.setattr(pm, "activate", lambda: pytest.fail("dev checkout activated managed runtime"))
     assert venv_sync.check_runtime(checkout) is None
+
+
+def test_prepare_launch_deferral_does_not_publish_root_owned_launchers(tmp_path, monkeypatch, capsys):
+    import pm
+    from hermes_cli import _early_recovery, _launchers, steward, update_lock
+
+    root = tmp_path / "checkout"
+    (root / ".git").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", encoding="utf-8")
+    published = []
+
+    monkeypatch.setattr(steward, "read_install_stamp", lambda root: {"updateMechanism": "self"})
+    monkeypatch.setattr(pm, "venv_is_current", lambda *, project_root: False)
+    monkeypatch.setattr(venv_sync, "completion_pending_path", lambda root: tmp_path / "pending")
+    monkeypatch.setattr(venv_sync, "completion_retry_state", lambda root: (True, 0, 0))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(venv_sync, "_sync_source_dependencies",
+                        lambda root, *, arm: (_ for _ in ()).throw(
+                            RuntimeError("refusing to update /checkout: /checkout/venv is owned by uid 1001, not the current uid 0")))
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda root: published.append(root))
+    monkeypatch.setattr(venv_sync.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(_early_recovery, "_marker_owner_is_live", lambda marker: False)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/managed/python"))
+    monkeypatch.setattr(
+        update_lock,
+        "UpdateLock",
+        type(
+            "Lock",
+            (),
+            {
+                "acquired": True,
+                "acquire": lambda self: True,
+                "release": lambda self: None,
+            },
+        ),
+    )
+
+    assert venv_sync.prepare_launch(root, ["run"]) is None
+    assert published == []
+    assert "deferring source-update dependency completion" in capsys.readouterr().err

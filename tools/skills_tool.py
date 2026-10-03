@@ -488,14 +488,51 @@ def _rank_same_root_candidate(candidate, root: Path) -> tuple:
     return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
 
 
+def _skill_copy_content(skill_md: Path) -> dict:
+    """Compare package content, not generated artifacts or a legacy flat file's siblings."""
+    import stat
+
+    def digest(path):
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").digest()
+
+    content = {"SKILL.md": digest(skill_md)}
+    if skill_md.name != "SKILL.md":
+        return content
+
+    def unreadable(error):
+        raise error
+
+    for directory, dirs, files in os.walk(skill_md.parent, onerror=unreadable):
+        dirs[:] = [d for d in dirs if d not in _EXCLUDED_SKILL_DIRS]
+        # os.walk does not follow directory links. Silently omitting their content
+        # would prove equality without comparing what the skill can actually load.
+        if any((Path(directory) / d).is_symlink() for d in dirs):
+            raise OSError("Cannot establish skill-copy identity through a directory link")
+        for name in files:
+            if name == ".DS_Store" or (
+                name.endswith((".pyc", ".pyo")) and (Path(directory) / name).with_suffix(".py").is_file()
+            ):
+                continue
+            path = Path(directory) / name
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise OSError("Cannot establish skill-copy identity for a non-regular file")
+            content[path.relative_to(skill_md.parent).as_posix()] = digest(path)
+    return content
+
+
 def _provably_same_skill(candidates) -> bool:
-    """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
-    or byte-identical content (copy). Anything else is two different skills sharing a name,
-    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
+    """Only collapse copies with matching instructions AND support files (#119959).
+
+    Known runtime caches and Finder metadata are not package content: including
+    them would make running an unchanged skill turn its copies into an ambiguity.
+    """
     try:
-        if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
-            return True
-        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
+        if len({os.path.realpath(smd.parent) for _sd, smd in candidates}) == 1:
+            if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
+                return True  # aliases of the whole package, not just SKILL.md
+        contents = [_skill_copy_content(smd) for _sd, smd in candidates]
+        return all(content == contents[0] for content in contents[1:])
     except OSError:
         return False
 

@@ -94,6 +94,9 @@ _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
     "claude-opus-4-5", "claude-opus-4.5", "claude-sonnet-4-5", "claude-sonnet-4.5", "claude-haiku-4-5",
     "claude-haiku-4.5",
 )
+# Bare 4.0 slugs (``claude-sonnet-4``, ``anthropic/claude-opus-4``). A substring would also match
+# 4.5 / 4.6+, so the version must not continue with another digit.
+_LEGACY_MANUAL_THINKING_CLAUDE_BARE_RE = re.compile(r"claude-(?:opus|sonnet)-4(?![-.]?\d)", re.IGNORECASE)
 # Adaptive families that reject the "xhigh" effort (arrived with Opus 4.7) and still accept
 # sampling params.
 _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-sonnet-4-6", "claude-sonnet-4.6")
@@ -166,12 +169,17 @@ def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length
     )
 
 
+def _is_legacy_manual_thinking(model: str) -> bool:
+    return (_model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+            or bool(_LEGACY_MANUAL_THINKING_CLAUDE_BARE_RE.search(model)))
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
     """True for Claude models using adaptive thinking (4.6+): unknown Claude models default to
     adaptive, the explicit legacy list stays manual, and non-Claude models return False — except
     Kimi/Moonshot, whose Anthropic-compatible endpoints implement the adaptive contract."""
     return _model_name_is_kimi_family(model) or (
-        _is_claude_model(model) and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+        _is_claude_model(model) and not _is_legacy_manual_thinking(model)
     )
 
 
@@ -198,8 +206,8 @@ def _forbids_sampling_params(model: str) -> bool:
     """True for models that 400 on any non-default temperature/top_p/top_k (Opus 4.7 and later;
     unknown Claude defaults to forbidding). The 4.6 family and the legacy manual-thinking families
     still accept them. Callers omit the fields entirely — the API rejects anything non-null."""
-    return _is_claude_model(model) and not _model_matches(
-        model, _NO_XHIGH_CLAUDE_SUBSTRINGS + _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS
+    return _is_claude_model(model) and not (
+        _model_matches(model, _NO_XHIGH_CLAUDE_SUBSTRINGS) or _is_legacy_manual_thinking(model)
     )
 
 

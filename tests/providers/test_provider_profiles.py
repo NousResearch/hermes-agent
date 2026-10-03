@@ -71,6 +71,20 @@ class TestOpenRouterProfile:
         )
         assert tl == {"verbosity": "high"}
 
+    def test_bare_claude_4_slugs_route_like_their_dated_alias(self):
+        """``anthropic/claude-sonnet-4`` is Sonnet 4.0, same as the dated id: reasoning stays optional
+        and is sent as ``reasoning``, not rerouted to ``verbosity`` like the 4.6+ families."""
+        p = get_provider_profile("openrouter")
+
+        def extras(model):
+            return p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"}, supports_reasoning=True, model=model)
+
+        for bare, dated in (("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-20250514"),
+                            ("anthropic/claude-opus-4", "anthropic/claude-opus-4-20250514")):
+            assert extras(bare) == extras(dated)
+        assert extras("anthropic/claude-sonnet-4.6") != extras("anthropic/claude-sonnet-4-20250514")
+
     def test_speed_tier_slugs_pin_endpoints_and_rewrite_wire_model(self):
         """Nous-style ``-fast``/``-flex`` slugs are OpenRouter ENDPOINTS of the base model: the wire
         model must be the base slug and ``provider.only`` must select exactly that tier, while the

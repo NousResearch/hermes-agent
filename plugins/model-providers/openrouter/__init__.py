@@ -1,6 +1,7 @@
 """OpenRouter provider profile."""
 
 import logging
+import re
 from typing import Any
 
 from agent.portal_tags import get_affinity_scope, get_conversation_context
@@ -27,6 +28,9 @@ _ANTHROPIC_REASONING_OPTIONAL_SUBSTRINGS = (
     "claude-sonnet-4-5", "claude-sonnet-4.5",
     "claude-haiku-4-5", "claude-haiku-4.5",
 )
+# Bare 4.0 slugs (``anthropic/claude-sonnet-4``, ``claude-opus-4:beta``). A plain substring would
+# also match 4.5 / 4.6+, so the version must not continue with another digit.
+_CLAUDE_4_0_BARE_RE = re.compile(r"claude-(?:opus|sonnet)-4(?![-.]?\d)")
 
 
 def _anthropic_reasoning_is_mandatory(model: str | None) -> bool:
@@ -34,7 +38,8 @@ def _anthropic_reasoning_is_mandatory(model: str | None) -> bool:
     m = (model or "").lower()
     if not m.startswith(("anthropic/", "claude")) and "claude" not in m:
         return False
-    return not any(sub in m for sub in _ANTHROPIC_REASONING_OPTIONAL_SUBSTRINGS)
+    return not (any(sub in m for sub in _ANTHROPIC_REASONING_OPTIONAL_SUBSTRINGS)
+                or _CLAUDE_4_0_BARE_RE.search(m))
 
 
 def _sticky_key(session_id: str | None) -> str | None:

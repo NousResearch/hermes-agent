@@ -1,7 +1,7 @@
 ---
 name: sdlc-review
 description: Review Kanban handoffs and route verified outcomes.
-version: 1.1.0
+version: 1.1.1
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -98,6 +98,8 @@ For code work:
 4. Check error handling, edge cases, concurrency boundaries, data preservation, security boundaries, and cross-platform behavior relevant to the change.
 5. Confirm that tests assert behavior rather than merely snapshotting source text or constants.
 
+Review workers commonly run in unattended single-query mode. Its terminal safety gate correctly refuses commands that would need a human approval, including executable heredocs. Do not weaken or work around that gate. Prefer evidence already carried in the handoff as literal output with the producing command named beside it. If live execution is essential, reduce it to one plain, read-only command. When neither form is available, continue with artifact and contract checks and record the exact unverified claim in the verdict; re-execution is corroboration, not a prerequisite for every review.
+
 For non-code work:
 
 1. Inspect the complete deliverable rather than only its summary.
@@ -165,6 +167,7 @@ Do not edit the implementation while acting as reviewer. Request changes and let
 - **Skipping prior rounds:** Re-review must confirm both the requested corrections and preservation of previously passing behavior.
 - **Using blockers for ordinary rework:** Correctable defects belong in `kanban_request_changes`; reserve `kanban_block` for genuine external blockers or human decisions.
 - **Completing without evidence:** Every approval summary must name the checks or artifacts actually inspected.
+- **Bypassing an unattended safety refusal:** Do not turn a refused heredoc into a script file or a different multi-command shell payload. Use literal handoff output, one plain read-only command, or disclose the verification gap.
 
 ## Verification
 

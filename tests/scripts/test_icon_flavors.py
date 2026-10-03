@@ -107,6 +107,12 @@ def tile_color(image):
     return max(pixels, key=lambda rgb: max(rgb) - min(rgb))
 
 
+def is_dark_tile(path):
+    # `-dark` outputs and the MSIX dark-theme form (`_altform-unplated`; the
+    # light theme's is `_altform-lightunplated`) carry the dark tile.
+    return "dark" in path.name or path.name.endswith("_altform-unplated.png")
+
+
 def assert_same_geometry(original, flavored):
     assert original.size == flavored.size
     assert original.getchannel("A").tobytes() == flavored.getchannel("A").tobytes()
@@ -152,16 +158,18 @@ def test_canary_changes_only_desktop_background_preserving_art_and_native_geomet
             assert_same_geometry(original, yellow)
             hue, saturation, value = colorsys.rgb_to_hsv(*(v / 255 for v in tile_color(yellow)))
             assert 0.10 < hue < 0.18 and saturation > 0.65, (path, yellow.size, tile_color(yellow))
-            assert (value < 0.4) if "dark" in path.name else (value > 0.8), (path, yellow.size, tile_color(yellow))
+            assert (value < 0.4) if is_dark_tile(path) else (value > 0.8), (path, yellow.size, tile_color(yellow))
             # Compare art in direct renders. Tiny container frames use LANCZOS,
             # whose ringing legitimately depends on adjacent background colors.
             if path.suffix == ".png" and original.width >= 256:
-                ink = (255, 255, 255, 255) if "dark" in path.name else (0, 0, 0, 255)
+                ink = (255, 255, 255, 255) if is_dark_tile(path) else (0, 0, 0, 255)
                 assert [p == ink for p in original.get_flattened_data()] == [p == ink for p in yellow.get_flattened_data()]
     assert_unbranded_outputs(stable, canary)
 
 
-def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(generate):
+def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(generate, monkeypatch):
+    module = load_generator(monkeypatch)
+    (gx, gy), badge_min_size = module.BADGE_GLYPH_ORIGIN, module.BADGE_MIN_SIZE
     stable = generate("v1.2.3")
     first = generate(commit="0123456" + "a" * 33)
     changed = generate(commit="abcdef9" + "a" * 33)
@@ -180,12 +188,16 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
             assert_same_geometry(original, red)
             hue, saturation, value = colorsys.rgb_to_hsv(*(v / 255 for v in tile_color(red)))
             assert (hue < 0.05 or hue > 0.95) and saturation > 0.6, (rel, tile_color(red))
-            assert (value < 0.4) if "dark" in path.name else (value > 0.8), (rel, red.size, tile_color(red))
+            assert (value < 0.4) if is_dark_tile(path) else (value > 0.8), (rel, red.size, tile_color(red))
             # No SHA change may move the tile/art or alter the region below its top quarter.
             bbox = red.getchannel("A").point(lambda a: 255 if a >= 128 else 0).getbbox()
             diff = ImageChops.difference(red.convert("RGB"), other.convert("RGB")).convert("L")
             opaque = red.getchannel("A").point(lambda a: 255 if a >= 128 else 0)
             changed_box = ImageChops.multiply(diff, opaque).getbbox()
+            if path.suffix == ".png" and red.width < badge_min_size:
+                # Direct renders this small carry no badge at all, so the SHA is invisible.
+                assert changed_box is None, (rel, red.size)
+                continue
             assert changed_box is not None, (rel, red.size)
             assert changed_box[1] >= bbox[1]
             assert changed_box[3] <= bbox[1] + (bbox[3] - bbox[1]) * 0.25 + 3
@@ -208,7 +220,7 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
             judged = 0
             for y, row in enumerate(rows):
                 for x in range(5):
-                    point = (184 + (digit * 6 + x) * 16 + 8, 48 + y * 16 + 8)
+                    point = (gx + (digit * 6 + x) * 16 + 8, gy + y * 16 + 8)
                     if unbadged.getpixel(point) == art:
                         continue
                     judged += 1
@@ -340,3 +352,32 @@ def test_mac_mask_offset_keeps_the_ring_geometry_honest(monkeypatch):
     for (ox, oy), (ix, iy) in zip(outline, inner, strict=True):
         assert math.hypot(ox - ix, oy - iy) == pytest.approx(thickness, abs=1e-6)
         assert 0 <= ox <= canvas and 0 <= oy <= canvas
+
+
+def test_msix_logos_resolve_every_slot_windows_draws(generate, monkeypatch):
+    """Windows picks `<Logo>.scale-N` / `.targetsize-N` by qualifier; the manifest
+    only names the bases. Every base the manifest references must therefore have
+    its scaled siblings at Microsoft's pixel sizes (never an upscaled 44px), and
+    the theme forms must be real variants: dark theme (unplated) gets the dark
+    tile, light theme the light one — the unqualified file stays light."""
+    module = load_generator(monkeypatch)
+    appx = generate("v1.2.3") / module.APPX_DIR
+    for name, base in module.APPX_LOGOS.items():
+        for scale in module.APPX_SCALES:
+            qualifier = "" if scale == 100 else f".scale-{scale}"
+            image = Image.open(appx / f"{name}{qualifier}.png")
+            expected = tuple(module.appx_scaled(side, scale) for side in (base if isinstance(base, tuple) else (base, base)))
+            assert image.size == expected, (name, scale, image.size)
+    # Microsoft's own table: 150 @ 125% is 188, not 187.
+    assert module.appx_scaled(150, 125) == 188 and module.appx_scaled(44, 400) == 176
+    assert {48, 256} <= set(module.APPX_TARGET_SIZES)  # taskbar @200% and the largest Start pin
+    light_plate = Image.open(appx / "Square44x44Logo.png").convert("RGBA").getpixel((2, 22))[:3]
+    for size in module.APPX_TARGET_SIZES:
+        plain = Image.open(appx / f"Square44x44Logo.targetsize-{size}.png").convert("RGBA")
+        dark = Image.open(appx / f"Square44x44Logo.targetsize-{size}_altform-unplated.png").convert("RGBA")
+        light = Image.open(appx / f"Square44x44Logo.targetsize-{size}_altform-lightunplated.png").convert("RGBA")
+        assert plain.size == dark.size == light.size == (size, size)
+        edge = (max(1, size // 24), size // 2)  # on the plate, left of the girl
+        assert light.getpixel(edge)[:3] == plain.getpixel(edge)[:3] == light_plate == (255, 255, 255), size
+        dark_plate = dark.getpixel(edge)
+        assert dark_plate[3] == 255 and max(dark_plate[:3]) < 60, (size, dark_plate)

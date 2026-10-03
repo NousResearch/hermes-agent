@@ -20,6 +20,7 @@ from hermes_cli.update_channel import (
     resolve_update_channel,
     set_install_channel,
     stale_channel_records,
+    unconfigured_main_default_notice,
 )
 
 
@@ -65,6 +66,31 @@ def test_dynamic_channel_parser_and_per_install_round_trip(tmp_path, monkeypatch
             resolve_update_channel(_config_for(root, invalid), root)
         with pytest.raises(SystemExit):
             parser.parse_args(["update", "--channel", invalid])
+
+
+class TestUnconfiguredMainDefaultNotice:
+    """#124584: an install nobody ever pointed at a channel silently rides
+    main. The notice fires exactly where resolve_update_channel's own
+    fallthrough would land on main, and nowhere a real choice was made."""
+
+    def test_no_record_and_no_stamp_warns(self, tmp_path):
+        root = tmp_path / "source"
+        root.mkdir()
+        assert resolve_update_channel(None, root) == CHANNEL_MAIN
+        notice = unconfigured_main_default_notice(None, root)
+        assert notice is not None
+        assert "--set-channel stable" in notice
+
+    def test_configured_record_silences_it_even_for_main(self, tmp_path):
+        root = tmp_path / "source"
+        root.mkdir()
+        assert unconfigured_main_default_notice(_config_for(root, CHANNEL_STABLE), root) is None
+        assert unconfigured_main_default_notice(_config_for(root, CHANNEL_MAIN), root) is None
+
+    def test_package_install_never_warns(self, tmp_path):
+        root = tmp_path / "bundle"
+        _stamp(root, "electron-updater", "v1.2.3")
+        assert unconfigured_main_default_notice(None, root) is None
 
 
 class TestInstallId:

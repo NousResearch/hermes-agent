@@ -660,7 +660,14 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
 
     selected_channel = _source_update_channel(channel=channel, branch_explicit=branch_explicit)
     if not branch_explicit:
-        branch = _check.channel_compare_branch(selected_channel, git_cmd, root)
+        notice = None
+        if channel is None:
+            from hermes_cli.config import get_config_path, require_readable_config_before_write
+            from hermes_cli.update_channel import unconfigured_main_default_notice
+
+            notice = unconfigured_main_default_notice(
+                require_readable_config_before_write(get_config_path()), root)
+        branch = _check.channel_compare_branch(selected_channel, git_cmd, root, notice)
         if branch is None:
             return
 
@@ -1489,11 +1496,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         from copy import deepcopy
         from hermes_cli.config import require_readable_config_before_write
-        from hermes_cli.update_channel import channel_record
+        from hermes_cli.update_channel import channel_record, unconfigured_main_default_notice
 
-        original_record = deepcopy(channel_record(require_readable_config_before_write(
-            Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
+        update_config = require_readable_config_before_write(Path(completion_request["home"]) / "config.yaml")
+        original_record = deepcopy(channel_record(update_config, _m().PROJECT_ROOT))
         print(f"→ Update channel: {selected_channel}")
+        if getattr(args, "channel", None) is None:
+            notice = unconfigured_main_default_notice(update_config, _m().PROJECT_ROOT)
+            if notice:
+                print(notice)
         try:
             with retrying_reads():
                 target = resolve_source_target(

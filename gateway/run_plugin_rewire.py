@@ -109,12 +109,15 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
             discover_plugins(force=True)
             manager = get_plugin_manager()
             names, activations = sorted(manager._plugins), activation_summaries(manager)
+            from providers import reload_home_providers
+            provider_refresh = reload_home_providers()
         try:
             rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)
         except Exception:
             rewired = None
-        return {"reloaded": True, "home": str(requested), "plugins": names, "activations": activations,
-                "adapters_rewired": rewired}
+        return {"reloaded": provider_refresh["reloaded"], "home": str(requested), "plugins": names,
+                "activations": activations, "adapters_rewired": rewired,
+                "model_providers": provider_refresh, "provider_clients": "next construction"}
 
     return _handler
 

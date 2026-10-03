@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.abc
+import importlib.machinery
 import importlib.util
 import logging
 import os
@@ -82,6 +84,7 @@ class _HomeLayer:
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
 _HOME_LAYERS_LOCK = threading.Lock()
+_HOME_SCANS: set[str] = set()
 # The layer a ``$HERMES_HOME`` plugin import registers into. A ContextVar, not a module global:
 # two turn threads scanning two profile homes at once must not cross-register. Never a lock held
 # across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
@@ -271,17 +274,136 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
         return False
     stamps = _plugin_dir_stamps(home)
     if stamps != layer.stamps:
-        _scan_home_layer(layer, key)
-        layer.stamps = stamps
+        with _HOME_LAYERS_LOCK:
+            if key in _HOME_SCANS or _HOME_LAYERS.get(key) is not layer:
+                return False
+            _HOME_SCANS.add(key)
+        try:
+            _scan_home_layer(layer, key)
+            layer.stamps = stamps
+            layer.stamp_checked_at = now
+        finally:
+            with _HOME_LAYERS_LOCK:
+                _HOME_SCANS.discard(key)
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time
         # re-stats the plugin dirs inside the TTL.
-        layer.stamp_checked_at = now
         if _discovered and not _discovering:
             _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
+
+
+def reload_home_providers() -> dict:
+    """Refresh user model-provider packages for the bound home, for new clients only.
+
+    Never evict bundled/pip providers, another home's modules, or existing clients.
+    Imports happen without the map lock: auth imports can re-enter provider lookup.
+    A concurrent home scan refuses the reload; readers retain the known old layer
+    until the complete replacement is published. Foreign module custody and import
+    failures retain that previous generation rather than claiming a partial reload.
+    """
+    layer, home, key = _bound_home_layer()
+    if home is None:
+        return {"reloaded": False, "errors": ["home unavailable"]}
+    home = home.resolve()
+    with _HOME_LAYERS_LOCK:
+        if key in _HOME_SCANS or _HOME_LAYERS.get(key) is not layer:
+            return {"reloaded": False, "errors": ["home discovery in progress"]}
+        _HOME_SCANS.add(key)
+    # Admission precedes the directory/module snapshots: a normal scan that
+    # finishes before this claim must be included in the replacement generation.
+    prefix = _user_module_prefix(key)
+    owned = {}
+    replacement = _HomeLayer()
+    evicted = False
+    finder = _FreshHomeProviderFinder(prefix, home / "plugins")
+    def owns(module):
+        filename = getattr(module, "__file__", None)
+        try:
+            return bool(filename and Path(filename).resolve().is_relative_to(home / "plugins"))
+        except OSError:
+            return False
+
+    def restore_modules():
+        if not evicted:
+            return
+        for name, module in tuple(sys.modules.items()):
+            if name.startswith(prefix) and owns(module):
+                sys.modules.pop(name, None)
+        for name, module in owned.items():
+            # An unknown foreign writer is never overwritten during compensation.
+            if name not in sys.modules:
+                sys.modules[name] = module
+
+    try:
+        for plugin in _home_plugin_dirs():
+            if not plugin.resolve().is_relative_to(home / "plugins") or not (plugin / "__init__.py").resolve().is_relative_to(home / "plugins"):
+                return {"reloaded": False, "errors": ["provider plugin escapes home"]}
+        for name, module in tuple(sys.modules.items()):
+            if name.startswith(prefix):
+                if not owns(module):
+                    return {"reloaded": False, "errors": ["foreign provider module ownership"]}
+                owned[name] = module
+        for name in owned:
+            if sys.modules.get(name) is not owned[name]:
+                return {"reloaded": False, "errors": ["provider module changed during reload"]}
+        for name in owned:
+            del sys.modules[name]
+        evicted = True
+        importlib.invalidate_caches()
+        # Timestamp/size-valid bytecode can hide an equal-size edit. Fresh source
+        # applies only to this explicit reload's package and relative descendants.
+        sys.meta_path.insert(0, finder)
+        errors = _scan_home_layer(replacement, key, fresh_source=True)
+        if errors:
+            restore_modules()
+            return {"reloaded": False, "errors": errors}
+        replacement.stamps = _plugin_dir_stamps(home)
+        replacement.stamp_checked_at = time.monotonic()
+        with _HOME_LAYERS_LOCK:
+            _HOME_LAYERS[key] = replacement
+        if _discovered and not _discovering:
+            _sync_auth_registry()
+        return {"reloaded": True, "providers": sorted(replacement.registry), "errors": []}
+    except BaseException as exc:
+        restore_modules()
+        with _HOME_LAYERS_LOCK:
+            if _HOME_LAYERS.get(key) is replacement:
+                _HOME_LAYERS[key] = layer
+        if isinstance(exc, Exception):
+            return {"reloaded": False, "errors": [type(exc).__name__]}
+        raise  # Restore custody before propagating SystemExit/KeyboardInterrupt.
+    finally:
+        if finder in sys.meta_path:
+            sys.meta_path.remove(finder)
+        with _HOME_LAYERS_LOCK:
+            _HOME_SCANS.discard(key)
+
+
+class _FreshProviderSourceLoader(importlib.machinery.SourceFileLoader):
+    """Compile explicit reload source without reading or deleting cached bytecode."""
+
+    def get_code(self, fullname):
+        return self.source_to_code(self.get_data(self.path), self.path)
+
+
+class _FreshHomeProviderFinder(importlib.abc.MetaPathFinder):
+    """Fresh source for one home's provider package descendants during reload."""
+
+    def __init__(self, prefix: str, plugins: Path):
+        self.prefix, self.plugins = prefix, plugins
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not fullname.startswith(self.prefix):
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is not None and isinstance(spec.loader, importlib.machinery.SourceFileLoader):
+            if not Path(spec.origin).resolve().is_relative_to(self.plugins):
+                raise ImportError("provider dependency escapes home")
+            spec.loader = _FreshProviderSourceLoader(fullname, spec.origin)
+        return spec
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:
@@ -356,7 +478,22 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
     return False
 
 
-def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
+def _home_plugin_dirs() -> list[Path]:
+    """The existing nested and flat model-provider discovery paths for this home."""
+    result = []
+    user_dir = _user_plugins_dir()
+    if user_dir is not None:
+        result.extend(child for child in sorted(user_dir.iterdir())
+                      if child.is_dir() and not child.name.startswith(("_", ".")))
+    installed_dir = _installed_plugins_dir()
+    if installed_dir is not None:
+        result.extend(child for child in sorted(installed_dir.iterdir())
+                      if child.is_dir() and not child.name.startswith(("_", "."))
+                      and child.name != "model-providers" and _declares_model_provider_kind(child))
+    return result
+
+
+def _scan_home_layer(layer: _HomeLayer, key: str, *, fresh_source: bool = False) -> list[str]:
     """Import the bound home's not-yet-imported provider plugins into *layer*.
 
     ``$HERMES_HOME/plugins/model-providers/<name>/`` first, then plugins cloned flat by
@@ -367,30 +504,27 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     global _discovering
     token, prior_discovering = _REGISTRATION_TARGET.set(layer), _discovering
     _discovering = True
+    errors = []
     try:
-        user_dir = _user_plugins_dir()
-        if user_dir is not None:
-            for child in sorted(user_dir.iterdir()):
-                if child.is_dir() and not child.name.startswith(("_", ".")):
-                    _import_plugin_dir(child, "user", home_key=key)
-        installed_dir = _installed_plugins_dir()
-        if installed_dir is not None:
-            for child in sorted(installed_dir.iterdir()):
-                if not child.is_dir() or child.name.startswith(("_", ".")) or child.name == "model-providers":
-                    continue
-                if _declares_model_provider_kind(child):
-                    _import_plugin_dir(child, "user", home_key=key)
+        for child in _home_plugin_dirs():
+            if not _import_plugin_dir(child, "user", home_key=key, fresh_source=fresh_source):
+                errors.append(child.name)
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
+    return errors
+
+
+def _user_module_prefix(home_key: str) -> str:
+    digest = hashlib.sha1(home_key.encode("utf-8")).hexdigest()[:10]
+    return f"_hermes_user_provider_{digest}_"
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
-    digest = hashlib.sha1(home_key.encode("utf-8")).hexdigest()[:10]
-    return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
+    return _user_module_prefix(home_key) + plugin_dir.name.replace('-', '_')
 
 
-def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> None:
+def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "", fresh_source: bool = False) -> bool:
     """Import a single plugin directory so it self-registers.
 
     ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
@@ -398,7 +532,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     global _current_source
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
-        return
+        return True
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
     # so relative imports within the plugin work. User plugins load via
@@ -410,7 +544,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         module_name = _user_module_name(plugin_dir, home_key)
 
     if module_name in sys.modules:
-        return  # already imported
+        return True  # already imported
 
     _current_source = source
     try:
@@ -418,15 +552,19 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
             module_name, init_file, submodule_search_locations=[str(plugin_dir)]
         )
         if spec is None or spec.loader is None:
-            return
+            return False
+        if fresh_source:
+            spec.loader = _FreshProviderSourceLoader(module_name, str(init_file))
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
+        return True
     except Exception as exc:
         logger.warning(
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+        return False
     finally:
         _current_source = None
 

@@ -145,3 +145,64 @@ def test_runner_rewires_live_adapters_on_the_loop_when_plugins_load():
         return runner.adapters[Platform.TELEGRAM].rewire_plugin_handlers.call_count
 
     assert asyncio.run(scenario()) == 1
+
+
+def _reload_on_live_loop(runner, home):
+    import threading
+    from gateway.run_plugin_rewire import reload_plugins_verb
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        return reload_plugins_verb(runner, loop)({'home': str(home)})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+
+def test_live_reload_route_refreshes_only_requested_served_provider_home(tmp_path, monkeypatch):
+    import providers
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    a = tmp_path / 'launch'; b = tmp_path / 'profiles/second'
+    a.mkdir(); b.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(a))
+    class Runner:
+        adapters = {}
+        _profile_adapters = {'second': {}}
+        _served_profile_homes = {'default': a, 'second': b}
+        _primary_profile_name = 'default'
+    for home in (a, b):
+        (home / 'config.yaml').write_text('{}\n')
+        p = home / 'plugins/model-providers/reload-scope'; p.mkdir(parents=True)
+        (p / 'plugin.yaml').write_text('name: reload-scope\nkind: model-provider\n')
+        (p / '__init__.py').write_text('from providers import register_provider\nfrom providers.base import ProviderProfile\nregister_provider(ProviderProfile(name="reload-scope", base_url="process://old"))\n')
+    old_a = providers.get_provider_profile('reload-scope')
+    token = set_hermes_home_override(b)
+    try:
+        old_b = providers.get_provider_profile('reload-scope')
+    finally:
+        reset_hermes_home_override(token)
+    p = b / 'plugins/model-providers/reload-scope/__init__.py'
+    p.write_text(p.read_text().replace('process://old', 'process://fresh-second'))
+    result = _reload_on_live_loop(Runner(), b)
+    assert result['reloaded'] is True
+    assert providers.get_provider_profile('reload-scope') is old_a
+    token = set_hermes_home_override(b)
+    try:
+        assert providers.get_provider_profile('reload-scope').base_url == 'process://fresh-second'
+        assert old_b.base_url == 'process://old'
+        assert result['model_providers']['reloaded'] is True
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_live_reload_route_refuses_unserved_home_before_category_refresh(tmp_path, monkeypatch):
+    import providers
+    class Runner:
+        adapters = {}
+        _served_profile_homes = {}
+    calls = []
+    monkeypatch.setattr(providers, 'reload_home_providers', lambda: calls.append(True))
+    result = _reload_on_live_loop(Runner(), tmp_path / 'not-served')
+    assert result['reloaded'] is False and calls == []

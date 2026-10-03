@@ -760,6 +760,73 @@ def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, 
 
 SKILL_PROMPT_DESC_LIMIT = 60
 
+# Frontmatter read contract. Skill discovery scans every SKILL.md once per pass and only needs the
+# routing fields — name / description / platforms / environments — which live at the top of the
+# file: over 131 installed skills the last of them ended within 422 bytes, and no frontmatter
+# (including verbatim metadata blocks) exceeded 3,190 bytes. Readers therefore take a head-only
+# read instead of loading whole files (131 skills: 3.03ms for read_text()[:N] vs 0.76ms for a head
+# read). SKILL_FRONTMATTER_MAX_BYTES is the write-boundary ceiling for **new** skills only:
+# skill_manage create rejects anything larger, while an existing skill may still be edited past it
+# (refusing those edits would leave an oversized skill unable to shrink) — so the head window is
+# usually sufficient rather than guaranteed, and the reader escalates up to SKILL_HEAD_MAX_BYTES
+# before falling back to a whole-file read for pathological input.
+SKILL_HEAD_BYTES = 4096
+SKILL_HEAD_MAX_BYTES = 262144
+SKILL_FRONTMATTER_MAX_BYTES = 4096
+
+
+def _frontmatter_closed(text: str) -> bool:
+    """True when *text* has no unclosed frontmatter: either it does not open with frontmatter at
+    all, or the closing ``---`` line is present. A leading BOM is tolerated.
+
+    Trailing blanks after the fence include ``\\r``: a SKILL.md written on Windows closes with
+    ``---\\r\\n``, and a predicate that accepted only ``[ \\t]*`` would report every CRLF file
+    unclosed forever — sending it down the whole-file fallback this module removes. Kept in step
+    with ``parse_frontmatter`` (``\\s*``), which accepts CRLF.
+    """
+    body = text.lstrip("\ufeff")
+    if not body.startswith("---"):
+        return True
+    return bool(re.search(r"\n---[ \t\r]*(\n|$)", body[3:]))
+
+
+def read_skill_head(path, limit: int = SKILL_HEAD_BYTES) -> str:
+    """Head-only read of a SKILL.md — enough bytes to parse the frontmatter, never the whole file.
+
+    Escalates the window only while the frontmatter is still unclosed (long metadata blocks), and
+    reads at most :data:`SKILL_HEAD_MAX_BYTES` before falling back to a whole-file read, so the
+    fallback warning quotes the byte count actually read. Decoding is ``utf-8-sig`` with
+    ``errors="replace"`` to match ``tools.skills_tool_plugin._read_skill_text`` (Notepad BOMs,
+    stray bytes).
+    """
+    head = b""
+    unclosed_at_cap = False
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                read_size = min(limit, SKILL_HEAD_MAX_BYTES - len(head))
+                if read_size <= 0:
+                    unclosed_at_cap = True  # cap reached while unclosed: caller-visible fallback
+                    break
+                chunk = fh.read(read_size)
+                if not chunk:
+                    break  # EOF: everything the file has is in hand, closed or not
+                head += chunk
+                if _frontmatter_closed(head.decode("utf-8-sig", "replace")):
+                    break
+                limit *= 2
+    except OSError:
+        return ""
+    if unclosed_at_cap:
+        logger.warning(
+            "SKILL.md frontmatter unclosed after %d bytes — reading the whole file: %s",
+            SKILL_HEAD_MAX_BYTES, path)
+        try:
+            return path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            return ""
+    return head.decode("utf-8-sig", "replace")
+
 
 def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:
     """Normalize a skill's description field for comparison/truncation."""

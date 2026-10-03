@@ -35,6 +35,9 @@ def send_message_tool(args, **kw):
     action = args.get("action", "send")
     if action == "list":
         return _handle_list()
+    from gateway.session_context import session_requires_event_bound_delivery
+    if session_requires_event_bound_delivery():
+        return tool_error("Separate outbound actions are unavailable for this event-bound account conversation")
     if action in ("react", "unreact"):
         return _handle_react(args, remove=action == "unreact")
     return _handle_send(args)
@@ -689,6 +692,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    from gateway.session_context import session_requires_event_bound_delivery
+    if session_requires_event_bound_delivery():
+        return _error("Separate outbound actions are unavailable for this event-bound account conversation")
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []

@@ -53,7 +53,7 @@ def _make_draft_adapter():
         return SendResult(success=True, message_id="sealed_ts_1")
     a.send = _send
 
-    async def _edit(chat_id, message_id, content, **kw):
+    async def _edit(chat_id, message_id, content, finalize=False):
         a.edit_calls.append({"message_id": message_id, "content": content})
         return SendResult(success=True, message_id=message_id)
     a.edit_message = _edit
@@ -228,7 +228,8 @@ class TestQueuedLaneReconcile:
 
         runner = object.__new__(GatewayRunner)
         adapter = _make_draft_adapter()
-        sc = SimpleNamespace(message_id="sealed_ts_9", _turn_split_delivery=False)
+        sc = GatewayStreamConsumer(adapter, "D1")
+        sc._message_id = "sealed_ts_9"
         source = SimpleNamespace(chat_id="D1")
         await GatewayRunner._deliver_queued_first_response(
             runner,

@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from gateway.delivery import event_bound_delivery_metadata
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
@@ -74,7 +75,7 @@ def _update_output_tail(output: str, limit: int) -> str:
 
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
-_WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
+_WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name", "scope_id")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
@@ -173,7 +174,13 @@ class GatewayNotificationsMixin:
         proceed: bool = True
         early_result: Optional[bool] = None
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
+    async def _deliver_platform_notice(
+        self,
+        source,
+        content: str,
+        *,
+        event_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.run import _is_slack_ignored_channel
         adapter = self._delivery_adapter_for(source)
@@ -196,7 +203,13 @@ class GatewayNotificationsMixin:
                 config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
                 else "public"
             )
-        metadata = self._thread_metadata_for_source(source)
+        metadata = self._thread_metadata_for_source(
+            source,
+            event_metadata=event_metadata,
+        )
+        if (metadata or {}).get("_delivery_route_blocked") is True:
+            logger.info("Skipping platform notice without event-bound send authority")
+            return
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
                 logging.DEBUG, "[%s] send_private_notice failed, falling back to public",
@@ -377,7 +390,11 @@ class GatewayNotificationsMixin:
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
-                else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+                else self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                    getattr(event, "metadata", None),
+                )
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
@@ -434,14 +451,18 @@ class GatewayNotificationsMixin:
                 # a plain send here would duplicate it.
                 _reconciled = False
                 _sc_msg_id = getattr(stream_consumer, "message_id", None)
+                _sc_edit_message = getattr(stream_consumer, "_edit_message", None)
                 if (
                     _sc_msg_id
                     and _sc_msg_id != "__no_edit__"
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
+                    and callable(_sc_edit_message)
                 ):
                     try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
+                        _edit_res = await cast(Any, _sc_edit_message)(
+                            message_id=_sc_msg_id,
+                            content=text_content,
+                            finalize=True,
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
@@ -587,10 +608,15 @@ class GatewayNotificationsMixin:
 
     def _pending_marker_metadata(self, platform, chat_id, data: dict, adapter):
         """Thread metadata for a persisted update/restart marker (thread_id/chat_type/message_id keys)."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             platform, chat_id, data.get("thread_id"), chat_type=data.get("chat_type"),
             reply_to_message_id=data.get("message_id"), adapter=adapter,
         )
+        source = self._build_process_event_source({
+            **data, "platform": getattr(platform, "value", platform), "chat_id": chat_id,
+        })
+        route_metadata = event_bound_delivery_metadata(source) or event_bound_delivery_metadata(data)
+        return {**(metadata or {}), **route_metadata} if route_metadata else metadata
 
     async def _watch_update_completion_only(self, paths: "_UpdatePaths", deadline: float, poll_interval: float) -> None:
         """Fallback when no adapter/chat can be resolved: wait for the exit code, then notify."""
@@ -1132,7 +1158,7 @@ class GatewayNotificationsMixin:
         def _opt(field: str) -> Optional[str]:
             return str(evt.get(field) or "").strip() or None
 
-        scope_id = _opt("scope_id")
+        scope_id = derived.get("scope_id") or _opt("scope_id")
         if scope_id is None and chat_type not in ("dm", "thread"):
             # Reconstructed scoped-chat source without scope_id: a relay connector's tenant guard may
             # decline the reply. Warn, don't fail (native adapters need no scope_id).
@@ -1275,6 +1301,9 @@ class GatewayNotificationsMixin:
         """
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         source = await asyncio.to_thread(self._build_process_event_source, evt)
+        if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+            logger.info("Dropping synthetic notification: route requires immediate event authority")
+            return None
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
             raw_sid = _raw_process_event_session_id(evt)
@@ -1489,7 +1518,9 @@ class GatewayNotificationsMixin:
         """
         claim = self._CompletionClaim()
         evt_type = evt.get("type")
-        if evt_type == "async_delegation" and not await self._completion_delivery_ready(evt):
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
+        route_blocked = event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True
+        if evt_type == "async_delegation" and not route_blocked and not await self._completion_delivery_ready(evt):
             claim.proceed, claim.early_result = False, False
             return claim
         # An interim per-task notice shares the batch's delegation_id but is not the durable
@@ -1508,6 +1539,12 @@ class GatewayNotificationsMixin:
                     claim.proceed, claim.early_result = False, False
                     return claim
         elif evt_type != "completion":
+            return claim
+        if route_blocked:
+            if claim.claim_id:
+                self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
+            claim.proceed = False
+            logger.info("Dropping async delivery: route requires immediate event authority")
             return claim
         # Background completions carry only session_key, so after /new the OLD session's notification
         # would land in the NEW one. Stamped events get the async-delegation pre-flight; unstamped deliver.
@@ -1764,6 +1801,8 @@ class GatewayNotificationsMixin:
         evt["chat_id"] = parsed.get("chat_id", "")
         if parsed.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
+        if parsed.get("scope_id"):
+            evt["scope_id"] = parsed["scope_id"]
 
     async def _deliver_async_delegation_group(self, group: list[dict]) -> Optional[bool]:
         """Deliver a same-session batch of async completions as ONE turn: the primary carries the
@@ -1777,6 +1816,13 @@ class GatewayNotificationsMixin:
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
+        source = await asyncio.to_thread(self._build_process_event_source, group[0])
+        if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+            # Each durable result needs its own terminal disposition; don't claim and
+            # repeatedly requeue siblings for a route that cannot authorize async sends.
+            for evt in group:
+                await self._deliver_completion_notification("", evt)
+            return None
         # API delivery does not start a model turn, so there is nothing to coalesce.
         # Keep each unit's stable identity with its row across partial delivery/retry.
         if group and group[0].get("origin_session_id"):
@@ -1950,15 +1996,22 @@ class GatewayNotificationsMixin:
         adapter = self._resolve_injection_adapter(platform_name, source)
         return session_key in (getattr(adapter, "_active_sessions", None) or {})
 
-    async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
+    async def _send_watcher_message(self: Any, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
         from gateway.run import _non_conversational_metadata
-        source = await asyncio.to_thread(self._build_process_event_source, watcher)
+        routing = {"platform": platform_name, "chat_id": chat_id, "thread_id": thread_id, **watcher}
+        source = await asyncio.to_thread(self._build_process_event_source, routing)
+        route_metadata = event_bound_delivery_metadata(source) or event_bound_delivery_metadata(routing)
+        if route_metadata.get("_delivery_route_blocked") is True:
+            logger.info("Skipping watcher notice: route requires immediate event authority")
+            return
         adapter = self._resolve_injection_adapter(platform_name, source)
         if adapter and chat_id:
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
-                send_meta = {"thread_id": thread_id} if thread_id else None
+                send_meta = (self._thread_metadata_for_source(source) if source is not None
+                             else {"thread_id": thread_id} if thread_id else None)
                 await adapter.send(
-                    chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                    source.chat_id if source is not None else chat_id, message_text,
+                    metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                 )
 
     @staticmethod

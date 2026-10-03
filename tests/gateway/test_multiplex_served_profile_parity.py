@@ -85,7 +85,7 @@ def test_platform_notice_honours_the_served_profiles_notice_delivery(served):
     """alpha's ``platforms.telegram.notice_delivery: private`` (carried by ITS adapter) wins over the
     launch profile's GatewayConfig — as a standalone alpha gateway would behave."""
     runner = served.runner
-    runner._thread_metadata_for_source = lambda source: None
+    runner._thread_metadata_for_source = lambda source, **_: None
     with _profile_runtime_scope(served.alpha):
         asyncio.run(runner._deliver_platform_notice(_alpha_source(), "notice"))
     assert [op for op, _ in served.alpha_adapter.calls] == ["send_private_notice"]

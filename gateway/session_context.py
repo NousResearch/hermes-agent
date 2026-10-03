@@ -213,8 +213,19 @@ def async_delivery_supported() -> bool:
     (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
     if os.environ.get("HERMES_KANBAN_TASK"):
         return False
+    if session_requires_event_bound_delivery():
+        return False
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)
+
+
+def session_requires_event_bound_delivery() -> bool:
+    """Whether restored routing fields cannot authorize a separate outbound action."""
+    from gateway.delivery import event_bound_delivery_metadata
+    return event_bound_delivery_metadata({
+        "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+        "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID"),
+    }).get("_delivery_route_blocked") is True
 
 
 def session_history_delivery_supported() -> bool:

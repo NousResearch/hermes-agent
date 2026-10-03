@@ -64,7 +64,7 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
     gateway = object.__new__(GatewayRunner)
     gateway.config = None
     gateway._delivery_adapter_for = lambda source: adapter
-    gateway._thread_metadata_for_source = lambda source: {"thread_id": source.thread_id} if source.thread_id else {}
+    gateway._thread_metadata_for_source = lambda source, event_metadata=None: {"thread_id": source.thread_id} if source.thread_id else {}
     ctx = TurnContext(source=source, user_config=config, _run_still_current=lambda: True,
                       _status_adapter=adapter, _status_chat_id=source.chat_id,
                       _status_thread_metadata=gateway._thread_metadata_for_source(source))

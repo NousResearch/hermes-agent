@@ -1868,6 +1868,17 @@ def _prepare_target_delivery(
 
     # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
     origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
+    from gateway.delivery import event_bound_delivery_metadata
+    same_origin_chat = (
+        str(origin.get("platform", "")).lower() == str(platform_name).lower()
+        and str(origin.get("chat_id", "")) == str(chat_id)
+    )
+    if (
+        event_bound_delivery_metadata(target).get("_delivery_route_blocked") is True
+        or same_origin_chat and event_bound_delivery_metadata(origin).get("_delivery_route_blocked") is True
+    ):
+        _note_target_error(job, "Delivery requires immediate event-bound account authority", delivery_errors)
+        return None
     mirror_this_target = mirror_enabled and _target_mirror_eligible(
         job, target, global_mirror=mirror_enabled, origin_match=origin_target)
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.

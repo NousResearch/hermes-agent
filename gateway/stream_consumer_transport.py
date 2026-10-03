@@ -106,6 +106,13 @@ class StreamTransportMixin:
     async def _delete_previews(self, stale_ids, *, skip=None, label: str,
                                retry_on_false: bool = False, skip_sentinel: bool = True) -> None:
         """Best-effort delete of stale previews; never the message just sent (``skip``)."""
+        from gateway.delivery import event_bound_delivery_metadata
+        if event_bound_delivery_metadata({
+            "platform": getattr(self.adapter, "platform", None),
+            "scope_id": (self.metadata or {}).get("scope_id"),
+        }).get("_delivery_route_blocked") is True:
+            # The optional deletion API cannot represent an account-bound route.
+            return
         delete_fn = getattr(self.adapter, "delete_message", None)
         if delete_fn is None:
             return

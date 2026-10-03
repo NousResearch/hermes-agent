@@ -308,7 +308,15 @@ def test_queued_reconcile_decline_does_not_fall_back_to_a_send():
     adapter = _EditAdapter()
     mixin = object.__new__(GatewayNotificationsMixin)
     source = SimpleNamespace(chat_id="C1", platform="discord")
-    consumer = SimpleNamespace(message_id="m0", _turn_split_delivery=False)
+    # The reconcile-by-edit dispatch reads stream_consumer._edit_message
+    # (consumer-owned edit, not adapter.edit_message — see
+    # `_deliver_queued_first_response`). Provide a consumer that owns the
+    # edit and forwards the decline from the adapter underneath.
+    async def _consumer_edit(**_k: Any) -> SendResult:
+        return await adapter.edit_message()
+    consumer = SimpleNamespace(
+        message_id="m0", _turn_split_delivery=False, _edit_message=_consumer_edit
+    )
 
     asyncio.run(
         mixin._deliver_queued_first_response(
@@ -331,7 +339,11 @@ def test_queued_reconcile_ORDINARY_edit_failure_still_sends():
     adapter = _Ordinary()
     mixin = object.__new__(GatewayNotificationsMixin)
     source = SimpleNamespace(chat_id="C1", platform="discord")
-    consumer = SimpleNamespace(message_id="m0", _turn_split_delivery=False)
+    async def _consumer_edit(**_k: Any) -> SendResult:
+        return await adapter.edit_message()
+    consumer = SimpleNamespace(
+        message_id="m0", _turn_split_delivery=False, _edit_message=_consumer_edit
+    )
 
     asyncio.run(
         mixin._deliver_queued_first_response(

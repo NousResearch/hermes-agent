@@ -60,7 +60,7 @@ async def _run_with_refused_followup(monkeypatch, tmp_path, agent_cls, adapter_c
     turn's result, which is the object the completion send then acts on."""
     monkeypatch.setattr(
         GatewayRunner, "_expand_inbound_context_references",
-        lambda self, source, session_key, message_text: _none(),
+        lambda self, source, session_key, message_text, event_metadata=None: _none(),
     )
     return await _run_with_agent(
         monkeypatch, tmp_path, agent_cls, session_id="sess-refused-followup",

@@ -100,3 +100,66 @@ def test_resume_unregisters_its_own_atexit_fallback_before_running(monkeypatch):
 
     assert calls == [update_cmd_windows._resume_windows_gateways_after_update]
     assert token["resume_needed"] is False
+
+
+def test_completion_resume_failure_is_recorded_once_and_disarms_token(monkeypatch):
+    """The completion owner records a failed relaunch without retrying it in its finally path."""
+    from hermes_cli import update_cmd
+
+    attempts = []
+
+    def failed_resume(token):
+        if not token or not token.get("resume_needed"):
+            return
+        attempts.append(token)
+        raise RuntimeError("gateway did not become live")
+
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", failed_resume)
+    markers = []
+    monkeypatch.setattr(update_cmd, "_write_gateway_update_exit_code", markers.append)
+    outcome = update_cmd._GatewayRestartOutcome(
+        incomplete=False,
+        phase_errors=[],
+        pre_restart_gateway_pids=[],
+        restarted_services=[],
+        failed_or_stale_units=[],
+        relaunched_profiles=[],
+        externally_supervised_profiles=[],
+        killed_pids=set(),
+    )
+    token = {"resume_needed": True}
+
+    with patch("hermes_cli.update_receipt.record_gateway_restart", lambda **_kw: None):
+        update_cmd._resume_windows_gateways_and_merge_outcome(outcome, token, True)
+    update_cmd._resume_windows_gateways_after_update(token)
+
+    assert attempts == [token]
+    assert token["resume_needed"] is False
+    assert outcome.incomplete is True
+    assert outcome.phase_errors == ["gateway did not become live"]
+    assert markers == [False]
+
+
+def test_completion_resume_does_not_swallow_base_exceptions(monkeypatch):
+    """Only operational failures are softened into an incomplete update outcome."""
+    from hermes_cli import update_cmd
+
+    def interrupted(_token):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", interrupted)
+    outcome = update_cmd._GatewayRestartOutcome(
+        incomplete=False,
+        phase_errors=[],
+        pre_restart_gateway_pids=[],
+        restarted_services=[],
+        failed_or_stale_units=[],
+        relaunched_profiles=[],
+        externally_supervised_profiles=[],
+        killed_pids=set(),
+    )
+    token = {"resume_needed": True}
+
+    with pytest.raises(KeyboardInterrupt):
+        update_cmd._resume_windows_gateways_and_merge_outcome(outcome, token, True)
+    assert token["resume_needed"] is True

@@ -3,6 +3,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_swarm import (
+    BLACKBOARD_PREFIX,
     SwarmWorkerSpec,
     create_swarm,
     latest_blackboard,
@@ -208,6 +209,56 @@ def test_swarm_blackboard_merges_structured_updates(tmp_path):
         assert board["sources"] == ["https://example.com/a"]
         assert board["risks"] == {"missing_primary_source": True}
         assert board["_authors"]["sources"] == "researcher"
+    finally:
+        conn.close()
+
+
+def test_swarm_retry_survives_non_object_blackboard_comment(tmp_path):
+    """A prefixed comment whose JSON is not an object is skipped, so an idempotent retry still
+    returns the original topology instead of raising."""
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        kwargs = dict(
+            goal="Collect evidence.",
+            workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            idempotency_key="swarm-retry",
+        )
+        created = create_swarm(conn, **kwargs)
+        for body in ('["note"]', '"note"', "null", "42"):
+            kb.add_comment(conn, created.root_id, author="researcher", body=BLACKBOARD_PREFIX + body)
+
+        assert latest_blackboard(conn, created.root_id)["topology"]["root_id"] == created.root_id
+        assert create_swarm(conn, **kwargs) == created
+    finally:
+        conn.close()
+
+
+def test_swarm_blackboard_skips_deeply_nested_payload(tmp_path):
+    """Deeply nested but well-formed JSON raises RecursionError, not JSONDecodeError, so a
+    bare `except json.JSONDecodeError` guard would still let it escape and kill the retry."""
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        kwargs = dict(
+            goal="Collect evidence.",
+            workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            idempotency_key="swarm-retry-nested",
+        )
+        created = create_swarm(conn, **kwargs)
+        try:
+            nested = "[" * 20000 + "]" * 20000
+            kb.add_comment(
+                conn, created.root_id, author="researcher", body=BLACKBOARD_PREFIX + nested
+            )
+        except RecursionError:
+            # A recursion guard lower down rejected the write; nothing to assert.
+            return
+
+        assert latest_blackboard(conn, created.root_id)["topology"]["root_id"] == created.root_id
+        assert create_swarm(conn, **kwargs) == created
     finally:
         conn.close()
 

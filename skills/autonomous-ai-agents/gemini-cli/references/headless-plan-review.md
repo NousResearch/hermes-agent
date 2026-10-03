@@ -1,30 +1,47 @@
-# Gemini CLI headless plan review pattern
+# Gemini CLI headless plan review
 
-Use this when asked to have Gemini scan a repository plan/spec without editing files.
+Use this when the user asks Gemini to review a repository plan or specification.
+Check installed `gemini --help` first; flags and model aliases change by release.
 
-## Verified flow
+## Read-only requirements
 
-1. Locate the repository in the intended project checkout (for example, `$HOME/<repo>`). Do not create or treat hidden tool directories such as `.hermes/` or `.codex/` as active working repo locations unless explicitly requested.
-2. Check repo state and find plan/spec docs:
+An analysis prompt and `--approval-mode plan` do not enforce read-only access.
+Current [headless Plan Mode](https://geminicli.com/docs/cli/plan-mode/#non-interactive-execution)
+can auto-approve plan transitions and switch to YOLO on exit. If no edits are
+allowed, use tested deny policies or a sandbox with the repository mounted
+read-only. Worktrees isolate changes but still permit writes.
+
+## Flow
+
+1. Set Hermes `terminal(workdir=...)` to the intended checkout. Use `read_file`
+   for its instructions and `search_files` to locate the requested plan/spec.
+2. Record `git status --short --branch` and `git diff` before the run, including
+   pre-existing untracked files. Inspect any project configuration before trust.
+3. With authentication and any required read-only containment already in place,
+   run through `terminal`:
+
    ```bash
-   git status --short --branch
-   find docs -maxdepth 2 -type f \( -iname '*plan*.md' -o -iname '*spec*.md' -o -iname '*roadmap*.md' \)
-   ```
-3. Run Gemini in headless plan mode with an explicit `workdir`. If the repo has not been trusted interactively, include `--skip-trust` so non-interactive automation can proceed:
-   ```bash
-   gemini --skip-trust -m gemini-3-pro-preview \
-     -p "You are a senior engineering reviewer. Scan @docs/plan.md. Do not edit files. Return strongest parts, critical gaps/blockers, sequencing risks, data/vendor/compliance risks, concrete next steps, and owner decisions." \
+   gemini -p "Review @docs/plan.md. Return critical gaps, sequencing risks, test coverage, and decisions needed. Analyze only; do not edit files, exit planning to implement, or run mutating commands." \
      --approval-mode plan \
      --output-format json
    ```
-4. Parse the JSON response and inspect `stats.models` to verify the actual routed model. In one observed run, requesting `gemini-3-pro-preview` routed to `gemini-3.1-pro-preview`; report the actual model rather than assuming the requested alias.
-5. Verify no edits occurred:
-   ```bash
-   git status --short --branch
-   ```
+
+   Replace the document path with the one actually requested. Do not pin a model
+   unless needed; verify an explicitly requested model with installed help.
+4. If the workspace is untrusted, stop and inspect it. Only add `--skip-trust`
+   after the user has authorized trust for that exact workspace. Never silently
+   broaden trust or approval mode as a retry strategy.
+5. Check exit status and JSON `error` before reading `response`. When present,
+   inspect `stats.models` to report the actual routed model.
+6. Compare the post-run `git status --short --branch` and `git diff` with the
+   baseline; inspect new untracked files too. Independently verify the review's
+   claims against project files. Preserve earlier work and report any unexpected
+   changes rather than discarding them.
 
 ## Pitfalls
 
-- Without `--skip-trust` or `GEMINI_CLI_TRUST_WORKSPACE=true`, headless runs can fail with a trusted-folder error and may override `--approval-mode plan` to `default`.
-- Plan review should use `--approval-mode plan` and a prompt that says `Do not edit files`.
-- Do not trust Gemini's self-report alone; verify `git status` after the run.
+- Cached Google authentication can work headlessly; an API key is not mandatory.
+- A prompt is not a permissions boundary, and project trust is not tool approval.
+- Git status cannot detect every write (for example, ignored files or files
+  outside the checkout). Use actual filesystem restrictions when that matters.
+- Do not treat a successful model response as proof that no files changed.

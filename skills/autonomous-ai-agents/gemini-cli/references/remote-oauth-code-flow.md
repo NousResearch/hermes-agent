@@ -1,45 +1,35 @@
-# Gemini CLI Remote OAuth Code Flow
+# Gemini CLI remote Google sign-in
 
-Setup note for running Gemini CLI on a headless/remote Hermes host.
+Setup reference for a remote Hermes host. Authentication UX depends on the
+installed release; consult the current [authentication guide](https://geminicli.com/docs/get-started/authentication/)
+and inspect the actual prompt before sending input.
 
-## Observed Flow
+## Flow
 
-1. Install and verify:
-   ```bash
-   npm install -g @google/gemini-cli
-   gemini --version
-   gemini --help | sed -n '1,80p'
-   ```
-2. A headless smoke test before auth can fail with JSON error code `41`:
-   ```json
-   {
-     "error": {
-       "message": "Please set an Auth method in your .../.gemini/settings.json or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA",
-       "code": 41
-     }
-   }
-   ```
-3. Running `gemini` interactively on a remote PTY may first show a workspace trust prompt. Choose the narrow trust scope needed for the task before continuing.
-4. Selecting `Sign in with Google` can print a browser URL and then wait at:
-   ```text
-   Enter the authorization code:
-   ```
-   Relay the full URL to the user, keep the PTY/process alive, and submit the returned authorization code into the same session.
+1. Use Hermes `terminal` to verify `gemini --version` and `gemini --help`.
+   Install only if needed and authorized; reuse existing authentication first.
+2. Start `gemini` in an interactive PTY/tmux session in the intended directory.
+   Inspect any workspace-trust prompt and obtain the necessary authorization
+   before proceeding. Do not automatically trust a repository to reach login.
+3. If Google sign-in is chosen, keep the same process alive. Some releases print
+   a browser URL and wait for an authorization code; others require a different
+   browser/redirect arrangement. Follow the flow actually displayed.
+4. For a displayed code flow, give the login URL to the user privately and enter
+   their returned one-time code only into that waiting process. Do not log,
+   commit, or retain authorization codes, tokens, or credential files. Passwords
+   and account security decisions belong in the user's secure sign-in flow.
+5. After sign-in completes, verify the task can run and check for reported auth
+   errors. A small headless smoke test may incur usage, so keep it within scope.
 
-## Practical Hermes Pattern
+## Troubleshooting
 
-```bash
-# Verify install and auth state without leaking secrets
-printf 'GEMINI_API_KEY set: '; [ -n "${GEMINI_API_KEY:-}" ] && echo yes || echo no
-printf 'GOOGLE_GENAI_USE_VERTEXAI: '; echo "${GOOGLE_GENAI_USE_VERTEXAI:-unset}"
-printf 'GOOGLE_GENAI_USE_GCA: '; echo "${GOOGLE_GENAI_USE_GCA:-unset}"
-gemini -p 'Reply with exactly: GEMINI_CLI_SMOKE_OK' --output-format json
-```
-
-If the smoke test returns code `41`, choose one auth method: API key (`GEMINI_API_KEY`), Vertex AI (`GOOGLE_GENAI_USE_VERTEXAI=true` plus project/credentials), Gemini Code Assist/Google sign-in (`GOOGLE_GENAI_USE_GCA=true` or interactive `/auth` depending on version), or user settings.
-
-## Pitfalls
-
-- Do not conclude Gemini CLI is broken when the first headless run fails with code `41`; it means auth is not configured.
-- Do not restart the interactive process after presenting the OAuth URL; the authorization code must be entered into the same waiting process.
-- `org.freedesktop.secrets` warnings can appear on servers without a desktop secret service; they are not necessarily fatal if the CLI still prints an OAuth URL/code prompt.
+- A headless auth error means the selected method is not ready; it is not proof
+  the CLI installation is broken. Code `41` has been observed for missing auth,
+  but read the actual error rather than relying on a fixed code across releases.
+- Cached Google credentials, an approved `GEMINI_API_KEY`, or configured Vertex AI
+  can support headless tasks. Ask which method to use if none is configured.
+- Do not restart a waiting code-flow process after presenting its login URL;
+  if it exits or times out, start a new flow and discard the expired code.
+- Desktop secret-service warnings on remote hosts are not necessarily fatal.
+  Check whether authentication completed before changing credential storage.
+- Never dump the environment or auth settings into a captured pane or report.

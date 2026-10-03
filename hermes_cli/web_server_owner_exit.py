@@ -23,15 +23,16 @@ from typing import Callable, Optional
 _log = logging.getLogger(__name__)
 
 DEFAULT_OWNER_POLL_S = 15.0
-# The Desktop writes the lock right after the spawn returns; a young process may still see an
-# older lock for a moment, so supersession only counts once the backend has settled.
-MIN_AGE_S = 90.0
 _CONFIRMATIONS = 2
 
 
 def should_retire_superseded(*, lock: Optional[dict], my_nonce: str, age_s: float) -> bool:
-    """Retire only when a valid lock provably names another spawn of this ownership slot."""
-    return lock is not None and lock["spawnNonce"] != my_nonce and age_s >= MIN_AGE_S
+    """Retire only when a valid lock provably names another spawn of this ownership slot. A young
+    process may still see the previous spawn's lock, so it must first outlive the same settle window
+    the orphan reaper gives the Desktop to write the lock."""
+    from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
+
+    return lock is not None and lock["spawnNonce"] != my_nonce and age_s >= _REAP_MIN_AGE_SECONDS
 
 
 def start_owner_watchdog(server, *, lock_path: Path, nonce: str,

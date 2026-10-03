@@ -614,16 +614,23 @@ def heartbeat_worker(
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
+    """Record a ``heartbeat`` event, touch ``last_heartbeat_at``, and renew
+    the claim when the caller proves the active run.
 
     Liveness signal orthogonal to the PID check: a worker whose forked child
     (train loop, crawl) is stuck can still have a live Python process.
-    Returns False if the task is not running or its claim expired.
+    Returns False if the task is not running or its run ownership no longer matches.
     """
     now = int(time.time())
+    expires = now + _kb._resolve_claim_ttl_seconds(None)
     with _kb.write_txn(conn):
-        sql = "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'"
-        params: tuple = (now, task_id)
+        sql = "UPDATE tasks SET last_heartbeat_at = ?"
+        params: tuple = (now,)
+        if expected_run_id is not None:
+            sql += ", claim_expires = ?"
+            params += (expires,)
+        sql += " WHERE id = ? AND status = 'running'"
+        params += (task_id,)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params += (int(expected_run_id),)
@@ -636,7 +643,13 @@ def heartbeat_worker(
             else _kb._current_run_id(conn, task_id)
         )
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
+            if expected_run_id is not None:
+                conn.execute(
+                    "UPDATE task_runs SET last_heartbeat_at = ?, claim_expires = ? WHERE id = ?",
+                    (now, expires, run_id),
+                )
+            else:
+                conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
         _kb._append_event(
             conn, task_id, "heartbeat",
             {"note": note} if note else None,

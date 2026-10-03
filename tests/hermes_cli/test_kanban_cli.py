@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -98,6 +101,81 @@ def test_kanban_edit_updates_documented_task_fields(kanban_home):
         events = kb.list_events(conn, task_id)
     assert (task.title, task.body, task.priority) == ("new title", "new body", 70)
     assert any(event.kind == "reprioritized" for event in events)
+
+
+def _run_kanban_cli(
+    home: Path, *args: str, profile: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one real one-shot ``hermes kanban`` process against ``home``."""
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    for name in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK"):
+        env.pop(name, None)
+    if profile is None:
+        env.pop("HERMES_PROFILE", None)
+        env.pop("HERMES_PROFILE_NAME", None)
+    else:
+        env["HERMES_PROFILE"] = profile
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "kanban", *args],
+        cwd=Path(__file__).resolve().parents[2], env=env, text=True, capture_output=True,
+        check=False,
+    )
+
+
+def test_cli_claim_uses_ttl_ownership_fence_across_processes(kanban_home):
+    """One-shot CLI processes retain their board/profile-scoped TTL ownership."""
+    with kbc.connect_closing() as conn:
+        complete_id = kb.create_task(conn, title="protected CLI completion")
+        review_id = kb.create_task(conn, title="protected CLI review")
+        heartbeat_id = kb.create_task(conn, title="protected CLI heartbeat")
+        unowned_id = kb.create_task(conn, title="unowned CLI completion")
+
+    claimed = _run_kanban_cli(kanban_home, "claim", complete_id, "--ttl", "300")
+    assert claimed.returncode == 0, claimed.stderr
+    assert f"Claimed {complete_id}" in claimed.stdout
+    completed = _run_kanban_cli(kanban_home, "complete", complete_id, "--result", "done")
+    assert completed.returncode == 0, completed.stderr
+    assert f"Completed {complete_id}" in completed.stdout
+
+    claimed = _run_kanban_cli(kanban_home, "claim", review_id, "--ttl", "300")
+    assert claimed.returncode == 0, claimed.stderr
+    requested = _run_kanban_cli(
+        kanban_home, "request-review", review_id, "--summary", "handoff",
+    )
+    assert requested.returncode == 0, requested.stderr
+    assert f"Requested review for {review_id}" in requested.stdout
+
+    claimed = _run_kanban_cli(kanban_home, "claim", heartbeat_id, "--ttl", "300")
+    assert claimed.returncode == 0, claimed.stderr
+    with kbc.connect_closing() as conn:
+        conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (heartbeat_id,))
+        task = kb.get_task(conn, heartbeat_id)
+        assert task is not None and task.current_run_id is not None
+        run_id = task.current_run_id
+        conn.execute("UPDATE task_runs SET claim_expires = 1 WHERE id = ?", (run_id,))
+    heartbeat = _run_kanban_cli(kanban_home, "heartbeat", heartbeat_id)
+    assert heartbeat.returncode == 0, heartbeat.stderr
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, heartbeat_id)
+        assert task is not None and task.current_run_id is not None
+        run = conn.execute(
+            "SELECT claim_expires FROM task_runs WHERE id = ?", (task.current_run_id,),
+        ).fetchone()
+    assert task.claim_expires is not None and task.claim_expires > 1
+    assert run is not None and run["claim_expires"] == task.claim_expires
+
+    claimed = _run_kanban_cli(kanban_home, "claim", unowned_id, "--ttl", "300")
+    assert claimed.returncode == 0, claimed.stderr
+    rejected = _run_kanban_cli(
+        kanban_home, "complete", unowned_id, "--result", "takeover", profile="other-operator",
+    )
+    assert rejected.returncode != 0
+    assert "active claim" in rejected.stderr
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, complete_id).status == "done"
+        assert kb.get_task(conn, review_id).status == "review"
+        assert kb.get_task(conn, unowned_id).status == "running"
 
 
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
@@ -239,5 +317,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

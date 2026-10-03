@@ -204,6 +204,18 @@ def _profile_author() -> str:
     return current_profile_name("user") or "user"
 
 
+def _cli_claimer_id() -> str:
+    """Stable ownership identity for one-shot CLI Kanban mutations.
+
+    ``hermes kanban`` starts a new process for each verb, so a host/PID lock
+    cannot prove that a later ``complete`` or ``request-review`` call belongs
+    to the process that claimed the task. Scope this credential to the active
+    profile and board instead; dispatcher workers continue to use their
+    run-id ownership fence and host/PID claim locks.
+    """
+    return f"cli:{_profile_author()}:{kb.get_current_board()}"
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
@@ -309,11 +321,21 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
+    run_id = _worker_run_id_for(args.task_id)
+    claimer = os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or _cli_claimer_id()
     with kbc.connect_closing() as conn:
-        ok = kbd.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None),
-                                 expected_run_id=_worker_run_id_for(args.task_id))
-    return _ok_or_err(ok, f"cannot heartbeat {args.task_id} (not running?)",
-                      f"Heartbeat recorded for {args.task_id}")
+        renewed = kb.heartbeat_claim(conn, args.task_id, claimer=claimer)
+        ok = renewed and kbd.heartbeat_worker(
+            conn,
+            args.task_id,
+            note=getattr(args, "note", None),
+            expected_run_id=run_id,
+        )
+    return _ok_or_err(
+        ok,
+        f"cannot heartbeat {args.task_id} (not running?)",
+        f"Heartbeat recorded for {args.task_id}",
+    )
 
 
 def _cmd_assignees(args: argparse.Namespace) -> int:
@@ -733,7 +755,9 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(
+            conn, args.task_id, ttl_seconds=args.ttl, claimer=_cli_claimer_id(),
+        )
         if task is None:
             existing = kb.get_task(conn, args.task_id)
             if existing is None:
@@ -920,11 +944,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
+                                        claimer=_cli_claimer_id(),
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
-                fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
-                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
-                                 f"--force to close its run and complete anyway.")
+                fail_msg[tid] = (f"cannot complete {tid}: an active claim holds it. Wait for its "
+                                 f"owner, `hermes kanban reclaim {tid}` to release it, or re-run with "
+                                 f"--force to close the claim and complete anyway.")
                 return False
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
@@ -1046,7 +1071,8 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             return _err(gate_err)
         ok, reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
-            expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
+            expected_run_id=_worker_run_id_for(tid), claimer=_cli_claimer_id(),
+            force=bool(getattr(args, "force", False)), with_reason=True)
         if not ok:
             return _err(f"cannot request review for {tid}: {reason or 'not running/ready?'}")
         persisted_run = kb.latest_run(conn, tid)

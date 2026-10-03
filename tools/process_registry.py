@@ -2204,6 +2204,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
+        if session.exited and session_id in self._completion_consumed:
+            return {
+                **self._exit_snapshot(session, "already_exited"),
+                "note": ("Process already exited and its completion was returned earlier; "
+                         "do not wait again."),
+            }
         deadline = time.monotonic() + effective_timeout
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)

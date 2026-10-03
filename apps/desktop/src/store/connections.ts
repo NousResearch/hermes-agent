@@ -26,6 +26,7 @@ import {
   $newChatRoute,
   $showAllProfiles,
   captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayAgent,
   normalizeProfileKey,
   openGatewayAgent,
@@ -425,6 +426,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   const revision = ++switchRevision
+  // A draft the user starts while this switch is in flight (a gateway group's
+  // "+", a profile pick) is newer than the switch; the late re-home must not
+  // take it over. switchRevision only sees other switches.
+  const draftIntent = currentNewChatIntent()
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
   // Set by the commit hook once THIS switch has wiped — i.e. it owns the
@@ -554,7 +559,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
         $showAllProfiles.set(false)
       }
 
-      rehomeNewChatDraft(targetProfile, restoreOnBoot)
+      if (currentNewChatIntent() === draftIntent) {
+        rehomeNewChatDraft(targetProfile, restoreOnBoot)
+      }
+
       await refreshActiveProfile()
     }
   } catch (error) {

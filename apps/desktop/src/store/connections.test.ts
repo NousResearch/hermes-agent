@@ -76,6 +76,7 @@ vi.mock('@/store/profile', () => ({
   $newChatRoute: atom(null),
   $showAllProfiles,
   captureNewChatSource: vi.fn(),
+  currentNewChatIntent: () => 0,
   ensureGatewayAgent,
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
   openGatewayAgent,

@@ -631,7 +631,8 @@ class CLISessionMixin:
         """
         from cli import datetime
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, export_projection, normalize_save_format, render_session_for_save)
+            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, drop_undone_rows, export_projection, normalize_save_format,
+            render_session_for_save)
 
         parts = cmd.split()[1:]
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -666,8 +667,7 @@ class CLISessionMixin:
             except Exception:
                 session_data = None
             if session_data and fmt not in SAVE_TRANSCRIPT_FORMATS:
-                # Turns removed by /undo, rewind or edit stay out of a /save file (archived turns are kept).
-                session_data["messages"] = [m for m in session_data["messages"] if m["active"] or m["compacted"]]
+                drop_undone_rows(session_data)
         if not session_data:
             if not self.conversation_history:
                 print(t("cli.session.save_nothing"))

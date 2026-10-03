@@ -218,6 +218,15 @@ def export_projection(transcript: bool) -> Dict[str, bool]:
     return {"include_compacted": True} if transcript else {"include_inactive": True}
 
 
+def drop_undone_rows(export: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep live and compaction-archived rows in a ``/save`` JSON snapshot; rows removed by /undo, rewind
+    or edit stay out. ``timings`` is rebuilt from the kept rows so it names no dropped row."""
+    from hermes_state_portability import _export_timings
+    export["messages"] = [m for m in export["messages"] if m["active"] or m["compacted"]]
+    export["timings"] = _export_timings(export["messages"], export.get("id"))
+    return export
+
+
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]
 

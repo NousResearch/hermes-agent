@@ -716,8 +716,8 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, export_projection, normalize_save_format,
-            render_session_for_save)
+            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, drop_undone_rows, export_projection,
+            normalize_save_format, render_session_for_save)
 
         parts = event.get_command_args().split()
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -748,8 +748,7 @@ class GatewaySessionCommandsMixin:
         if not export_data:
             return t("gateway.save.no_messages", session_id=session_id)
         if fmt not in SAVE_TRANSCRIPT_FORMATS:
-            # Turns removed by /undo, rewind or edit stay out of a file sent into the chat (archived turns are kept).
-            export_data["messages"] = [m for m in export_data["messages"] if m["active"] or m["compacted"]]
+            drop_undone_rows(export_data)
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             export_data = redact_session_data(export_data)

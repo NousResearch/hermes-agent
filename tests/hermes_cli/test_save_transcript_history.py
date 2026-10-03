@@ -95,6 +95,7 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
         snapshot = json.loads(save(db, "json", tmp_path / "saved.json"))
         kept = [m["id"] for m in db.get_messages("s1", include_inactive=True) if m["active"] or m["compacted"]]
         assert [m["id"] for m in snapshot["messages"]] == kept  # every kept row, not the deduped display read
+        assert sum(snapshot["timings"]["role_counts"].values()) == len(kept)  # timings name no undone row
         # Like `hermes sessions export`, the in-memory backup is capped per session (sessions.max_export_messages).
         monkeypatch.setattr("hermes_state.resolved_max_export_messages", lambda: 5)
         assert "max_export_messages" in save(db, "json", tmp_path / "capped.json")

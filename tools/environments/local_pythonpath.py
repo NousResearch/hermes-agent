@@ -127,6 +127,41 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
         env.pop(_marker, None)
 
 
+def _is_pm_generation_site_packages(entry: Path) -> bool:
+    """True for the site-packages directory of a PM dependency generation.
+
+    ``activate_dependencies`` writes that exact directory into ``PYTHONPATH``.
+    A child on another interpreter does not list it in ``site.getsitepackages()``,
+    so the provenance check that only knows the running process leaves it in
+    place and the child imports the store's compiled extensions.
+
+    The layout is the ownership proof:
+    ``installs/<key>/environments/<generation>/venv/lib/pythonX.Y/site-packages``
+    (or ``Lib/site-packages`` on Windows), and nothing past it. A descendant, or
+    a path that merely contains one of those words, is not owned. No install
+    record is read, so a child whose home differs from the gateway's still
+    recognises the path it was handed.
+    """
+    parts = entry.parts
+    try:
+        at = len(parts) - 1 - parts[::-1].index("environments")
+    except ValueError:
+        return False
+    tail = parts[at + 1:]
+    posix = (
+        len(tail) == 5 and tail[1] == "venv" and tail[2] == "lib"
+        and tail[3].startswith("python") and tail[4] == "site-packages"
+    )
+    windows = (
+        len(tail) == 4 and tail[1] == "venv" and tail[2] == "Lib"
+        and tail[3] == "site-packages"
+    )
+    if not (posix or windows):
+        return False
+    head = parts[:at]
+    return len(head) >= 2 and head[-2] == "installs"
+
+
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
     """Remove Hermes-owned PYTHONPATH entries: only exact matches of the repo root
     (any launcher spelling) and runtime site-packages — never descendants, which are
@@ -141,7 +176,15 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
+    stripped = []
+    for entry in entries:
+        if not entry:
+            continue
+        path = Path(entry)
+        if any(_same_path(path, owned) for owned in owned_paths):
+            stripped.append(entry)
+        elif "environments" in path.parts and _is_pm_generation_site_packages(path):
+            stripped.append(entry)
     kept = [e for e in entries if e not in stripped]
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)

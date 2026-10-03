@@ -186,6 +186,7 @@ class SessionLifecycleMixin:
                     entry.resume_pending = True
                     entry.resume_reason = "restart_interrupted"
                     entry.last_resume_marked_at = now  # freshness starts at discovery
+                    entry.resume_marker_id = uuid.uuid4().hex
                     promoted += 1
             entry.active_turn_token = None
             entry.active_turn_started_at = None
@@ -213,16 +214,38 @@ class SessionLifecycleMixin:
             entry.resume_pending = True
             entry.resume_reason = reason
             entry.last_resume_marked_at = _now()
+            entry.resume_marker_id = uuid.uuid4().hex
         return self._update_entry(session_key, _apply)
 
-    def clear_resume_pending(self, session_key: str) -> bool:
-        """Clear the resume-pending flag after a successful resumed turn; True if cleared."""
+    @staticmethod
+    def _resume_marker_identity(entry: SessionEntry) -> Optional[str]:
+        """The set marker's identity (its token, or its timestamp on a pre-upgrade row); None if unset."""
+        if not entry.resume_pending:
+            return None
+        if entry.resume_marker_id:
+            return entry.resume_marker_id
+        marked = entry.last_resume_marked_at
+        return f"legacy:{marked.isoformat() if marked else ''}"
+
+    def peek_resume_marker(self, session_key: str) -> Optional[str]:
+        """Identity of the session's resume marker, or None when none is set."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            return self._resume_marker_identity(entry) if entry is not None else None
+
+    def clear_resume_pending(self, session_key: str, *, only_marker: Optional[str] = None) -> bool:
+        """Clear the resume-pending flag after a successful resumed turn; True if cleared.
+        With ``only_marker`` (from ``peek_resume_marker``), clear only that exact marker: one set
+        since (a successor run's) is left alone."""
         def _apply(entry: SessionEntry):
             if not entry.resume_pending:
+                return False
+            if only_marker is not None and self._resume_marker_identity(entry) != only_marker:
                 return False
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            entry.resume_marker_id = None
         return self._update_entry(session_key, _apply)
 
     def prune_old_entries(self, max_age_days: int) -> int:

@@ -223,6 +223,15 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+def _volatile_prompt(agent):
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)["volatile"]
+
+
 def _prompt_parts(agent):
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),
@@ -582,10 +591,10 @@ class TestTelegramRichMessagesHint:
             mock_cfg.return_value = {
                 "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
             }
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown auto-converts" in stable
-        assert "lean into it" not in stable
-        assert "task lists" not in stable
+            volatile = _volatile_prompt(agent)
+        assert "Standard Markdown auto-converts" in volatile
+        assert "lean into it" not in volatile
+        assert "task lists" not in volatile
 
     def test_rich_hint_with_rich_messages_enabled(self, monkeypatch):
         """When rich_messages is True in gateway.platforms, the extension
@@ -595,10 +604,10 @@ class TestTelegramRichMessagesHint:
             mock_cfg.return_value = {
                 "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": True}}}}
             }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-        assert "task lists" in stable
-        assert "math/formulas" in stable
+            volatile = _volatile_prompt(agent)
+        assert "lean into it" in volatile
+        assert "task lists" in volatile
+        assert "math/formulas" in volatile
 
     def test_rich_hint_from_top_level_platforms(self):
         """Top-level ``platforms.telegram.extra.rich_messages`` is merged
@@ -608,9 +617,9 @@ class TestTelegramRichMessagesHint:
             mock_cfg.return_value = {
                 "platforms": {"telegram": {"extra": {"rich_messages": True}}}
             }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-        assert "task lists" in stable
+            volatile = _volatile_prompt(agent)
+        assert "lean into it" in volatile
+        assert "task lists" in volatile
 
     def test_top_level_overrides_gateway_rich_messages(self):
         """Top-level ``platforms.telegram.extra`` wins over gateway.platforms
@@ -621,8 +630,8 @@ class TestTelegramRichMessagesHint:
                 "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}},
                 "platforms": {"telegram": {"extra": {"rich_messages": True}}},
             }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
+            volatile = _volatile_prompt(agent)
+        assert "lean into it" in volatile
 
     def test_gateway_extra_other_keys_does_not_block_top_level_rich_messages(self):
         """When gateway.platforms.telegram.extra has other keys but not
@@ -633,8 +642,8 @@ class TestTelegramRichMessagesHint:
                 "gateway": {"platforms": {"telegram": {"extra": {"disable_link_previews": True}}}},
                 "platforms": {"telegram": {"extra": {"rich_messages": True}}},
             }
-            stable = _stable_prompt(agent)
-        assert "lean into it" in stable
+            volatile = _volatile_prompt(agent)
+        assert "lean into it" in volatile
 
 
 
@@ -662,9 +671,9 @@ class TestTelegramRichMessagesHint:
         monkeypatch.setattr(_cfgmod, "get_config_path", lambda: home / "config.yaml")
 
         agent = _make_agent(platform="telegram")
-        stable = _stable_prompt(agent)
-        assert "lean into it" in stable
-        assert "task lists" in stable
+        volatile = _volatile_prompt(agent)
+        assert "lean into it" in volatile
+        assert "task lists" in volatile
 
     def test_malformed_extra_value_falls_back_to_base_hint(self, tmp_path, monkeypatch):
         """A truthy non-mapping ``extra`` must not crash prompt construction —
@@ -675,9 +684,9 @@ class TestTelegramRichMessagesHint:
             mock_cfg.return_value = {
                 "gateway": {"platforms": {"telegram": {"extra": "not-a-map"}}}
             }
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown auto-converts" in stable
-        assert "lean into it" not in stable
+            volatile = _volatile_prompt(agent)
+        assert "Standard Markdown auto-converts" in volatile
+        assert "lean into it" not in volatile
 
 
 _SKILLS = "SKILLS_INDEX_SENTINEL"
@@ -717,6 +726,26 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+    def test_desktop_and_telegram_share_prefix_with_coding_mode_off(self):
+        from agent.prompt_builder import PLATFORM_HINTS
+
+        # These surfaces resolve different postures in a code workspace;
+        # pin both to general mode so the hint is the divergence point.
+        with (
+            patch("agent.coding_context._coding_mode", return_value="off"),
+            patch("agent.system_prompt._memory_parts", return_value=["SHARED_MEMORY_SENTINEL"]),
+        ):
+            desktop = _build(build_system_prompt, platform="desktop")
+            telegram = _build(build_system_prompt, platform="telegram")
+
+        common = os.path.commonprefix((desktop, telegram))
+        assert _SKILLS in common
+        assert "SHARED_MEMORY_SENTINEL" in common
+        for prompt, surface in ((desktop, "desktop"), (telegram, "telegram")):
+            assert PLATFORM_HINTS[surface] not in common
+            assert prompt.index("SHARED_MEMORY_SENTINEL") < prompt.index(PLATFORM_HINTS[surface])
+            assert prompt.index(PLATFORM_HINTS[surface]) < prompt.index("Conversation started:")
 
 
 class TestMemoryProviderSystemPromptGating:

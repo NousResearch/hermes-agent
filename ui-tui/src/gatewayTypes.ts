@@ -116,6 +116,8 @@ export interface ConfigDisplayConfig {
   /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
    *  (default) trusts the OSC-11 probe + env signals. */
   tui_theme?: string
+  /** Vim-style modal editing in the composer (display.vim_mode). */
+  vim_mode?: boolean
 }
 
 export interface ConfigVoiceConfig {

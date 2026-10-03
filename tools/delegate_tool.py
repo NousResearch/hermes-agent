@@ -212,6 +212,10 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Per-task skill promotion: names re-promoted to full descriptions in the
+    # child's compact skills index (see agent/system_prompt.py). None/empty =
+    # pure names-only index.
+    skills: Optional[List[str]] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -294,6 +298,12 @@ def _build_child_agent(
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
     # reference), and no parent teardown can close it out from under a background child (#81267).
+    # Per-task skill promotion (see agent/system_prompt.py): names the brief
+    # wants re-promoted to full descriptions in the child's compact index.
+    # Set BEFORE the first request — the system prompt is built lazily.
+    child._delegate_skills = tuple(
+        s.strip() for s in (skills or []) if isinstance(s, str) and s.strip()
+    )
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
@@ -400,6 +410,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    skills: Optional[List[str]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -424,7 +435,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                skills=(t.get("skills") if "skills" in t else skills), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -475,8 +487,8 @@ def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
-    subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    subagent_id: Optional[str] = None, message: Optional[str] = None, skills: Optional[List[str]] = None,
+    parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -569,6 +581,7 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        skills=skills,
     )
     if err:
         return tool_error(err)
@@ -726,6 +739,11 @@ DELEGATE_TASK_SCHEMA = {
                             "files do NOT belong here — put paths in 'context' instead.",
                             items={"type": "string"},
                         ),
+                        "skills": _p(
+                            "array",
+                            "Per-task skill promotion override. See top-level 'skills'.",
+                            items={"type": "string"},
+                        ),
                         "group": _p(
                             "string",
                             "Optional result-delivery bucket within this call (only when delegation.independent_completions "
@@ -755,6 +773,14 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
+            ),
+            "skills": _p(
+                "array",
+                "Skill names to promote in the subagent's skill index. Subagents get a compact names-only index by "
+                "default; skills named here keep their full descriptions so the child loads them reliably. Pass the "
+                "skills the task's domain needs (e.g. ['systematic-debugging']). Applies to every task unless a task "
+                "sets its own 'skills'. The child can still browse/load ANY skill via skills_list/skill_view.",
+                items={"type": "string"},
             ),
         },
         "required": [],
@@ -791,7 +817,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        skills=args.get("skills"), parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

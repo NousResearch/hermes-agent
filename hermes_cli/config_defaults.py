@@ -1360,6 +1360,10 @@ DEFAULT_CONFIG = {
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
+        # Give delegated subagents a names-only skill index (descriptions dropped) and re-promote only the
+        # skills the dispatching brief named via delegate_task(skills=[...]). Demote-never-hide: every skill
+        # stays loadable with skill_view(). Set false to give children the full index.
+        "compact_skill_index": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each

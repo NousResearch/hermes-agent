@@ -310,8 +310,24 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
+    # Subagent compact index (delegate_task children): a spawned child inherits the parent's ENTIRE skills index —
+    # measured at 85%+ of a child's system prompt (~86KB / ~22k tokens on a large skills tree) for descriptions it
+    # almost never reads. Demote everything to names-only (the "*" sentinel; same demote-never-hide contract as the
+    # coding posture) and re-promote only the skills the dispatching brief named via delegate_task(skills=[...]).
+    # Config-gated: delegation.compact_skill_index (default ON; false restores the full index for children).
+    _promoted = frozenset()
+    if (agent.platform or "").lower() == "subagent":
+        try:
+            from tools.delegate_tool import _load_config as _delegation_config
+            _sub_compact = bool((_delegation_config() or {}).get("compact_skill_index", True))
+        except Exception:
+            _sub_compact = True
+        if _sub_compact:
+            _compact_cats = frozenset({"*"}) | _compact_cats
+            _promoted = frozenset(getattr(agent, "_delegate_skills", ()) or ())
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent),
+                                         promoted_skills=_promoted or None)
 
 
 def _auto_load_parts(agent: Any) -> List[str]:

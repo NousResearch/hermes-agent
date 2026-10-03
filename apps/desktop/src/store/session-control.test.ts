@@ -387,6 +387,31 @@ describe('session-control store', () => {
     expect($sessionControlBySession.get()).toEqual({})
   })
 
+  it('does not reuse a read generation when a session id returns after a gateway switch', async () => {
+    const staleRead = deferred<unknown>()
+    const currentRead = deferred<unknown>()
+    useGateway(
+      vi
+        .fn()
+        .mockImplementationOnce(() => staleRead.promise)
+        .mockImplementationOnce(() => currentRead.promise)
+    )
+
+    const stale = refreshSessionControl('returning')
+    clearAllSessionControl()
+    const current = refreshSessionControl('returning')
+
+    staleRead.resolve({ control: { ...FULL_SNAPSHOT, revision: 'pre-switch-stale' } })
+    await stale
+
+    expect($sessionControlBySession.get().returning).toMatchObject({ loading: true, snapshot: null })
+
+    currentRead.resolve({ control: { ...FULL_SNAPSHOT, revision: 'post-switch-current' } })
+    await current
+
+    expect($sessionControlBySession.get().returning!.snapshot!.revision).toBe('post-switch-current')
+  })
+
   it('does not let a late read repopulate a cleared session', async () => {
     const slow = deferred<unknown>()
     useGateway(vi.fn(() => slow.promise))

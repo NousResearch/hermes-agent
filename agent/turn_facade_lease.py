@@ -265,6 +265,7 @@ def admit_durable_turn_lease(
         f":platform={task_context['platform'] or 'unknown'}"
     )
     reload_needed = announced = False
+    last_wait_status_at = -15.0
 
     def _on_contended() -> None:
         # A busy state.db, not a known holder: say nothing, but still reload after admission,
@@ -274,8 +275,18 @@ def admit_durable_turn_lease(
         reload_needed = True
 
     def _on_wait(elapsed: float) -> None:
-        nonlocal reload_needed, announced
+        nonlocal reload_needed, announced, last_wait_status_at
         reload_needed = announced = True
+        # This bounded wait is queued work: refresh shared liveness so gateway watchdogs
+        # do not classify it as an idle or stalled agent turn.
+        from agent.session_activity import ActivityProvenance
+        agent._touch_activity(
+            "waiting for session turn lease",
+            provenance=ActivityProvenance.AGENT_SESSION_TURN_LEASE,
+        )
+        if elapsed >= 1.0 and elapsed - last_wait_status_at < 15.0:
+            return
+        last_wait_status_at = elapsed
         agent._emit_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
@@ -285,7 +296,7 @@ def admit_durable_turn_lease(
 
     if not db.acquire_session_turn_lease(
         session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
-        on_wait=_on_wait, on_contended=_on_contended,
+        on_wait=_on_wait, on_contended=_on_contended, wait_notice_interval_seconds=1.0,
         should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)

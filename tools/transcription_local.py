@@ -55,6 +55,39 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
     return model_name
 
 
+# Display names the Desktop language picker renders that users paste into
+# ``stt.local.language``; mapped to the faster-whisper code they mean (#132118).
+_LOCAL_STT_LANGUAGE_DISPLAY_NAMES = {
+    "中文": "zh", "简体中文": "zh", "繁體中文": "zh", "繁体中文": "zh", "chinese": "zh",
+    "english": "en",
+}
+
+
+def _normalize_local_stt_language(value: Any) -> Optional[str]:
+    """Coerce a configured STT language to the lowercase code faster-whisper accepts.
+
+    faster-whisper rejects anything but a lowercase ISO-639 code, while the Desktop
+    language picker deals in uppercase variants (``ZH``), script/region forms
+    (``zh-hant``) and display names (``繁體中文``) — each used to abort the
+    transcription outright. Unresolvable values return ``None`` so the backend
+    auto-detects instead of raising (#132118).
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if not text:
+        return None
+    mapped = _LOCAL_STT_LANGUAGE_DISPLAY_NAMES.get(text)
+    if mapped:
+        return mapped
+    # BCP-47-ish tag: keep only the primary subtag (zh-hant / zh_TW / en-US -> zh / zh / en).
+    primary = text.replace("_", "-").split("-")[0]
+    if primary.isalpha() and 2 <= len(primary) <= 3:
+        return primary
+    logger.warning("stt language %r is not a recognized code; letting the model auto-detect instead", value)
+    return None
+
+
 def _try_lazy_install_stt() -> bool:
     """Install faster-whisper and re-check dynamically so it's usable without a restart.
 
@@ -270,8 +303,11 @@ def _transcribe_local_command(
     command_template = _get_local_command_template()
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
-    # Language: hook override > stt.local.language > stt.language > env > "en".
-    language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
+    # Language: hook override > stt.local.language > stt.language > env > "en". All three
+    # sources pass the faster-whisper normalization — the whisper CLI rejects the same
+    # uppercase/script/display-name values the library does (#132118).
+    language = (_normalize_local_stt_language(language or _resolve_stt_language("local"))
+                or DEFAULT_LOCAL_STT_LANGUAGE)
     normalized_model = _normalize_local_model(model_name)
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:

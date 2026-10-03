@@ -33,7 +33,8 @@ from tools.transcription_audio import (
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
-    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+    _normalize_local_stt_language, _transcribe_local_command, _try_lazy_install_stt,
+    build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
@@ -377,10 +378,18 @@ def _transcribe_local(
         model = _get_or_load_local_model(model_name, local_cfg)
         if model is None:  # defensive: load failed without raising
             return _error_result("Local whisper model failed to load")
-        # pre_transcription hook overrides win over config-resolved values.
+        # pre_transcription hook overrides win over config-resolved values. Both the
+        # override and the config-resolved hint must pass the faster-whisper language
+        # normalization: uppercase/script/display-name values raise inside transcribe()
+        # and lose the recording (#132118); unresolvable values drop the hint so the
+        # model auto-detects.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
-        transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
-                                  if v})
+        language = _normalize_local_stt_language(
+            language or transcribe_kwargs.pop("language", None)
+        )
+        transcribe_kwargs.update({
+            k: v for k, v in (("language", language), ("initial_prompt", prompt)) if v
+        })
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
             # faster-whisper's transcribe() is lazy: the decode (and with it the

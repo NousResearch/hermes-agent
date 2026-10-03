@@ -213,7 +213,8 @@ class _Cred:
 
     ``creds``: env names that must ALL be truthy (inner tuple = ANY of). ``token``: env stored as
     ``PlatformConfig.token`` even when yaml disables the adapter (sending skills use it). ``fixed``:
-    ``(extra_key, env[, default[, fn]])`` always written once enabled. ``optional*``: ``_env_extras``
+    ``(extra_key, env[, default[, fn]])`` written once enabled: the env value when set, else the
+    default, but only when config.yaml did not set the key. ``optional*``: ``_env_extras``
     specs. ``warn_missing``: ``(env, msg)`` logged BEFORE enabling when blank. ``then``: tail
     ``fn(config, platform_config)``. ``home``: ``_env_home_channel`` env base applied only when the gate passed.
     """
@@ -238,8 +239,20 @@ class _Cred:
             platform_config.token = token
         extra = platform_config.extra
         for key, env, *rest in self.fixed:
-            default = rest[0] if rest else ""
-            value = _env_first(env) or default if isinstance(env, tuple) else getenv(env, default)
+            value = _env_first(env)
+            if not value:
+                if key in extra:
+                    # Env is silent, so the config.yaml value stands, but it still
+                    # goes through the spec converter. A quoted "9999" or "true"
+                    # would otherwise stay a string. Converters parse env strings,
+                    # so a native yaml scalar is stringified first.
+                    if len(rest) > 1:
+                        raw = extra[key]
+                        if not isinstance(raw, str):
+                            raw = "" if raw is None else str(raw)
+                        extra[key] = rest[1](raw)
+                    continue
+                value = rest[0] if rest else ""
             extra[key] = rest[1](value) if len(rest) > 1 else value
         _env_extras(extra, self.optional)
         _env_extras(extra, self.optional_stripped, strip=True)
@@ -294,14 +307,17 @@ def _slack_home(config: GatewayConfig) -> None:
 
 def _matrix_e2ee(config: GatewayConfig, matrix_config: PlatformConfig) -> None:
     mode = getenv("MATRIX_E2EE_MODE").strip().lower()
-    matrix_config.extra["encryption"] = mode in ("required", "require", "optional", "prefer", "preferred") or is_truthy_value(getenv("MATRIX_ENCRYPTION"))
+    legacy = getenv("MATRIX_ENCRYPTION")
+    if mode or legacy or "encryption" not in matrix_config.extra:
+        matrix_config.extra["encryption"] = mode in ("required", "require", "optional", "prefer", "preferred") or is_truthy_value(legacy)
     if mode:
         matrix_config.extra["e2ee_mode"] = mode
     _env_extras(matrix_config.extra, (("device_id", "MATRIX_DEVICE_ID"),))
 
 
 def _sms_api_key(config: GatewayConfig, sms_config: PlatformConfig) -> None:
-    sms_config.api_key = getenv("TWILIO_AUTH_TOKEN")
+    if token := getenv("TWILIO_AUTH_TOKEN"):
+        sms_config.api_key = token
 
 
 def _api_server(config: GatewayConfig) -> None:
@@ -608,7 +624,7 @@ _ENV_STEPS: tuple = (
         ),
         home="WEIXIN_HOME_CHANNEL", home_strip=True,
     ),
-    # BlueBubbles (iMessage). ``require_mention`` is always written: an unset env reads as "" → False.
+    # BlueBubbles (iMessage). With no env and no config.yaml value, ``require_mention`` is "" → False.
     _Cred(
         Platform.BLUEBUBBLES, ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
         fixed=(

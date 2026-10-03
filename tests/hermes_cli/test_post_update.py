@@ -65,9 +65,29 @@ def test_run_steps_isolates_failures():
 def test_migrate_config_noop_when_current(monkeypatch):
     import hermes_cli.config as cfg
 
-    monkeypatch.setattr(cfg, "check_config_version", lambda: (34, 34))
+    monkeypatch.setattr(cfg, "_read_config_version_stamp", lambda **_: (34, 34))
     result = step_migrate_config()
     assert result == {"ok": True, "skipped": "up-to-date"}
+
+
+def test_migrate_config_stamps_an_unversioned_config_like_migrate_config():
+    """A config with no _config_version is current-schema content, not a sub-floor install:
+    boot maintenance must migrate and stamp it exactly as ``migrate_config()`` would, not
+    refuse it with the "predates version 12" warning."""
+    from hermes_cli.config import (
+        DEFAULT_CONFIG, check_config_version, get_config_path, read_user_config_raw)
+
+    config_path = get_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "mcp_servers:\n  fs:\n    command: npx\n    disabled: true\n", encoding="utf-8")
+
+    result = step_migrate_config()
+
+    assert result["ok"] is True and "skipped" not in result
+    assert check_config_version() == (DEFAULT_CONFIG["_config_version"],) * 2
+    server = read_user_config_raw(config_path)["mcp_servers"]["fs"]
+    assert server.get("enabled") is False and "disabled" not in server
 
 
 def test_migrate_config_restores_backup_when_version_does_not_advance(

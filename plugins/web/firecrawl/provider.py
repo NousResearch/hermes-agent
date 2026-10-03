@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, lazy_ensure, search_fail, search_ok, setup_schema
+from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
 from tools.url_safety import is_safe_url
@@ -31,8 +31,15 @@ def _load_firecrawl_cls() -> type:
     """Import and cache ``firecrawl.Firecrawl`` (lazy_deps install hint → ImportError)."""
     global _FIRECRAWL_CLS_CACHE
     if _FIRECRAWL_CLS_CACHE is None:
-        lazy_ensure("search.firecrawl")
-        from firecrawl import Firecrawl as _cls
+        try:
+            from pm import ensure_import as _lazy_ensure
+
+            _lazy_ensure("firecrawl")
+        except ImportError:
+            pass
+        except Exception as exc:  # noqa: BLE001 — surface install hint
+            raise ImportError(str(exc))
+        from firecrawl import Firecrawl as _cls  # noqa: WPS433 — deliberately lazy
         _FIRECRAWL_CLS_CACHE = _cls
     return _FIRECRAWL_CLS_CACHE
 
@@ -114,7 +121,12 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+    def scrape(self, *, url, formats, timeout=None):
+        # _scrape_one passes the SDK's server-side ``timeout`` (ms); the v2 REST payload takes the same field.
+        payload = {"url": url, "formats": formats}
+        if timeout is not None:
+            payload["timeout"] = timeout
+        return self._post("/v2/scrape", payload)
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -146,7 +158,7 @@ def _get_firecrawl_client() -> Any:
     managed fallback billed to Nous); never-configured → direct when present, else managed. Raises ValueError
     when the resolved path is unusable."""
     wt = _wt()
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error, selection_exists
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error
     selected = read_selection("web")
     direct_config = _get_direct_firecrawl_config()
 
@@ -166,8 +178,11 @@ def _get_firecrawl_client() -> Any:
     if selected == NOUS_MANAGED_PROVIDER:
         resolved, log, message = _managed(), "the Nous Subscription web selection is stored but the tool gateway is unavailable.", lambda: selection_error(
             "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)")
-    elif selected is not None or selection_exists("web"):
-        # Stored vendor selection: direct only (no credentials → explicit selection unlocks keyless cloud mode).
+    elif selected is not None or _is_explicit_firecrawl_selection():
+        # Stored vendor selection (shared name, or a per-capability key naming firecrawl): direct only (no
+        # credentials → explicit selection unlocks keyless cloud mode). A per-capability key naming ANOTHER
+        # vendor is not a firecrawl selection: the other capability's ladder reached firecrawl on its own,
+        # so it resolves exactly like a never-configured install (#113017).
         resolved, log, message = direct_config, "direct Firecrawl selected but FIRECRAWL_API_KEY/FIRECRAWL_API_URL is not set.", lambda: selection_error(
             "web", selected or "firecrawl", "neither FIRECRAWL_API_KEY nor FIRECRAWL_API_URL is set")
     elif direct_config is not None:
@@ -248,7 +263,19 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            # Pass timeout (ms) to Firecrawl so the server-side deadline
+            # matches our asyncio deadline. Without this the API uses its
+            # 30 s default, causing SCRAPE_TIMEOUT before our 60 s
+            # client-side wait expires. See #43272.
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _get_firecrawl_client().scrape,
+                    url=url,
+                    formats=formats,
+                    timeout=60_000,
+                ),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
@@ -316,34 +343,10 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             for url in urls
         ]
 
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(
             "Firecrawl", "keyless/paid · optional gateway",
             "Full search + extract; supports keyless cloud, direct API, and Nous tool-gateway routing.",
             "FIRECRAWL_API_KEY", "Firecrawl API key (optional; blank = keyless cloud or self-hosted)", "https://docs.firecrawl.dev/introduction",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import NoReturn  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import os  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -96,8 +96,8 @@ _ARG_FILTERS = (
 def build_prune_filters(args: Any) -> Dict[str, Any]:
     """Translate argparse Namespace flags into SessionDB filter kwargs.
 
-    ``--older-than`` / ``--newer-than`` bound last activity (latest message timestamp, falling back
-    to ``started_at`` for empty sessions); ``--before`` / ``--after`` bound session start time.
+    ``--older-than`` / ``--newer-than`` bound last activity (freshest of ``last_activity_at`` /
+    latest message / ``started_at``); ``--before`` / ``--after`` bound session start time.
     """
     bounds: Dict[str, Optional[float]] = {
         key: None if (raw := getattr(args, attr, None)) is None else parse_point_in_time(raw, flag)

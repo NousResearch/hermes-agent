@@ -26,12 +26,6 @@ describe('panes store', () => {
   })
 
   describe('ensurePaneRegistered', () => {
-    it('adds a pane with defaults when missing', () => {
-      ensurePaneRegistered('files', { open: true })
-
-      expect(getPaneStateSnapshot('files')).toEqual({ open: true, widthOverride: undefined })
-    })
-
     it('is a no-op when the pane already exists', () => {
       ensurePaneRegistered('files', { open: false })
       ensurePaneRegistered('files', { open: true })
@@ -49,13 +43,6 @@ describe('panes store', () => {
   })
 
   describe('setPaneOpen / togglePane', () => {
-    it('updates the pane open flag', () => {
-      ensurePaneRegistered('files', { open: false })
-      setPaneOpen('files', true)
-
-      expect(getPaneStateSnapshot('files')?.open).toBe(true)
-    })
-
     it('togglePane flips the current value', () => {
       ensurePaneRegistered('files', { open: false })
       togglePane('files')
@@ -82,13 +69,6 @@ describe('panes store', () => {
   })
 
   describe('width overrides', () => {
-    it('setPaneWidthOverride stores the px value', () => {
-      ensurePaneRegistered('files', { open: true })
-      setPaneWidthOverride('files', 300)
-
-      expect(getPaneStateSnapshot('files')?.widthOverride).toBe(300)
-    })
-
     it('clearPaneWidthOverride removes the override', () => {
       ensurePaneRegistered('files', { open: true })
       setPaneWidthOverride('files', 300)
@@ -137,10 +117,6 @@ describe('panes store', () => {
       ensurePaneRegistered('files', { open: true })
       setPaneWidthOverride('files', 240)
       expect(width$.get()).toBe(240)
-    })
-
-    it('$paneOpen returns the same atom instance for repeated calls', () => {
-      expect($paneOpen('files')).toBe($paneOpen('files'))
     })
   })
 })

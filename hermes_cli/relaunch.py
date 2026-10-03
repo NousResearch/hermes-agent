@@ -139,4 +139,7 @@ def relaunch(
             )
             sys.exit(1)
     else:
+        from hermes_cli.observability.shared_metrics_startup import mark_in_place_relaunch
+
+        mark_in_place_relaunch()
         os.execvp(new_argv[0], new_argv)

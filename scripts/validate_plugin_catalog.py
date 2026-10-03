@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Standalone structural validator for plugin-catalog entry files.
 
 Validates ``plugin-catalog/*.yaml`` catalog entries and
 ``plugin-catalog/removed.yaml`` against the catalog contract schema, using
-only stdlib + PyYAML so the admission CI (and third-party repos) can run it
+only stdlib + ruamel.yaml so the admission CI (and third-party repos) can run it
 WITHOUT installing hermes-agent.
 
 NOTE: this script intentionally duplicates the schema rules instead of
@@ -29,18 +29,22 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 try:
-    import yaml
+    from ruamel.yaml import YAML, YAMLError
 except ImportError:  # pragma: no cover - dependency guidance only
     print(
-        "ERROR: PyYAML is required (pip install pyyaml)",
+        "ERROR: ruamel.yaml is required (pip install ruamel.yaml==0.18.17)",
         file=sys.stderr,
     )
     sys.exit(2)
 
-NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# \Z, not $: $ also matches just before a trailing newline, so a block scalar's
+# "abc123\n" would sneak past a $-anchored check while the workflow's fullmatch
+# rejects it. The two gates must see the same strings identically.
+NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}\Z")
+SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 TIERS = ("official", "community")
 CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 PLATFORMS = ("linux", "macos", "windows")
@@ -63,17 +67,62 @@ KNOWN_KEYS = {
     "category",
     "requires_hermes",
     "docs_url",
+    "version",
+    "image",
+    "screenshots",
+    "readme",
     "platforms",
     "capabilities",
+    "title",
+    "onboarding",
+    "known_issues",
 }
+# Cosmetic labels attached to the pin. ``version`` is never parsed; ``image`` and ``screenshots``
+# may only point at GitHub so the Desktop catalog browser and the docs site never fetch from
+# third-party hosts and a raw URL pinned to the entry's commit stays as immutable as the sha.
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}\Z")
+IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
+IMAGE_HOST_SUFFIX = ".githubusercontent.com"
+MAX_SCREENSHOTS = 6
+# ``readme: true`` makes the docs site render the README from the pinned commit; the build knows
+# the raw-file URL scheme of these forges only.
+README_REPO_HOSTS = ("github.com", "gitlab.com")
 REQUIRED_KEYS = ("name", "repo", "sha", "description", "maintainer")
 
 # One comparator clause of a requires_hermes spec, e.g. ">=0.19" or "!=1.2.3".
-_COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*\d+(\.\d+)*$")
+_COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*\d+(\.\d+)*\Z")
+
+
+def _is_allowed_image_url(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
 
 
 def _is_nonempty_str(value: object) -> bool:
     return isinstance(value, str) and value.strip() != ""
+
+
+def _repo_host(repo: object) -> str:
+    return (urlsplit(repo).hostname or "").lower() if isinstance(repo, str) else ""
+
+
+def _check_page_fields(data: dict, errors: list[str]) -> None:
+    """``screenshots`` and ``readme`` feed the entry's page at /docs/plugins/<name>; both optional (README on by default)."""
+    shots = data.get("screenshots")
+    if shots is not None:
+        if not isinstance(shots, list) or not all(isinstance(s, str) and _is_allowed_image_url(s) for s in shots):
+            errors.append(
+                f"screenshots must be a list of https URLs on {list(IMAGE_HOSTS)} or *{IMAGE_HOST_SUFFIX}"
+            )
+        elif len(shots) > MAX_SCREENSHOTS:
+            errors.append(f"screenshots lists {len(shots)} URLs; at most {MAX_SCREENSHOTS} are shown")
+    readme = data.get("readme")
+    if readme is not None:
+        if not isinstance(readme, bool):
+            errors.append(f"readme must be true or false, got {readme!r}")
+        elif readme and _repo_host(data.get("repo")) not in README_REPO_HOSTS:
+            errors.append(f"readme: true needs a repo on {list(README_REPO_HOSTS)} (the site fetches it from the pinned commit); omit it for other forges")
 
 
 def _check_requires_hermes(spec: object, errors: list[str]) -> None:
@@ -111,9 +160,25 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
 
     repo = data.get("repo")
     if "repo" in data and (
-        not isinstance(repo, str) or not repo.startswith("https://")
+        not isinstance(repo, str) or not re.fullmatch(r"https://\S+", repo)
     ):
         errors.append(f"repo {repo!r} must be an https:// URL")
+
+    # The admission CI joins subdir onto a pinned clone before validating its
+    # manifest: it must be a plain relative path or it can point the gate at
+    # files outside the pinned commit.
+    subdir = data.get("subdir")
+    # `subdir:` with no value is the repo root, as the runtime loader reads it.
+    if subdir is not None:
+        if not isinstance(subdir, str):
+            errors.append("subdir must be a string")
+        elif subdir and (
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", subdir)
+            or any(seg in ("", ".", "..") for seg in subdir.split("/"))
+        ):
+            errors.append(
+                f"subdir {subdir!r} must be a relative path without '.' or '..' segments"
+            )
 
     sha = data.get("sha")
     if "sha" in data and (not isinstance(sha, str) or not SHA_RE.match(sha)):
@@ -133,6 +198,16 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
 
     if "requires_hermes" in data:
         _check_requires_hermes(data["requires_hermes"], errors)
+
+    version = data.get("version")
+    if version is not None and (not isinstance(version, str) or not VERSION_RE.match(version)):
+        errors.append(f"version {version!r} must be 1-32 chars of [A-Za-z0-9._+-] (quote it in YAML)")
+
+    image = data.get("image")
+    if image is not None and (not isinstance(image, str) or not _is_allowed_image_url(image)):
+        errors.append(f"image {image!r} must be an https URL on {list(IMAGE_HOSTS)} or *{IMAGE_HOST_SUFFIX}")
+
+    _check_page_fields(data, errors)
 
     platforms = data.get("platforms", [])
     if platforms is None:
@@ -196,11 +271,13 @@ def validate_removed(data: object) -> tuple[list[str], list[str]]:
 def validate_file(path: Path) -> tuple[list[str], list[str]]:
     """Validate one YAML file (dispatching on filename). Returns (errors, warnings)."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+        reader = YAML(typ="safe")
+        reader.version = (1, 1)
+        with open(path, encoding="utf-8-sig") as fh:
+            data = reader.load(fh)
     except OSError as exc:
         return [f"cannot read file: {exc}"], []
-    except yaml.YAMLError as exc:
+    except YAMLError as exc:
         return [f"invalid YAML: {exc}"], []
 
     if path.name == "removed.yaml":

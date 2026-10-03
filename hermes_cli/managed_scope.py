@@ -15,9 +15,15 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-import yaml
 
-from utils import file_signature
+# Stale-module bridge: this module binds ``utils.file_signature`` at import time, so a fresh
+# import in a post-pull updater process (pre-handoff purge keeps root modules cached) dies
+# unless the stale ``utils`` is dropped first. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_root_modules
+
+drop_stale_root_modules()
+
+from utils import fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +106,7 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
 
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: yaml.safe_load(p.read_text(encoding="utf-8")) or {})
+    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
 
 
 def load_managed_env() -> Dict[str, str]:

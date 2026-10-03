@@ -14,8 +14,13 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from hermes_state_pidns import holder_namespace_token
+
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+# ``tool_reason`` for a lost session turn lease: attributes the stop to the lease, not the user (#112647).
+_REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
@@ -72,6 +77,8 @@ class DurableTurnLease:
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
         self.agent._touch_activity("starting new turn")
+        from hermes_cli.observability.shared_metrics_process import arm_turn
+        arm_turn(self.agent)
         from agent.periodic_scheduler import schedule
 
         self.timer_handles.append(schedule(self.refresh_tick, self.refresh_interval))
@@ -117,10 +124,11 @@ class DurableTurnLease:
                 return
             self.interrupt_message = message
             try:
-                self.agent.interrupt(message, hard_cancel=True)
+                self.agent.interrupt(message, hard_cancel=True, tool_reason=_REASON_LEASE_LOST)
             except Exception:
                 self.agent._interrupt_requested = True
                 self.agent._interrupt_message = message
+                self.agent._tool_interrupt_reason = _REASON_LEASE_LOST
 
     def commit_liveness_abort(self, snapshot, message: str) -> bool:
         """Commit point for the watchdog's stall observation.
@@ -142,7 +150,8 @@ class DurableTurnLease:
                 return False
         try:
             published = agent.interrupt(
-                message, hard_cancel=True, require_generation=current_generation
+                message, hard_cancel=True, tool_reason="turn liveness watchdog",
+                require_generation=current_generation,
             )
         except Exception:
             logger.debug("Turn liveness abort interrupt raised; declining the abort", exc_info=True)
@@ -213,28 +222,25 @@ class TurnLeaseAdmission:
     conversation_history: Optional[List[Dict[str, Any]]] = None
 
 
-def _durable_session_exists(db, session_id: str) -> bool:
+def _durable_session_exists(db, session_id: str) -> Optional[bool]:
+    """True / False when the row read answered; None when it failed and the state is unknown."""
     try:
         return db.get_session(session_id) is not None
     except Exception:
-        # A locked / non-WAL read is not proof the row is absent; treating probe failure as "fresh"
-        # ran fail-open at the exact contention point. Acquire, or fail closed.
+        # A locked / non-WAL read proves neither presence nor absence: get_session returns None —
+        # it does not raise — when the row is missing. See #84234.
         logger.warning(
-            # Acquire (or fail closed if acquire itself cannot) rather than start load/run/flush
-            # unsynchronized. get_session returns None — it does not raise — when the row is missing. See
-            # #84234.
-            "Could not check durable session before turn lease; "
-            "will acquire rather than run without serialization",
+            "Could not check durable session after turn lease admission; row state is unknown",
             exc_info=True,
         )
-        return True
+        return None
 
 
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
 ) -> TurnLeaseAdmission:
-    """Acquire the session turn lease when the session is durable; build (not start) its threads.
+    """Acquire the session turn lease (the row need not exist yet); build (not start) its threads.
 
     Mutates ``task_context["session_id"]`` and ``agent.session_id`` when the wait forced a resume-id
     reload. Returns an ``early_result`` (interrupted / timed out) instead of a lease when admission
@@ -243,25 +249,33 @@ def admit_durable_turn_lease(
     admission = TurnLeaseAdmission(conversation_history=conversation_history)
     if db is None or not session_id:
         return admission
-    # A fresh session id has no durable transcript to race over, and callers may supply an
-    # in-memory seed before the row exists — reloading would erase it. Check the concrete type:
-    # MagicMock-style shims accept any attribute without the protocol.
+    # Check the concrete type: MagicMock-style shims accept any attribute without the protocol.
     if (
         getattr(agent, "_persist_disabled", False)
-        or not _durable_session_exists(db, session_id)
         or not callable(getattr(type(db), "acquire_session_turn_lease", None))
     ):
         return admission
-    # Row proven to exist — suppress the redundant create attempt.
-    agent._session_db_created = True
+    # A session id without a row still takes the lease: client-addressed ids (API server
+    # X-Hermes-Session-Id, /v1/runs session_id, fingerprint-derived chat ids) are not
+    # process-unique, and the first turn creates the row mid-turn, so a second writer would
+    # otherwise find the row, take an unheld lease and interleave its turn into this one.
+    # pidns stamp: see hermes_state_pidns.
     holder = (
-        f"pid={os.getpid()}:turn={relay_turn_id}:platform={task_context['platform'] or 'unknown'}"
+        f"pid={os.getpid()}{holder_namespace_token()}:turn={relay_turn_id}"
+        f":platform={task_context['platform'] or 'unknown'}"
     )
-    waited = False
+    reload_needed = announced = False
+
+    def _on_contended() -> None:
+        # A busy state.db, not a known holder: say nothing, but still reload after admission,
+        # since the busy writer may have been the previous holder's final flush (one that fits
+        # inside the write patience never gets here, before or after this signal existed).
+        nonlocal reload_needed
+        reload_needed = True
 
     def _on_wait(elapsed: float) -> None:
-        nonlocal waited
-        waited = True
+        nonlocal reload_needed, announced
+        reload_needed = announced = True
         agent._emit_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
@@ -271,7 +285,8 @@ def admit_durable_turn_lease(
 
     if not db.acquire_session_turn_lease(
         session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
-        on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+        on_wait=_on_wait, on_contended=_on_contended,
+        should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
         return admission
@@ -282,8 +297,21 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
-            agent._emit_status("Session is free; loading the latest transcript...")
+        # Read the row only now: the previous holder may have created or deleted it while this
+        # turn waited, so an answer from before admission can be stale either way.
+        durable = _durable_session_exists(db, session_id)
+        if durable:
+            # Row proven to exist — suppress the redundant create attempt. A missing row leaves
+            # the flag alone: the flush heals a row deleted under a live agent (#123583). So does
+            # an unknown one: the create is an upsert that never overwrites an existing row.
+            agent._session_db_created = True
+        # Reload only a transcript that may exist: callers may seed a fresh id in memory before its
+        # row is written, and reloading an absent row would erase that seed. An unknown row still
+        # reads the transcript after a wait and adopts it only if it returns rows; that read
+        # raising ends the turn.
+        if reload_needed and durable is not False:
+            if announced:
+                agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
             latest_session_id = db.resolve_resume_session_id(session_id)
@@ -293,15 +321,18 @@ def admit_durable_turn_lease(
             reloaded = db.get_messages_as_conversation(
                 agent.session_id, repair_alternation=True, include_row_ids=True
             )
-            # A follow-up that aborted an earlier wait carries that turn's never-persisted input
-            # only in memory (see carry_unadmitted_user_message); the reload would drop it.
-            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
-            reloaded.extend(
-                m for m in (conversation_history or [])
-                if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
-                and "_row_id" not in m
-            )
-            admission.conversation_history = reloaded
+            # Decide on the stored rows alone: an unknown row that reloads nothing keeps the
+            # caller's history, which already holds any carried input below.
+            if durable or reloaded:
+                # A follow-up that aborted an earlier wait carries that turn's never-persisted
+                # input only in memory (see carry_unadmitted_user_message); the reload drops it.
+                from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+                reloaded.extend(
+                    m for m in (conversation_history or [])
+                    if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                    and "_row_id" not in m
+                )
+                admission.conversation_history = reloaded
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

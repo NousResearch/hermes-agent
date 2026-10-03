@@ -10,9 +10,17 @@ import sys
 import time
 from typing import Any
 
-from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
+from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
+from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
+
+
+# Persisted title provenance: automatic display labels are not user-selected identities.
+TITLE_SOURCE_DERIVED = "derived"
+TITLE_SOURCE_LLM = "llm"
+TITLE_SOURCE_USER = "user"
 
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
@@ -50,12 +58,26 @@ def escape_like(text: str) -> str:
 
 
 _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
-_PREVIEW_SCAFFOLDED_SQL = f"m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+# User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
+# the typed request sits at the tail (auto-load) or behind the instruction marker.
+# No LIKE wildcards in either prefix, so no ESCAPE clause is needed.
+_PREVIEW_SCAFFOLDED_SQL = (
+    f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+    f" OR m.content LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
 _SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 
 def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
+
+
+# ``display_metadata`` flag stamped on the user row a busy-queue accept writes (#111868/#121374
+# accept-time durability). The in-memory queue drain re-places an unmarked row at the transcript
+# end and deactivates this one; a backend restart discards the queue with nothing left to retire
+# the accept-time row, so ``reopen_session`` deactivates still-marked rows (#125577) — the marker
+# is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
+# turn's row (which #123532 deliberately keeps active).
+QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 
 
 def _sql_json_extract(expression: str, path: str) -> str:
@@ -134,10 +156,13 @@ def _shape_preview(raw: Any) -> str:
     return text[:_PREVIEW_MAX_CHARS] + "..." if len(text) > _PREVIEW_MAX_CHARS else text
 
 
-# Correlated ``_preview_raw`` column for a ``sessions s`` row.
-_PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m"
-    f" WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL AND {_PREVIEW_ELIGIBLE_SQL}"
-    f" ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
+def _sql_preview_raw(session_id_expr: str = "s.id") -> str:
+    """Correlated ``_preview_raw`` column: the first eligible user message of *session_id_expr*.
+    ``INDEXED BY`` walks the session in timestamp order and stops at the first eligible row; with planner
+    stats older than idx_messages_session_id, SQLite otherwise reads and sorts the whole session (#119403)."""
+    return (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m INDEXED BY idx_messages_session"
+        f" WHERE m.session_id = {session_id_expr} AND m.role = 'user' AND m.content IS NOT NULL"
+        f" AND {_PREVIEW_ELIGIBLE_SQL} ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
@@ -194,6 +219,17 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
+    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
+    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
+    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
+    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in ("_branched_from", "_delegate_from", "_reset_from")
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
+
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
 _RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
@@ -210,12 +246,26 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
         f" AND NOT ({_COMPRESSION_CHILD_SQL.format(a=alias)}) AND NOT ({_RESET_CHILD_SQL.format(a=alias)}))")
 
 
+_SQL_IN_WINDOW = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+
+
+def _sql_in_window(expr: str) -> str:
+    """*expr* when it is inside the ``coerce_epoch`` window, else NULL."""
+    return f"(SELECT _win.v FROM (SELECT {expr} AS v) _win WHERE _win.v {_SQL_IN_WINDOW})"
+
+
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
-    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone."""
-    msg_max = f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr})"
-    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v), "
-        f"{started})")
+    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone.
+    Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
+    skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
+    session with no trusted cell at all is NULL."""
+    # Pinned for the same reason as _sql_preview_raw (#119403).
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m INDEXED BY idx_messages_session"
+        f" WHERE _act_m.session_id = {session_id_expr}"
+        f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
+    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
+        f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")
 
 
 def _sql_session_last_active(alias: str = "s") -> str:
@@ -230,7 +280,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -247,23 +297,27 @@ AUTO_VACUUM_MIN_FREELIST_RATIO = 0.25
 # layout 0 (marker absent) with a working inline index until the user opts in.
 #   1 = v23 external-content layout with a tool-row-excluded trigram
 #   2 = trigram also excludes structured tool_calls JSON
-FTS_STORAGE_VERSION = 2
+#   3 = messages_fts source aligned to a stable projection view
+#       (``messages_fts_src``): always-truncate tool rows to the prefix, no
+#       moving high-water boundary. The external-content source now reads
+#       back EXACTLY what the triggers indexed, so the rank=1
+#       'integrity-check' probe cannot drift from the stored index (the
+#       recurring fts5 "checksum mismatch" / leaked-token failures).
+FTS_STORAGE_VERSION = 3
 
-# Tool results are often multi-megabyte machine payloads. Index a useful
-# prefix for new tool rows instead of tokenizing the entire body while the
-# canonical message write holds SQLite's single writer lock. The high-water
-# marker lets upgraded databases retain the exact token stream already stored
-# for historical rows, so external-content delete/update commands stay valid
-# without an eager full-index rebuild.
+# Tool results are often multi-megabyte machine payloads. The base FTS index
+# stores only a bounded prefix of every tool row; tool rows are skipped by
+# default in search, and explicit tool-only search uses a LIKE fallback over
+# the full stored content, so no search capability is lost. The projection
+# below is STABLE — it depends only on the row being written, never on
+# mutable ``state_meta`` markers — which is what keeps the external-content
+# integrity checker and the trigger 'delete'/'update' commands in agreement
+# with the stored index forever.
 FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
-FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY = "fts_tool_full_content_high_water"
 
 
 def _fts_indexed_content_sql(alias: str) -> str:
     return f"""CASE WHEN {alias}.role = 'tool'
-              AND {alias}.id > COALESCE((SELECT CAST(value AS INTEGER)
-                                         FROM state_meta
-                                         WHERE key = '{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}'), -1)
          THEN substr(COALESCE({alias}.content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
          ELSE {alias}.content END"""
 
@@ -328,6 +382,7 @@ CREATE TABLE IF NOT EXISTS system_prompts (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
+    created_source TEXT,
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,
@@ -377,9 +432,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
+    compression_overload_streak INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
+    transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    auto_archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
@@ -414,7 +472,11 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    message_uid TEXT,
+    absorbed_message_uids TEXT,
+    tool_call_uids TEXT,
+    tool_call_uid TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -582,6 +644,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
 CREATE INDEX IF NOT EXISTS idx_messages_display_identity
     ON messages(session_id, display_identity, display_order)
     WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_message_uid_insert;
+CREATE TRIGGER IF NOT EXISTS messages_message_uid_insert
+AFTER INSERT ON messages WHEN new.message_uid IS NULL
+BEGIN
+    -- Every row carries a message_uid, whoever wrote it: a build that predates the column binds NULL, so
+    -- the store mints one on its behalf (the current build always binds a uid; this never fires for it).
+    -- The note lives inside the body: a comment before DROP/CREATE would defeat the settled-trigger skip.
+    UPDATE messages SET message_uid = lower(hex(randomblob(16))) WHERE id = new.id;
+END;
 DROP TRIGGER IF EXISTS messages_display_order_insert;
 CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
 AFTER INSERT ON messages WHEN new.display_order IS NULL
@@ -650,6 +721,9 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+-- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.
+CREATE INDEX IF NOT EXISTS idx_messages_session_uid
+    ON messages(session_id, message_uid) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
@@ -658,6 +732,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
+    ON sessions(tool_names);
 -- Recent-session browsing must never derive recency by scanning messages.
 -- This expression is the durable, indexable approximation used to preselect
 -- a small candidate set before compression-chain and preview hydration.
@@ -685,12 +761,32 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 # predicate into a tautology (id > -1 OR id <= -1), i.e. normal operation.
 # The two state_meta PK probes per write are negligible next to the FTS
 # insert itself.
+#
+# messages_fts_src: the base word index no longer reads raw `messages` as its
+# external content. Tool rows are indexed as a bounded prefix, so the index
+# must read that SAME projection back or FTS5's 'integrity-check' / 'delete'
+# commands disagree with the stored tokens and corrupt the index (the
+# recurring fts5 checksum-mismatch drift: the projection used to depend on a
+# moving state_meta high-water key). The view/trigger/backfill all share the
+# one expression in `_fts_indexed_content_sql` — a fixed per-row function
+# with no marker lookups — so the boundary can never move again.
 FTS_SQL = f"""
+-- Stable projection the base word index reads and writes through: the view
+-- computes EXACTLY what the triggers/backfill insert, so 'rebuild' and the
+-- integrity checker always agree with the stored index.
+CREATE VIEW IF NOT EXISTS messages_fts_src AS
+    SELECT id,
+           CASE WHEN role = 'tool'
+                THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
+                ELSE content END AS content,
+           tool_name, tool_calls
+    FROM messages;
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     tool_name,
     tool_calls,
-    content='messages',
+    content='messages_fts_src',
     content_rowid='id'
 );
 
@@ -1032,9 +1128,11 @@ def _write_lock_holder_record(handle) -> None:
     from a live wedged one.
 
     Written under the flock so contenders that time out can tell an orphaned-fd holder (recorded process
-    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.
+    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.  ``pidns``: see
+    ``hermes_state_pidns``.
     """
-    record = {"pid": os.getpid(), "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
+    record = {"pid": os.getpid(), "pidns": pid_namespace_id(),
+              "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
     _rewrite_lock_file(handle, json.dumps(record, sort_keys=True).encode("utf-8"))
 
 
@@ -1045,13 +1143,16 @@ def _clear_lock_holder_record(handle) -> None:
 
 def _lock_holder_provably_dead(record) -> bool:
     """True ONLY when the recorded holder is provably dead or PID-recycled.  Anything indeterminate
-    (no/malformed record, PID owned by another user, /proc unavailable) is False: FAIL CLOSED and defer."""
+    (no/malformed record, PID owned by another user, /proc unavailable, foreign PID namespace)
+    is False: FAIL CLOSED and defer.  Unstamped records keep probing: see ``hermes_state_pidns``."""
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         return False
     if pid <= 0:
         return False
+    if not persistent_record_pidns_checkable(record.get("pidns")):
+        return False  # foreign namespace: a local reading is not proof — defer
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1216,3 +1317,12 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+
+def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
+    """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(warning)
+        return fallback

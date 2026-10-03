@@ -142,7 +142,7 @@ def _cmd_sources(args) -> None:
     """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import _ensure_dict, load_config, save_config
 
     c = _console()
     classes = {cls.name: cls for cls in external_backend_classes()}
@@ -152,7 +152,7 @@ def _cmd_sources(args) -> None:
             c.print(f"[red]Unknown password manager {name!r}[/] (expected one of {', '.join(classes)})")
             return
         cfg = load_config()
-        section = cfg.setdefault("vault", {}).setdefault(name, {})
+        section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
         if args.enable:
             section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
         else:
@@ -211,8 +211,13 @@ def register_cli(subparser) -> None:
 
 
 def vault_command(args) -> None:
+    from agent.vault_store import VaultError
+
     handler = getattr(args, "_vault_handler", None)
-    if handler is None:
-        _cmd_list(args)
-        return
-    handler(args)
+    try:
+        if handler is None:
+            _cmd_list(args)
+            return
+        handler(args)
+    except VaultError as exc:
+        _console().print(f"[red]Error:[/] {exc}")

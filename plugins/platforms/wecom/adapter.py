@@ -6,6 +6,7 @@ Config (``platforms.wecom.extra``): ``bot_id``/``secret`` (or WECOM_BOT_ID / WEC
 
 from __future__ import annotations
 
+from pm import install_hint
 import asyncio
 import json
 import logging
@@ -27,7 +28,7 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, bounded_put
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -106,6 +107,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     SUPPORTS_MESSAGE_EDITING = False
     SUPPORTS_NATIVE_STREAMING = True  # msgtype "stream" via aibot_respond_msg, not edit-based
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     _SPLIT_THRESHOLD = 3900  # chunks near the 4000-char client split are almost certainly continued
 
     def __init__(self, config: PlatformConfig):
@@ -597,7 +599,9 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         is_control = metadata.pop("is_approval_prompt", False)
         # Approval *confirmations* must not consume the req_id the stream consumer still needs.
         force_proactive = bool(metadata.pop("force_proactive_send", False))
-        return await self._enqueue_chat_send(chat_id, lambda: self._send_inner(chat_id, content, reply_to, force_proactive=force_proactive), is_control=is_control)
+        # One queued send per chunk so each one draws a token from the 30 msgs/min bucket.
+        return await send_chunks(self.truncate_message(content, self.MAX_MESSAGE_LENGTH), lambda chunk: self._enqueue_chat_send(
+            chat_id, lambda: self._send_inner(chat_id, chunk, reply_to, force_proactive=force_proactive), is_control=is_control))
 
     async def _send_inner(self, chat_id: str, content: str, reply_to: Optional[str] = None, *, force_proactive: bool = False) -> SendResult:
         """Send under the per-chat queue; force_proactive skips passive reply except in groups."""
@@ -674,7 +678,9 @@ def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {page_url}")
     except Exception:
         print(f"  Open this URL in WeCom on your phone:\n\n  {page_url}\n")
-        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
+        print("  Tip: from the Hermes environment, run: "
+              f"{install_hint('messaging')} "
+              "to display a scannable QR code here next time")
     print("\n  Fetching configuration results...", end="", flush=True)
     deadline = time.monotonic() + timeout_seconds
     query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(scode)}"
@@ -844,52 +850,3 @@ def register(ctx) -> None:
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS", allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS", **common,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import base64  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from collections import deque  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import mimetypes  # noqa: F401,E402
-import os  # noqa: F401,E402
-from urllib.parse import unquote  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'ABSOLUTE_MAX_BYTES': ('plugins.platforms.wecom.media', 'ABSOLUTE_MAX_BYTES'),
-    'APP_CMD_UPLOAD_MEDIA_CHUNK': ('plugins.platforms.wecom.media', 'APP_CMD_UPLOAD_MEDIA_CHUNK'),
-    'APP_CMD_UPLOAD_MEDIA_FINISH': ('plugins.platforms.wecom.media', 'APP_CMD_UPLOAD_MEDIA_FINISH'),
-    'APP_CMD_UPLOAD_MEDIA_INIT': ('plugins.platforms.wecom.media', 'APP_CMD_UPLOAD_MEDIA_INIT'),
-    'FILE_MAX_BYTES': ('plugins.platforms.wecom.media', 'FILE_MAX_BYTES'),
-    'IMAGE_MAX_BYTES': ('plugins.platforms.wecom.media', 'IMAGE_MAX_BYTES'),
-    'MAX_INTERMEDIATE_FRAMES': ('plugins.platforms.wecom.streaming', 'MAX_INTERMEDIATE_FRAMES'),
-    'MAX_UPLOAD_CHUNKS': ('plugins.platforms.wecom.media', 'MAX_UPLOAD_CHUNKS'),
-    'ReplyFrame': ('plugins.platforms.wecom.streaming', 'ReplyFrame'),
-    'STREAM_EXPIRED_ERRCODE': ('plugins.platforms.wecom.streaming', 'STREAM_EXPIRED_ERRCODE'),
-    'STREAM_REQUEST_EXPIRED_ERRCODE': ('plugins.platforms.wecom.streaming', 'STREAM_REQUEST_EXPIRED_ERRCODE'),
-    'STREAM_VERSION_CONFLICT_ERRCODE': ('plugins.platforms.wecom.streaming', 'STREAM_VERSION_CONFLICT_ERRCODE'),
-    'UPLOAD_CHUNK_SIZE': ('plugins.platforms.wecom.media', 'UPLOAD_CHUNK_SIZE'),
-    'VIDEO_MAX_BYTES': ('plugins.platforms.wecom.media', 'VIDEO_MAX_BYTES'),
-    'VOICE_MAX_BYTES': ('plugins.platforms.wecom.media', 'VOICE_MAX_BYTES'),
-    'VOICE_SUPPORTED_MIMES': ('plugins.platforms.wecom.media', 'VOICE_SUPPORTED_MIMES'),
-    'WeComStreamExpiredError': ('plugins.platforms.wecom.streaming', 'WeComStreamExpiredError'),
-    'cache_document_from_bytes_async': ('gateway.platforms.base', 'cache_document_from_bytes_async'),
-    'cache_image_from_bytes_async': ('gateway.platforms.base', 'cache_image_from_bytes_async'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

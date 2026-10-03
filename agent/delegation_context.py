@@ -73,6 +73,37 @@ def is_dispatcher_owned_worker_context() -> bool:
     return not (is_delegated_child_process_context() or _NON_DISPATCHER_OWNED_CONTEXT.get())
 
 
+def explicit_board_intent_is_pinned() -> bool:
+    """Whether an explicit kanban ``board=`` argument must still resolve through
+    the dispatcher-injected env pins (``HERMES_KANBAN_DB`` & friends) rather than
+    its own board directory.
+
+    True for in-process delegate children, descendants carrying
+    :data:`DELEGATED_CHILD_ENV_MARKER`, and dispatched workers
+    (``HERMES_KANBAN_TASK`` set). The pins are the "workers physically cannot
+    see other boards" isolation, and :func:`kanban_path_is_fenced` checks the
+    pinned path / fenced root — an explicit board that resolved elsewhere would
+    also escape that fence. Outside these fences an explicit board is the
+    caller's own intent and wins.
+    """
+    if _DELEGATED_CHILD_CONTEXT.get():
+        return True
+    if os.environ.get(DELEGATED_CHILD_ENV_MARKER):
+        return True
+    return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+
+
+def owned_kanban_task() -> str:
+    """The board task this execution OWNS: ``HERMES_KANBAN_TASK`` for the dispatcher-owned
+    worker, ``""`` otherwise. Tool access is not worker identity — a profile can expose the
+    kanban toolset interactively, and children/cron runs inherit the env var — so every
+    reader that turns the task id into worker behaviour (guidance, stop nudge, terminal
+    outcomes) goes through this one helper."""
+    if not is_dispatcher_owned_worker_context():
+        return ""
+    return (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+
+
 def is_delegated_child_process_context() -> bool:
     """Return True in this process or a subprocess spawned by a child."""
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))

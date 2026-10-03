@@ -10,7 +10,7 @@ Hermes Agent supports xAI Grok through a browser-based OAuth device-code login f
 
 When you sign in with an X account that has Premium+, xAI automatically links the subscription status to your xAI session, so the OAuth flow works the same as it does for direct SuperGrok subscribers.
 
-The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes.
+The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes. For what Hermes supports across the whole xAI surface, see the [xAI / Grok capability matrix](./xai-capability-matrix.md).
 
 The same OAuth bearer token is also reused by every direct-to-xAI surface in Hermes — TTS, image generation, video generation, and transcription — so a single login covers all four.
 

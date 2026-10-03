@@ -199,7 +199,7 @@ def _cmd_resume(args) -> int: return _set_paused(False)
 
 _PIN_MESSAGES = {
     True: (
-        "cannot pin (only agent-created skills participate in curation)",
+        "cannot be pinned",
         "could not pin '{skill}' — the skill is not curation-eligible (protected built-in or "
         "external). `hermes curator list-unmanaged` shows which skills the curator tracks.",
         # Unmanaged skills are never auto-transitioned, so the pin is recorded but only
@@ -208,7 +208,7 @@ _PIN_MESSAGES = {
         "it. Run `hermes curator adopt {skill}` to put it under curator management)",
         "pinned '{skill}' (will bypass auto-transitions)"),
     False: (
-        "there's nothing to unpin (curator only tracks agent-created skills)",
+        "cannot be unpinned",
         "could not unpin '{skill}' — the skill is not curation-eligible (protected built-in or "
         "external).",
         "unpinned '{skill}' (recorded; this skill is unmanaged — it was never under "
@@ -218,15 +218,25 @@ _PIN_MESSAGES = {
 
 def _set_pin(args, pinned: bool) -> int:
     from tools import skill_usage
-    not_agent, not_eligible, unmanaged, done = _PIN_MESSAGES[pinned]
+    refused, not_eligible, unmanaged, done = _PIN_MESSAGES[pinned]
     skill = args.skill
-    if not skill_usage.is_agent_created(skill):
-        print(f"curator: '{skill}' is bundled or hub-installed — {not_agent}")
-        return 1
+    bundled = skill_usage.is_bundled(skill)
+    if not skill_usage.is_curation_eligible(skill):
+        if skill_usage.is_hub_installed(skill):
+            reason = "hub-installed skills are never curator-managed"
+        elif bundled and not skill_usage.is_protected_builtin(skill):
+            reason = "bundled built-ins require curator.prune_builtins=true"
+        else:
+            reason = None
+        if reason:
+            print(f"curator: '{skill}' {refused} ({reason})")
+            return 1
     if not skill_usage.set_pinned(skill, pinned):
         print("curator: " + not_eligible.replace("{skill}", skill))
         return 1
-    if not skill_usage.is_curator_managed(skill):
+    # Bundled built-ins are governed by prune_builtins, not by the created_by marker,
+    # so the "unmanaged — run adopt" note (adopt refuses bundled) does not apply to them.
+    if not bundled and not skill_usage.is_curator_managed(skill):
         print("curator: " + unmanaged.replace("{skill}", skill))
         return 0
     print("curator: " + done.replace("{skill}", skill))

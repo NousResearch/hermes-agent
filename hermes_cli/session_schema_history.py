@@ -246,6 +246,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'tool_call_uids', 'absorbed_message_uids'),
             ('+', 'tool_call_uid', 'tool_call_uids'),
         )),
+        ('17 2026-10-03T01:31Z #121293', (('+', 'bedrock_content_blocks', 'codex_message_items'),)),
         ),
     ),
     "session_model_usage": _TableHistory(

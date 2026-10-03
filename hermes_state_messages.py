@@ -31,10 +31,10 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
+                   codex_message_items, bedrock_content_blocks, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
                    tool_call_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -277,7 +277,7 @@ class SessionMessagesMixin:
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))
-              for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
+              for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks")),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
@@ -357,7 +357,7 @@ class SessionMessagesMixin:
             for column in ("reasoning", "reasoning_content"):
                 if row[column] is not None:
                     msg[column] = row[column]
-            for column in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+            for column in ("reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks"):
                 if row[column]:
                     msg[column] = _json_or(
                         row[column], None, f"Failed to deserialize repaired {column}, falling back to None"
@@ -381,7 +381,7 @@ class SessionMessagesMixin:
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
         reasoning_content: str = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
-        codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
+        codex_message_items: Any = None, bedrock_content_blocks: Any = None, platform_message_id: str = None, observed: bool = False,
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
@@ -1609,7 +1609,7 @@ class SessionMessagesMixin:
                     msg["reasoning_content"] = row["reasoning_content"]
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
-                    for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
+                    for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items", "bedrock_content_blocks") if row[col])
                 if msg.get("tool_calls"):
                     unindexed_tool_owners.append(msg)
             elif row["role"] == "user":

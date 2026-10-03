@@ -191,11 +191,22 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
-# Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
+def _visible_selector_probe(selector: str) -> str:
+    """Return a probe with the same visibility filter used by the fill path."""
+    return (
+        "Array.from(document.querySelectorAll(" + repr(selector) + ")).some(el => {"
+        " const style = window.getComputedStyle(el);"
+        " return style.display !== 'none' && style.visibility !== 'hidden'"
+        " && el.getClientRects().length !== 0;"
+        "})"
+    )
+
+
+# Per kind: a JS probe that is truthy on a tab holding a visible form this kind fills.
 _TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
-    "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
+    "login": _visible_selector_probe("input[type=password]"),
+    "payment": _visible_selector_probe("input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]"),
+    "address": _visible_selector_probe("input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]"),
 }
 
 
@@ -328,8 +339,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = _visible_selector_probe(
+    "input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+    "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]"
+)
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:

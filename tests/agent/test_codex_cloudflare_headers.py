@@ -214,7 +214,7 @@ class TestAuxiliaryClientWiring:
         # the auth.json token.
         monkeypatch.setattr(
             auxiliary_client, "_select_pool_entry",
-            lambda provider: (False, None),
+            lambda provider, **kwargs: (False, None),
         )
         monkeypatch.setattr(
             auxiliary_client, "_read_codex_singleton_token",
@@ -236,7 +236,7 @@ class TestAuxiliaryClientWiring:
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
             auxiliary_client, "_select_pool_entry",
-            lambda provider: (False, None),
+            lambda provider, **kwargs: (False, None),
         )
         monkeypatch.setattr(
             auxiliary_client, "_read_codex_singleton_token",

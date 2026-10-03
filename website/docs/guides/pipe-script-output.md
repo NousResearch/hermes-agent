@@ -255,9 +255,9 @@ If you just need to pipe a raw string, reach for `hermes send`.
 
 ## Related
 
-- [Automate Anything with Cron](./automate-with-cron.md) —
+- [Automate Anything with Cron](/guides/automate-with-cron) —
   scheduled jobs whose output auto-delivers to any platform.
-- [Gateway Internals](../developer-guide/gateway-internals.md) —
+- [Gateway Internals](/developer-guide/gateway-internals) —
   the delivery router that `hermes send` shares with cron delivery.
-- [Messaging Platform Setup](../user-guide/messaging/index.md) —
+- [Messaging Platform Setup](/user-guide/messaging/index) —
   one-time configuration for each platform.

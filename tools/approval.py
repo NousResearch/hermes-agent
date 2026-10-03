@@ -695,6 +695,46 @@ class _GateSpec:
     smart_log: str            # {command}{description}{session_key}
 
 
+# The only answers that count as consent. The gate used to be a deny-list — it refused "deny",
+# ``None`` and "timeout" and treated every other value as a yes — so an unexpected answer reaching
+# ``grant`` executed the action. The local CLI prompt is unaffected either way because
+# ``prompt_dangerous_approval`` normalizes keystrokes through a lookup table, but two paths hand
+# their answer straight through: the gateway round-trip (``_await_gateway_decision``) and
+# third-party approval transport plugins. Consent is now an allow-list: anything not listed here is
+# refused, so a renamed field, a truncated payload or a plugin bug fails closed instead of open.
+CONSENT_ANSWERS = frozenset({"once", "session", "always"})
+
+# Platform adapters do not all speak the canonical vocabulary, so normalize BEFORE the allow-list
+# rather than widening it. Two things are handled:
+#   * case and surrounding whitespace — a chat payload can carry either, and "ONCE" is the same
+#     decision as "once"; accepting it loses nothing, since the values being refused are
+#     *unrecognized* ones, not differently-spelled ones.
+#   * affirmative aliases -> "once". The WhatsApp Cloud adapter's Approve button emits a literal
+#     "approve" (the ``appr:<id>:approve`` payload goes straight to ``resolve_gateway_approval``),
+#     so without this a real Approve tap is refused while the adapter still replies "✅ Approved."
+#     to the user. The alias set is the one the API server already applies at
+#     ``gateway/platforms/api_server_runs.py::_APPROVAL_CHOICE_ALIASES`` so the two stay in step.
+#
+# Every alias maps to "once", the NARROWEST scope: an Approve tap is one operation and must never
+# persist a session or permanent grant. Anything not listed is returned unchanged and refused.
+_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
+
+
+def _canonical_choice(choice):
+    """Normalize a platform adapter's approval answer onto the canonical vocabulary."""
+    if not isinstance(choice, str):
+        return choice
+    normalized = choice.strip().lower()
+    return _CHOICE_ALIASES.get(normalized, normalized)
+
+
+_UNRECOGNIZED_ANSWER = (
+    "BLOCKED: the approval response was not a recognized decision (expected one of "
+    "once/session/always to approve, or deny to refuse). An unrecognized answer is treated as "
+    "NO consent. Do NOT retry this action, do NOT rephrase it, and do NOT attempt the same "
+    "outcome via a different route — report the failed approval to the user instead."
+)
+
 _STOP_COMMAND = (
     " The user has NOT consented to this action. Do NOT retry this command, do "
     "NOT rephrase it, and do NOT attempt the same outcome via a different "
@@ -825,6 +865,16 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
+        # Consent is an allow-list, not a deny-list: normalize the answer, then refuse anything
+        # that is not one of CONSENT_ANSWERS rather than executing it. See the constant for why.
+        choice = _canonical_choice(choice)
+        if choice not in CONSENT_ANSWERS:
+            logger.warning(
+                "approval: refusing unrecognized approval answer %r (pattern_key=%s, session=%s); "
+                "only %s count as consent",
+                choice, pattern_key, session_key, "/".join(sorted(CONSENT_ANSWERS)))
+            return _denied(_UNRECOGNIZED_ANSWER, pattern_key=pattern_key,
+                           description=description, outcome="unrecognized_answer")
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, warnings)

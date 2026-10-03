@@ -50,6 +50,14 @@ hooks, resource cleanup, and child-cost rollup. It does not change the
 synchronous `delegate_task` tool, batch delegation, or its gateway/TUI display.
 The initial implementation retains metadata and terminal results in-process for
 one hour.
+
+A non-empty `correlation_id` is unique within its parent session while the child
+is being constructed, running, or retained as a terminal result. Concurrent
+duplicates raise `SubagentLifecycleError`; other parents may reuse the same ID.
+If launch preparation or submission fails, the reservation is released and any
+constructed child is closed, so the caller can retry. Requests without a
+correlation ID are not deduplicated.
+
 After a process restart, `reconnect` returns `RECONNECT_UNAVAILABLE` and never
 starts a replacement child. Running Python threads also cannot survive process
 exit; callers must treat those handles as interrupted by process exit.

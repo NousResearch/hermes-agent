@@ -3,6 +3,7 @@ Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independe
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
+import json
 import logging
 import os
 import time
@@ -22,6 +23,16 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Evict-on-write (add-overflow). MEMORY.md / USER.md are injected into the system prompt
+# every turn and have a hard char cap; once the file is AT the cap, add() refused and a
+# full memory silently blocked every later fact until the model ran a consolidation pass.
+# Instead, on overflow the OLDEST entries are rotated out and archived (archive-never-
+# delete, reversible via ARCHIVE.jsonl) so the new fact can land without a manual
+# consolidation. Entries are never silently dropped: the write is REFUSED if the archive
+# record cannot be written first.
+EVICT_HEADROOM = 200  # chars left free after an eviction, so the next add can't re-trip the cap
+ARCHIVE_FILENAME = "ARCHIVE.jsonl"
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -31,6 +42,34 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 def _error(message: str, **extra) -> Dict[str, Any]:
     return {"success": False, "error": message, **extra}
+
+
+def get_memory_archive_path() -> Path:
+    """Profile-scoped append-only archive for entries removed from memory."""
+    from tools import memory_tool  # get_memory_dir is monkeypatched there
+    return memory_tool.get_memory_dir() / ARCHIVE_FILENAME
+
+
+def _append_archive(records: List[Dict[str, Any]]) -> Optional[str]:
+    """Append *records* to ARCHIVE.jsonl in ONE append-mode write.
+
+    Returns None on success, or an error string. One ``write`` on a file opened in
+    append mode, so a crash can add a partial line at worst — never reorder or
+    truncate records already archived by an earlier write.
+    """
+    if not records:
+        return None
+    path = get_memory_archive_path()
+    from hermes_constants import mkdir_under_hermes_home
+
+    try:
+        mkdir_under_hermes_home(path.parent)
+        payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(payload)
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+    return None
 
 
 def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
@@ -274,7 +313,9 @@ class MemoryStore:
             return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """Append a new entry. At the char limit the OLDEST entries are evicted to
+        ARCHIVE.jsonl to make room (reversible); an entry too large for an empty
+        store, or one whose eviction cannot be archived, is refused."""
         content = content.strip()
         if not content:
             return _error("Content cannot be empty.")
@@ -284,13 +325,50 @@ class MemoryStore:
         def _add(entries, limit):
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
-            if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
+            if len(ENTRY_DELIMITER.join(entries + [content])) <= limit:
+                return entries + [content], "Entry added."
+
+            # At the cap: evict oldest-first instead of refusing. The facts most
+            # recently recorded are the ones in play; the oldest are the likeliest to be
+            # stale, and they are archived rather than dropped, so nothing is lost.
+            # Evict down to a headroom below the cap in one pass so a burst of adds
+            # doesn't re-trip this on every call.
+            target_size = max(limit - EVICT_HEADROOM, limit // 2)
+            kept, evicted = list(entries), []
+            while kept and len(ENTRY_DELIMITER.join(kept + [content])) > target_size:
+                evicted.append(kept.pop(0))
+                if not kept:
+                    break
+            if not evicted or len(ENTRY_DELIMITER.join(kept + [content])) > limit:
+                # Nothing was evictable, or the entry cannot fit even emptied. This is
+                # the original refusal path, kept for those cases.
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
                     f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
                     f"overlapping entries into shorter ones or 'remove' stale or less important entries (see "
                     f"current_entries below), then retry this add — all in this turn."))
-            return entries + [content], "Entry added."
+            # Archive BEFORE the rewrite. _mutate persists whatever the closure returns,
+            # so the record has to exist first: dropping entries with no trace is the one
+            # outcome worse than refusing.
+            archive_error = _append_archive([
+                {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "action": "add_overflow",
+                 "target": target, "reason": f"evicted on write: over {limit} chars",
+                 "entry": entry} for entry in evicted])
+            if archive_error:
+                return _error(
+                    f"Refusing to add: memory is at {self._char_count(target):,}/{limit:,} chars and "
+                    f"{len(evicted)} oldest entr{'y' if len(evicted) == 1 else 'ies'} would have to be "
+                    f"evicted, but the archive write failed ({archive_error}). Nothing was changed. "
+                    f"Fix write access to {get_memory_archive_path()} and retry, or consolidate with "
+                    f"'replace'/'remove' instead.",
+                    current_entries=self._entries_for(target), usage=self._usage(target),
+                    archive_error=archive_error)
+            message = (f"Entry added. Memory was at the {limit:,}-char limit, so "
+                       f"{len(evicted)} oldest entr{'y was' if len(evicted) == 1 else 'ies were'} "
+                       f"evicted to {ARCHIVE_FILENAME} to make room (reversible).")
+            return kept + [content], message, {
+                "evicted": len(evicted), "archive": ARCHIVE_FILENAME,
+                "evicted_entries": evicted}
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)

@@ -9,6 +9,14 @@ import sys
 
 import pytest
 
+# Local-env workaround (#124050 tests): the checkout's venv python3 is a
+# symlink into <home>/hermes-agent/.hermes-runtime/..., so stdlib zoneinfo's
+# first import (sysconfig._safe_realpath(sys.executable)) trips the real-home
+# IO guard after it installs. Importing here — during collection, before any
+# autouse guard fixture — caches the module. CI pythons are not symlinked into
+# the home, so this is a no-op there.
+import zoneinfo  # noqa: F401
+
 from hermes_cli import _launchers, doctor, doctor_platform
 from pm.environments import install_state_dir, site_packages
 
@@ -192,3 +200,57 @@ def test_remedies_and_launcher_repairs_respect_install_owner(tmp_path, monkeypat
     else:
         assert not command.exists()
         assert "hermes pm repair" not in out
+
+
+@pytest.mark.platforms("posix")
+def test_pm_install_without_workspace_launcher_accepts_committed_venv_console_script(tmp_path, monkeypatch, capsys):
+    """#124050: a PM install stages source into <gen>/workspace WITHOUT a launcher;
+    the real launcher lives in the committed generation env. doctor must accept that
+    layout instead of permanently reporting a missing entry point."""
+    project, home, command = _tree(tmp_path, monkeypatch)
+    selected = _generation(project)
+    (selected / "bin").mkdir(parents=True, exist_ok=True)
+    (selected / "bin" / "hermes").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (selected / "bin" / "hermes").chmod(0o755)
+    # The PM staging workspace deliberately contains NO launcher:
+    assert not (project / "hermes").is_file()
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    # #124050 scope: the PM layout must no longer be flagged for the missing
+    # workspace launcher (a user shim absence is a separate, real issue).
+    assert "Hermes entry point exists" in out
+    assert "Hermes entry point not found" not in out
+
+
+@pytest.mark.platforms("posix")
+def test_pm_install_without_any_launcher_still_warns(tmp_path, monkeypatch, capsys):
+    """#124050: keep the fail signal — a PM install with NO launcher anywhere
+    (workspace, committed venv, base venv) must still report the missing entry point."""
+    project, home, command = _tree(tmp_path, monkeypatch)
+    _generation(project)
+    assert not (project / "hermes").is_file()
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "Hermes entry point not found" in out
+
+
+@pytest.mark.platforms("posix")
+def test_pm_install_accepts_base_venv_console_script(tmp_path, monkeypatch, capsys):
+    """#124050: same acceptance for a launcher in the PM base env (pre-Gen layout)."""
+    project, home, command = _tree(tmp_path, monkeypatch)
+    base = project / "venv"
+    (base / "bin").mkdir(parents=True, exist_ok=True)
+    (base / "bin" / "hermes").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (base / "bin" / "hermes").chmod(0o755)
+    _generation(project)
+    assert not (project / "hermes").is_file()
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "Hermes entry point exists" in out
+    assert "Hermes entry point not found" not in out

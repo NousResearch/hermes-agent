@@ -41,12 +41,9 @@ def _active_cron_provider_name() -> str:
 
 
 def _builtin_gateway_liveness() -> Optional[bool]:
-    """Tri-state readiness of a scheduler serving THIS home (None = probe failed).
+    """Tri-state scheduler readiness (None = probe failed).
 
-    A gateway launched from this home proves itself by process liveness. Any other scheduler that
-    ticks this home — the host multiplexer for a served profile, or the in-process ticker inside
-    ``hermes serve`` / the Desktop backend (#121881) — proves itself only by the fresh heartbeat it
-    writes into this home's store. External providers use their own machinery and are exempt.
+    Local gateways use process liveness; served satellites also require their own fresh heartbeat. External providers use their own machinery and are exempt.
     """
     try:
         if _active_cron_provider_name() != "builtin":
@@ -58,17 +55,15 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             from gateway.status import is_gateway_runtime_lock_active
             if is_gateway_runtime_lock_active():
                 return True
-        from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
+        from hermes_cli.gateway import (
+            find_gateway_pids, named_profile_served_by_running_multiplexer)
         if find_gateway_pids():
             return True
-        from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
-        if not _ticker_age_is_fresh(get_ticker_heartbeat_age()):
+        if not named_profile_served_by_running_multiplexer():
             return False
-        # A served named profile's heartbeat is the host multiplexer's, whose process the served
-        # record already proves. Any other writer (the in-process ticker, a shared gateway whose
-        # record omits this profile) must itself still be running: a killed ticker's last stamp
-        # reads fresh for ~3 minutes and would queue manual runs nobody picks up.
-        return named_profile_served_by_running_multiplexer() or ticker_heartbeat_writer_alive()
+        # List/create and status require a fresh heartbeat from the satellite's own store.
+        from cron.jobs import get_ticker_heartbeat_age
+        return _ticker_age_is_fresh(get_ticker_heartbeat_age())
     except Exception:
         return None
 
@@ -77,11 +72,7 @@ def _warn_if_gateway_not_running() -> None:
     """Warn at create/list time when the scheduler is not ready; stay silent on an unknown probe result."""
     if _builtin_gateway_liveness() is not False:
         return
-    from hermes_cli.profiles import get_active_profile_name
-    # Name the inspected profile: the shared gateway may well be running and ticking ANOTHER
-    # profile's jobs, so a bare "not running" reads as a system claim it cannot make (#99579).
-    print(color(f"  ⚠  Scheduler is not ready for profile '{get_active_profile_name()}': "
-                "no gateway serves it and no fresh ticker heartbeat.", Colors.YELLOW))
+    print(color("  ⚠  Scheduler is not ready: no gateway or no fresh profile heartbeat.", Colors.YELLOW))
     print(color("     If no gateway is running: hermes gateway install\n"
                 "                    sudo hermes gateway install --system  # Linux servers\n"
                 "     Check status:  hermes cron status", Colors.DIM))
@@ -184,13 +175,12 @@ def cron_list(show_all: bool = False):
             if job.get("enabled", True) or effective_job_state(job) == "paused"
         ]
 
-    from hermes_cli.profiles import get_active_profile_name
     if not jobs:
-        print(color(f"No scheduled jobs in profile '{get_active_profile_name()}'.\n"
-                    "Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
+        print(color("No scheduled jobs.\nCreate one with 'hermes cron create ...' "
+                    "or the /cron command in chat.", Colors.DIM))
         return
 
-    _print_banner(f"Scheduled Jobs (profile: {get_active_profile_name()})")
+    _print_banner("Scheduled Jobs")
 
     for job in jobs:
         # effective_job_state honours the scheduler flag — never [paused] when enabled=true.
@@ -245,7 +235,6 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
         ("Workdir", job.get("workdir")),
-        ("Python", job.get("interpreter")),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
@@ -311,9 +300,6 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
 def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import CronTickYielded, tick
-    from hermes_cli.observability.shared_metrics_process import begin_process
-
-    begin_process("cron")
     try:
         tick(verbose=True)
     except CronTickYielded as exc:
@@ -500,7 +486,6 @@ def cron_status():
         pids = [] if host is not None else find_gateway_pids()
         gateway_alive_via_lock = False
         served_by_multiplexer = False
-        in_process_ticker = False
         if host is None and not pids:
             # The pid scan transiently misses a live gateway right after a restart; the runtime
             # lock proves the process is alive. Declare "not running" only when both agree.
@@ -515,37 +500,19 @@ def cron_status():
             # Multiplexer identity does not establish the active profile's ticker health.
             if not gateway_alive_via_lock:
                 served_by_multiplexer = named_profile_served_by_running_multiplexer()
-            if not gateway_alive_via_lock and not served_by_multiplexer:
-                # `hermes serve` / the Desktop backend ticks every local profile in-process: no
-                # gateway argv, lock or host record — only the heartbeat it writes here (#121881).
-                with contextlib.suppress(Exception):
-                    from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
-                    in_process_ticker = (_ticker_age_is_fresh(get_ticker_heartbeat_age())
-                                         and ticker_heartbeat_writer_alive())
         if host is not None:
             print(f"  Scheduler host: {host.describe()}")
             # `hermes gateway restart` exits 78 for a served NAMED profile
-            # (_guard_named_profile_under_multiplexer): name the profile that LAUNCHED the host
-            # process. On a standalone fleet that is this profile itself, not default (#120871).
-            owner = None
-            with contextlib.suppress(Exception):
-                from hermes_cli.gateway import host_multiplexer_serving
-                owner = host_multiplexer_serving(active)
-            host_profile = owner.profile_label if owner is not None else "default"
-            _print_ticker_health([host.pid], restart_command=f"hermes --profile {host_profile} gateway restart")
-        elif pids or gateway_alive_via_lock or served_by_multiplexer or in_process_ticker:
+            # (_guard_named_profile_under_multiplexer): the one host process is the default's.
+            _print_ticker_health([host.pid], restart_command="hermes --profile default gateway restart")
+        elif pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
                 print("  Scheduler host: the host gateway (multiplexing this profile)")
                 _print_ticker_health([], restart_command="hermes --profile default gateway restart")
-            elif in_process_ticker:
-                print(f"  Scheduler host: an in-process ticker (hermes serve / Desktop backend) ticking profile '{active}'")
-                _print_ticker_health([], restart_command="restart the Hermes Desktop app (or its serve backend)")
             else:
                 _print_ticker_health(pids)
         else:
-            # Only THIS profile's scheduler is knowable from here: a gateway may be alive on the
-            # host ticking other profiles, so never assert a host-wide negative (#99579).
-            print(color(f"✗ No scheduler is serving profile '{active}' — its cron jobs will NOT fire", Colors.RED))
+            print(color("✗ No gateway is running on this host — cron jobs will NOT fire", Colors.RED))
             # When scheduling last worked before the host went away: without this, a
             # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
             with contextlib.suppress(Exception):
@@ -715,8 +682,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
-                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:
@@ -730,8 +696,7 @@ _JOB_DETAIL_LINES = (
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
-    ("workdir", "  Workdir: {}"),
-    ("interpreter", "  Python: {}"))
+    ("workdir", "  Workdir: {}"))
 
 
 def _print_job_details(job_data: Dict[str, Any]) -> None:
@@ -779,6 +744,13 @@ def cron_edit(args):
         return 1
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+    if getattr(args, "prompt", None) is not None and not str(args.prompt).strip():
+        print(color(
+            "Error: --prompt must be non-empty; empty or whitespace-only "
+            "substitution is rejected.",
+            Colors.RED,
+        ))
         return 1
     existing_skills = list(job.get("skills") or ([job["skill"]] if job.get("skill") else []))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))

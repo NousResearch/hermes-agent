@@ -165,7 +165,7 @@ def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
     linked: Dict[str, List[str]] = {}
     for category in _SUPPORT_DIRS:
         files = [
-            str(path.relative_to(skill_root)) for path in sorted((skill_root / category).rglob("*"))
+            path.relative_to(skill_root).as_posix() for path in sorted((skill_root / category).rglob("*"))
             if path.is_file() and validate_within_dir(path, skill_root) is None]
         if files:
             linked[category] = files

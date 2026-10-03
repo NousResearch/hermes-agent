@@ -284,11 +284,15 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     from gateway.platforms.event import MessageEvent
 
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
 
+    import types
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
     runner._draining = False
+    fake_entry = types.SimpleNamespace(session_id="sess_12345", session_key="telegram:c1", created_at=None, updated_at=None)
+    runner.session_store = types.SimpleNamespace(get_or_create_session=lambda src: fake_entry)
 
     source = SessionSource(
         platform=Platform.TELEGRAM, chat_id="c1", user_id="u1", user_name="tester", chat_type="dm",
@@ -299,6 +303,7 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
 
     def _handler(raw_args):
         seen["session_key"] = get_session_env("HERMES_SESSION_KEY")
+        seen["session_id"] = get_session_env("HERMES_SESSION_ID")
         seen["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID")
         return f"Bound: {raw_args}"
 
@@ -312,7 +317,60 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     assert result == "Bound: bind"
     assert seen["session_key"] == runner._session_key_for_source(source)
     assert seen["session_key"] != ""
+    assert seen["session_id"] == "sess_12345"
     assert seen["chat_id"] == "c1"
     # Bound only for the handler call, not leaked past dispatch
     assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("HERMES_SESSION_ID") == ""
 
+
+@pytest.mark.asyncio
+async def test_gateway_new_command_emits_session_key_in_on_session_reset(monkeypatch):
+    """Gateway /new and /reset must include session_key along with old/new session IDs (#123245)."""
+    import types
+    from hermes_cli import lifecycle as _lifecycle_mod
+
+    invocations = []
+    def _fake_invoke(hook_name, **kwargs):
+        invocations.append((hook_name, kwargs))
+
+    monkeypatch.setattr(_lifecycle_mod, "invoke_hook", _fake_invoke)
+
+    from gateway.run import GatewayRunner
+    handler_obj = object.__new__(GatewayRunner)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat99", user_id="user99", chat_type="dm")
+    session_key = "telegram:chat99"
+    old_entry = types.SimpleNamespace(session_id="old_sid_111", session_key=session_key, created_at=None, updated_at=None)
+    new_entry = types.SimpleNamespace(session_id="new_sid_222", session_key=session_key, created_at=None, updated_at=None)
+
+    handler_obj._session_key_for_source = lambda s: session_key
+    handler_obj._invalidate_session_run_generation = lambda sk, reason: None
+    handler_obj._release_running_agent_state = lambda sk: None
+    handler_obj.session_store = types.SimpleNamespace(_entries={session_key: old_entry})
+    async def _noop(*args, **kw): pass
+    handler_obj._cleanup_old_agent_for_reset = _noop
+    handler_obj._evict_cached_agent = lambda sk: None
+    handler_obj._clear_conversation_scope = lambda sk, reason: None
+    handler_obj._async_session_store = types.SimpleNamespace(
+        _store=handler_obj.session_store,
+        reset_session=lambda sk: asyncio.sleep(0, result=new_entry)
+    )
+    handler_obj._fire_session_reset_hooks = _noop
+    handler_obj._reset_notice_session_info = lambda s: ""
+    handler_obj._telegram_topic_new_header = lambda s: ""
+    handler_obj._is_telegram_topic_lane = lambda s: False
+    handler_obj._session_db = None
+
+    from gateway.platforms.event import MessageEvent
+    event = MessageEvent(text="/new", source=source, message_id="m99")
+
+    await handler_obj._handle_reset_command(event)
+
+    reset_hooks = [kw for name, kw in invocations if name == "on_session_reset"]
+    assert len(reset_hooks) == 1
+    hook_args = reset_hooks[0]
+    assert hook_args["session_key"] == session_key
+    assert hook_args["old_session_id"] == "old_sid_111"
+    assert hook_args["new_session_id"] == "new_sid_222"
+    assert hook_args["session_id"] == "new_sid_222"

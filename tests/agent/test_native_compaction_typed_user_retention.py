@@ -58,13 +58,16 @@ _IMAGE = {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
           {"type": "input_text", "text": "trailing"}], 2, ("abcd", "efgh")),
         ([{"type": "input_text", "text": "你好世界"}], 2, ("你好",)),
         ([{"type": "input_text", "text": "CURRENT" * 20}, _IMAGE], 2, None),
+        (None, 2, None),
     ],
-    ids=["multipart-boundary", "cjk-estimator-budget", "oversized-mixed-image"],
+    ids=["multipart-boundary", "cjk-estimator-budget", "oversized-mixed-image", "oversized-output-text-only"],
 )
 def test_typed_boundary_is_budgeted_and_never_substitutes_older_ask(content, budget, expected):
     older = {"role": "user", "content": "old"}
     current = {"type": "message", "role": "user", "id": "current-user", "content": deepcopy(content)}
-    for index, part in enumerate(current["content"]):
+    if content is None:  # Content-less item measured only via output_text.
+        current = {"type": "message", "role": "user", "output_text": "CURRENT" * 20}
+    for index, part in enumerate(current.get("content") or []):
         part["metadata"] = {"index": index}
     items = [older, current, _CHECKPOINT]
     original = deepcopy(items)

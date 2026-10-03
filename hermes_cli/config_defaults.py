@@ -2922,7 +2922,7 @@ OPTIONAL_ENV_VARS = {
         "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
         tools=["web_search"], password=False),
     "BRAVE_SEARCH_API_KEY": _tool(
-        "Brave Search API subscription token (free tier: 2,000 queries/mo)",
+        "Brave Search API subscription token ($5 free credits/mo, card required)",
         "Brave Search subscription token", "https://brave.com/search/api/", tools=["web_search"]),
     "BROWSERBASE_API_KEY": _tool(
         "Browserbase API key for cloud browser (optional — local browser works without this)",

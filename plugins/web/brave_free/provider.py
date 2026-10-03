@@ -1,4 +1,4 @@
-"""Brave Search (free-tier Data-for-Search API) — search only, 2,000 queries/month.
+"""Brave Search (Data-for-Search API) — search only; $5 free credits/mo, card required.
 
 Config: ``web.search_backend`` / ``web.backend: "brave-free"`` (hyphen form kept for
 existing user configs). Env: ``BRAVE_SEARCH_API_KEY``. Pair with Firecrawl/Tavily/Exa
@@ -18,10 +18,10 @@ _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 
 class BraveFreeWebSearchProvider(BaseWebSearchProvider):
-    """Search-only Brave provider using the free-tier Data-for-Search API."""
+    """Search-only Brave provider using the Data-for-Search API."""
 
     NAME = "brave-free"
-    DISPLAY_NAME = "Brave Search (Free)"
+    DISPLAY_NAME = "Brave Search"
     KEY_ENV = "BRAVE_SEARCH_API_KEY"
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
@@ -43,6 +43,7 @@ class BraveFreeWebSearchProvider(BaseWebSearchProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(
-            "Brave Search (Free)", "free", "Free-tier API key — 2k queries/mo, search only.",
-            "BRAVE_SEARCH_API_KEY", "Brave Search API key (free tier)", "https://brave.com/search/api/",
+            "Brave Search", "free credits",
+            "Data-for-Search API key — $5 free credits/mo (card required), search only.",
+            "BRAVE_SEARCH_API_KEY", "Brave Search API key", "https://brave.com/search/api/",
         )

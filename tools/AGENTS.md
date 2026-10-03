@@ -129,7 +129,7 @@ completion by default; with `delegation.independent_completions` it is split int
 (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped
 task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
 `async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
-and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
+plus force-stalled runners still holding a thread, and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
 no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:

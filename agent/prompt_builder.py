@@ -1359,6 +1359,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    names_only: bool = False,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1366,6 +1367,7 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``names_only`` keeps the same visibility and category semantics while omitting descriptions.
     """
     _home_token = None
     if skills_dir_override is not None:
@@ -1381,7 +1383,39 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs,
+            names_only=names_only)
+    finally:
+        if _home_token is not None:
+            reset_hermes_home_override(_home_token)
+
+
+def get_visible_skill_names(
+    available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
+    skills_dir_override: "Path | None" = None,
+) -> frozenset[str]:
+    """Return the names that the skills prompt would expose for this session.
+
+    Visibility uses the same disabled-skill, platform, app, tool, project, and external
+    directory rules as :func:`build_skills_system_prompt`.  The returned set is suitable
+    for plugins that need to build an index before the first model request.
+    """
+    names: set[str] = set()
+    _home_token = None
+    if skills_dir_override is not None:
+        skills_dir = Path(skills_dir_override)
+        _home_token = set_hermes_home_override(str(skills_dir.parent))
+    else:
+        skills_dir = get_skills_dir()
+    try:
+        external_dirs = get_all_skills_dirs()[1:]
+        from agent.skill_utils import get_project_skills_dirs
+        project_dirs = get_project_skills_dirs()
+        if skills_dir.exists() or external_dirs or project_dirs:
+            _build_skills_system_prompt_inner(
+                skills_dir, external_dirs, available_tools, available_toolsets, None, project_dirs,
+                visible_names=names)
+        return frozenset(names)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1442,7 +1476,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
-    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", names_only: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
@@ -1460,10 +1494,12 @@ def _render_skills_index(
     index_lines = []
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
+        if names_only:
+            entries = [(name, "") for name, _ in entries]
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        cat_desc = category_descriptions.get(category, "")
+        cat_desc = "" if names_only else category_descriptions.get(category, "")
         index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
         seen = set()
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
@@ -1508,7 +1544,7 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
+    project_dirs: "list[Path] | None" = None, names_only: bool = False, visible_names: set[str] | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1518,7 +1554,7 @@ def _build_skills_system_prompt_inner(
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())), names_only,
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)
@@ -1527,7 +1563,7 @@ def _build_skills_system_prompt_inner(
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None and not app_gated:
+        if cached is not None and not app_gated and visible_names is None:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
@@ -1582,7 +1618,10 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    if visible_names is not None:
+        visible_names.update(name for entries in skills_by_category.values() for name, _ in entries)
+    result = _render_skills_index(
+        skills_by_category, category_descriptions, compact_categories, available_tools, names_only=names_only)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

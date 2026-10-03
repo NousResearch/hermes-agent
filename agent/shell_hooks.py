@@ -496,7 +496,18 @@ def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+def _parse_review_request(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    # {"review": ...} and/or {"skip": ...} (kinds: "memory", "skills"); anything else asks for nothing.
+    from agent.review_trigger import parse_review_request, parse_review_skip
+    review, skip = parse_review_request([data]), parse_review_skip([data])
+    out = {**({"review": sorted(review)} if review else {}), **({"skip": sorted(skip)} if skip else {})}
+    return out or None
+
+
+_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify,
+    "request_background_review": _parse_review_request,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:

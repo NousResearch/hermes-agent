@@ -194,6 +194,84 @@ def _repair_swapped_close_brackets(text: str) -> Optional[str]:
     return "".join(out) if repairs else None
 
 
+def _is_valid_calls_batch(obj: Any) -> bool:
+    """Semantic guard for the malformed-tail repairs: a recovered string must parse
+    to a real calls batch (a non-empty list of dicts each carrying a non-empty
+    ``name``). This is what stops a repair from "fixing" a genuinely corrupted or
+    structurally wrong payload into a plausible-but-wrong one."""
+    if not isinstance(obj, list) or not obj:
+        return False
+    return all(isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].strip() for e in obj)
+
+
+def _repair_malformed_calls_string(text: str) -> Optional[str]:
+    """Recover a stringified ``tool_call`` batch from the small-model tail-bracket
+    malformations measured on long Qwen3.8-27B turns. Three bounded shapes:
+
+    1. adjacent close brackets emitted out of order (counts balanced) — handled by
+       :func:`_repair_swapped_close_brackets` (09-29, 5/5 identical shape);
+    2. a valid batch prefix followed by a trailing run of stray close brackets —
+       cut at the prefix end;
+    3. exactly one surplus close bracket (counts off by +1) — delete it.
+
+    Each candidate is accepted **only** if it re-parses to a valid calls batch
+    (:func:`_is_valid_calls_batch`), so real corruption is never silently masked.
+    Returns the repaired string, or ``None`` when no bounded repair applies.
+    """
+    # 1. adjacent close brackets out of order (balanced counts).
+    repaired = _repair_swapped_close_brackets(text)
+    if repaired is not None:
+        try:
+            if _is_valid_calls_batch(json.loads(repaired)):
+                return repaired
+        except json.JSONDecodeError:
+            pass
+    # 2. valid batch prefix + trailing stray close brackets -> cut.
+    try:
+        obj, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        obj, end = None, None
+    if obj is not None:
+        trail = text[end:]
+        if trail and all(ch in "]}" for ch in trail) and _is_valid_calls_batch(obj):
+            return text[:end]
+    # 3. exactly one surplus close bracket (forward stack scan, delete the mismatch).
+    pairs = {"}": "{", "]": "["}
+    opens = {"{", "["}
+    stack: List[int] = []
+    in_str = False
+    esc = False
+    mismatch: Optional[int] = None
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in opens:
+            stack.append(i)
+        elif ch in pairs:
+            if stack and text[stack[-1]] == pairs[ch]:
+                stack.pop()
+            else:
+                mismatch = i
+                break
+    if mismatch is not None and not in_str:
+        candidate = text[:mismatch] + text[mismatch + 1:]
+        try:
+            obj2 = json.loads(candidate)
+        except json.JSONDecodeError:
+            obj2 = None
+        if _is_valid_calls_batch(obj2):
+            return candidate
+    return None
+
+
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -215,15 +293,15 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            # Small-model structural slip: adjacent close brackets emitted out of
-            # order (measured 5/5 on a long Qwen3.8-27B turn: tail "...}]}" where
-            # "...}]" is required; bracket COUNTS stay balanced). One bounded repair
-            # pass — swap the mismatched closer with its neighbour — then re-parse.
-            repaired = _repair_swapped_close_brackets(raw_calls)
+            # Small-model structural slips in the stringified batch envelope:
+            # adjacent close brackets out of order, a trailing run of stray
+            # close brackets, or one surplus close bracket (each shape measured
+            # on long Qwen3.8-27B turns; see _repair_malformed_calls_string).
+            repaired = _repair_malformed_calls_string(raw_calls)
             if repaired is not None:
                 try:
                     raw_calls = json.loads(repaired)
-                    logger.info("tool_call 'calls' recovered a swapped-close-bracket slip")
+                    logger.info("tool_call 'calls' recovered a malformed-tail slip")
                 except json.JSONDecodeError as e2:
                     return [], f"tool_call 'calls' is not valid JSON: {e2}"
             else:

@@ -181,6 +181,19 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "hermes_state",
+        # MCP server/child-process teardown: the mcp_plugins and parity
+        # suites spawn real stdio MCP servers and fail on any process that
+        # outlives the turn (zero_mcp_orphans).
+        "tools/mcp_",
+        "tools/environments/local",
+        # Approval/clarify waits and the native Codex app-server: the
+        # providers suite runs a real `hermes chat -q` against a fake
+        # app-server and answers its approval requests in single-query mode.
+        "tools/approval",
+        "tools/clarify",
+        "tui_gateway/prompt_turn",
+        "tui_gateway/server_requests",
+        "agent/transports/codex_app_server",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,

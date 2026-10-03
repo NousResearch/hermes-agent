@@ -122,8 +122,8 @@ describe('PaneTab hover close button', () => {
     )
 
     const close = screen.getByRole('button', { name: 'Close' })
-    expect(close).toHaveClass('[-webkit-app-region:no-drag]')
-    expect(close.parentElement).toHaveClass('[-webkit-app-region:no-drag]')
+    expect(close.classList.contains('[-webkit-app-region:no-drag]')).toBe(true)
+    expect(close.parentElement?.classList.contains('[-webkit-app-region:no-drag]')).toBe(true)
   })
 
   it('renders no ✕ without an onClose', () => {

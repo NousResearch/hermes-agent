@@ -176,10 +176,12 @@ class TurnRunner:
             or self._agent_interrupted()
         ):
             return
-        # "new" mode: only report when tool changes
-        if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
+        # "new" mode deduplicates the parent's tool lane only. Child relays are
+        # independent activity and must not suppress or unlock parent repeats.
+        if event_type != "subagent.tool" and ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
             return
-        ctx.last_tool[0] = tool_name
+        if event_type != "subagent.tool":
+            ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
             self._progress_emit(msg)

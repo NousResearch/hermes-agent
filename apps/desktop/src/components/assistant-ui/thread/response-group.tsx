@@ -9,6 +9,45 @@ interface GroupMessage {
   metadata?: { custom?: Record<string, unknown> }
 }
 
+/**
+ * Whether a USER message is a background delivery, keyed by its content array.
+ *
+ * This is the only part of `responseMessageRole` that reads a message's text, and
+ * the transcript-wide structural signature calls it for every message on every
+ * store notification. Extracting the whole text to test one prefix meant each
+ * streamed delta re-copied and re-trimmed every settled prompt in the thread, so
+ * per-frame cost grew with the transcript's characters, not with the live tail
+ * (#126486). The sibling `contentHasVisibleText` in `./content` already exists to
+ * avoid exactly this concatenation.
+ *
+ * A content array is the right key because assistant-ui publishes a NEW array
+ * when a message changes and keeps the settled one — the same invariant
+ * `messagePaintWeight`'s WeakMap is built on. A same-length replacement, a
+ * rewrite, or a rewind all arrive as a new array and miss the cache. A `string`
+ * content is not weak-referenceable and is left uncached.
+ */
+const backgroundDeliveryByContent = new WeakMap<object, boolean>()
+
+function isBackgroundDelivery(message: GroupMessage): boolean {
+  const content = message.content
+
+  if (!Array.isArray(content)) {
+    return PROCESS_NOTIFICATION_RE.test(messageContentText(content))
+  }
+
+  const cached = backgroundDeliveryByContent.get(content)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const background = PROCESS_NOTIFICATION_RE.test(messageContentText(content))
+
+  backgroundDeliveryByContent.set(content, background)
+
+  return background
+}
+
 /** Background deliveries continue the response without becoming human prompts. */
 export function responseMessageRole(message: GroupMessage): string {
   const custom = message.metadata?.custom
@@ -16,7 +55,7 @@ export function responseMessageRole(message: GroupMessage): string {
   const background =
     message.role === 'system'
       ? Boolean(custom?.asyncResult || custom?.asyncResultKind)
-      : message.role === 'user' && PROCESS_NOTIFICATION_RE.test(messageContentText(message.content))
+      : message.role === 'user' && isBackgroundDelivery(message)
 
   return background ? 'background' : message.role
 }

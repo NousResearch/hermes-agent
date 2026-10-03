@@ -32,6 +32,7 @@ gateway:
         attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                  # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
+        free_response_channels: [] # channel UUIDs that answer without a mention (require_mention stays on elsewhere)
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4           # seconds between inbound poll sweeps
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
@@ -52,6 +53,7 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_RELAY_URL` | ✅ | Base URL of the community relay |
 | `BUZZ_PRIVATE_KEY` | ✅ | Nostr private key (nsec or hex) — the only secret |
 | `BUZZ_CHANNELS` | — | Comma-separated channel UUIDs to watch (default: all joined channels) |
+| `BUZZ_FREE_RESPONSE_CHANNELS` | — | Comma-separated channel UUIDs where the agent responds without an @mention even when `BUZZ_REQUIRE_MENTION` is `true` (parity with Discord's `DISCORD_FREE_RESPONSE_CHANNELS`) |
 | `BUZZ_HOME_CHANNEL` | — | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | — | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
 | `BUZZ_ALLOW_ALL_USERS` | — | Allow any community member to talk to the agent |
@@ -84,6 +86,7 @@ gateway:
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        free_response_channels: []        # channel UUIDs exempt from require_mention (e.g. a dedicated bot-help channel)
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
 ```
 
@@ -102,6 +105,7 @@ gateway:
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- Channels listed in `free_response_channels` / `BUZZ_FREE_RESPONSE_CHANNELS` dispatch every message from an allowed user without a mention; every other channel keeps the mention requirement. Use it to make one help channel mention-free while the rest of the community still has to @ the agent.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 

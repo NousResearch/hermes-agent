@@ -65,6 +65,13 @@ _ADDRESS_RE = re.compile(r"^\+\d+")
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
 
+# BlueBubbles Server up to and including 1.9.9 routes ``DELETE /api/v1/chat/:guid/typing`` to
+# ``startTyping`` (BlueBubblesApp/bluebubbles-server#768, merged after the 1.9.9 release), so every
+# stop call re-lights the bubble until iMessage's own timeout clears it. Those servers already stop
+# typing themselves when a text message is sent, so there the REST stop is skipped, not inverted.
+_LAST_SERVER_WITH_INVERTED_STOP_TYPING = (1, 9, 9)
+_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)")
+
 
 def _redact(text: str) -> str:
     """Redact phone numbers and emails from log output."""
@@ -90,6 +97,12 @@ def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
     """Historical maps were closed: unlisted mimes fall back without consulting mimetypes."""
     return ext_for_mime(mime, overrides=overrides, use_defaults=False, use_mimetypes=False,
                         fallback=fallback) or fallback
+
+
+def _parse_server_version(raw: Any) -> Optional[tuple]:
+    """``"1.9.9"`` / ``"1.10.0-beta.1"`` → ``(1, 9, 9)`` / ``(1, 10, 0)``; None when unparseable."""
+    match = _VERSION_RE.match(raw) if isinstance(raw, str) else None
+    return tuple(int(part) for part in match.groups()) if match else None
 
 
 def _temp_guid() -> str:
@@ -130,6 +143,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
+        self._server_version: Optional[tuple] = None
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
     # --- API helpers ---
@@ -207,8 +221,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             server_data = (info or {}).get("data", {})
             self._private_api_enabled = bool(server_data.get("private_api"))
             self._helper_connected = bool(server_data.get("helper_connected"))
-            logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
-                        self.server_url, self._private_api_enabled, self._helper_connected)
+            self._server_version = _parse_server_version(server_data.get("server_version"))
+            logger.info("[bluebubbles] connected to %s (version=%s, private_api=%s, helper=%s)",
+                        self.server_url, server_data.get("server_version"), self._private_api_enabled,
+                        self._helper_connected)
         except Exception as exc:
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
@@ -445,6 +461,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         await self._private_api_chat_call(chat_id, "typing", "post")
 
     async def stop_typing(self, chat_id: str) -> None:
+        # Unknown version: skip too. A text send clears typing server-side on every version, so a
+        # skipped stop only matters for turns without a text reply; an inverted one re-lights all.
+        if self._server_version is None or self._server_version <= _LAST_SERVER_WITH_INVERTED_STOP_TYPING:
+            return
         await self._private_api_chat_call(chat_id, "typing", "delete")
 
     async def mark_read(self, chat_id: str) -> bool:

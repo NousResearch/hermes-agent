@@ -105,14 +105,14 @@ export function noteRuntimeAlive(runtimeId: string): void {
  *  it pulls are themselves bounded (the tile resume effect single-flights
  *  through `resumingRef` and latches its own terminal errors; the route resume
  *  backs off over `MAX_RESUME_RETRIES`). */
-export function markRuntimeGone(runtimeId: string): boolean {
+export function markRuntimeGone(runtimeId: string, knownStoredId?: string | null): boolean {
   if (!runtimeId || healedRuntimes.has(runtimeId)) {
     return false
   }
 
   healedRuntimes.add(runtimeId)
 
-  const storedId = storedIdForRuntime(runtimeId)
+  const storedId = storedIdForRuntime(runtimeId) || knownStoredId?.trim()
 
   if (!storedId) {
     // No durable identity to resume from — a never-persisted draft, or a

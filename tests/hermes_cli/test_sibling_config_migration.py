@@ -104,7 +104,7 @@ def test_unconfigured_profile_skipped(monkeypatch, tmp_path):
     assert not (bare / "config.yaml").exists()
 
 
-def test_one_broken_profile_does_not_block_others(monkeypatch, tmp_path):
+def test_one_broken_profile_warns_and_does_not_block_others(monkeypatch, tmp_path, capsys):
     active = _write_profile(tmp_path / "profiles", "active", _latest_version())
     broken_home = tmp_path / "profiles" / "broken"
     broken_home.mkdir()
@@ -115,7 +115,35 @@ def test_one_broken_profile_does_not_block_others(monkeypatch, tmp_path):
     migrated = update_cmd._migrate_sibling_profile_configs()
 
     assert [m[0] for m in migrated] == ["healthy"]
+    output = capsys.readouterr().out
+    assert "Profile 'broken'" in output
+    # A parse error fails the same way on `config migrate`; the hint must be one that works.
+    assert "hermes -p broken config edit" in output
 
+
+def test_sibling_migration_names_the_settings_it_changed(monkeypatch, tmp_path, capsys):
+    """An unattended update must not reset or remove a sibling's settings silently: the
+    mutation notes and warnings of the real migration steps reach the output, per profile."""
+    active = _write_profile(tmp_path / "profiles", "active", _latest_version())
+    work = _write_profile(tmp_path / "profiles", "work", 13)
+    (work / "config.yaml").write_text(yaml.safe_dump({
+        "_config_version": 13,
+        "stt": {"model": "whisper-1"},  # 13 -> 14 removes it
+        "compression": {"summary_model": "gpt-4o-mini"},  # 16 -> 17 removes it
+        "delegation": {"max_concurrent_children": 8, "max_async_children": 2},  # 32 -> 33
+        "display": {"personality": "kawaii"},  # 33 -> 34 resets it
+        "plugins": {"enabled": ["observability/nemo_relay"]},  # 37 -> 38 removes it
+    }), encoding="utf-8")
+    _setup(monkeypatch, tmp_path, active)
+
+    update_cmd._migrate_sibling_profile_configs()
+
+    output = capsys.readouterr().out
+    assert "Profile 'work': stt.model" in output
+    assert "Profile 'work': compression.summary_" in output
+    assert "Profile 'work': delegation.max_async_children" in output
+    assert "Profile 'work': display.personality=none" in output
+    assert "Profile 'work': Removed legacy Relay plugin" in output
 
 def test_override_is_reset_after_run(monkeypatch, tmp_path):
     """The ContextVar override must not leak past the sweep."""

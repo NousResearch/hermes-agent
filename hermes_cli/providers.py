@@ -45,6 +45,15 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "anthropic": HermesOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
     "zai": HermesOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
     "kimi-for-coding": HermesOverlay(base_url_env_var="KIMI_BASE_URL"),
+    # CN-region Kimi Coding Plan: distinct provider, NOT an alias of
+    # kimi-for-coding. Uses KIMI_CN_API_KEY against api.moonshot.cn so
+    # mid-session /model switches resolve credentials correctly for CN users.
+    "kimi-coding-cn": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.moonshot.cn/v1",
+        base_url_env_var="KIMI_CN_BASE_URL",
+        extra_env_vars=("KIMI_CN_API_KEY",),
+    ),
     "stepfun": HermesOverlay(extra_env_vars=("STEPFUN_API_KEY",),
                              base_url_override="https://api.stepfun.ai/step_plan/v1",
                              base_url_env_var="STEPFUN_BASE_URL"),
@@ -116,7 +125,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
     "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
-    "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
+    "kimi-for-coding": ("kimi", "kimi-coding", "moonshot"),
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
     "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
     "copilot-acp": ("github-copilot-acp",), "openai-codex": ("chatgpt", "chatgpt-codex"),

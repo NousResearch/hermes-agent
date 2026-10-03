@@ -1092,6 +1092,8 @@ DEFAULT_CONFIG = {
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
             "voice": "en-US-AriaNeural",
+            # Per-synthesis caller wait bound; raise for slow connections or long audio.
+            "timeout": 60,
         },
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam

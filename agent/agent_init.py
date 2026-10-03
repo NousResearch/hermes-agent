@@ -1969,11 +1969,19 @@ def _select_context_engine(_agent_cfg):
 
 
 def _compressor_max_tokens(agent):
-    """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
-    still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
-    reserving 0 let the provider 400 before compaction fired."""
-    if agent.max_tokens is not None:
+    """The output cap the wire sends for ``agent``'s CURRENT route: ``agent.max_tokens``, else the
+    provider profile's cap (chat-completions wire only), else the native-Gemini adapter default
+    (generateContent still sends maxOutputTokens=65,535). The threshold is pct×(window − max_tokens),
+    so reserving less than the wire sends lets the provider 400 before compaction fires."""
+    if getattr(agent, "max_tokens", None) is not None:
         return agent.max_tokens
+    if getattr(agent, "api_mode", "") not in ("anthropic_messages", "bedrock_converse", "codex_responses"):
+        with suppress(Exception):
+            from providers import get_provider_profile
+            _profile = get_provider_profile(agent.provider)
+            _profile_max = _profile.get_max_tokens(agent.model) if _profile else None
+            if _profile_max:
+                return _profile_max
     with suppress(Exception):
         from agent.gemini_native_adapter import (
             GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url
@@ -1984,6 +1992,18 @@ def _compressor_max_tokens(agent):
         if _gemini_provider or is_native_gemini_base_url(agent.base_url):
             return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     return None
+
+
+def refresh_compressor_output_reservation(agent) -> None:
+    """Re-derive the built-in compressor's reservation for the route the agent now runs on.
+
+    Call before ``update_model()`` on every route change (switch, fallback, primary restore):
+    ``update_model()`` keeps the reservation it is not given, so the construction route's cap
+    otherwise outlives the route. Plugin engines own their own policy and are left alone.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if isinstance(compressor, ContextCompressor):
+        compressor.max_tokens = compressor._coerce_max_tokens(_compressor_max_tokens(agent))
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):

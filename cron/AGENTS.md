@@ -80,6 +80,13 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
   generation the collector may delete. The gateway never re-runs the boot — `hermes_bootstrap`
   already did at its own launch (#122222).
+- **A billing/credits refusal holds the job; it never grinds a local model.** For a background
+  run (delegation root platform `cron`, or a Kanban worker process) whose provider refused for
+  billing, `agent/fallback_local_billing.py` declines a fallback entry on a loopback/LAN endpoint
+  unless `fallback.background_local_when_billing_blocked`; `cron/billing_hold.py` then parks the
+  job on `quota_hold_until` + `billing_hold_provider` (re-probe at most hourly, one alert, cleared
+  by any run that reaches the model). Why: a spent xAI account ran every fire of a job on a 4B
+  LM Studio model for hours. The verdict rides the error as `turn_verdict`, never failure text.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

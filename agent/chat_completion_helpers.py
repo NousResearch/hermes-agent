@@ -2130,6 +2130,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                     logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
                 fb_base_url = str(fb_client.base_url)
+                from agent.fallback_local_billing import declines_local_fallback
+                if declines_local_fallback(agent, reason, fb_base_url):
+                    # Read back by the run's owner (cron's hold notice names the skipped model).
+                    agent._declined_local_fallback = f"{fb_model} via {fb_provider}"
+                    logger.warning(
+                        "Fallback skip: %s/%s is a local model; this background run's provider refused "
+                        "for billing/credits, so the run stops here instead of grinding it "
+                        "(fallback.background_local_when_billing_blocked: true allows it)",
+                        fb_provider, fb_model)
+                    continue
                 from hermes_cli.providers import is_actual_route
                 if is_actual_route(fb_provider, fb_base_url):
                     fb_api_mode = "chat_completions"

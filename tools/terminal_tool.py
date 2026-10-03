@@ -775,6 +775,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_env": docker_env,
         "docker_run_as_host_user": _tenv_bool("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"),
         "docker_snap_compat": _tenv_bool("TERMINAL_DOCKER_SNAP_COMPAT", "false"),
+        "docker_implicit_mounts": _tenv_bool("TERMINAL_DOCKER_IMPLICIT_MOUNTS", "true"),
         "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,

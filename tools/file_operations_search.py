@@ -619,6 +619,11 @@ class SearchMixin:
                 glob_expr_probe = f"{glob_expr} {self._search_prune_glob_args()}"
             else:
                 glob_expr_probe = glob_expr
+            # Every probe keeps the real search's macOS protected-dir boundary: a
+            # 0-match search rooted at $HOME must not re-walk ~/Documents etc.
+            protected_globs = " ".join(self._rg_exclusion_globs(path))
+            if protected_globs:
+                glob_expr_probe = f"{glob_expr_probe} {protected_globs}"
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
                            self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)

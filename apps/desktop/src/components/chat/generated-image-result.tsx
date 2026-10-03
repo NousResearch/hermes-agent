@@ -8,8 +8,9 @@ import { useImageDownload } from '@/hooks/use-image-download'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { useI18n } from '@/i18n'
 import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/lib/generated-images'
-import { mediaExternalUrl, mediaName } from '@/lib/media'
+import { mediaName, openMediaFileExternally } from '@/lib/media'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 
 // A hint is only a placeholder shape, not a promise about the delivered image.
 const ASPECT_HINTS: Record<string, number> = {
@@ -57,7 +58,9 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         href="#"
         onClick={event => {
           event.preventDefault()
-          void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
+          // The bug being fixed here was a silent no-op, so a failed fetch must
+          // not be swallowed back into silence.
+          void openMediaFileExternally(image).catch(error => notifyError(error, copy.imageDownloadFailed))
         }}
       >
         {copy.openImage}: {mediaName(image)}

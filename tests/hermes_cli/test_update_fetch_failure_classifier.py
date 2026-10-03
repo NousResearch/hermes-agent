@@ -147,11 +147,18 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
     assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]
-    for args, kwargs in calls:
+    for index, (args, kwargs) in enumerate(calls):
         assert kwargs["stdin"] is subprocess.DEVNULL, args
         env = kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0", args
         assert env["GCM_INTERACTIVE"] == "Never", args
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
-        assert env["GIT_CONFIG_COUNT"] == "1", args
+        if index in (0, 3):
+            assert env["GIT_CONFIG_COUNT"] == "3", args
+            assert env["GIT_CONFIG_KEY_1"] == "http.lowSpeedLimit", args
+            assert env["GIT_CONFIG_VALUE_1"] == "1", args
+            assert env["GIT_CONFIG_KEY_2"] == "http.lowSpeedTime", args
+            assert env["GIT_CONFIG_VALUE_2"] == "60", args
+        else:
+            assert env["GIT_CONFIG_COUNT"] == "1", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args

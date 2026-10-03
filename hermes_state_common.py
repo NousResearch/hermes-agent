@@ -517,6 +517,17 @@ CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     session_key TEXT PRIMARY KEY,
     failure_streak INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS post_reply_idle (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL DEFAULT 0,
+    session_key TEXT,
+    due_at REAL,
+    transcript_watermark INTEGER,
+    last_compacted_watermark INTEGER NOT NULL DEFAULT 0,
+    claimed_by TEXT,
+    claimed_until REAL
+);
+CREATE INDEX IF NOT EXISTS idx_post_reply_idle_due ON post_reply_idle(due_at);
 
 -- Monotonic conversation generation per routing peer (#96811).
 --

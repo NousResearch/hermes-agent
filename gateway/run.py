@@ -2203,6 +2203,7 @@ from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_startup import GatewayStartupMixin
 from gateway.run_watchers import GatewaySessionWatchersMixin
+from gateway.post_reply_idle_worker import GatewayPostReplyIdleWorkerMixin
 from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
@@ -3378,7 +3379,7 @@ class GatewayRunner(
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
-    GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
+    GatewaySessionWatchersMixin, GatewayPostReplyIdleWorkerMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
     GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayPluginRewireMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 

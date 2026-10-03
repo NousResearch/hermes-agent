@@ -1345,6 +1345,7 @@ class GatewayInboundMixin:
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
+        await self._invalidate_post_reply_idle_for_turn(event, source, _quick_key)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply

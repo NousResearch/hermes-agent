@@ -1002,7 +1002,9 @@ compression:
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   in_place: true                                    # Compact on the same session id (no rotation) — see below
-  idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
+  idle_compact_after_seconds: 0                     # Resume-time compaction (0 = disabled) — see below
+  post_reply_idle:                                   # Gateway-only: background compaction after a delivered reply
+    channels: []                                     # Opt in by stable platform/chat ID, never display name
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
   hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
@@ -1053,6 +1055,22 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 `threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count, so compaction never fires later than that token count regardless of which model is active. Use it when you want a fixed cost ceiling per call, for example `threshold_tokens: 256000` to compact a 1M-window model at 256K instead of 500K. The cap is clamped to the model's context length, so a value above the window is a no-op. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
 
 `idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
+
+`post_reply_idle.channels` is a separate, gateway-only opt-in for **background** compaction: after a completed reply has been delivered, the selected chat's durable session is compacted in place if no new message arrives for `after_seconds`. It needs no follow-up message and sends no new chat message. An arriving turn cancels the pending attempt; a failed attempt leaves the transcript unchanged. The summarizer incurs an auxiliary model call and breaks the next prompt-cache prefix. No channels are enabled by default; `compression.enabled: false` disables it. Configure by immutable platform IDs rather than a chat's display name:
+
+```yaml
+compression:
+  post_reply_idle:
+    channels:
+      - platform: signal
+        chat_id: "<Signal group ID>"
+        after_seconds: 300
+        min_tokens: 150000
+```
+
+`min_tokens` is an optional lower bound on the rough token estimate of active conversation history (including tool messages, excluding the system prompt and tool schemas). Both the idle delay and this inclusive minimum must be met: `150000` skips a history estimated below 150k tokens. Omitted or `0` adds no token floor beyond the small-history/no-op guards. Below the floor, the worker makes no summary call, constructs no temporary agent, and does not evict the prompt cache. The most specific matching rule supplies both settings; fields are not inherited from a broader chat rule.
+
+A chat rule covers its threads and any separate per-user sessions in that chat. Optional `thread_id`, `scope_id` (e.g. a Slack workspace), `profile` (runtime profile), and `transport_profile` (receiving bot) can narrow a rule; a more specific match overrides a broad chat rule. Set `after_seconds: 0` in a matching specific rule to disable that subset. Run `hermes config check` to validate rule names and IDs before restarting the gateway; invalid rules are reported as errors and disable this optional feature without blocking chat. The legacy `idle_compact_after_seconds` still runs at **resume** and is unaffected by this setting.
 
 `proactive_prune_tokens` enables a deterministic, no-LLM prune of old tool-result payloads that runs independently of `threshold`. On large-window models the `threshold` compaction (≈50% of the window) rarely fires, so bulky tool outputs (terminal dumps, file reads, web extracts) ride along in history and get re-sent on every subsequent turn. When re-sent history exceeds `proactive_prune_tokens` (default `0` = off; try `48000` to enable), the prune dedupes identical results and summarizes older oversized tool results, protecting the most recent `protect_last_n` messages and never calling the model. Tool-call arguments are execution records and are never rewritten by pruning; the summary model has a separate bounded serializer for copies included in its prompt. The pressure pass likewise demotes tool-result bodies only. During full semantic compaction the carried head/tail rows keep those tool-result demotions (so an oversized tail can still compress), while tool-call arguments stay byte-exact. The opt-in proactive prune still commits eligible tool-result-body demotions, so `proactive_prune_min_reclaim_tokens` (default `4096`) keeps those cache-breaking commits episodic; `proactive_prune_min_result_chars` (default `8000`, clamped to ≥ 200) sets the size below which a tool result is left untouched. This runs only under the built-in `compressor` engine; other context engines inherit a no-op.
 

@@ -78,3 +78,18 @@ def test_second_provider_needs_its_own_credential_before_first_use_counts(monkey
     _lazy_installs(monkeypatch, True)
     assert tts_tool.check_tts_requirements() is False
     assert installs == []
+
+
+def test_package_installed_while_running_is_detected(tmp_path, monkeypatch):
+    """#81235: piper-tts (or neutts/kittentts) installed into a live gateway counts without a
+    restart. The path entry gets scanned before the package exists, so its finder caches
+    "nothing here" and the probe has to drop that answer."""
+    vendor = tmp_path / "vendor"
+    monkeypatch.syspath_prepend(str(vendor))
+    assert tts_tool._package_installed("hermes_runtime_install_probe") is False
+
+    package = vendor / "hermes_runtime_install_probe"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+
+    assert tts_tool._package_installed("hermes_runtime_install_probe") is True

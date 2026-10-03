@@ -89,7 +89,12 @@ def _importable(importer: Callable[[], Any]) -> bool:
 
 
 def _package_installed(name: str) -> bool:
+    """Whether ``name`` is importable *now* — never an import-time answer, so a package the user
+    installs while the gateway is running shows up without a restart (piper/kittentts/neutts
+    reported missing until a launchctl kickstart, #81235)."""
     try:
+        # The path finders cache directory listings; drop them so the new dist is visible.
+        importlib.invalidate_caches()
         return importlib.util.find_spec(name) is not None
     except Exception:
         return False

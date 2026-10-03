@@ -36,3 +36,21 @@ def test_transcription_is_what_installs(no_faster_whisper):
     assert attempts == [1], "the action path lost its on-demand install"
     assert result["success"] is False
     assert "faster-whisper not installed" in result["error"]
+
+
+def test_readiness_reprobes_instead_of_answering_from_an_import_snapshot(monkeypatch):
+    """#81235: a package installed while the gateway runs must count without a restart.
+
+    ``_HAS_*`` was an import-time bool, so the resolution chain (and the wake-word arming
+    prerequisite that reads it) kept reporting the provider missing until a relaunch.
+    """
+    tools = transcription_tools
+    monkeypatch.setattr(tools, "_has_local_command", lambda: False)
+    monkeypatch.delitem(tools.__dict__, "_HAS_FASTER_WHISPER", raising=False)
+    monkeypatch.setattr(tools, "_safe_find_spec", lambda name: name == "faster_whisper")
+    assert tools._HAS_FASTER_WHISPER is True, "outside readers must re-probe"
+    assert tools._detect_local_backend() == "local", "in-module readers must re-probe too"
+
+    monkeypatch.setattr(tools, "_safe_find_spec", lambda name: False)
+    assert tools._HAS_FASTER_WHISPER is False
+    assert tools._detect_local_backend() is None

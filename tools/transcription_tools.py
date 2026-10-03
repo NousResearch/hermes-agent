@@ -15,6 +15,7 @@ import os
 import shutil
 import threading
 import time
+import importlib
 import importlib.util as _ilu
 from contextlib import ExitStack
 from pathlib import Path
@@ -54,13 +55,39 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
 
 def _safe_find_spec(module_name: str) -> bool:
     try:
+        # A package installed into the venv while the gateway is already running stays invisible
+        # until the path finders drop their cached directory listings (#81235).
+        importlib.invalidate_caches()
         return _ilu.find_spec(module_name) is not None
     except (ImportError, ValueError):
         return module_name in globals() or module_name in os.sys.modules
 
 
-_HAS_FASTER_WHISPER, _HAS_OPENAI, _HAS_MISTRAL, _HAS_PILK = map(
-    _safe_find_spec, ("faster_whisper", "openai", "mistralai", "pilk"))
+# Availability of the optional provider packages, answered per read. These were import-time
+# snapshots, so a package installed while the gateway was running stayed invisible until a
+# restart and blocked wake-word arming (#81235, STT+TTS ready is an arming prerequisite).
+# ``_HAS_*`` is deliberately NOT a module global: ``__getattr__`` serves outside readers
+# (``nous_subscription``, the ``transcription_*`` backends) and anything a caller or a test sets
+# on the module still wins over a probe.
+_HAS_SPEC_MODULES = {
+    "_HAS_FASTER_WHISPER": "faster_whisper",
+    "_HAS_OPENAI": "openai",
+    "_HAS_MISTRAL": "mistralai",
+    "_HAS_PILK": "pilk",
+}
+
+
+def __getattr__(name: str) -> bool:
+    if name in _HAS_SPEC_MODULES:
+        return _safe_find_spec(_HAS_SPEC_MODULES[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _flag(name: str) -> bool:
+    """Optional-package availability for in-module readers (PEP 562 `__getattr__` cannot serve
+    a global lookup). An explicit ``_HAS_*`` on the module — a caller's or a test's — wins."""
+    value = globals().get(name)
+    return bool(value) if value is not None else _safe_find_spec(_HAS_SPEC_MODULES[name])
 
 # Local model singleton; the lock guards check-then-load against concurrent voice messages.
 _local_model: Optional[object] = None
@@ -137,7 +164,7 @@ def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
 def _has_key(env_var: str, provider: str, *, needs_openai: bool = False, needs_mistral: bool = False):
     """Availability probe factory: optional SDK flag AND a resolvable API key."""
     def probe() -> bool:
-        sdk_ok = (not needs_openai or _HAS_OPENAI) and (not needs_mistral or _HAS_MISTRAL)
+        sdk_ok = (not needs_openai or _flag("_HAS_OPENAI")) and (not needs_mistral or _flag("_HAS_MISTRAL"))
         return sdk_ok and bool(_resolve_provider_key(env_var, provider))
     return probe
 
@@ -150,7 +177,7 @@ def _has_xai_stt_credentials_quietly() -> bool:
 
 
 def _resolve_explicit_openai() -> str:
-    if not _HAS_OPENAI:
+    if not _flag("_HAS_OPENAI"):
         logger.warning("STT provider 'openai' configured but no API key available")
         return "none"
     # Resolved directly so a managed openai-audio gateway outage is logged with its real reason.
@@ -169,7 +196,7 @@ def _detect_local_backend() -> Optional[str]:
     the per-install lock, so ``wake.status`` and ``/voice status`` could hold a sibling profile's
     backend off its port for the length of a venv rebuild. A missing faster-whisper now reports
     unavailable; the install happens on first transcription, in ``_transcribe_local``."""
-    if _HAS_FASTER_WHISPER:
+    if _flag("_HAS_FASTER_WHISPER"):
         return "local"
     return "local_command" if _has_local_command() else None
 
@@ -185,7 +212,7 @@ def _resolve_explicit_local() -> str:
 def _resolve_explicit_local_command() -> str:
     if _has_local_command():
         return "local_command"
-    if _HAS_FASTER_WHISPER:
+    if _flag("_HAS_FASTER_WHISPER"):
         logger.info("Local STT command unavailable, using local faster-whisper")
         return "local"
     logger.warning("STT provider 'local_command' configured but unavailable")
@@ -208,7 +235,7 @@ _CLOUD_PROVIDER_SPECS = {
     "groq": (_has_groq_key, _has_groq_key,
              "STT provider 'groq' configured but GROQ_API_KEY not set",
              "No local STT available, using Groq Whisper API"),
-    "openai": (None, lambda: _HAS_OPENAI and _has_openai_audio_backend(),
+    "openai": (None, lambda: _flag("_HAS_OPENAI") and _has_openai_audio_backend(),
                None,
                "No local STT available, using OpenAI Whisper API"),
     "mistral": (_has_mistral_key, _has_mistral_key,
@@ -367,7 +394,7 @@ def _transcribe_local(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
-    if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
+    if not _flag("_HAS_FASTER_WHISPER") and not _try_lazy_install_stt():
         return _error_result("faster-whisper not installed")
     try:
         stt_config = _load_stt_config()
@@ -521,7 +548,7 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
         return _unregistered_stt_provider_error(provider_key)
     # An explicit openai selection flattened to "none" has a specific reason (e.g. managed gateway down).
     # Surface it — with its `hermes tools` remediation — instead of the all-provider setup hint (#93045).
-    if provider_key == "none" and str(stt_config.get("provider") or "") == "openai" and _HAS_OPENAI:
+    if provider_key == "none" and str(stt_config.get("provider") or "") == "openai" and _flag("_HAS_OPENAI"):
         reason = _openai_audio_unavailable_reason()
         if reason is not None:
             return _error_result(reason)
@@ -566,7 +593,7 @@ def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None)
     if error:
         return error
     local_model = model or (_load_stt_config().get("local") or {}).get("model", DEFAULT_LOCAL_MODEL)
-    if _HAS_FASTER_WHISPER:
+    if _flag("_HAS_FASTER_WHISPER"):
         return _transcribe_local(file_path, _normalize_local_model(local_model))
     if _has_local_command():
         return _transcribe_local_command(file_path, _normalize_local_model(local_model))

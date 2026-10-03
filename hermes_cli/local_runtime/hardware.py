@@ -203,9 +203,11 @@ def _nvidia_smi_path() -> str | None:
 def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     """(total bytes, free bytes, name, optional packed PCI ID) from the shared nvidia-smi query, or None."""
     query = _cached_nvidia_gpu_query()
-    if query is None:
+    if query is None or query["total_bytes"] is None or query["free_bytes"] is None:
         return None
-    return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
+    # Name may be unreadable ("[N/A]"); the 4-tuple's contract is a display string,
+    # so degrade to "" — vendor detection reads gpu_name truthiness itself.
+    return query["total_bytes"], query["free_bytes"], query["gpu_name"] or "", query.get("gpu_pci_id")
 
 
 _gpu_query_cache: "tuple[float, dict | None] | None" = None
@@ -222,6 +224,9 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
 
     Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
     gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
+    Individual fields are None when the driver answers ``[N/A]`` for that field —
+    one unreadable metric must not void the rest (WDDM prints ``[N/A]`` for
+    utilization; backend selection needs only the name, the budget probe total/free).
     Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
     """
     global _gpu_query_cache
@@ -244,17 +249,25 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+        total_mib, free_mib, name, raw_id, used_mib, util = (
+            f.strip() for f in next(csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True)))
         pci_id = None
         with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
             pci_id = int(raw_id, 16)
+
+        def _mib(field: str) -> "int | None":
+            return int(field) << 20 if field.isdigit() else None
+
+        # Each field stands alone: drivers answer "[N/A]" per field (WDDM utilization,
+        # some memory.used), and one unreadable metric must not erase the name/VRAM
+        # that backend selection and the budget probe depend on — a wholesale int()
+        # here demoted the whole read (and its 4 s cache) to None (#127209 review).
         data = {
-            "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
-            "gpu_util_percent": int(util),
+            "gpu_name": name if name and not name.startswith("[") else None,
+            "total_bytes": _mib(total_mib),
+            "free_bytes": _mib(free_mib),
+            "used_bytes": _mib(used_mib),
+            "gpu_util_percent": int(util) if util.isdigit() else None,
             "gpu_pci_id": pci_id,
         }
         _gpu_query_cache = (now, data)

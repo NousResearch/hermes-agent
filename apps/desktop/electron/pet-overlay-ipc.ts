@@ -138,7 +138,24 @@ export function registerPetOverlayIpc({
     petOverlayWindow.setFocusable(Boolean(focusable))
 
     if (focusable) {
+      // macOS: focusing the overlay activates the whole app, which drags the
+      // main window over whatever the user was doing. When the main window was
+      // not the one in use, tuck it away while the companion has the keyboard;
+      // the Dock icon or a double-click on the pet brings it back.
+      const mainWindow = getMainWindow()
+
+      const hideMain =
+        process.platform === 'darwin' &&
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isFocused()
+
       petOverlayWindow.focus()
+
+      if (hideMain) {
+        mainWindow.hide()
+      }
     }
   })
   // Main renderer → overlay: forward the latest pet state for the overlay to render.

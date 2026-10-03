@@ -291,7 +291,7 @@ hermes sessions rename 20250305_091523_a1b2c3d4 "refactoring auth module"
 ### Title Rules
 
 - **Unique** — no two sessions can share the same title
-- **Max 100 characters** — keeps listing output clean
+- **Max 100 characters** — keeps listing output clean; a longer title on an imported or moved session, or on an auto-numbered `#N` title, is shortened and ends in `…`
 - **Sanitized** — control characters, zero-width chars, and RTL overrides are stripped automatically
 - **Normal Unicode is fine** — emoji, CJK, accented characters all work
 

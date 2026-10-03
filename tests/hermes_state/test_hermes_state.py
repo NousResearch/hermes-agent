@@ -2543,6 +2543,28 @@ class TestTitleLineage:
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
 
+    def test_next_title_of_a_title_at_the_cap_stays_writable(self, db):
+        """The " #N" suffix must not push a lineage title past MAX_TITLE_LENGTH."""
+        base = "x" * db.MAX_TITLE_LENGTH
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", base)
+        for sid in ("s2", "s3"):
+            db.create_session(sid, "cli")
+            assert db.set_session_title(sid, db.get_next_title_in_lineage(base))
+        assert db.get_session_title("s2") != db.get_session_title("s3")
+
+    @pytest.mark.parametrize("entry", ["import_sessions", "import_moved_session"])
+    def test_an_imported_title_past_the_cap_stays_writable(self, db, entry):
+        """A row inserted past the title writer must hold a title that writer accepts."""
+        session = {"id": "imp", "source": "cli", "title": "T" * (db.MAX_TITLE_LENGTH + 150),
+                   "started_at": time.time()}
+        if entry == "import_sessions":
+            assert db.import_sessions([{**session, "messages": []}])["ok"]
+        else:
+            db.import_moved_session({"session": session, "messages": []}, profile_name="default")
+        stored = db.get_session_title("imp")
+        assert stored and db.set_session_title("imp", stored)
+
 
 
 

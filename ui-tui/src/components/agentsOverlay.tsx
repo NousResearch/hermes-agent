@@ -12,7 +12,7 @@ import {
 import { patchOverlayState } from '../app/overlayStore.js'
 import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiSessionId } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { messages } from '../i18n/runtime.js'
@@ -660,7 +660,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   // cc-style view switching: list = full-width row picker, detail = full-width
   // scrollable pane.  Two panes side-by-side in Ink fought Yoga flex.
   const [mode, setMode] = useState<'detail' | 'list' | 'steer' | 'tail'>('list')
-  const { sid } = useStore($uiState)
+  const sid = useStore($uiSessionId)
   const processRows = useProcessRows(now)
 
   const detailScrollRef = useRef<null | ScrollBoxHandle>(null)

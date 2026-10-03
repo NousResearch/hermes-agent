@@ -2,7 +2,7 @@ import type { GoalSnapshot } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 
-import { $uiState } from './uiStore.js'
+import { $uiSessionId } from './uiStore.js'
 
 // The session's standing /goal, as `session.control.read` / `session.control.update` report it.
 // Session-local presentation only; `/goal` itself stays the control surface.
@@ -55,7 +55,7 @@ export function goalLine(goal: GoalSnapshot | null): GoalLine | null {
 
 export function useGoalLine(): GoalLine | null {
   const snapshot = useStore($goalSnapshot)
-  const { sid } = useStore($uiState)
+  const sid = useStore($uiSessionId)
 
   return snapshot.sid === sid ? goalLine(snapshot.goal) : null
 }

@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useMemo } from 'react'
 
-import { $uiState } from './uiStore.js'
+import { $uiSessionId } from './uiStore.js'
 
 // Background `terminal(background=true)` processes owned by this session, as the
 // gateway's `process.list` reports them. Session-local presentation only.
@@ -116,7 +116,7 @@ export const buildProcessRows = (processes: readonly ProcessEntry[], nowMs: numb
 
 export function useProcessRows(nowMs: number): ProcessRow[] {
   const snapshot = useStore($processSnapshot)
-  const { sid } = useStore($uiState)
+  const sid = useStore($uiSessionId)
 
   return useMemo(() => buildProcessRows(snapshot.sid === sid ? snapshot.processes : [], nowMs), [snapshot, sid, nowMs])
 }

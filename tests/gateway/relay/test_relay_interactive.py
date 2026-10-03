@@ -227,6 +227,31 @@ def test_discord_component_interaction_decodes_prompt_token():
     assert event.message_type == MessageType.COMMAND
 
 
+def test_discord_select_interaction_decodes_prompt_token_before_values():
+    adapter, _stub = _adapter()
+
+    class Forward:
+        platform = "discord"
+        method = "POST"
+        path = "/interactions/bot1"
+        body = (
+            b'{"type": 3, "id": "i2", "channel_id": "ch1", "guild_id": "g1",'
+            b' "message": {"id": "pm56"},'
+            b' "member": {"user": {"id": "u1", "username": "ben"}},'
+            b' "data": {"custom_id": "hp1:a1b2c3d4:deny", "values": ["allow"]}}'
+        )
+
+    event = adapter._discord_interaction_to_event(Forward())
+    assert event is not None
+    assert event.prompt_response == {
+        "prompt_id": "a1b2c3d4",
+        "option_id": "deny",
+        "prompt_message_id": "pm56",
+    }
+    assert event.text == "/deny"
+    assert event.message_type == MessageType.COMMAND
+
+
 # ── react ack lifecycle ──────────────────────────────────────────────────
 
 

@@ -78,4 +78,79 @@ class TestCmdSetupNonTtyGuard:
         ))
         assert result == 0
 
+    def test_missing_flags_fail_before_binary_install(self, monkeypatch, capsys):
+        """A doomed headless run must not pay the bws download: flag validation
+        precedes _setup_binary, so neither find_bws nor install_bws runs."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.find_bws",
+            lambda install_if_missing=False: calls.append("find") or None)
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.install_bws",
+            lambda *a, **kw: calls.append("install") or "/usr/bin/bws")
+
+        from hermes_cli.secrets_cli import cmd_setup
+
+        result = cmd_setup(self._make_args())  # every required flag missing
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "Missing:" in captured.out
+        assert calls == [], (
+            f"binary setup ran before flag validation: {calls}")
+
+    def test_parser_dispatch_headless_missing_flags_never_installs(
+            self, monkeypatch, capsys):
+        """e2e through the real parser: `hermes secrets bitwarden setup` with no
+        flags on a non-TTY must reach the flag error without touching bws."""
+        import argparse as _ap
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.find_bws",
+            lambda install_if_missing=False: calls.append("find") or None)
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.install_bws",
+            lambda *a, **kw: calls.append("install") or "/usr/bin/bws")
+
+        from hermes_cli.subcommands.secrets import build_secrets_parser
+        parser = _ap.ArgumentParser()
+        sub = parser.add_subparsers()
+        build_secrets_parser(sub)
+        args = parser.parse_args(["secrets", "bitwarden", "setup"])
+        result = args.func(args)
+        assert result == 1
+        assert "Missing:" in capsys.readouterr().out
+        assert calls == []
+
+    def test_full_flags_headless_still_installs(self, monkeypatch):
+        """Boundary arm: the reorder must not skip the install for a VALID
+        headless run -- all flags present still downloads bws and completes."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.find_bws",
+            lambda install_if_missing=False: calls.append("find") or None)
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.install_bws",
+            lambda *a, **kw: calls.append("install") or "/usr/bin/bws")
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli._bws_version", lambda _: "2.0.0")
+        monkeypatch.setattr("hermes_cli.secrets_cli.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.secrets_cli.save_env_value", lambda *a: None)
+        monkeypatch.setattr("hermes_cli.secrets_cli.get_env_path", lambda: "/tmp/.env")
+        monkeypatch.setattr(
+            "hermes_cli.secrets_cli.bw.fetch_bitwarden_secrets",
+            lambda **kw: ({"KEY": "val"}, []))
+
+        from hermes_cli.secrets_cli import cmd_setup
+
+        result = cmd_setup(self._make_args(
+            access_token="0.valid-token",
+            server_url="https://vault.bitwarden.com",
+            project_id="aaaa-bbbb",
+        ))
+        assert result == 0
+        assert calls == ["find", "install"]
+
 

@@ -1087,13 +1087,16 @@ class GroupAtGuardMiddleware(InboundMiddleware):
         )
 
     @staticmethod
-    def _attribution_header(nickname: str, user_id: Optional[str]) -> str:
-        """``[nickname|user_id]``. Nicknames are member-chosen: a newline or a ``[``/``|``/``]`` in one
-        would end the header early and let the line pass as another member's."""
+    def _attribution_name(name: str) -> str:
+        """Nicknames and forwarded senders are member-chosen: a newline or a ``[``/``|``/``]`` in one
+        would end a header early, or start a line that passes as another member's ``[name|id]``."""
         from gateway.session import neutralize_untrusted_inline_text
+        return " ".join(neutralize_untrusted_inline_text(name or "").translate(str.maketrans("", "", "[]|")).split())
+
+    @classmethod
+    def _attribution_header(cls, nickname: str, user_id: Optional[str]) -> str:
         uid = user_id or "unknown"
-        name = " ".join(neutralize_untrusted_inline_text(nickname or "").translate(str.maketrans("", "", "[]|")).split())
-        return f"[{name or uid}|{uid}]"
+        return f"[{cls._attribution_name(nickname) or uid}|{uid}]"
 
     @classmethod
     def _observe_group_message(cls, adapter, source, sender_display: str, text: str, *, ctx: InboundContext,
@@ -1319,9 +1322,10 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
     def build_forward_text(cls, forward_data: dict, *, ctx: InboundContext, is_dispatch: bool) -> str:
         """Render ``ForwardMsgData`` as ``发送人：正文`` lines with media markers. When ``is_dispatch``,
         refs go to ``ctx.media_refs`` and a ``用户附言：`` footer is added (observe-time callers skip both)."""
-        lines = [f"当前用户的昵称为{ctx.sender_nickname or '用户'}", "以下为用户的聊天记录"]
+        name_of = GroupAtGuardMiddleware._attribution_name
+        lines = [f"当前用户的昵称为{name_of(ctx.sender_nickname) or '用户'}", "以下为用户的聊天记录"]
         for sender, body, refs in cls._walk_forward_msgs(forward_data):
-            lines.append(f"{sender}：{body}")
+            lines.append(f"{name_of(sender)}：{body}")
             if is_dispatch:
                 ctx.media_refs.extend(refs)
         text = "\n".join(lines)

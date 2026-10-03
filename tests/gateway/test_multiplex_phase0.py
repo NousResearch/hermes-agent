@@ -1,3 +1,5 @@
+from gateway.run_startup import _start_gateway_start_cron_and_housekeeping
+
 """Phase 0 foundations for multi-profile gateway multiplexing.
 
 Covers the three Phase 0 deliverables:
@@ -89,7 +91,7 @@ class TestMultiplexConfigFlag:
             _primary_profile_name="rex", _draining=False, _external_drain_active=False)
 
         async def _go():
-            return run_mod._start_gateway_start_cron_and_housekeeping(runner)
+            return _start_gateway_start_cron_and_housekeeping(runner)
 
         cron_stop, _provider, cron_thread, hk = asyncio.run(_go())
         cron_stop.set()

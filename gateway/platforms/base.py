@@ -4359,7 +4359,7 @@ class BasePlatformAdapter(ABC):
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
                     t("gateway.notify.turn_error_detailed", error_type=type(e).__name__, error_detail=error_detail),
-                    None,
+                    t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:
                 return _thread_metadata

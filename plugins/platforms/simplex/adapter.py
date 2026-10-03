@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import random
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +43,6 @@ HEALTH_CHECK_STALE_THRESHOLD = 300.0
 _CORR_PREFIX = "hermes-"  # marks requests we sent so our own echoes can be ignored
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
-_VOICE_TAG_EXTS = {".ogg", ".mp3", ".wav", ".m4a", ".opus"}  # MEDIA: tags sent as voice notes
 _TEXT_BEARING_TYPES = ("text", "file", "image", "voice", "link", "video")
 _THUMB_URI_PREFIX = "data:image/jpg;base64,"
 _MEDIA_KIND_PRECEDENCE = (("audio/", MessageType.VOICE), ("image/", MessageType.PHOTO))  # first match wins
@@ -453,22 +451,15 @@ class SimplexAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send text; ``MEDIA:<path>`` tags (TTS / audio tools) are stripped and sent as native voice
-        notes or documents. The text send is fire-and-forget: the daemon doesn't always return a corrId
-        reply for chat commands, and waiting would serialise all outbound traffic behind a 30s timeout."""
-        media_paths = re.findall(r"MEDIA:(\S+)", content)
-        if media_paths:
-            content = re.sub(r"MEDIA:\S+", "", content).strip()
+        """Send text. ``MEDIA:`` tags are NOT re-parsed here: the gateway pipeline, send_message and
+        cron extract, validate and dispatch them (send_voice / send_document) before calling send(),
+        so a tag still in the text is a code example or a path the delivery policy rejected — e.g.
+        a credential file — and must stay text. The send is fire-and-forget: the daemon doesn't
+        always return a corrId reply for chat commands, and waiting would serialise all outbound
+        traffic behind a 30s timeout."""
         if content:
             cmd_str = _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": content}}])
             await self._send_ws({"corrId": self._make_corr_id(), "cmd": cmd_str})
-        for path in media_paths:
-            if os.path.splitext(path)[1].lower() in _VOICE_TAG_EXTS:
-                media_result = await self.send_voice(chat_id, path)
-            else:
-                media_result = await self.send_document(chat_id, path)
-            if not media_result.success:
-                return media_result
         return SendResult(success=True)
 
     async def list_channels(self) -> Optional[List[Dict[str, Any]]]:

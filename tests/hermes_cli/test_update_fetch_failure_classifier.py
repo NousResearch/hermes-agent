@@ -92,13 +92,23 @@ class TestClassifyFetchFailure:
 
 
 class TestPrintFetchFailure:
-    def test_prints_diagnosis_and_first_raw_line(self, capsys):
+    def test_prints_diagnosis_and_bounded_raw_stderr(self, capsys):
         update_cmd._print_fetch_failure(RATE_LIMIT_STDERR)
         out = capsys.readouterr().out
         assert "rate limiting" in out
         assert "HTTP 429" in out
-        # raw first stderr line preserved for diagnosability
+        # Every raw line is preserved for diagnosability.
         assert "error: RPC failed" in out
+        assert "fatal: expected flush after ref listing" in out
+
+    def test_limits_raw_stderr_to_fifteen_lines(self, capsys):
+        stderr = "\n".join(f"line {i}" for i in range(20))
+        update_cmd._print_fetch_failure(stderr)
+        out = capsys.readouterr().out
+        assert "  line 0" in out
+        assert "  line 14" in out
+        assert "  line 15" not in out
+        assert "  ... (5 more lines omitted)" in out
 
     def test_empty_stderr_prints_only_diagnosis(self, capsys):
         update_cmd._print_fetch_failure("")

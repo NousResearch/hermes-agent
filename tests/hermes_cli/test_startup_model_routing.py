@@ -7,6 +7,7 @@ from hermes_cli import model_switch
 
 def test_startup_route_uses_configured_nous_provider(monkeypatch):
     monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+
     route = model_switch.resolve_startup_model_route(
         "nous/deepseek-v4-pro",
         user_providers={"nous": {"base_url": "https://inference.example/v1"}},
@@ -206,3 +207,44 @@ def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path
     choice = _resolve_model_and_provider(cfg, None, None)
     assert (choice.provider, choice.model) == ("custom:jetson-vllm", "nemotron-nano-30b")
     assert tui_server._resolve_startup_runtime() == ("nemotron-nano-30b", "custom:jetson-vllm")
+
+
+def test_startup_route_settings_only_vendor_block_does_not_hijack_the_default(monkeypatch):
+    """A tuning-only ``providers.deepseek`` block must not re-route a ``deepseek/...`` default (#118153).
+
+    ``providers.<key>`` blocks also carry settings-only tuning (timeouts, context length,
+    rate-limit caps). Those keys used to register as routing choices, so a default named
+    ``deepseek/deepseek-v4-flash-0731`` on the ``nous`` provider was re-parsed as
+    ``provider=deepseek``: the CLI/TUI called the vendor endpoint with the bare model id,
+    got an HTTP 400 and stuck to the vendor's fallback model for the whole session.
+    """
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "deepseek/deepseek-v4-flash-0731",
+        explicit_provider="",
+        current_provider="nous",
+        user_providers={"deepseek": {"stale_timeout_seconds": 45, "request_timeout_seconds": 90}},
+    )
+    assert route is None
+
+
+def test_startup_route_capability_only_vendor_block_does_not_hijack_the_default(monkeypatch):
+    """Capabilities/limits alone are not a routing choice either (#118153)."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "deepseek/deepseek-v4-flash-0731",
+        current_provider="nous",
+        user_providers={"deepseek": {"context_length": 200000, "rate_limit_delay": 0.5}},
+    )
+    assert route is None
+
+
+def test_startup_route_block_with_a_credential_still_routes(monkeypatch):
+    """The routing-key gate must keep honouring real provider declarations (#118153)."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "deepseek/deepseek-v4-flash-0731",
+        current_provider="nous",
+        user_providers={"deepseek": {"apiKey": "sk-test"}},
+    )
+    assert route == model_switch.StartupModelRoute("deepseek-v4-flash-0731", "deepseek", "")

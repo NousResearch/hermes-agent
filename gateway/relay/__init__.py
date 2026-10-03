@@ -12,6 +12,7 @@ unless the effective relay platform configuration explicitly disables it.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -259,6 +260,19 @@ def _json_post(url: str, token: str, body: dict, timeout: float):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def _read_json_response(response, *, context: str):
+    """decode a successful JSON response without leaking parser exceptions.
+
+    transport errors from response.read() intentionally stay with the caller
+    so each endpoint can add context. callers must invoke this helper inside
+    their transport exception handling.
+    """
+    try:
+        return json.loads(response.read().decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"{context} returned a non-JSON response") from exc
+
+
 def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     """Project a fronted platform's RELEVANCE config into the connector's generic vocabulary.
 
@@ -353,7 +367,7 @@ def _post_provision(
             body[key] = value
     try:
         with _json_post(provision_url, access_token, body, timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_json_response(resp, context="connector")
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -365,6 +379,8 @@ def _post_provision(
         ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not reach connector: {exc.reason}") from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"connector transport failure: {exc}") from exc
 
     if not isinstance(payload, dict):
         raise RuntimeError("connector returned an unexpected response")
@@ -434,16 +450,26 @@ def _resolve_relay_identity_token() -> str:
         req = urllib.request.Request(
             token_url, method="GET", headers={"Accept": "application/json, text/plain"}
         )
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
-            body = resp.read().decode().strip()
+        try:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+                body = resp.read().decode("utf-8").strip()
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"identity token endpoint returned HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"could not reach identity token endpoint: {exc.reason}") from exc
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("identity token endpoint returned a non-UTF-8 body") from exc
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            raise RuntimeError(f"identity token endpoint transport failure: {exc}") from exc
         token = ""
         if body.startswith("{"):
             try:
-                envelope_token = (json.loads(body) or {}).get("access_token")
-            except ValueError:
-                envelope_token = None
+                envelope = json.loads(body)
+            except json.JSONDecodeError:
+                envelope = None
             # No shape gate on an envelope: it is a deliberate token response, and
             # opaque tokens may use the standard-base64 alphabet the raw gate rejects.
+            envelope_token = envelope.get("access_token") if isinstance(envelope, dict) else None
             if isinstance(envelope_token, str):
                 token = envelope_token.strip()
         elif _AMBIENT_TOKEN_SHAPE.fullmatch(body):
@@ -476,9 +502,18 @@ def _resolve_relay_identity_token() -> str:
         token_url, data=urllib.parse.urlencode(form).encode("utf-8"), method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
-        payload = json.loads(resp.read().decode())
-    access_token = (payload or {}).get("access_token")
+    try:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+            payload = _read_json_response(resp, context="IdP token endpoint")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"IdP token endpoint returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"could not reach IdP token endpoint: {exc.reason}") from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"IdP token endpoint transport failure: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("IdP client_credentials response was not a JSON object")
+    access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token.strip():
         raise RuntimeError("IdP client_credentials response had no access_token")
     return access_token.strip()
@@ -613,6 +648,8 @@ def _post_policy(*, policy_url: str, token: str, policy: dict, timeout: float = 
         return int(exc.code)
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not reach connector: {exc.reason}") from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"connector transport failure: {exc}") from exc
 
 
 def send_relay_policy() -> bool:

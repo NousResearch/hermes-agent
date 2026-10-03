@@ -19,6 +19,7 @@ snapshots of it:
 
 from __future__ import annotations
 
+import http.client
 import os
 
 import pytest
@@ -298,3 +299,31 @@ def test_all_platforms_withheld_warns_with_the_recovery_path(monkeypatch, caplog
     assert warnings, "a fully-withheld boot must warn"
     assert "/relay/rotate" in warnings[-1].getMessage()
     assert not any("self-provisioned (" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(ConnectionResetError("reset"), id="read-reset"),
+        pytest.param(ValueError("unknown url type"), id="bad-url"),
+        pytest.param(http.client.RemoteDisconnected("closed"), id="http-framing"),
+    ],
+)
+def test_provision_transport_failures_are_runtime_errors(monkeypatch, failure):
+    """Provisioning must keep socket, url, and framing failures in its contract."""
+    monkeypatch.setattr(
+        relay,
+        "_json_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(RuntimeError, match="connector transport failure"):
+        relay._post_provision(
+            provision_url="https://connector.example/relay/provision",
+            access_token="tok",
+            gateway_id="gw-1",
+            platform="telegram",
+            bot_id="BOT",
+            gateway_endpoint="",
+            route_keys=[],
+        )

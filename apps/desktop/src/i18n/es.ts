@@ -660,6 +660,7 @@ export const esOverrides = {
       'nav.profiles': 'Abrir perfiles',
       'nav.capabilities': 'Abrir skills',
       'nav.messaging': 'Abrir mensajería',
+      'nav.projects': 'Abrir proyectos',
       'nav.artifacts': 'Abrir artefactos',
       'nav.cron': 'Abrir tareas programadas',
       'nav.agents': 'Abrir agentes',
@@ -3085,6 +3086,10 @@ export const esOverrides = {
       messaging: {
         title: 'Mensajería',
         detail: 'Configura Telegram, Slack, Discord y más'
+      },
+      projects: {
+        title: 'Proyectos',
+        detail: 'Explora carpetas, repositorios y sesiones del proyecto'
       },
       artifacts: {
         title: 'Artefactos',

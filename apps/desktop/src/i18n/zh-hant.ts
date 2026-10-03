@@ -2098,6 +2098,7 @@ export const zhHant = defineLocale({
       settings: { title: '設定', detail: '設定 Hermes 桌面端' },
       capabilities: { title: '技能與工具', detail: '啟用技能、工具集和提供方' },
       messaging: { title: '訊息平台', detail: '設定 Telegram、Slack、Discord 等' },
+      projects: { title: '專案', detail: '瀏覽專案資料夾、儲存庫和工作階段' },
       artifacts: { title: '成品', detail: '瀏覽產生的輸出' }
     },
     sectionEntries: {

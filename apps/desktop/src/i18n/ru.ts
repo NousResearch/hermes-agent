@@ -374,6 +374,7 @@ export const ru = defineLocale({
       'nav.profiles': 'Открыть профили',
       'nav.capabilities': 'Открыть навыки',
       'nav.messaging': 'Открыть мессенджеры',
+      'nav.projects': 'Открыть проекты',
       'nav.artifacts': 'Открыть артефакты',
       'nav.cron': 'Открыть запланированные задачи',
       'nav.agents': 'Открыть агенты',
@@ -1956,6 +1957,7 @@ export const ru = defineLocale({
       settings: { title: 'Настройки', detail: 'Настройка Hermes desktop' },
       capabilities: { title: 'Возможности', detail: 'Навыки, инструменты и MCP-серверы' },
       messaging: { title: 'Сообщения', detail: 'Настройка Telegram, Slack, Discord и других' },
+      projects: { title: 'Проекты', detail: 'Просмотр папок, репозиториев и сеансов проекта' },
       artifacts: { title: 'Артефакты', detail: 'Просмотр сгенерированных результатов' }
     },
     sectionEntries: {

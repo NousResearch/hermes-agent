@@ -660,6 +660,7 @@ export const deOverrides = {
       'nav.profiles': 'Profile öffnen',
       'nav.capabilities': 'Skills öffnen',
       'nav.messaging': 'Messaging öffnen',
+      'nav.projects': 'Projekte öffnen',
       'nav.artifacts': 'Artefakte öffnen',
       'nav.cron': 'Geplante Jobs öffnen',
       'nav.agents': 'Agenten öffnen',
@@ -3093,6 +3094,10 @@ export const deOverrides = {
       messaging: {
         title: 'Messaging',
         detail: 'Telegram, Slack, Discord und mehr einrichten'
+      },
+      projects: {
+        title: 'Projekte',
+        detail: 'Projektordner, Repositorys und Sessions durchsuchen'
       },
       artifacts: {
         title: 'Artefakte',

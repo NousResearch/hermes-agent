@@ -713,6 +713,7 @@ export const en: Translations = {
       'nav.profiles': 'Open profiles',
       'nav.capabilities': 'Open skills',
       'nav.messaging': 'Open messaging',
+      'nav.projects': 'Open projects',
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
@@ -2773,6 +2774,7 @@ export const en: Translations = {
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
       capabilities: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
+      projects: { title: 'Projects', detail: 'Browse project folders, repositories, and sessions' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
     sectionEntries: {

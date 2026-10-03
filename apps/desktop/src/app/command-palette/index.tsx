@@ -104,6 +104,7 @@ import {
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
+  PROJECTS_ROUTE,
   SETTINGS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
@@ -878,6 +879,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: 'nav-messaging',
             label: cc.nav.messaging.title,
             run: go(MESSAGING_ROUTE)
+          },
+          {
+            action: 'nav.projects',
+            icon: codiconIcon('folder-library'),
+            id: 'nav-projects',
+            keywords: ['projects', 'workspace', 'repositories', 'sessions'],
+            label: cc.nav.projects.title,
+            run: go(PROJECTS_ROUTE)
           },
           {
             action: 'nav.artifacts',

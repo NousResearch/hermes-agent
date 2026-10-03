@@ -426,6 +426,7 @@ export const zh = defineLocale({
       'nav.profiles': '打开配置',
       'nav.capabilities': '打开技能',
       'nav.messaging': '打开消息',
+      'nav.projects': '打开项目',
       'nav.artifacts': '打开制品',
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
@@ -2590,6 +2591,7 @@ export const zh = defineLocale({
       settings: { title: '设置', detail: '配置 Hermes 桌面端' },
       capabilities: { title: '技能与工具', detail: '启用技能、工具集与提供方' },
       messaging: { title: '消息平台', detail: '配置 Telegram、Slack、Discord 等' },
+      projects: { title: '项目', detail: '浏览项目文件夹、仓库和会话' },
       artifacts: { title: '产物', detail: '浏览生成的输出' }
     },
     sectionEntries: {

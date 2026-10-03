@@ -4,13 +4,10 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
 import type * as ProjectsStore from '@/store/projects'
 import type * as SessionDotStateStore from '@/store/session-dot-state'
 import type { SessionDotState } from '@/store/session-dot-state'
-
-import { ROUTES_AREA } from '../routes'
 
 const projectsStore = vi.hoisted(() => ({
   fetchProjectSessions:
@@ -124,7 +121,7 @@ describe('ProjectsView', () => {
     expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p_atlas', { supersedable: false })
   })
 
-  it('links to Artifacts always and to Kanban only while its route is contributed', async () => {
+  it('links to the global Artifacts surface without offering an unscoped Kanban destination', async () => {
     $projectTree.set([atlas])
     renderView('/projects?project=p_atlas')
 
@@ -132,19 +129,6 @@ describe('ProjectsView', () => {
 
     expect(within(detail).getByRole('button', { name: /Artifacts/ })).toBeTruthy()
     expect(within(detail).queryByRole('button', { name: /Kanban/ })).toBeNull()
-
-    const dispose = registry.register({
-      area: ROUTES_AREA,
-      data: { path: '/kanban' },
-      id: 'kanban-test',
-      render: () => null
-    })
-
-    try {
-      await waitFor(() => expect(within(detail).getByRole('button', { name: /Kanban/ })).toBeTruthy())
-    } finally {
-      act(() => dispose())
-    }
   })
 
   it('offers project creation when there are no projects', async () => {

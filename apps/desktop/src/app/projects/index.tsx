@@ -10,9 +10,9 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorState } from '@/components/ui/error-state'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $dismissedAutoProjectIds } from '@/store/layout'
 import {
   $activeProjectId,
   $projects,
@@ -31,13 +31,12 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
-import { ARTIFACTS_ROUTE, contributedRoutes, navigateToWorkspacePage, ROUTES_AREA } from '../routes'
+import { ARTIFACTS_ROUTE, navigateToWorkspacePage } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import {
   cockpitProjects,
   filterCockpitProjects,
-  KANBAN_ROUTE,
   PROJECT_QUERY_PARAM,
   projectOverviewRoute,
   projectSessionList,
@@ -65,7 +64,7 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
   const rpcAvailable = useStore($projectsRpcAvailable)
   const dotStates = useStore($sessionDotStateById)
   const removedIds = useStore($removedSessionIds)
-  const routeSnapshot = useContributions(ROUTES_AREA)
+  const dismissedAutoProjectIds = useStore($dismissedAutoProjectIds)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [refreshedOnce, setRefreshedOnce] = useState(false)
@@ -88,12 +87,15 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
     void refresh()
   }, [refresh])
 
-  const projects = useMemo(() => cockpitProjects(tree, activeProjectId), [activeProjectId, tree])
+  const projects = useMemo(
+    () => cockpitProjects(tree, activeProjectId, dismissedAutoProjectIds),
+    [activeProjectId, dismissedAutoProjectIds, tree]
+  )
+
   const visibleProjects = useMemo(() => filterCockpitProjects(projects, query), [projects, query])
   const selectedId = new URLSearchParams(search).get(PROJECT_QUERY_PARAM)
   const selected = projects.find(project => project.id === selectedId) ?? null
   const selectedInfo = selected ? infos.find(info => info.id === selected.id) : undefined
-  const kanbanAvailable = contributedRoutes(routeSnapshot).some(route => route.path === KANBAN_ROUTE)
   const { failed: sessionsFailed, hydrated } = useProjectSessions(selected)
 
   const { active, recent } = useMemo(
@@ -164,9 +166,7 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
             <ProjectDetail
               active={active}
               info={selectedInfo}
-              kanbanAvailable={kanbanAvailable}
               onOpenArtifacts={() => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE)}
-              onOpenKanban={() => navigateToWorkspacePage(navigate, KANBAN_ROUTE)}
               onOpenSession={(sessionId, event) =>
                 openSessionFromPicker(sessionId, navigate, openSessionIntentFromModifiers(event))
               }

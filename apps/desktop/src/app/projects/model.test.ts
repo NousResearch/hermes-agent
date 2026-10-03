@@ -27,6 +27,16 @@ describe('projects cockpit model', () => {
     expect(ids).toEqual(['p_a'])
   })
 
+  it('keeps dismissed auto-discovered repositories out of the cockpit', () => {
+    const ids = cockpitProjects(
+      [node('/work/auto', { isAuto: true }), node('p_a')],
+      null,
+      ['/work/auto']
+    ).map(project => project.id)
+
+    expect(ids).toEqual(['p_a'])
+  })
+
   it('prefers every backend-assigned session over the preview, newest first, without tombstoned rows', () => {
     const project = node('p_a', { previewSessions: [session('preview-only', 99)] })
 

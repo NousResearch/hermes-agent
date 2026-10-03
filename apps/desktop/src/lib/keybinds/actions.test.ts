@@ -40,6 +40,14 @@ describe('KEYBIND_ACTIONS', () => {
     expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'composer.dictate')).toHaveLength(1)
   })
 
+  it('registers Projects navigation with a label and no default chord', () => {
+    const action = keybindAction('nav.projects')
+
+    expect(action).toMatchObject({ category: 'navigation', defaults: [] })
+    expect(defaultBindings()['nav.projects']).toEqual([])
+    expect(en.keybinds.actions['nav.projects']).toBe('Open projects')
+  })
+
   // jsdom never reports a Mac platform, so this is the Windows/Linux default.
   // Don't fake the host OS — assert the chord this runtime actually ships.
   it('ships a voice chord that does not claim the sidebar chord or any other shipped combo', () => {

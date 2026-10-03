@@ -7,6 +7,7 @@ import {
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
+import { filterVisibleProjects } from '@/store/layout'
 import type { SessionDotState } from '@/store/session-dot-state'
 
 import { PROJECTS_ROUTE } from '../routes'
@@ -19,22 +20,22 @@ import { PROJECTS_ROUTE } from '../routes'
 
 export const PROJECT_QUERY_PARAM = 'project'
 
-// Owned by the Kanban plugin's ROUTES_AREA contribution; the cockpit links to
-// it only while that route is registered.
-export const KANBAN_ROUTE = '/kanban'
-
 export function projectOverviewRoute(projectId?: null | string): string {
   return projectId
     ? `${PROJECTS_ROUTE}?${new URLSearchParams({ [PROJECT_QUERY_PARAM]: projectId }).toString()}`
     : PROJECTS_ROUTE
 }
 
-/** Every real project in the tree, in the sidebar overview's order. The Home
- *  bucket (sessions no project claimed) and archived projects are not
- *  projects the user can operate on, so they stay out. */
-export function cockpitProjects(tree: SidebarProjectTree[], activeProjectId: null | string): SidebarProjectTree[] {
+/** Every visible real project in the tree, in the sidebar overview's order.
+ * The Home bucket, archived projects, and dismissed auto-discovered repos are
+ * not projects the user can operate on, so they stay out. */
+export function cockpitProjects(
+  tree: SidebarProjectTree[],
+  activeProjectId: null | string,
+  dismissedAutoProjectIds: readonly string[] = []
+): SidebarProjectTree[] {
   return sortProjectsForOverview(
-    tree.filter(project => !project.isNoProject && !project.archived),
+    filterVisibleProjects(tree, dismissedAutoProjectIds).filter(project => !project.isNoProject && !project.archived),
     activeProjectId
   )
 }

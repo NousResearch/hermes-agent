@@ -233,6 +233,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: '',
     icon: props => <Codicon name="folder-library" {...props} />,
     route: PROJECTS_ROUTE,
+    keybindActionId: 'nav.projects',
     tier: 'advanced'
   },
   {

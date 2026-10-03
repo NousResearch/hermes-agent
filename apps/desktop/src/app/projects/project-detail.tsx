@@ -34,9 +34,7 @@ const STATUS_BADGE: Record<LiveSessionState, 'default' | 'muted' | 'warn'> = {
 export interface ProjectDetailProps {
   active: ActiveProjectSession[]
   info?: ProjectInfo
-  kanbanAvailable: boolean
   onOpenArtifacts: () => void
-  onOpenKanban: () => void
   onOpenSession: (sessionId: string, event: React.MouseEvent) => void
   onShowInSidebar: () => void
   project: SidebarProjectTree
@@ -47,9 +45,7 @@ export interface ProjectDetailProps {
 export function ProjectDetail({
   active,
   info,
-  kanbanAvailable,
   onOpenArtifacts,
-  onOpenKanban,
   onOpenSession,
   onShowInSidebar,
   project,
@@ -92,12 +88,6 @@ export function ProjectDetail({
             <Codicon name="files" />
             {p.openArtifacts}
           </Button>
-          {kanbanAvailable && (
-            <Button onClick={onOpenKanban} size="sm" variant="secondary">
-              <Codicon name="project" />
-              {p.openKanban}
-            </Button>
-          )}
           <Button onClick={onShowInSidebar} size="sm" variant="text">
             {p.showInSidebar}
           </Button>

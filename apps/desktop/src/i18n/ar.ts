@@ -358,6 +358,7 @@ export const ar = defineLocale({
       'nav.profiles': 'فتح الملفات الشخصية',
       'nav.capabilities': 'فتح المهارات',
       'nav.messaging': 'فتح المراسلة',
+      'nav.projects': 'فتح المشاريع',
       'nav.artifacts': 'فتح العناصر',
       'nav.cron': 'فتح المهام المجدولة',
       'nav.agents': 'فتح الوكلاء',
@@ -1470,6 +1471,10 @@ export const ar = defineLocale({
       messaging: {
         title: 'المراسلة',
         detail: 'إعداد Telegram وSlack وDiscord والمزيد'
+      },
+      projects: {
+        title: 'المشاريع',
+        detail: 'استعرض مجلدات المشروع ومستودعاته وجلساته'
       },
       artifacts: {
         title: 'العناصر',

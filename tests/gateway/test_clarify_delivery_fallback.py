@@ -76,7 +76,8 @@ def _runner(adapter, loop, monkeypatch, timeout=5):
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="42", _status_thread_metadata=None,
-        session_key="sk-fallback", stream_consumer_holder=[None], _loop_for_step=loop)
+        session_key="sk-fallback", stream_consumer_holder=[None], _loop_for_step=loop,
+        _run_still_current=lambda: True)
     runner._close_native_stream_boundary = lambda *a, **k: None
     monkeypatch.setattr(cm, "get_clarify_timeout", lambda: timeout)
     return runner

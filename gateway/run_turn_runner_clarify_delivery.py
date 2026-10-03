@@ -37,11 +37,13 @@ def text_fallback_coro(adapter, **send_kwargs):
     return BasePlatformAdapter.send_clarify(adapter, **send_kwargs)
 
 
-def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Optional[str]:
+def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod, owner=None) -> Optional[str]:
     """Map a send outcome to the abort sentinel (registration torn down) or ``None`` (proceed to wait).
 
     Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
-    and proceeds to the bounded wait, whose response timeout covers a lost card."""
+    and proceeds to the bounded wait, whose response timeout covers a lost card. With ``owner`` the
+    teardown is scoped to that turn's registrations (a displaced turn cannot clear its successor)."""
+    cleanup_scope = {"owner": owner} if owner is not None else {}
     if outcome == "declined":
         # P5(b): a connector DECLINE is MORE definitive than a failure — the
         # destination was authorized and refused, so the card cannot arrive and
@@ -52,12 +54,12 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
             "Clarify prompt DECLINED by the connector's egress guard; "
             "clearing registration"
         )
-        clarify_mod.clear_session(session_key)
+        clarify_mod.clear_session(session_key, **cleanup_scope)
         return UNDELIVERED_DECLINED
     if outcome == "failed":
         # Undeliverable: clear the registration and return the sentinel so the agent falls back, not hangs.
         logger.warning("Clarify send failed definitively; clearing registration")
-        clarify_mod.clear_session(session_key)
+        clarify_mod.clear_session(session_key, **cleanup_scope)
         return UNDELIVERED
     if outcome == "ambiguous":
         logger.warning(
@@ -66,16 +68,17 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
     return None
 
 
-def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> Optional[str]:
+def _clarify_send_disposition(fut, *, session_key: str, clarify_mod, owner=None) -> Optional[str]:
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``."""
     from gateway.run import _approval_send_outcome
 
     return _abort_for_outcome(
-        _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod)
+        _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod,
+        owner=owner)
 
 
 def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod,
-                            fallback: Optional[Callable[[], Any]] = None) -> tuple[str, bool]:
+                            fallback: Optional[Callable[[], Any]] = None, owner=None) -> tuple[str, bool]:
     """Resolve a clarify prompt: send disposition, plain-text fallback, then the bounded wait.
 
     ``fallback()`` schedules the plain-text ``send_clarify`` and returns its future (or ``None``);
@@ -98,11 +101,11 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
             outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
         if outcome == "sent":
             logger.info("Clarify card undeliverable; plain-text prompt sent instead (id=%s)", clarify_id)
-    abort = _abort_for_outcome(outcome, session_key=session_key, clarify_mod=clarify_mod)
+    abort = _abort_for_outcome(outcome, session_key=session_key, clarify_mod=clarify_mod, owner=owner)
     if abort is not None:
         return abort, False
     late = _LateFailureWatch(fut, clarify_id=clarify_id, session_key=session_key,
-                             clarify_mod=clarify_mod, fallback=fallback)
+                             clarify_mod=clarify_mod, fallback=fallback, owner=owner)
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     late.disarm()
@@ -124,13 +127,14 @@ class _LateFailureWatch:
     sentinel, or ``None`` while nothing definitive happened) tells it why.
     Armed only while the future is still pending: a sent card needs no watch."""
 
-    def __init__(self, fut, *, clarify_id: str, session_key: str, clarify_mod, fallback) -> None:
+    def __init__(self, fut, *, clarify_id: str, session_key: str, clarify_mod, fallback, owner=None) -> None:
         self.undeliverable: Optional[str] = None
         self._armed = False
         self._clarify_id = clarify_id
         self._session_key = session_key
         self._clarify_mod = clarify_mod
         self._fallback = fallback
+        self._cleanup_scope = {"owner": owner} if owner is not None else {}
         # Test doubles hand the runner a bare ``.result()`` object; only a real pending
         # concurrent future can still resolve late.
         done = getattr(fut, "done", None)
@@ -179,4 +183,4 @@ class _LateFailureWatch:
 
     def _release(self, notice: str = UNDELIVERED) -> None:
         self.undeliverable = notice
-        self._clarify_mod.clear_session(self._session_key)
+        self._clarify_mod.clear_session(self._session_key, **self._cleanup_scope)

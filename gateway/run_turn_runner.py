@@ -1395,10 +1395,14 @@ class TurnRunner:
             """Schedule the plain-text prompt when the native card cannot render; None = no such path."""
             coro = text_fallback_coro(ctx._status_adapter, **send_kwargs)
             return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
-        clarify_mod.register(
+        entry = clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
-            multi_select=bool(multi_select),
+            multi_select=bool(multi_select), owner=self,
+            is_current=ctx._run_still_current,
         )
+        if entry.event.is_set() and not entry.response:
+            # Admission refused: the turn was invalidated (/stop, /new) before this prompt armed.
+            return "[Clarify cancelled]", False
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
         self._close_native_stream_boundary("Clarify", t("gateway.clarify.native_stream_placeholder"), reopen=True)
@@ -1425,7 +1429,7 @@ class TurnRunner:
         # failure — immediate or late — retries once as plain text before giving up.
         response, answered = _clarify_send_then_wait(
             fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
-            fallback=_text_fallback)
+            fallback=_text_fallback, owner=self)
         # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
         # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
         if not answered:
@@ -1728,7 +1732,7 @@ class TurnRunner:
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
-                clear_session(session_key)
+                clear_session(session_key, owner=self)
             reset_current_session_key(token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):

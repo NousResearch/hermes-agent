@@ -583,7 +583,12 @@ class TestWebSearchSchema:
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
-        assert result == {"success": True, "data": {"web": []}}
+        # Empty-but-successful search now carries the anti-fabrication gate marker
+        # (a bare {"success": true, "data": {"web": []}} invites the model to invent
+        # results); the limit-clamp contract is unchanged.
+        assert result["success"] is True
+        assert result["data"] == {"web": []}
+        assert result["gather_aborted"] is True
         fake_search.assert_called_once_with("docs", 100)
 
 

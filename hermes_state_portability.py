@@ -484,6 +484,16 @@ class SessionPortabilityMixin:
     def _validate_import_payload(self, sessions: List[Dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
         errors)``. Every rejected entry is reported."""
+        from hermes_state import (
+            resolved_import_max_messages_per_session, resolved_import_max_session_bytes,
+            resolved_import_max_total_bytes, resolved_import_max_total_messages,
+        )
+        limits = {
+            "messages_per_session": resolved_import_max_messages_per_session(),
+            "session_bytes": resolved_import_max_session_bytes(),
+            "total_bytes": resolved_import_max_total_bytes(),
+            "total_messages": resolved_import_max_total_messages(),
+        }
         normalized: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
         seen_ids: set[str] = set()
@@ -491,7 +501,7 @@ class SessionPortabilityMixin:
         for index, raw in enumerate(sessions):
             session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
             try:
-                item = self._validate_import_session(raw, session_id, seen_ids, totals)
+                item = self._validate_import_session(raw, session_id, seen_ids, totals, limits)
             except ValueError as exc:
                 item = {"index": index, "error": str(exc)}
                 if session_id:
@@ -502,9 +512,12 @@ class SessionPortabilityMixin:
             normalized.append({"index": index, **item})
         return normalized, errors
 
-    def _validate_import_session(self, raw: Any, session_id: str, seen_ids: set, totals: Dict[str, int]) -> Dict[str, Any]:
+    def _validate_import_session(
+        self, raw: Any, session_id: str, seen_ids: set, totals: Dict[str, int], limits: Dict[str, int],
+    ) -> Dict[str, Any]:
         """One payload session -> normalized item; ValueError(message) on rejection. *totals*
-        accumulate before their limit check (a rejected oversize entry still counts)."""
+        accumulate before their limit check (a rejected oversize entry still counts). *limits*
+        is ``sessions.import_max_*`` resolved once per ``import_sessions`` call; 0 disables."""
         if not isinstance(raw, dict):
             raise ValueError("session must be an object")
         if not session_id:
@@ -514,7 +527,7 @@ class SessionPortabilityMixin:
         messages = raw.get("messages") or []
         if not isinstance(messages, list):
             raise ValueError("messages must be a list")
-        if len(messages) > self._IMPORT_MAX_MESSAGES_PER_SESSION:
+        if limits["messages_per_session"] and len(messages) > limits["messages_per_session"]:
             raise ValueError("messages exceeds the per-session import limit")
         if any(not isinstance(msg, dict) for msg in messages):
             raise ValueError("messages must contain only objects")
@@ -525,14 +538,14 @@ class SessionPortabilityMixin:
             session_bytes = len(json.dumps(measured, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             raise ValueError("session must be JSON serializable") from None
-        if session_bytes > self._IMPORT_MAX_SESSION_BYTES:
+        if limits["session_bytes"] and session_bytes > limits["session_bytes"]:
             raise ValueError("session exceeds the import size limit")
         totals["bytes"] += session_bytes
-        if totals["bytes"] > self._IMPORT_MAX_TOTAL_BYTES:
+        if limits["total_bytes"] and totals["bytes"] > limits["total_bytes"]:
             raise ValueError("import exceeds the total size limit")
         item = self._normalize_import_session(raw, session_id, messages)
         totals["messages"] += len(item["messages"])
-        if totals["messages"] > self._IMPORT_MAX_TOTAL_MESSAGES:
+        if limits["total_messages"] and totals["messages"] > limits["total_messages"]:
             raise ValueError("messages exceeds the total import limit")
         return item
 
@@ -627,8 +640,10 @@ class SessionPortabilityMixin:
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")
-        if len(sessions) > self._IMPORT_MAX_SESSIONS:
-            raise ValueError(f"sessions must contain at most {self._IMPORT_MAX_SESSIONS} entries")
+        from hermes_state import resolved_import_max_sessions
+        max_sessions = resolved_import_max_sessions()
+        if max_sessions and len(sessions) > max_sessions:
+            raise ValueError(f"sessions must contain at most {max_sessions} entries")
         normalized, errors = self._validate_import_payload(sessions)
         if errors:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}

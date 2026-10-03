@@ -165,10 +165,62 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
     return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
 
 
+# --- HTML -> MarkdownV2 fallback (#124413) ----------------------------------
+_TELEGRAM_DETAILS_OPEN_RE = re.compile(r"<details\b[^>]*>", re.IGNORECASE)
+_TELEGRAM_DETAILS_CLOSE_RE = re.compile(r"</details\s*>", re.IGNORECASE)
+_TELEGRAM_SUMMARY_RE = re.compile(r"<summary\b[^>]*>(?P<body>.*?)</summary\s*>", re.IGNORECASE | re.DOTALL)
+# Bot API HTML tags MarkdownV2 can express, as (pattern, marker) with a ``body`` group.
+_TELEGRAM_INLINE_TAGS = (
+    (re.compile(r"<(?:b|strong)\b[^>]*>(?P<body>.*?)</(?:b|strong)\s*>", re.IGNORECASE | re.DOTALL), "**"),
+    (re.compile(r"<(?:i|em)\b[^>]*>(?P<body>.*?)</(?:i|em)\s*>", re.IGNORECASE | re.DOTALL), "*"),
+    (re.compile(r"<(?:s|strike|del)\b[^>]*>(?P<body>.*?)</(?:s|strike|del)\s*>", re.IGNORECASE | re.DOTALL), "~~"),
+    (re.compile(r"<code\b[^>]*>(?P<body>.*?)</code\s*>", re.IGNORECASE | re.DOTALL), "`"),
+    (re.compile(r"<tg-spoiler\b[^>]*>(?P<body>.*?)</tg-spoiler\s*>", re.IGNORECASE | re.DOTALL), "||"),
+)
+_TELEGRAM_ANCHOR_RE = re.compile(r'<a\b[^>]*href="([^"]*)"[^>]*>(?P<body>.*?)</a\s*>', re.IGNORECASE | re.DOTALL)
+_TELEGRAM_LEFTOVER_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _telegram_mdv2_fallback_text(html_chunk):
+    """Convert an HTML-rejected chunk to MarkdownV2 via the gateway adapter's ``format_message``.
+
+    Returns None when the converter is unavailable (caller keeps the plain-text floor).
+    ``<summary>`` becomes a bold title, ``<details>`` wrappers are dropped, and the Bot API inline
+    tags MarkdownV2 can express are mapped so they render instead of showing as tag source.
+    """
+    text = _TELEGRAM_SUMMARY_RE.sub(r"**\g<body>**", html_chunk)
+    text = _TELEGRAM_DETAILS_OPEN_RE.sub("", text)
+    text = _TELEGRAM_DETAILS_CLOSE_RE.sub("", text)
+    text = _TELEGRAM_ANCHOR_RE.sub(r"[\g<body>](\1)", text)
+    for pattern, marker in _TELEGRAM_INLINE_TAGS:
+        text = pattern.sub(lambda m, mk=marker: f"{mk}{m.group('body')}{mk}", text)
+    # Tags MarkdownV2 has no equivalent for (u, pre, …) lose the markup but keep their text.
+    text = _TELEGRAM_LEFTOVER_TAG_RE.sub("", text)
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        return TelegramAdapter.__new__(TelegramAdapter).format_message(text)
+    except Exception:
+        return None
+
+
+def _escape_mdv2_chunk_indicators(chunks):
+    """``truncate_message`` appends a raw `` (1/2)`` and those parens are MarkdownV2-reserved, so
+    an unescaped indicator gets the whole chunk rejected. Mirror the gateway adapter: escape it and
+    lift it off a synthesized closing fence."""
+    if len(chunks) < 2:
+        return chunks
+    try:
+        from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+    except Exception:
+        _separate_chunk_indicator_from_fence = lambda text: text  # noqa: E731
+    return [_separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
+            for chunk in chunks]
+
+
 async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
-    ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
-    -> plain text."""
+    ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure ->
+    MarkdownV2 retry (HTML sends only, #124413) -> plain text."""
     async def send(text, mode):
         return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
     try:
@@ -182,6 +234,26 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
             return await send(chunk, parse_mode)
         err_text = str(md_error).lower()
         if "parse" in err_text or "markdown" in err_text or "html" in err_text:
+            if has_html:
+                # Graded fallback (#124413): an HTML send rejected for one unsupported tag retries
+                # as MarkdownV2 so the rest of the formatting survives.
+                mdv2 = _telegram_mdv2_fallback_text(chunk)
+                if mdv2 is not None and mdv2.strip():
+                    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+                    from telegram.constants import ParseMode
+                    mdv2_msg = None
+                    try:
+                        for mdv2_chunk in _escape_mdv2_chunk_indicators(
+                                BasePlatformAdapter.truncate_message(mdv2, 4096, len_fn=utf16_len)):
+                            mdv2_msg = await send(mdv2_chunk, ParseMode.MARKDOWN_V2)
+                        return mdv2_msg
+                    except Exception as mdv2_error:
+                        if not any(k in str(mdv2_error).lower() for k in ("parse", "markdown", "html")):
+                            # Non-parse failure (timeout etc.): the retry may have delivered, so
+                            # never fall through to a duplicating resend.
+                            raise
+                        logger.warning("MarkdownV2 retry failed in _send_telegram, falling back to plain text: %s",
+                                       _sanitize_error_text(mdv2_error))
             logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s",
                            parse_mode, _sanitize_error_text(md_error))
             return await send(chunk if has_html else _strip_mdv2_safe(chunk), None)
@@ -277,7 +349,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
+        chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else []
+        if not _has_html:
+            # truncate_message appends a raw " (1/2)"; MarkdownV2 reserves those parens.
+            chunks = _escape_mdv2_chunk_indicators(chunks)
+        for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):

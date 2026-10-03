@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1665,3 +1666,132 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     assert str(os.getpid()) in err and str(profile) in err
     assert "bitwarden" in err
     assert "SECRET-VALUE" not in err
+
+
+# ---------------------------------------------------------------------------
+# Graded HTML -> MarkdownV2 -> plain fallback for the standalone Telegram
+# sender (#124413).
+# ---------------------------------------------------------------------------
+
+
+_MDV2_ALLOWED_SPAN = re.compile(
+    r"\\.|```[\s\S]*?```|`[^`]*`|\|\|[\s\S]*?\|\||\*[^*\n]*\*|__[^_\n]*__|_[^_\n]*_|~[^~\n]*~"
+    r"|\[[^\]\n]*\]\([^)\n]*\)"
+)
+
+
+def _mdv2_violations(text):
+    """Reserved chars left bare outside an allowed MarkdownV2 construct — the Bot API
+    rule a rejected chunk trips on."""
+    stripped = _MDV2_ALLOWED_SPAN.sub("", text)
+    return sorted({char for char in stripped if char in "_*[]()~`>#+-=|{}.!\\"})
+
+
+class _ValidatingTelegramBot:
+    """Bot API stub enforcing MarkdownV2 escaping, the HTML start-tag allow-list and
+    the 4096 cap, so a formatting bug surfaces the way the Bot API reports it."""
+
+    _HTML_ALLOWED = {"b", "strong", "i", "em", "u", "s", "strike", "del", "code", "pre",
+                     "a", "tg-spoiler", "blockquote", "span"}
+
+    def __init__(self, *, mdv2_error=None):
+        self.calls = []
+        self._mdv2_error = mdv2_error
+
+    async def send_message(self, *, chat_id, text, parse_mode=None, **kwargs):
+        self.calls.append({"text": text, "parse_mode": parse_mode, **kwargs})
+        if parse_mode == "HTML":
+            for tag in re.findall(r"</?([a-zA-Z][\w-]*)", text):
+                if tag.lower() not in self._HTML_ALLOWED:
+                    raise Exception('Bad Request: can\'t parse entities: '
+                                    f'unsupported start tag "{tag}" at byte offset 0')
+        elif parse_mode == "MarkdownV2":
+            if self._mdv2_error is not None:
+                raise Exception(self._mdv2_error)
+            violations = _mdv2_violations(text)
+            if violations:
+                raise Exception("Bad Request: can't parse entities: character "
+                                f"'{violations[0]}' is reserved and must be escaped")
+        if len(text) > 4096:
+            raise Exception("Bad Request: message is too long")
+        return SimpleNamespace(message_id=len(self.calls))
+
+
+class TestSendTelegramGradedFallback:
+    """One unsupported HTML tag must not drop ALL formatting (#124413).
+
+    ``_telegram_format`` sends the whole message as HTML once any ``<tag>`` is
+    present. When the Bot API rejects one unsupported tag (``<details>``), the
+    send used to fall straight to plain text, silently losing every other
+    formatting marker; it now retries as MarkdownV2 first.
+    """
+
+    def _run(self, monkeypatch, bot, message, **kwargs):
+        _install_telegram_mock(monkeypatch, bot)
+        return asyncio.run(_send_telegram("tok", "123", message, **kwargs))
+
+    def test_unsupported_tag_retries_markdown_v2(self, monkeypatch):
+        bot = _ValidatingTelegramBot()
+        result = self._run(
+            monkeypatch, bot, "<b>Quiz</b>\n<details><summary>Answer</summary>Paris</details>")
+
+        assert result["success"] is True
+        assert [c["parse_mode"] for c in bot.calls] == ["HTML", "MarkdownV2"]
+        retry = bot.calls[1]["text"]
+        assert "<details>" not in retry and "<summary>" not in retry
+        assert "*Quiz*" in retry and "*Answer*" in retry and "Paris" in retry
+
+    def test_multi_chunk_markdownv2_escapes_chunk_indicator(self, monkeypatch):
+        """``truncate_message`` appends a raw " (1/2)"; those parens are
+        MarkdownV2-reserved, so an unescaped indicator used to send the chunk to
+        the plain-text floor."""
+        bot = _ValidatingTelegramBot()
+        result = self._run(monkeypatch, bot, "alpha.beta-gamma!delta.epsilon " * 200)
+
+        assert result["success"] is True
+        assert len(bot.calls) >= 2
+        assert all(c["parse_mode"] == "MarkdownV2" for c in bot.calls), bot.calls
+        assert all(len(c["text"]) <= 4096 for c in bot.calls)
+        for index, call in enumerate(bot.calls):
+            assert re.search(rf"\\\({index + 1}/{len(bot.calls)}\\\)$", call["text"]), call["text"][-16:]
+
+    def test_multi_chunk_html_retry_escapes_indicator(self, monkeypatch):
+        """The MarkdownV2 retry re-chunks the converted body; each new indicator
+        must be escaped as well, or the retry lands back on plain text."""
+        bot = _ValidatingTelegramBot()
+        result = self._run(
+            monkeypatch, bot, "<details>x</details> " + "alpha.beta-gamma!delta.epsilon " * 200)
+
+        assert result["success"] is True
+        assert bot.calls[0]["parse_mode"] == "HTML"
+        assert None not in [c["parse_mode"] for c in bot.calls], bot.calls  # nothing hit the plain floor
+        mdv2_calls = [c for c in bot.calls if c["parse_mode"] == "MarkdownV2"]
+        assert len(mdv2_calls) >= 2, bot.calls  # the retry re-chunked past the 4096 limit
+        for call in mdv2_calls:
+            assert _mdv2_violations(call["text"]) == []
+            assert not re.search(r"(?<!\\) \(\d+/\d+\)$", call["text"])
+
+    def test_double_parse_failure_still_delivers_plain(self, monkeypatch):
+        bot = _ValidatingTelegramBot(
+            mdv2_error="Bad Request: can't parse entities: character '.' is reserved and must be escaped")
+        result = self._run(monkeypatch, bot, "<details>hi</details>")
+
+        assert result["success"] is True
+        assert [c["parse_mode"] for c in bot.calls] == ["HTML", "MarkdownV2", None]
+
+    def test_non_parse_error_on_retry_raises_no_duplicate(self, monkeypatch):
+        bot = _ValidatingTelegramBot(mdv2_error="Timed out")
+        result = self._run(monkeypatch, bot, "<details>hi</details>")
+
+        assert "error" in result
+        assert len(bot.calls) == 2  # HTML attempt + MarkdownV2 retry; no duplicating plain resend
+
+    def test_converter_unavailable_keeps_plain_floor(self, monkeypatch):
+        bot = _ValidatingTelegramBot()
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setitem(sys.modules, "plugins.platforms.telegram.adapter", ModuleType("broken_adapter"))
+
+        result = asyncio.run(_send_telegram("tok", "123", "<details>hi</details>"))
+
+        assert result["success"] is True
+        assert [c["parse_mode"] for c in bot.calls] == ["HTML", None]

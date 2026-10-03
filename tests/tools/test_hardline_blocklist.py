@@ -114,6 +114,11 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    # `halt =1` passes "=1" as an ARGUMENT (a shell assignment needs no space
+    # before the `=`), so the definition/assignment exclusion must not swallow
+    # it (#132444).
+    "halt =1",
+    "shutdown =0",
     # Bare subshell `(cmd)` and brace-group `{ cmd; }` openers put the trigger
     # at a real command position, so they must hit the floor just like `$(…)`.
     # These slipped through before the quote-aware command-start tokenizer
@@ -199,6 +204,18 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # A word followed by `()` is a shell function DEFINITION and a word followed
+    # by `=` (no space) is a variable ASSIGNMENT — neither invokes the named
+    # program, so `halt()` error helpers and `shutdown=1` flags must stay off
+    # the floor (#132444).
+    "halt() { printf 'STOP: %s\\n' \"$*\" >&2; exit 1; }",
+    "halt () { echo stop; }",
+    "shutdown() { echo 'not that one'; }",
+    "reboot() { :; }",
+    "poweroff() { :; }",
+    "halt=1",
+    "shutdown=1",
+    "set -e\nhalt() { printf x; }\necho ok",
 ]
 
 

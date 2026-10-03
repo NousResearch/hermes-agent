@@ -420,6 +420,7 @@ def display_skill_create_dir() -> str:
 # skills.external_dirs. Inside ONE tier two different skills sharing a name stay ambiguous — refused,
 # never guessed (59da8ec4e) — while identical copies under one root resolve to the shallowest.
 TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
+_WARNED_SHADOWS: Set[str] = set()
 
 
 def get_skill_search_roots(local: Optional[Path] = None, *, include_project: bool = True) -> List[Tuple[int, Path]]:
@@ -466,6 +467,43 @@ def pick_skill_candidate(candidates) -> Tuple[Optional[int], List[int]]:
         if candidates[ranked[0]][2] != candidates[ranked[1]][2]:
             return ranked[0], contenders
     return (contenders[0] if len(contenders) == 1 else None), contenders
+
+
+def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copies of scanned skills (each with ``name``, ``tier``, ``root`` and ``path`` = its SKILL.md)
+    annotated with what skill_view() resolves, using its aliases (declared name, directory name, path
+    relative to the root) and :func:`pick_skill_candidate`. Adds ``relative_path`` and ``status``:
+    ``unique`` (``load_name`` = name), ``ambiguous`` (``load_name`` = the exact relative path, or None
+    when even that is shared) or ``shadowed`` (a higher tier owns the name: hidden, warned once)."""
+    out = [dict(e) for e in entries]
+    owners: Dict[str, List[int]] = {}
+    for i, e in enumerate(out):
+        skill_dir = Path(e["path"]).parent
+        e["relative_path"] = skill_dir.relative_to(e["root"]).as_posix()
+        for alias in {str(e["name"]), skill_dir.name, e["relative_path"]}:
+            owners.setdefault(alias, []).append(i)
+    winner: Dict[str, Optional[int]] = {}
+    for alias, idxs in owners.items():
+        won, _ = pick_skill_candidate([
+            (out[j]["tier"], str(out[j]["root"]), (False, len(PurePath(out[j]["relative_path"]).parts) + 1),
+             out[j]["path"]) for j in idxs])
+        winner[alias] = None if won is None else idxs[won]
+    for i, e in enumerate(out):
+        name, rel = str(e["name"]), e["relative_path"]
+        higher = [j for j in owners[name] if out[j]["tier"] < e["tier"]]
+        if higher or winner[name] not in (None, i):  # lower tier, or an identical same-root copy
+            e.update(status="shadowed", load_name=None)
+            # A symlink view or byte-identical copy of the winner hides nothing worth a warning.
+            if (higher and str(e["path"]) not in _WARNED_SHADOWS
+                    and not any(provably_same_skill([e["path"], out[j]["path"]]) for j in higher)):
+                _WARNED_SHADOWS.add(str(e["path"]))
+                logger.warning("Skill '%s' at %s is shadowed by a higher-precedence copy "
+                               "(project > local > create_dir > external_dirs)", name, e["path"])
+        elif winner[name] == i:
+            e.update(status="unique", load_name=name)
+        else:
+            e.update(status="ambiguous", load_name=rel if winner[rel] == i else None)
+    return out
 
 
 # Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest

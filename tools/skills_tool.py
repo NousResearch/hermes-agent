@@ -179,10 +179,11 @@ def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
     return roots, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
-    """All skills (name, description, category) across project/local/create_dir/external dirs,
-    first-wins by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    from agent.skill_utils import TIER_PROJECT, iter_project_skill_files, iter_skill_index_files
+def _skill_catalog(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
+    load_name / tier / path), visible ones only; cached per session. Resolution runs over ALL
+    files first — skill_view ignores platform/disabled gates when collecting candidates."""
+    from agent.skill_utils import TIER_PROJECT, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = _skill_search_dirs()
@@ -193,8 +194,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
-    skills = []
-    seen_names: set = set()
+    scanned = []
     for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
         _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
@@ -202,26 +202,34 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
-                    continue
-                name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
-                if name in seen_names or name in disabled:
-                    continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
-                seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                scanned.append({
+                    "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
+                    "description": _truncate_description(description),
+                    "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
+                    "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
+                                                      and skill_matches_environment(frontmatter)
+                                                      and skill_matches_apps(frontmatter))})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+    skills = [s for s in resolve_skill_catalog(scanned) if s.pop("visible") and s["name"] not in disabled]
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
     return [dict(s) for s in skills]
+
+
+def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
+    the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
+    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
+            for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

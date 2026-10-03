@@ -392,7 +392,9 @@ async function desktopSessionCreateParams(
             : {}),
           ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
           fast: selection.fast,
-          ...(selection.serviceTier ? { service_tier: selection.serviceTier } : {})
+          // Only Ultrafast needs the tier: `fast` already pins Priority/normal, and a
+          // pre-Ultrafast backend rejects the field (createGatewaySession drops it).
+          ...(selection.serviceTier === 'ultrafast' ? { service_tier: 'ultrafast' } : {})
         }
       : {})
   }

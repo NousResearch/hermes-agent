@@ -49,6 +49,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from tools import mcp_app_host
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -1143,9 +1144,15 @@ def _commit_tool_result(
                 tool_message["display_metadata"] = metadata
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
+    # An MCP App view's record rides its tool row (display-only: never sent to the provider).
+    view = None if blocked else mcp_app_host.running_record(agent.session_id, tool_call_id)
+    if view is not None:
+        tool_message["display_metadata"] = {**(tool_message.get("display_metadata") or {}), "mcp_app": view}
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
+    if view is not None:
+        mcp_app_host.forget_record(agent.session_id, tool_call_id)
 
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can

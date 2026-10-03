@@ -682,6 +682,21 @@ class SessionMessagesMixin:
                     before_id = rows[-1]["id"]
         return None
 
+    def get_tool_call(self, session_id: str, tool_call_id: str) -> Optional[Dict[str, Any]]:
+        """``display_metadata`` of the newest visible tool row answering *tool_call_id* in the resume
+        display scope (``{}`` when the row carries none), or None when no row answers it. Provider ids
+        repeat, so newest wins. Compression continuations also see their ancestors' archived rows."""
+        if not session_id or not tool_call_id:
+            return None
+        for sid in reversed(self._resume_lineage_ids(session_id)):
+            row = self._read_one(
+                "SELECT display_metadata FROM messages INDEXED BY idx_messages_session_id WHERE session_id = ? "
+                f"AND role = 'tool' AND tool_call_id = ?{_DISPLAY_ACTIVE_CLAUSE} ORDER BY id DESC LIMIT 1",
+                (sid, tool_call_id))
+            if row is not None:
+                return self._decode_display_metadata(row[0]) or {}
+        return None
+
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:
         """Row id of the most recent active *role* message, or ``None``. ``offset`` steps back; ``require_text``

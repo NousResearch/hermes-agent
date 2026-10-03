@@ -141,7 +141,7 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
     calls: list[str] = []
 
     # Supply the same supported backend to preflight and the stubbed install;
-    # host auto-detection may select CUDA without a published Linux archive.
+    # host auto-detection may select a GPU backend this test host cannot install.
     from hermes_cli.config import load_config, save_config
 
     config = load_config()

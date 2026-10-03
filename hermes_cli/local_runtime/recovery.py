@@ -37,6 +37,19 @@ def _valid_birth(value) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and value > 0
 
 
+def _same_birth(proc, state: dict, prefix: str = "") -> bool:
+    """Linux derives psutil's create_time from /proc/stat's boot time, which moves whenever the
+    clock is stepped (WSL re-syncs within minutes), so a live process stops matching its record.
+    The start_time fingerprint is boot-relative there; create_time is for records that predate it."""
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+
+    recorded = state.get(f"{prefix}start_time")
+    if not _valid_birth(recorded):
+        return proc.create_time() == state[f"{prefix}create_time"]
+    current = get_process_start_time(proc.pid)
+    return current is not None and start_time_fingerprints_match(recorded, current)
+
+
 def recorded_process(state: dict):
     """Match a modern process incarnation, never just its reusable PID."""
     try:
@@ -48,7 +61,7 @@ def recorded_process(state: dict):
                 or owner_created > created or not isinstance(exe, str) or not exe):
             return None
         proc = psutil.Process(pid)
-        if (not proc.is_running() or proc.create_time() != created
+        if (not proc.is_running() or not _same_birth(proc, state)
                 or Path(proc.exe()) != Path(exe)):
             return None
         # Windows retains the original parent PID; POSIX reparents orphans.
@@ -57,7 +70,7 @@ def recorded_process(state: dict):
         parent = proc.parent()
         if parent is not None:
             if parent.pid == owner_pid:
-                if parent.create_time() != owner_created:
+                if not _same_birth(parent, state, "owner_"):
                     return None
             elif os.name == "nt" or not _owner_is_dead(state):
                 return None  # POSIX may reparent a router whose recorded owner exited.
@@ -74,7 +87,7 @@ def _owner_is_dead(state: dict) -> bool:
         try:
             owner = psutil.Process(pid)
             # A newer incarnation proves the recorded owner has exited.
-            return owner.create_time() > created or not owner.is_running()
+            return not owner.is_running() or not _same_birth(owner, state, "owner_")
         except psutil.NoSuchProcess:
             return True
     except (KeyError, TypeError, ValueError, OverflowError, OSError, psutil.Error):

@@ -392,6 +392,31 @@ print(json.dumps({'pid': proc.pid, 'create_time': proc.create_time(), 'executabl
             owner.stdout.close()
 
 
+@pytest.mark.platforms("linux")
+def test_clock_step_keeps_the_recorded_router(tmp_path, monkeypatch):
+    """psutil's create_time moves with /proc/stat's boot time when the clock is stepped (WSL
+    re-syncs within minutes); the live router must still resolve, and a reused PID must not."""
+    import psutil._pslinux
+    from hermes_cli.local_runtime import endpoint, supervisor
+
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
+    sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        sup.proc = proc
+        sup._write_state()
+        stepped = psutil._pslinux.boot_time() + 22
+        monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: stepped)
+        assert endpoint._state_endpoint() == {"base_url": sup.base_url, "api_key": sup.api_key}
+
+        state = json.loads(supervisor.state_path().read_text())
+        supervisor.state_path().write_text(json.dumps({**state, "start_time": state["start_time"] - 1000}))
+        assert endpoint._state_endpoint() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("damage", ["valid", "birth", "exe", "bool-pid", "bool-birth", "nan", "inf", "owner-bool", "owner-nan", "parent", "partial", "list", "invalid", "unreadable"])
 def test_retained_endpoint_validates_identity(tmp_path, monkeypatch, damage):

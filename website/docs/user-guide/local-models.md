@@ -176,7 +176,7 @@ Selecting a local model as your main model uses the standard
 ## Requirements and limits
 
 - **Windows:** CUDA on supported NVIDIA targets, Vulkan on x64, or CPU.
-  **Linux:** Vulkan or CPU; the pinned release has no prebuilt CUDA archive.
+  **Linux:** CUDA on x64 NVIDIA (needs a CUDA 13 driver), Vulkan, or CPU.
   **macOS:** Metal or CPU. HIP/ROCm is an explicit choice on supported x64
   targets. Unsupported backend/target pairs fail before any download.
 - `backend: auto` prefers CUDA for NVIDIA and Vulkan for AMD and Intel GPUs,

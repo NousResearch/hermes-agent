@@ -1139,23 +1139,42 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """Windows only: upstream publishes no prebuilt Linux CUDA archive at
-    current tags, so NVIDIA Linux users run the vulkan build."""
+    """CUDA 13.4 everywhere upstream builds it: 13.x drivers run any 13.x
+    runtime (minor-version compatibility), and 13.4 is the only line upstream
+    ships for win-arm64. Linux archives first appeared after b10964, and
+    upstream dropped win-cuda-13.3 at the same time.
+
+    The engine archive carries no CUDA libraries (end users have no toolkit),
+    so each target pins a second cudart archive too."""
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
+        "linux-x64": "ubuntu-cuda-13.4-x64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
-        ]
+        # Upstream names the Windows cudart zip without the build tag and the
+        # Linux one with it.
+        infix = self.assets[target]
+        cudart = (
+            f"cudart-llama-bin-{infix}.zip"
+            if target.startswith("win32")
+            else f"cudart-llama-b{version}-bin-{infix}.tar.gz"
+        )
+        return super()._asset_names(version, target) + [cudart]
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        """The Linux cudart tarball unpacks into its own top-level dir, but the
+        engine's RUNPATH is $ORIGIN, so its libraries must sit beside
+        llama-server. The Windows zip is flat and needs no hoist."""
+        super().stage(store, staged, version, target)
+        for extra in sorted(staged.glob("cudart-*")):
+            if extra.is_dir():
+                merge_tree(extra, staged)
+                shutil.rmtree(extra)
 
 
 @register

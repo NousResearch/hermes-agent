@@ -85,8 +85,26 @@ _TOKEN_COALESCE_S = 0.033
 # starlette stays optional at import time; fall back to a generic sentinel.
 try:
     from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
+    from starlette.websockets import WebSocketState as _WebSocketState
 except ImportError:  # pragma: no cover - starlette is a required install path
     _WebSocketDisconnect = Exception  # type: ignore[assignment]
+    _WebSocketState = None  # type: ignore[assignment]
+
+# Close reason when a reply or a read fails only because the client had already left.
+_PEER_GONE_REASON = "client_disconnect(peer_gone)"
+
+
+def _peer_gone(ws: Any) -> bool:
+    """True once Starlette has seen the client's close, or latched its own side after a send met a dead peer.
+
+    A client that closes with an RPC still in flight (Desktop redialing on wake, a phone WebView thawing from
+    the background) makes the reply fail as uvicorn's ``Unexpected ASGI message 'websocket.send', after sending
+    'websocket.close'`` or as ``WebSocketDisconnect(1006)``, and the read loop's next ``receive_text`` then
+    raises ``WebSocket is not connected. Need to call "accept" first``. Those are departures, not faults."""
+    if _WebSocketState is None:
+        return False
+    gone = _WebSocketState.DISCONNECTED
+    return getattr(ws, "client_state", None) is gone or getattr(ws, "application_state", None) is gone
 
 
 class WSTransport:
@@ -113,6 +131,8 @@ class WSTransport:
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
         self._abort_requested = False
+        #: A send failed because the client had already disconnected (see ``_peer_gone``).
+        self.peer_gone = False
 
     def _on_loop(self) -> bool:
         try:
@@ -220,7 +240,12 @@ class WSTransport:
                 except Exception as exc:
                     # Latch while holding the writer lock so queued batches observe the failure first.
                     self._closed = True
-                    _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
+                    if _peer_gone(self._ws):
+                        self.peer_gone = True
+                        _log.debug("ws send dropped, peer already gone peer=%s error_type=%s error=%s",
+                                   self._peer, type(exc).__name__, exc)
+                    else:
+                        _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
                     return
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
@@ -304,9 +329,15 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         """write_async; on failure record *reason*, log *msg* and end the read loop."""
         nonlocal disconnect_reason, send_failures
         if not await transport.write_async(frame):
-            disconnect_reason = reason
             send_failures += 1
-            _log.warning(msg, *args)
+            if transport.peer_gone:
+                # The client left with this request in flight: keep its own close reason if the reader has it.
+                if not disconnect_reason.startswith("client_disconnect"):
+                    disconnect_reason = _PEER_GONE_REASON
+                _log.debug(msg, *args)
+            else:
+                disconnect_reason = reason
+                _log.warning(msg, *args)
             raise _SendFailed
 
     def _error(code: int, message: str, req_id: Any) -> dict:
@@ -401,7 +432,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             except _WebSocketDisconnect as exc:
                 disconnect_reason = f"client_disconnect(code={getattr(exc, 'code', None)},reason={getattr(exc, 'reason', None)})"
                 break
-            except Exception:
+            except Exception as exc:
+                if _peer_gone(ws):
+                    # A reply already met the departed peer and Starlette latched; this read is the echo of it.
+                    if not disconnect_reason.startswith("client_disconnect"):
+                        disconnect_reason = _PEER_GONE_REASON
+                    _log.debug("ws receive after peer left peer=%s error=%s", peer, exc)
+                    break
                 disconnect_reason = "receive_failed"
                 _log.exception("ws receive failed peer=%s", peer)
                 break

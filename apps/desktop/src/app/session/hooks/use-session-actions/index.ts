@@ -3291,7 +3291,8 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removedOwner)
 
-        for (const id of removedIds) {if (id) {retireBrowserSession(id)}}
+        // Detached tabs may still await runtime → stored ownership binding.
+        for (const id of new Set([...removedIds, closingRuntimeId])) {if (id) {retireBrowserSession(id)}}
 
         dropTranscriptTailEverywhere(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll

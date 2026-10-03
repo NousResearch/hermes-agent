@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { backendScopeKey } from '../../shared/src/backend-scope'
 
+import { BROWSER_REQUEST_HISTORY_LIMIT, BrowserRequestHistory } from './browser-request-history'
 import {
   type BrowserConversation,
   type BrowserOwnershipUpdate,
@@ -40,9 +41,12 @@ export class BrowserWorkspaces {
   private renderers = new Set<number>()
   private sessionAliases = new Map<number, Map<string, string>>()
   private comments = new Map<string, { opener: number; renderer: number; windowId: string; at: number }>()
+  private receivedRequests = new BrowserRequestHistory()
+  // Active cancellation routes survive target retirement and deadline expiry.
+  // Bound admission rather than evicting handles for operations still running.
   private pending = new Map<
     string,
-    { opener: number; renderer: number; target: BrowserRequestTarget; kind: string; completed: boolean }
+    { opener: number; renderer: number; target: BrowserRequestTarget; kind: string }
   >()
 
   constructor(private changed: (recipients: number[], state: BrowserWorkspace) => void) {}
@@ -511,6 +515,7 @@ export class BrowserWorkspaces {
       payload?: unknown
       result?: unknown
       error?: unknown
+      deadline?: unknown
     }
 
     const target = packet.target
@@ -530,13 +535,13 @@ export class BrowserWorkspaces {
     if (packet.kind === 'cancel') {
       const pending = this.pending.get(packet.id)
 
-      if (!pending || pending.completed || pending.opener !== sender ||
+      if (!pending || pending.opener !== sender ||
         pending.target.windowId !== target.windowId || pending.target.tabId !== target.tabId ||
         pending.target.selectionVersion !== target.selectionVersion || !sameBrowserOwner(pending.target.owner, target.owner)) {
         return null
       }
 
-      pending.completed = true
+      this.pending.delete(packet.id)
 
       return pending.renderer
     }
@@ -560,7 +565,9 @@ export class BrowserWorkspaces {
         !browserTabAllowsRequest(entry.state.owner, entry.state.tabs.find(tab => tab.id === target.tabId)!, packet.requester) ||
         entry.renderer === undefined ||
         (packet.kind !== 'act' && packet.kind !== 'read') ||
-        this.pending.has(packet.id)
+        this.pending.has(packet.id) ||
+        this.pending.size >= BROWSER_REQUEST_HISTORY_LIMIT ||
+        !this.receivedRequests.admit(packet.id, packet.kind, packet.deadline)
       ) {
         return null
       }
@@ -569,8 +576,7 @@ export class BrowserWorkspaces {
         opener: sender,
         renderer: entry.renderer,
         target: structuredClone(target),
-        kind: packet.kind,
-        completed: false
+        kind: packet.kind
       })
 
       return entry.renderer
@@ -580,7 +586,6 @@ export class BrowserWorkspaces {
 
     if (
       !pending ||
-      pending.completed ||
       (packet.kind !== pending.kind && packet.kind !== 'error') ||
       pending.renderer !== sender ||
       pending.target.windowId !== target.windowId ||
@@ -592,7 +597,7 @@ export class BrowserWorkspaces {
       return null
     }
 
-    pending.completed = true
+    this.pending.delete(packet.id)
 
     return pending.opener
   }

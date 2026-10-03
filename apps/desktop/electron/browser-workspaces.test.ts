@@ -19,6 +19,10 @@ const request = (id = 'seed', scope = 'alpha'): BrowserWorkspaceOpen => ({
 
 const route = { connectionId: 'connection-a', profile: 'alpha' }
 
+function withDeadline<T extends { id: string }>(packet: T, deadline = Date.now() + 8_000) {
+  return { ...packet, id: `${packet.id}-${deadline}`, deadline }
+}
+
 function fixture() {
   const changed = vi.fn()
   const runtime = new BrowserWorkspaces(changed)
@@ -37,6 +41,71 @@ function fixture() {
 }
 
 describe('detached browser runtime authority', () => {
+  it('bounds completed request history without evicting replay protection on a long-lived target', () => {
+    vi.useFakeTimers()
+    const { runtime, target } = fixture()
+    const captured = target()
+
+    const packet = (id: string) => withDeadline({ id, kind: 'act', target: captured,
+      requester: captured.owner.conversation, payload: { kind: 'click' } }, Date.now() + 20_000)
+
+    try {
+      for (let batch = 0; batch < 3; batch++) {
+        const first = packet(`first-${batch}`)
+        const requests = [first, ...Array.from({ length: 1023 }, (_, index) => packet(`${batch}-${index}`))]
+
+        for (const request of requests) {
+          expect(runtime.relay(1, request)).toBe(2)
+          // A wrong-type result cannot consume the request or release its route.
+          expect(runtime.relay(2, { id: request.id, kind: 'read', target: captured, result: {} })).toBeNull()
+
+          if (batch === 1) {
+            expect(runtime.relay(1, { id: request.id, kind: 'cancel', target: captured })).toBe(2)
+          } else {
+            expect(runtime.relay(2, { id: request.id, kind: 'act', target: captured, result: {} })).toBe(1)
+          }
+        }
+
+        expect(runtime.relay(1, packet(`overflow-${batch}`))).toBeNull()
+        expect(runtime.relay(1, first)).toBeNull()
+        vi.advanceTimersByTime(19_999)
+        expect(runtime.relay(1, first)).toBeNull()
+        vi.advanceTimersByTime(1)
+        expect(runtime.relay(1, first)).toBeNull()
+        // Keeping the ID while extending its deadline must not revive it.
+        expect(runtime.relay(1, { ...first, deadline: Date.now() + 20_000 })).toBeNull()
+      }
+    } finally {vi.useRealTimers()}
+  })
+
+  it('rejects expired admission but retains active cancellation after the deadline and workspace acknowledgement', () => {
+    vi.useFakeTimers()
+    const { runtime, state, target } = fixture()
+    const captured = target()
+
+    const packet = withDeadline({ id: 'still-running', kind: 'read', target: captured,
+      requester: captured.owner.conversation, payload: {} })
+
+    try {
+      expect(runtime.relay(1, packet)).toBe(2)
+      vi.advanceTimersByTime(8_000)
+      expect(runtime.relay(1, { ...packet, id: `expired-before-arrival-${packet.deadline}` })).toBeNull()
+
+      for (const deadline of [Date.now() + 8_001, Infinity, NaN]) {
+        expect(runtime.relay(1, { ...packet, id: `invalid-${deadline}`, deadline })).toBeNull()
+      }
+
+      runtime.close(state.id)
+      runtime.acknowledge(1, state.id, runtime.snapshots(1)[0]!.revision)
+      expect(runtime.snapshots(1)).toEqual([])
+      const cancel = { id: packet.id, kind: 'cancel', target: captured }
+      expect(runtime.relay(99, cancel)).toBeNull()
+      expect(runtime.relay(1, { ...cancel, target: { ...captured, selectionVersion: 99 } })).toBeNull()
+      expect(runtime.relay(1, cancel)).toBe(2)
+      expect(runtime.relay(1, cancel)).toBeNull()
+    } finally {vi.useRealTimers()}
+  })
+
   it('shares a same-profile pin without transferring annotation authority or native-input epochs', () => {
     const { runtime, state, current, target } = fixture()
     runtime.updateOwnership(99, { tabs: [{ id: 'url:seed', sessionId: 'stored-a', pinned: true }] })
@@ -44,7 +113,7 @@ describe('detached browser runtime authority', () => {
     runtime.updateOwnership(1, { tabs: [{ id: 'url:seed', sessionId: 'stored-a', pinned: true }] })
     const captured = target()
     const requester = { ...captured.owner.conversation!, id: 'stored-b' }
-    const packet = { id: 'shared-pin', kind: 'act', target: captured, requester, payload: { kind: 'click' } }
+    const packet = withDeadline({ id: 'shared-pin', kind: 'act', target: captured, requester, payload: { kind: 'click' } })
     expect(runtime.relay(99, packet)).toBeNull()
     expect(runtime.relay(1, { ...packet, requester: { ...requester, profile: 'beta' } })).toBeNull()
     expect(runtime.relay(1, packet)).toBe(2)
@@ -57,7 +126,7 @@ describe('detached browser runtime authority', () => {
     expect(runtime.relayComment(2, { ...comment, destination: { ...state.owner.destination, conversation: requester } })).toBeNull()
     expect(runtime.relayComment(2, comment)).toBe(1)
     runtime.updateOwnership(1, { tabs: [{ id: 'url:seed', sessionId: 'stored-a', pinned: false }] })
-    expect(runtime.relay(1, { ...packet, id: 'after-unpin', target: target() })).toBeNull()
+    expect(runtime.relay(1, { ...packet, id: `after-unpin-${packet.deadline}`, target: target() })).toBeNull()
     expect(runtime.command(2, state.id, { kind: 'new' })!.tabs.at(-1)).toMatchObject({ sessionId: 'stored-a', pinned: false })
   })
 
@@ -77,7 +146,7 @@ describe('detached browser runtime authority', () => {
     expect(rotated.owner.destination?.conversation?.id).toBe('stored-next')
     runtime.updateOwnership(1, { tabs: [], rotation: { previousId: 'stored-next', nextId: 'stored-a' } })
     expect(current()).toEqual(rotated)
-    const pending = { id: 'before-delete', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'type' } }
+    const pending = withDeadline({ id: 'before-delete', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'type' } })
     expect(runtime.relay(1, pending)).toBe(2)
     expect(runtime.retireSession(1, 'stored-a')).toEqual([state.id])
     expect(current()).toMatchObject({ closed: true, tabs: [], removed: [second], owner: { destination: null } })
@@ -93,7 +162,7 @@ describe('detached browser runtime authority', () => {
 
   it('cancels only the original pending request, including after its target retires, without replay revival', () => {
     const { runtime, state, target } = fixture()
-    const packet = { id: 'cancel-me', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'type' } }
+    const packet = withDeadline({ id: 'cancel-me', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'type' } })
     expect(runtime.relay(1, packet)).toBe(2)
     const cancel = { id: packet.id, kind: 'cancel', target: packet.target }
     expect(runtime.relay(99, cancel)).toBeNull()
@@ -107,7 +176,7 @@ describe('detached browser runtime authority', () => {
     expect(runtime.relay(1, cancel)).toBeNull()
     expect(runtime.relay(2, { id: packet.id, kind: 'act', target: packet.target, result: { success: true } })).toBeNull()
     expect(runtime.relay(1, { ...packet, target: target() })).toBeNull()
-    const survivor = { ...packet, id: 'survivor', target: target() }
+    const survivor = { ...packet, id: `survivor-${packet.deadline}`, target: target() }
     expect(runtime.relay(1, survivor)).toBe(2)
     runtime.close(state.id)
     runtime.acknowledge(1, state.id, runtime.snapshots(1)[0]!.revision)
@@ -122,7 +191,7 @@ describe('detached browser runtime authority', () => {
     remoteRequest.destination!.conversation = { kind: 'session', id: 'remote', connectionId: 'remote', profile: 'alpha' }
     const remote = runtime.open(5, remoteRequest, { connectionId: 'remote', profile: 'alpha' })
     runtime.attach(remote.id, 6)
-    const packet = { id: 'profile-act', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'type' } }
+    const packet = withDeadline({ id: 'profile-act', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'type' } })
     expect(runtime.relay(1, packet)).toBe(2)
     const retired = runtime.retireProfile({ ...route, ...(kind === 'rename' ? { replacementProfile: 'renamed' } : {}) })
     expect(retired.map(item => item.id)).toEqual([state.id, peer.id])
@@ -134,7 +203,7 @@ describe('detached browser runtime authority', () => {
 
     expect(runtime.command(2, state.id, { kind: 'page', tabId: 'url:seed', url: 'https://example.test/late', title: 'late' })).toBeNull()
     runtime.close(state.id)
-    expect(runtime.relay(1, { ...packet, id: 'late' })).toBeNull()
+    expect(runtime.relay(1, { ...packet, id: `late-${packet.deadline}` })).toBeNull()
     expect(runtime.relay(1, { id: packet.id, kind: 'cancel', target: packet.target })).toBe(2)
     expect(runtime.ownerForRenderer(2)).toBeNull()
     expect(runtime.ownerForRenderer(6)).toEqual(remote.owner)
@@ -167,7 +236,7 @@ describe('detached browser runtime authority', () => {
 
   it('rejects a copied target with a different requester and retires exact sessions and comments', () => {
     const { runtime, state, target } = fixture()
-    const packet = { id: 'foreign', kind: 'read', target: target(), payload: {}, requester: { ...target().owner.conversation!, id: 'stored-b' } }
+    const packet = withDeadline({ id: 'foreign', kind: 'read', target: target(), payload: {}, requester: { ...target().owner.conversation!, id: 'stored-b' } })
     expect(runtime.relay(1, packet)).toBeNull()
     expect(runtime.relay(1, { ...packet, requester: { ...packet.requester, id: 'stored-a', connectionId: 'connection-b' } })).toBeNull()
     expect(runtime.relay(1, { ...packet, requester: target().owner.conversation })).toBe(2)
@@ -257,7 +326,7 @@ describe('detached browser runtime authority', () => {
     const other = runtime.open(3, request('other', 'beta'), { connectionId: 'connection-b', profile: 'beta' })
     runtime.attach(other.id, 4)
     runtime.command(2, state.id, { kind: 'new' })
-    const packet = { id: 'act-1', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'click' } }
+    const packet = withDeadline({ id: 'act-1', kind: 'act', target: target(), requester: target().owner.conversation, payload: { kind: 'click' } })
     expect(packet.target.tabId).not.toBe('url:seed')
     expect(runtime.relay(3, packet)).toBeNull()
     expect(runtime.relay(4, packet)).toBeNull()
@@ -273,7 +342,7 @@ describe('detached browser runtime authority', () => {
   it.each(['click', 'type'])('keeps a %s request effect-bound through same-active selection renewal', kind => {
     const { runtime, state, current, target } = fixture()
     const captured = target()
-    const packet = { id: `renew-${kind}`, kind: 'act', target: captured, requester: captured.owner.conversation, payload: { kind } }
+    const packet = withDeadline({ id: `renew-${kind}`, kind: 'act', target: captured, requester: captured.owner.conversation, payload: { kind } })
     expect(runtime.relay(1, packet)).toBe(2)
     const before = current()
     runtime.command(2, state.id, { kind: 'select', tabId: captured.tabId })
@@ -290,7 +359,7 @@ describe('detached browser runtime authority', () => {
     'rejects an in-flight action after %s, even with a refreshed reply target', transition => {
       const { runtime, state, target } = fixture()
       const captured = target()
-      const packet = { id: 'retired-act', kind: 'act', target: captured, requester: captured.owner.conversation, payload: { kind: 'type' } }
+      const packet = withDeadline({ id: 'retired-act', kind: 'act', target: captured, requester: captured.owner.conversation, payload: { kind: 'type' } })
       expect(runtime.relay(1, packet)).toBe(2)
       let replyTarget = captured
 
@@ -307,19 +376,19 @@ describe('detached browser runtime authority', () => {
 
       const reply = { id: packet.id, kind: 'act', target: replyTarget, result: { success: true } }
       expect(runtime.relay(2, reply)).toBeNull()
-      expect(runtime.relay(1, { ...packet, id: 'late', target: replyTarget })).toBeNull()
+      expect(runtime.relay(1, { ...packet, id: `late-${packet.deadline}`, target: replyTarget })).toBeNull()
 
       if (transition === 'switch-away-and-back') {
         // A valid current epoch cannot be substituted onto an old request ID.
         expect(runtime.relay(2, { ...reply, target: target() })).toBeNull()
-        expect(runtime.relay(1, { ...packet, id: 'fresh', target: target() })).toBe(2)
+        expect(runtime.relay(1, { ...packet, id: `fresh-${packet.deadline}`, target: target() })).toBe(2)
       }
     }
   )
 
   it('rejects missing/malformed/wrong-owner/stale targets and late replies after switch-away-and-back', () => {
     const { runtime, state, target } = fixture()
-    const packet = { id: 'read-1', kind: 'read', target: target(), requester: target().owner.conversation, payload: {} }
+    const packet = withDeadline({ id: 'read-1', kind: 'read', target: target(), requester: target().owner.conversation, payload: {} })
 
     for (const bad of [
       null,
@@ -334,8 +403,8 @@ describe('detached browser runtime authority', () => {
     runtime.command(2, state.id, { kind: 'new' })
     runtime.command(2, state.id, { kind: 'select', tabId: 'url:seed' })
     expect(runtime.relay(2, { id: packet.id, kind: 'read', target: packet.target, result: {} })).toBeNull()
-    expect(runtime.relay(1, { ...packet, id: 'stale' })).toBeNull()
-    const fresh = { ...packet, id: 'fresh', target: target() }
+    expect(runtime.relay(1, { ...packet, id: `stale-${packet.deadline}` })).toBeNull()
+    const fresh = { ...packet, id: `fresh-${packet.deadline}`, target: target() }
     expect(runtime.relay(1, fresh)).toBe(2)
     runtime.command(2, state.id, { kind: 'close', tabId: 'url:seed' })
     expect(runtime.relay(2, { id: fresh.id, kind: 'read', target: fresh.target, result: {} })).toBeNull()

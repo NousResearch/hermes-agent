@@ -472,7 +472,8 @@ it.each([false, true])('adopts detached-created pending tabs through the opener 
   expect(target).toEqual({ windowId: state.id, tabId: second, owner: live.owner, selectionVersion: live.selectionVersion })
 
   for (const kind of ['read', 'act'] as const) {
-    const packet = { id: `pending-${kind}`, kind, target, requester: conversation, payload: kind === 'read' ? {} : { kind: 'click', ref: '@e1' } }
+    const deadline = Date.now() + 8_000
+    const packet = { id: `pending-${kind}-${deadline}`, kind, target, requester: conversation, deadline, payload: kind === 'read' ? {} : { kind: 'click', ref: '@e1' } }
     expect(runtime.relay(1, { ...packet, target: oldTarget })).toBeNull()
     expect(runtime.relay(1, { ...packet, target: { ...target, tabId: seed.id } })).toBeNull()
     expect(runtime.relay(1, { ...packet, requester: undefined })).toBeNull()

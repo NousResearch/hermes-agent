@@ -21,6 +21,7 @@ import { previewTabIdsVisibleTo, previewTabsFor } from '@/store/preview'
 import type { PreviewOwner } from '@/store/preview-ownership'
 import { isBrowserWindow } from '@/store/windows'
 
+import { BROWSER_REQUEST_HISTORY_LIMIT, BROWSER_REQUEST_TIMEOUT_MS, BrowserRequestHistory } from '../../../../electron/browser-request-history'
 import type { BrowserConversation, BrowserRequestTarget } from '../../../../electron/browser-workspace-types'
 
 import { actOnActivePreview } from './preview-act'
@@ -30,8 +31,8 @@ import { activePreviewScriptRunner } from './preview-script-runner'
 
 const CHANNEL = 'hermes:preview-popout'
 
-const ACT_TIMEOUT_MS = 20_000
-const READ_TIMEOUT_MS = 8_000
+const ACT_TIMEOUT_MS = BROWSER_REQUEST_TIMEOUT_MS.act
+const READ_TIMEOUT_MS = BROWSER_REQUEST_TIMEOUT_MS.read
 
 type ActPayload = Omit<PreviewActAction, 'kind'> & { kind: string }
 
@@ -112,10 +113,10 @@ function requestPreviewOwner(target: BrowserRequestTarget, requester?: BrowserCo
   }
 }
 
-function nextId(prefix: string): string {
+function nextId(prefix: string, deadline: number): string {
   seq += 1
 
-  return `${prefix}-${globalThis.crypto.randomUUID()}-${seq}`
+  return `${prefix}-${globalThis.crypto.randomUUID()}-${seq}-${deadline}`
 }
 
 function askPopout<T>(
@@ -192,8 +193,10 @@ export async function requestPopoutPreviewAct(payload: ActPayload, requester?: B
     return null
   }
 
+  const deadline = Date.now() + ACT_TIMEOUT_MS
+
   return (
-    (await askPopout({ id: nextId('act'), kind: 'act', payload, target, owner: owner ?? requestPreviewOwner(target, requester), tabIds, requester: requester ?? target.owner.conversation!, deadline: Date.now() + ACT_TIMEOUT_MS }, ACT_TIMEOUT_MS, response =>
+    (await askPopout({ id: nextId('act', deadline), kind: 'act', payload, target, owner: owner ?? requestPreviewOwner(target, requester), tabIds, requester: requester ?? target.owner.conversation!, deadline }, ACT_TIMEOUT_MS, response =>
       response.kind === 'act' ? response.result : undefined, signal
     )) ?? {
       success: false,
@@ -211,15 +214,17 @@ export function requestPopoutPreviewRead(payload: PreviewReadOptions = {}, reque
     return Promise.resolve(null)
   }
 
-  return askPopout({ id: nextId('read'), kind: 'read', payload, target, owner: owner ?? requestPreviewOwner(target, requester), tabIds, requester: requester ?? target.owner.conversation!, deadline: Date.now() + READ_TIMEOUT_MS }, READ_TIMEOUT_MS, response =>
+  const deadline = Date.now() + READ_TIMEOUT_MS
+
+  return askPopout({ id: nextId('read', deadline), kind: 'read', payload, target, owner: owner ?? requestPreviewOwner(target, requester), tabIds, requester: requester ?? target.owner.conversation!, deadline }, READ_TIMEOUT_MS, response =>
     response.kind === 'read' ? response.result : undefined
   )
 }
 
 let responderStop: (() => void) | null = null
 let responderUsers = 0
-// One-use IDs for this renderer's lifetime, not a time-based replay window.
-const receivedRequests = new Set<string>()
+// Survives responder remounts; unexpired IDs cannot regain execution authority.
+const receivedRequests = new BrowserRequestHistory()
 
 function releaseResponder(): () => void {
   let released = false
@@ -302,17 +307,18 @@ export function installPopoutPreviewResponder(): () => void {
     const id = request.id
     const target = request.target
 
-    if (receivedRequests.has(id)) {
+    if (running.has(id) || running.size >= BROWSER_REQUEST_HISTORY_LIMIT ||
+      !receivedRequests.admit(id, request.kind, request.deadline)) {
       return
     }
 
-    receivedRequests.add(id)
-    const controller = new AbortController()
-    const remaining = Math.min(request.deadline - Date.now(), request.kind === 'act' ? ACT_TIMEOUT_MS : READ_TIMEOUT_MS)
+    const remaining = request.deadline - Date.now()
 
-    // A request delayed in transit never gets a fresh execution budget.
-    if (remaining <= 0) {controller.abort('timeout')}
-    const timer = window.setTimeout(() => controller.abort('timeout'), Math.max(0, remaining))
+    // Admission and execution can straddle the deadline; do not invoke a reader
+    // (which has no AbortSignal) or an action after its budget expires.
+    if (remaining <= 0) {return}
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort('timeout'), remaining)
     running.set(id, { target, controller, timer })
 
     void (async () => {

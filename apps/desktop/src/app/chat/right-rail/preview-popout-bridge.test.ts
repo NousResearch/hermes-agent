@@ -22,6 +22,10 @@ const readActivePreview = vi.hoisted(() => vi.fn())
 const activePreviewScriptRunner = vi.hoisted(() => vi.fn(() => null))
 const activePreviewNav = vi.hoisted(() => vi.fn(() => null))
 
+function withDeadline<T extends { id: string }>(packet: T, deadline = Date.now() + 20_000) {
+  return { ...packet, id: `${packet.id}-${deadline}`, deadline }
+}
+
 type Listener = (event: MessageEvent) => void
 
 /** Same-origin BroadcastChannel never delivers to the posting window, so the
@@ -114,6 +118,65 @@ function installDesktopRelay() {
 }
 
 describe('preview pop-out bridge', () => {
+  it('bounds settled request history without replaying unexpired IDs when a long-lived responder fills up', async () => {
+    vi.useFakeTimers()
+    isBrowserWindow.mockReturnValue(true)
+    actOnActivePreview.mockResolvedValue({ success: true })
+    const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
+    let stop = installPopoutPreviewResponder()
+    const bus = new LoopbackChannel('hermes:preview-popout')
+
+    const packet = (id: string) => withDeadline({ id, kind: 'act', target, payload: { kind: 'click' },
+      tabIds: [target.tabId] })
+
+    try {
+      for (let batch = 0; batch < 3; batch++) {
+        actOnActivePreview.mockClear()
+        const first = packet(`first-${batch}`)
+        bus.postMessage(first)
+        await Promise.resolve()
+
+        for (let index = 1; index < 1024; index++) {
+          bus.postMessage(packet(`${batch}-${index}`))
+          await Promise.resolve()
+        }
+
+        expect(actOnActivePreview).toHaveBeenCalledTimes(1024)
+        bus.postMessage(packet(`overflow-${batch}`))
+        expect(actOnActivePreview).toHaveBeenCalledTimes(1024)
+        // Remounting the responder cannot open a replay window either.
+        stop()
+        stop = installPopoutPreviewResponder()
+        bus.postMessage(first)
+        await vi.advanceTimersByTimeAsync(19_999)
+        bus.postMessage(first)
+        expect(actOnActivePreview).toHaveBeenCalledTimes(1024)
+        await vi.advanceTimersByTimeAsync(1)
+        bus.postMessage(first)
+        bus.postMessage({ ...first, deadline: Date.now() + 20_000 })
+        expect(actOnActivePreview).toHaveBeenCalledTimes(1024)
+      }
+    } finally {stop(); vi.useRealTimers()}
+  })
+
+  it('never invokes a reader for an expired or unbounded request deadline', async () => {
+    vi.useFakeTimers()
+    isBrowserWindow.mockReturnValue(true)
+    readActivePreview.mockResolvedValue({ text: 'page' })
+    const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const bus = new LoopbackChannel('hermes:preview-popout')
+
+    try {
+      for (const deadline of [Date.now(), Date.now() - 1, Date.now() + 8_001, Infinity, NaN]) {
+        bus.postMessage({ id: `invalid-${deadline}-${deadline}`, kind: 'read', target, payload: {}, tabIds: [target.tabId], deadline })
+      }
+
+      expect(readActivePreview).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {stop(); vi.useRealTimers()}
+  })
+
   beforeEach(async () => {
     const { $previewTabs } = await import('@/store/preview')
     $previewTabs.set([{ id: 'url:second', pinned: true, sessionId: 'stored-a', target: {
@@ -170,7 +233,7 @@ describe('preview pop-out bridge', () => {
     const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
     const stop = installPopoutPreviewResponder()
     const bus = new LoopbackChannel('hermes:preview-popout')
-    const packet = { id: 'cancel-original', kind: 'act', target, payload: { kind: 'type' }, tabIds: [target.tabId], deadline: Date.now() + 20_000 }
+    const packet = withDeadline({ id: 'cancel-original', kind: 'act', target, payload: { kind: 'type' }, tabIds: [target.tabId] })
 
     try {
       bus.postMessage(packet)
@@ -193,7 +256,7 @@ describe('preview pop-out bridge', () => {
 
         return { success: true }
       })
-      bus.postMessage({ ...packet, id: 'expired-in-transit', payload: { kind: 'type', text: 'too late' } })
+      bus.postMessage({ ...packet, id: `expired-in-transit-${packet.deadline}`, payload: { kind: 'type', text: 'too late' } })
       await vi.advanceTimersByTimeAsync(0)
       expect(input.send).not.toHaveBeenCalled()
       expect(vi.getTimerCount()).toBe(0)
@@ -298,7 +361,7 @@ describe('preview pop-out bridge', () => {
     const first = installPopoutPreviewResponder()
     const second = installPopoutPreviewResponder()
     const bus = new LoopbackChannel('hermes:preview-popout')
-    const packet = { id: 'duplicate', kind: 'act', payload: { kind: 'click' }, target, tabIds: [target.tabId], deadline: Date.now() + 20_000 }
+    const packet = withDeadline({ id: 'duplicate', kind: 'act', payload: { kind: 'click' }, target, tabIds: [target.tabId] })
     bus.postMessage(packet)
     bus.postMessage(packet)
     await Promise.resolve()
@@ -322,7 +385,7 @@ describe('preview pop-out bridge', () => {
       { ...target, tabId: 'url:seed' },
       { ...target, selectionVersion: 1 }
     ]) {
-      bus.postMessage({ id: 'bad', kind: 'act', payload: { kind: 'click' }, target: badTarget, tabIds: [target.tabId], deadline: Date.now() + 20_000 })
+      bus.postMessage(withDeadline({ id: 'bad', kind: 'act', payload: { kind: 'click' }, target: badTarget, tabIds: [target.tabId] }))
     }
 
     await Promise.resolve()

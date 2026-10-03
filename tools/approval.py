@@ -1207,17 +1207,21 @@ def check_all_command_guards(command: str, env_type: str,
     warnings = []
     session_key = get_current_session_key()
     if tirith_result["action"] in {"block", "warn"}:
+        # One key per finding, not just the first: a session approval of rule A must not cover a later command whose
+        # first finding is A but which also carries findings the user never saw. Approving the prompt persists every
+        # key in it (_persist_choice), so a command whose findings were all approved still passes silently.
         findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
-        if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
+        rule_ids = dict.fromkeys(f.get("rule_id", "unknown") for f in findings) or {"unknown": None}
+        unapproved = [f"tirith:{r}" for r in rule_ids if not is_approved(session_key, f"tirith:{r}")]
+        if unapproved:
+            tirith_desc = _format_tirith_description(tirith_result)
+            warnings.extend((key, tirith_desc if i == 0 else "", True) for i, key in enumerate(unapproved))
     if is_dangerous and not is_approved(session_key, pattern_key):
         warnings.append((pattern_key, description, False))
     if not warnings:
         return _approved()
 
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    combined_desc = "; ".join(desc for _, desc, _ in warnings if desc)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
 

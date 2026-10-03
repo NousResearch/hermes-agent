@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -540,6 +541,31 @@ class TestVoiceChannelCommands:
         assert event.message_type == MessageType.VOICE
         assert event.source.chat_id == "123"
         assert event.source.chat_type == "channel"
+
+    @pytest.mark.asyncio
+    async def test_input_transcript_echo_does_not_delay_dispatch(self, runner):
+        """The "[Voice]" echo is posted in the background: a slow Discord send must not hold
+        the reply back (it added ~0.35 s to every voice turn)."""
+        from gateway.config import Platform
+        release = asyncio.Event()
+
+        async def slow_send(content):
+            await release.wait()
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(side_effect=slow_send)
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        await asyncio.wait_for(runner._handle_voice_channel_input(111, 42, "Hello from VC"), timeout=2)
+        mock_adapter.handle_message.assert_called_once()
+        release.set()
+        await asyncio.sleep(0)
+        mock_channel.send.assert_awaited_once_with("**[Voice]** <@42>: Hello from VC")
 
     @pytest.mark.asyncio
     async def test_input_reroutes_speaker_without_changing_transport_owner(self, runner, monkeypatch):

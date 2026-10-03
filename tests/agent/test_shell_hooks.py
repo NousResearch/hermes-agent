@@ -62,6 +62,26 @@ class TestParseResponse:
         assert shell_hooks._parse_response("pre_tool_call", "") is None
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
 
+    @pytest.mark.parametrize("event, nested, expected", [
+        ("pre_tool_call", {"permissionDecision": "deny", "permissionDecisionReason": "Blocked by policy"},
+         {"action": "block", "message": "Blocked by policy"}),
+        # Claude's "ask" is "route to the human" — the Hermes approval-gate escalation, not auto-allow.
+        ("pre_tool_call", {"permissionDecision": "ask", "permissionDecisionReason": "needs a human"},
+         {"action": "approve", "message": "needs a human"}),
+        ("pre_tool_call", {"permissionDecision": "allow", "updatedInput": {"command": "npm ci"}},
+         {"action": "modify", "args": {"command": "npm ci"}}),
+        ("pre_tool_call", {"permissionDecision": "allow"}, None),
+        ("pre_llm_call", {"hookEventName": "UserPromptSubmit", "additionalContext": "Today is Friday"},
+         {"context": "Today is Friday"}),
+        ("pre_verify", {"decision": "block", "reason": "Tasks incomplete, continue working"},
+         {"action": "continue", "message": "Tasks incomplete, continue working"}),
+    ])
+    def test_hook_specific_output_is_the_nested_spelling_of_the_flat_dialect(self, event, nested, expected):
+        """Claude Code's documented reply shape wraps the directive in ``hookSpecificOutput``; a
+        script written for it used to parse to None here (the tool ran, the context was dropped)."""
+        stdout = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", **nested}})
+        assert shell_hooks._parse_response(event, stdout) == expected
+
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 

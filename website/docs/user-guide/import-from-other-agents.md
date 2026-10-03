@@ -26,11 +26,14 @@ hermes import-agent claude-code --overwrite --yes  # replace conflicts, skip pro
 | `CLAUDE.md` (global instructions) | Memory entries in `~/.hermes/memories/MEMORY.md` |
 | `settings.json` → `permissions.allow` (`Bash(...)` rules) | `command_allowlist` in `config.yaml` |
 | `settings.json` → `permissions.deny` (`Bash(...)` rules) | `approvals.deny` in `config.yaml` |
+| `settings.json` → `hooks` (`type: "command"` entries) | [Shell hooks](./features/hooks.md#shell-hooks) under `hooks:` in `config.yaml` |
 | `mcpServers` (from `~/.claude.json` and `settings.json`) | `mcp_servers` in `config.yaml` |
 | `skills/<name>/` (dirs with `SKILL.md`) | `~/.hermes/skills/claude-code-imports/<name>/` |
 | `commands/*.md` (slash commands) | Skipped with a note — convert them into skills |
 
 Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`Bash` permission rules (`Read(...)`, `WebFetch`, ...) gate Claude-specific tools and are reported as unmapped rather than imported.
+
+Hook scripts run unchanged: Hermes shell hooks speak the same stdin JSON (`hook_event_name`, `tool_name`, `tool_input`, `session_id`, `cwd`), honour exit code 2 as a block, and read both the flat `{"decision": "block"}` reply and the nested `{"hookSpecificOutput": {...}}` one. The import renames the event (`PreToolUse` → `pre_tool_call`, `PostToolUse` → `post_tool_call`, `UserPromptSubmit` → `pre_llm_call`, `Stop` → `pre_verify`, `SubagentStart`/`SubagentStop` → `subagent_start`/`subagent_stop`, `SessionStart`/`SessionEnd` → `on_session_start`/`on_session_end`) and the tool names inside `matcher` (`Bash` → `terminal`, `Edit|Write` → `patch|write_file`, `Grep`/`Glob` → `search_files`, `Task` → `delegate_task`, `WebFetch` → `web_extract`, `WebSearch` → `web_search`; `mcp__<server>__<tool>` is already the Hermes spelling). `PreCompact`, `Notification`, `PermissionRequest` and `type: "prompt"` (LLM-judged) hooks have no Hermes shell-hook equivalent and are listed as skipped. Imported hooks are **not** pre-approved: each one still gets the [first-use consent prompt](./features/hooks.md#shell-hooks) before it ever runs, and `$CLAUDE_PROJECT_DIR` is not set by Hermes (the stdin `cwd` field carries the workspace), which the report flags per command.
 
 ### Codex CLI (`~/.codex`)
 

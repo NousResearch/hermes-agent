@@ -499,6 +499,35 @@ def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 _RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
 
 
+def _flatten_hook_specific_output(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Claude Code's nested ``{"hookSpecificOutput": {...}}`` reply → the flat dialect the parsers read.
+
+    ``permissionDecision`` ``deny`` blocks; ``ask`` is Claude's "route to the human" and lands on the
+    Hermes approval-gate escalation; ``allow`` is a no-op (hooks never auto-allow here, same ruling as
+    the flat ``decision: approve``) unless it carries ``updatedInput``, which is a modify.
+    ``additionalContext`` is the nested spelling of ``context``. A script that already answers in the
+    flat form (or in both) is returned unchanged, so the top-level keys keep precedence."""
+    nested = data.get("hookSpecificOutput")
+    if not isinstance(nested, dict):
+        return data
+    flat: Dict[str, Any] = {}
+    decision = nested.get("permissionDecision")
+    reason = nested.get("permissionDecisionReason")
+    updated = nested.get("updatedInput")
+    if decision == "deny":
+        flat = {"decision": "block", "reason": reason}
+    elif decision == "ask":
+        flat = {"action": "approve", "message": reason}
+    elif isinstance(updated, dict):  # allow / unspecified with a rewrite
+        flat = {"decision": "modify", "tool_input": updated}
+    elif nested.get("decision") == "block":  # Stop / SubagentStop nested form
+        flat = {"decision": "block", "reason": nested.get("reason")}
+    context = nested.get("additionalContext")
+    if isinstance(context, str) and context.strip():
+        flat.setdefault("context", context)
+    return {**flat, **{k: v for k, v in data.items() if k != "hookSpecificOutput"}}
+
+
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict, or ``None``."""
     stdout = (stdout or "").strip()
@@ -509,7 +538,9 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         logger.warning("shell hook stdout was not valid JSON (event=%s): %s", event, stdout[:200])
         return None
-    return _RESPONSE_PARSERS.get(event, _parse_context)(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    return _RESPONSE_PARSERS.get(event, _parse_context)(_flatten_hook_specific_output(data))
 
 
 # --- Allowlist / consent ---

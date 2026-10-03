@@ -902,3 +902,22 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+@pytest.mark.parametrize("speed", [None, "fast"])
+def test_anthropic_1h_cache_writes_bill_at_twice_the_input_rate(speed):
+    """``prompt_caching.cache_ttl: 1h`` (or ``auto`` on a human-paced session) writes at 2x base
+    input, not the 5m write rate; the TTL split comes from ``usage.cache_creation``."""
+    from agent.usage_pricing import _ANTHROPIC_FAST_MODE_PRICING
+
+    raw = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 1_000_000,
+           "cache_creation": {"ephemeral_1h_input_tokens": 400_000, "ephemeral_5m_input_tokens": 600_000}}
+    if speed:
+        raw["speed"] = speed
+    usage = normalize_usage(raw, provider="anthropic", api_mode="anthropic_messages")
+    entry = (_ANTHROPIC_FAST_MODE_PRICING["claude-opus-4-8"] if speed
+             else get_pricing_entry("claude-opus-4-8", provider="anthropic"))
+
+    cost = estimate_usage_cost("claude-opus-4-8", usage, provider="anthropic").amount_usd
+
+    assert cost == Decimal("0.4") * 2 * entry.input_cost_per_million + Decimal("0.6") * entry.cache_write_cost_per_million

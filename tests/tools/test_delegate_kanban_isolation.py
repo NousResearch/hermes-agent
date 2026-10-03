@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import shlex
+import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -60,6 +62,55 @@ def _make_running_kanban_task(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return kb, tid, workspace, attachments_root
+
+
+def _record_delegated_session(home: Path) -> str:
+    """Persist the durable session provenance written for a real subagent."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        parent_id = "parent-session"
+        child_id = "delegated-child-session"
+        db.create_session(session_id=parent_id, source="cli")
+        db.create_session(
+            session_id=child_id,
+            source="subagent",
+            parent_session_id=parent_id,
+            model_config={"_delegate_from": parent_id},
+        )
+        return child_id
+    finally:
+        db.close()
+
+
+def _run_kanban_cli_args(argv: list[str]) -> int:
+    import argparse
+
+    from hermes_cli import kanban
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd")
+    kanban.build_parser(sub)
+    return kanban.kanban_command(parser.parse_args(["kanban", *argv]))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal return codes")
+def test_delegated_runner_is_cwd_independent_and_preserves_signal_exit_status(tmp_path):
+    from agent.delegation_context import (
+        delegated_child_context,
+        wrap_delegated_child_command,
+    )
+
+    with delegated_child_context():
+        argv = wrap_delegated_child_command([
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGTERM)",
+        ])
+    result = subprocess.run(argv, cwd=tmp_path, env={}, check=False)
+
+    assert result.returncode == -signal.SIGTERM
 
 
 def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, tmp_path):
@@ -219,6 +270,105 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
         conn.close()
 
 
+def test_delegate_child_session_kernel_cannot_unset_identity_to_complete_parent(
+    monkeypatch,
+    tmp_path,
+):
+    """The persistent execute_code kernel must retain process provenance."""
+    kb, tid, workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    child_session_id = _record_delegated_session(tmp_path / ".hermes")
+
+    from agent.delegation_context import delegated_child_context
+    from tools.code_kernel import execute_in_session_kernel, shutdown_all_kernels
+
+    code = (
+        "import argparse, os; "
+        "os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None); "
+        "os.environ.pop('HERMES_SESSION_ID', None); "
+        f"os.environ['HERMES_HOME']={str(tmp_path / 'decoy-home')!r}; "
+        f"os.environ['HERMES_KANBAN_DB']={str(tmp_path / '.hermes' / 'kanban.db')!r}; "
+        "from hermes_cli import kanban; "
+        "p=argparse.ArgumentParser(); "
+        "sub=p.add_subparsers(dest='cmd'); "
+        "kanban.build_parser(sub); "
+        f"args=p.parse_args(['kanban','complete',{tid!r},'--summary','kernel bypass']); "
+        "print(kanban.kanban_command(args))"
+    )
+    try:
+        with delegated_child_context(session_id=child_session_id):
+            result = execute_in_session_kernel(
+                code,
+                task_id="delegated-kernel-isolation",
+                mode="project",
+                child_python=sys.executable,
+                child_cwd=str(_REPO_ROOT),
+                sandbox_tools=frozenset(),
+                timeout=15,
+                max_tool_calls=0,
+                reset=True,
+                is_interrupted=lambda: False,
+            )
+    finally:
+        shutdown_all_kernels()
+
+    assert "delegate_task child contexts cannot mutate Kanban tasks" in result
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.latest_run(conn, tid).status == "running"
+    assert workspace.is_dir()
+
+
+def test_delegate_child_execute_code_cannot_unset_identity_to_complete_parent(
+    monkeypatch,
+    tmp_path,
+):
+    """The one-shot execute_code process must retain delegated provenance."""
+    kb, tid, workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    child_session_id = _record_delegated_session(tmp_path / ".hermes")
+
+    from agent.delegation_context import delegated_child_context
+    from tools import code_execution_tool as cet
+
+    code = (
+        "import argparse, os; "
+        "os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None); "
+        "os.environ.pop('HERMES_SESSION_ID', None); "
+        f"os.environ['HERMES_HOME']={str(tmp_path / 'decoy-home')!r}; "
+        f"os.environ['HERMES_KANBAN_DB']={str(tmp_path / '.hermes' / 'kanban.db')!r}; "
+        "from hermes_cli import kanban; "
+        "p=argparse.ArgumentParser(); "
+        "sub=p.add_subparsers(dest='cmd'); "
+        "kanban.build_parser(sub); "
+        f"args=p.parse_args(['kanban','complete',{tid!r},'--summary','code bypass']); "
+        "print(kanban.kanban_command(args))"
+    )
+    monkeypatch.setattr(
+        "tools.approval.check_execute_code_guard",
+        lambda *_args, **_kwargs: {"approved": True},
+    )
+    monkeypatch.setattr(
+        cet,
+        "_load_config",
+        lambda: {"timeout": 15, "max_tool_calls": 0, "mode": "project"},
+    )
+
+    with delegated_child_context(session_id=child_session_id):
+        payload = json.loads(cet.execute_code(code, task_id="delegated-code-isolation"))
+
+    assert payload["status"] == "success", payload
+    assert "delegate_task child contexts cannot mutate Kanban tasks" in payload["output"]
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.latest_run(conn, tid).status == "running"
+    assert workspace.is_dir()
+
+
 def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     monkeypatch,
     tmp_path,
@@ -256,6 +406,193 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]
     assert kb.board_exists("victim")
     assert kb.board_dir("victim").is_dir()
+
+
+def test_delegate_child_cannot_unset_marker_to_complete_parent_via_cli(
+    monkeypatch,
+    tmp_path,
+):
+    """Durable child provenance must survive deletion of the env fast-path."""
+    kb, tid, workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    child_session_id = _record_delegated_session(tmp_path / ".hermes")
+
+    from agent.delegation_context import delegated_child_context
+    from tools.environments.local import LocalEnvironment
+
+    code = (
+        "from hermes_cli import kanban; "
+        "import argparse; "
+        "p=argparse.ArgumentParser(); "
+        "sub=p.add_subparsers(dest='cmd'); "
+        "kanban.build_parser(sub); "
+        f"args=p.parse_args(['kanban','complete',{tid!r},'--summary','child bypass']); "
+        "raise SystemExit(kanban.kanban_command(args))"
+    )
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+    try:
+        with delegated_child_context(session_id=child_session_id):
+            direct = env.execute(_python_with_repo_path(code), timeout=15)
+            bypass_env = "env -u HERMES_DELEGATED_CHILD_CONTEXT "
+            result = env.execute(
+                bypass_env + _python_with_repo_path(code),
+                timeout=15,
+            )
+    finally:
+        env.cleanup()
+
+    assert direct["returncode"] == 1
+    assert "delegate_task child contexts cannot mutate Kanban tasks" in direct["output"]
+    assert result["returncode"] == 1
+    assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+    finally:
+        conn.close()
+
+    assert task.status == "running"
+    assert run.status == "running"
+    assert workspace.is_dir()
+
+
+def test_delegate_child_background_terminal_cannot_unset_identity_to_complete_parent(
+    monkeypatch,
+    tmp_path,
+):
+    """Background terminal processes must retain delegated provenance too."""
+    kb, tid, workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    child_session_id = _record_delegated_session(tmp_path / ".hermes")
+
+    from agent.delegation_context import delegated_child_context
+    from tools.process_registry import ProcessRegistry
+
+    code = (
+        "from hermes_cli import kanban; "
+        "import argparse; "
+        "p=argparse.ArgumentParser(); "
+        "sub=p.add_subparsers(dest='cmd'); "
+        "kanban.build_parser(sub); "
+        f"args=p.parse_args(['kanban','complete',{tid!r},'--summary','background bypass']); "
+        "raise SystemExit(kanban.kanban_command(args))"
+    )
+    bypass = (
+        "env -u HERMES_DELEGATED_CHILD_CONTEXT -u HERMES_SESSION_ID "
+        f"HERMES_HOME={shlex.quote(str(tmp_path / 'decoy-home'))} "
+        f"HERMES_KANBAN_DB={shlex.quote(str(tmp_path / '.hermes' / 'kanban.db'))} "
+    )
+    registry = ProcessRegistry()
+    with delegated_child_context(session_id=child_session_id):
+        session = registry.spawn_local(
+            bypass + _python_with_repo_path(code),
+            cwd=str(tmp_path),
+            task_id="delegated-background-isolation",
+        )
+    result = registry.wait(session.id, timeout=15)
+
+    assert result["status"] == "exited", result
+    assert result["exit_code"] == 1
+    assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.latest_run(conn, tid).status == "running"
+    assert workspace.is_dir()
+
+
+def test_delegate_child_cli_guard_classifies_every_mutating_sibling():
+    """New mutation verbs must not bypass the CLI fast-fail deny boundary."""
+    import argparse
+
+    from agent.delegation_context import delegated_child_context
+    from hermes_cli.kanban import (
+        _DELEGATED_CHILD_DENIED_ACTIONS,
+        _DELEGATED_CHILD_DENIED_BOARD_ACTIONS,
+        _is_delegated_child_cli_mutation,
+    )
+
+    expected_actions = {
+        "init", "create", "swarm", "assign", "set-model", "reclaim",
+        "reassign", "link", "unlink", "claim", "comment", "attach",
+        "attach-rm", "complete", "edit", "block", "schedule", "unblock",
+        "request-review", "request-changes", "reopen-review", "promote",
+        "archive", "dispatch", "daemon", "repair", "heartbeat",
+        "notify-subscribe", "notify-unsubscribe", "specify", "decompose", "gc",
+    }
+    expected_board_actions = {
+        "create", "new", "rm", "remove", "delete", "switch", "use",
+        "rename", "set-default-workdir", "import",
+    }
+
+    assert _DELEGATED_CHILD_DENIED_ACTIONS == expected_actions
+    assert _DELEGATED_CHILD_DENIED_BOARD_ACTIONS == expected_board_actions
+    with delegated_child_context():
+        for action in expected_actions:
+            args = argparse.Namespace(kanban_action=action, boards_action=None)
+            assert _is_delegated_child_cli_mutation(args) is True
+        for action in expected_board_actions:
+            args = argparse.Namespace(kanban_action="boards", boards_action=action)
+            assert _is_delegated_child_cli_mutation(args) is True
+
+
+def test_delegate_child_direct_board_import_uses_durable_mutation_guard(
+    monkeypatch,
+    tmp_path,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_ID", _record_delegated_session(home))
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+
+    from hermes_cli import kanban_transfer
+
+    with pytest.raises(PermissionError, match="delegate_task child"):
+        kanban_transfer.import_board(str(tmp_path / "missing.tar.gz"))
+
+
+def test_dispatcher_worker_can_still_complete_its_own_task(monkeypatch, tmp_path):
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    assert _run_kanban_cli_args(["complete", tid, "--summary", "worker handoff"]) == 0
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_operator_cli_with_root_session_can_still_mutate_board(monkeypatch, tmp_path):
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(
+        monkeypatch,
+        tmp_path,
+    )
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID")
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / ".hermes" / "state.db")
+    try:
+        db.create_session(session_id="operator-session", source="cli")
+    finally:
+        db.close()
+    monkeypatch.setenv("HERMES_SESSION_ID", "operator-session")
+
+    assert _run_kanban_cli_args(["complete", tid, "--summary", "operator handoff"]) == 0
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "done"
 
 
 def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_path):

@@ -2332,6 +2332,14 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
+        # Same MissingSessionID bypass as the chat summary path: build_api_kwargs' wrapper
+        # merge does not run here, so merge the OpenCode affinity header into the
+        # hand-built anthropic summary kwargs.
+        from agent.opencode_affinity import merge_session_affinity_headers
+        merge_session_affinity_headers(
+            ant_kw, getattr(agent, "provider", None), getattr(agent, "base_url", None),
+            getattr(agent, "session_id", None),
+        )
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)

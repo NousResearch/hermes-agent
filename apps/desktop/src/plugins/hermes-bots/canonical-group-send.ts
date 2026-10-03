@@ -12,6 +12,8 @@ export interface PreparedCanonicalGroupSend {
   journal?: { owner: string; storageKey: string }
   attempted?: boolean
   acknowledged?: boolean
+  /** Written while the group was paused: Desktop sends it once the group resumes. */
+  held?: boolean
 }
 
 export interface RecoverableCanonicalGroupSend {
@@ -106,7 +108,8 @@ async function records(binding: CanonicalGroupBinding): Promise<RecoverableCanon
         (key[0] === 'canonical-group-send-v2' && (key.length !== 5 || key[4] !== entry.params.event_id || !entry.journal)) ||
         (entry.journal && (entry.journal.storageKey !== storageKey || typeof entry.journal.owner !== 'string' || !entry.journal.owner)) ||
         (entry.attempted !== undefined && typeof entry.attempted !== 'boolean') ||
-        (entry.acknowledged !== undefined && typeof entry.acknowledged !== 'boolean')) {
+        (entry.acknowledged !== undefined && typeof entry.acknowledged !== 'boolean') ||
+        (entry.held !== undefined && typeof entry.held !== 'boolean')) {
       throw new Error('Invalid canonical group Send entry')
     }
 
@@ -152,7 +155,8 @@ export async function claimCanonicalGroupSend(binding: CanonicalGroupBinding, re
   return next
 }
 
-export async function prepareCanonicalGroupSend(binding: CanonicalGroupBinding, payload: Record<string, unknown>): Promise<PreparedCanonicalGroupSend> {
+export async function prepareCanonicalGroupSend(binding: CanonicalGroupBinding, payload: Record<string, unknown>,
+  options: { held?: boolean } = {}): Promise<PreparedCanonicalGroupSend> {
   const scope = { ...binding }
   roomKey(scope)
   const owner = await journalOwner()
@@ -174,7 +178,7 @@ export async function prepareCanonicalGroupSend(binding: CanonicalGroupBinding, 
 
   const entry: PreparedCanonicalGroupSend = JSON.parse(JSON.stringify({ binding: scope,
     params: { room_id: scope.roomId, event_id: eventId, payload: { ...payload, thread_id: payload.thread_id ?? eventId } },
-    journal: { owner, storageKey }, attempted: false }))
+    journal: { owner, storageKey }, attempted: false, ...options.held ? { held: true } : {} }))
 
   const snapshot = JSON.stringify(entry)
 
@@ -235,5 +239,22 @@ export async function settleCanonicalGroupSend(binding: CanonicalGroupBinding, e
     acknowledged.delete(entry.journal.storageKey)
   } catch (error) {
     console.warn('Accepted group Send journal cleanup failed', error)
+  }
+}
+
+/** A group that continues on another computer keeps its unsent messages: each entry moves to the new route with
+ * its original event id, owner and attempt state, so the new host recognizes a message the old one accepted. */
+export async function rehomeCanonicalGroupSends(from: CanonicalGroupBinding, to: CanonicalGroupBinding): Promise<void> {
+  if (from.roomId !== to.roomId) {throw new Error('A group keeps its room id when it moves')}
+  roomKey(to)
+
+  for (const record of await records(from)) {
+    const { entry } = record
+    const storageKey = JSON.stringify(['canonical-group-send-v2', to.connectionId, to.profile, to.roomId, entry.params.event_id])
+    const next = JSON.stringify({ ...entry, binding: { ...to }, journal: { owner: entry.journal?.owner ?? await journalOwner(), storageKey } })
+
+    if (!await compareJournal(storageKey, null, next)) {continue}
+
+    if (!await compareJournal(record.storageKey, record.expected, null)) {await compareJournal(storageKey, next, null)}
   }
 }

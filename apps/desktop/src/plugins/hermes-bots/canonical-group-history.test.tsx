@@ -239,3 +239,46 @@ it('explains actual failed, deferred and stopped replies while keeping technical
   expect(history.getByText('approval_pending').closest('details')?.open).toBe(false)
   expect(request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
 })
+
+it('keeps continuation bookkeeping quiet and words host changes and waiting work from display fields, without new reads', async () => {
+  const wentOffline = new Date()
+  wentOffline.setHours(9, 30, 0, 0)
+  const time = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(wentOffline)
+  const english = 'This group now continues on install:0123456789abcdef0123456789abcdef (with the operator’s attestation).'
+  const system = { kind: 'system', id: 'room-driver' }
+
+  const events = [
+    { seq: 1, event_id: 'said', kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'hello' } },
+    { seq: 2, event_id: 'admitted', kind: 'task.admitted', actor: system, payload: { task_id: 'task-1', generation: 1 } },
+    { seq: 3, event_id: 'custody', kind: 'custody.configured', actor: system, payload: { voters: [{ install_id: 'install:a', role: 'custodian' }] } },
+    { seq: 4, event_id: 'state', kind: 'succession.state', actor: system, payload: { state: 'moving' } },
+    { seq: 5, event_id: 'moved', kind: 'authority.transition', actor: system,
+      payload: { text: english, to_name: 'Home VPS', from_name: 'Mac mini', offline_since: wentOffline.getTime() / 1000 } },
+    { seq: 6, event_id: 'moved-unnamed', kind: 'authority.transition', actor: system, payload: { text: english, to_name: null, from_name: null, offline_since: null } },
+    { seq: 7, event_id: 'moved-older', kind: 'authority.transition', actor: system, payload: { text: 'Older gateway notice.' } },
+    { seq: 8, event_id: 'waiting-bot', kind: 'turn.deferred', actor: system,
+      payload: { member_id: 'atlas', task_id: 'task-2', reason: 'waiting_for_host', resource: 'bot', host_name: 'Mac mini' } },
+    { seq: 9, event_id: 'waiting-file', kind: 'turn.deferred', actor: system,
+      payload: { member_id: 'atlas', task_id: 'task-3', reason: 'waiting_for_host', resource: 'file', host_name: null } }
+  ]
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Harbor launch', members: [{ member_id: 'atlas', profile: 'default', handle: 'atlas', display_name: 'Atlas Bot' }] } }}
+
+    if (method === 'groups.log') {return { events }}
+    throw new Error(`Unexpected method ${method}`)
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const history = within(screen.getByRole('log'))
+  await history.findByText('hello')
+
+  for (const kind of ['task.admitted', 'custody.configured', 'succession.state']) {expect(history.queryByText(kind)).toBeNull()}
+  expect(history.getByText(`This group now continues on Home VPS. Mac mini went offline at ${time}.`)).toBeTruthy()
+  expect(history.getByText(CANONICAL_GROUP_LOCALES.en.continuedOnUnnamed)).toBeTruthy()
+  expect(history.getByText('Older gateway notice.')).toBeTruthy()
+  expect(history.queryByText(english)).toBeNull()
+  expect(history.getByText('Waiting for Mac mini: this needs a Bot that’s only there.')).toBeTruthy()
+  expect(history.getByText('Waiting for another computer: this needs a file that’s only there.')).toBeTruthy()
+  expect(history.getByText('This group now continues on Home VPS. Mac mini went offline at ' + time + '.').closest('p')?.className).toContain('text-(--ui-text-tertiary)')
+  expect(request.mock.calls.every(call => ['groups.capabilities', 'groups.state', 'groups.log'].includes(call[1]))).toBe(true)
+})

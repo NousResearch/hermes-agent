@@ -1,18 +1,22 @@
-import { Button, Codicon, composerInputSurface, PRIMARY_ICON_BTN, Tip } from '@hermes/plugin-sdk'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Button, Codicon, composerInputSurface, host, PRIMARY_ICON_BTN, Tip } from '@hermes/plugin-sdk'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { CanonicalGroupBackups } from './canonical-group-backups'
 import { CanonicalGroupComposerInput } from './canonical-group-composer'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
-import { updateCanonicalGroupName } from './canonical-group-registry'
-import { attemptCanonicalGroupSend, claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend, settleCanonicalGroupSend } from './canonical-group-send'
+import { moveCanonicalGroup, updateCanonicalGroupName } from './canonical-group-registry'
+import { attemptCanonicalGroupSend, claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend, rehomeCanonicalGroupSends, retireCanonicalGroupSend, settleCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend, RecoverableCanonicalGroupSend } from './canonical-group-send'
+import { type ContinuedOn, useCanonicalGroupSuccession } from './canonical-group-succession-state'
+import { CanonicalGroupMovedAway, CanonicalGroupSuccessionBanner, computerName } from './canonical-group-succession-view'
 import { actCanonicalGroup, canonicalGroupRequest, isPendingFileAction } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
+import { useBots } from './i18n'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
@@ -22,6 +26,8 @@ interface DriverStatus {
   blocked?: boolean
   counts?: Record<string, number>
   pending_actions?: CanonicalPendingAction[]
+  /** Work that waits for the computer that has its Bot or file (`state: "waiting_for_host"`). */
+  tasks?: { task_id?: unknown; member_id?: unknown; state?: unknown; resource?: unknown; host_name?: unknown }[]
 }
 interface RoomState { room: { name: string; authority_epoch?: number; members?: CanonicalRoomMember[] }; driver_status?: DriverStatus }
 type Labels = ReturnType<typeof useCanonicalGroupLabels>
@@ -71,15 +77,31 @@ export type CanonicalRoomActions = (room: { name: string; refresh: () => void })
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack, actions }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; actions?: CanonicalRoomActions
 }) {
+  // A group that continues on another computer keeps this view; only its route changes. The registry follows
+  // too, so the parent then renders the moved binding and this override retires.
+  const [moved, setMoved] = useState<{ from: string; to: string } | null>(null)
+  const original = JSON.stringify(binding)
+  const currentKey = moved?.from === original ? moved.to : original
+  const current = useMemo(() => JSON.parse(currentKey) as CanonicalGroupBinding, [currentKey])
+
+  const onMoved = useCallback((route: CanonicalGroupRoute) => {
+    const to = { connectionId: route.connectionId, profile: route.profile, roomId: current.roomId }
+
+    void rehomeCanonicalGroupSends(current, to).catch(error => console.warn('Unsent group messages could not follow the group', error))
+      .finally(() => {moveCanonicalGroup(current, to); setMoved({ from: original, to: JSON.stringify(to) })})
+  }, [current, original])
+
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView actions={actions} binding={binding} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView actions={actions} binding={current} key={currentKey} onBack={onBack} onMoved={onMoved} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; actions?: CanonicalRoomActions
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, onMoved, actions }: {
+  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; onMoved: (route: CanonicalGroupRoute) => void
+  actions?: CanonicalRoomActions
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
+  const words = useBots().succession
   const [state, setState] = useState<RoomState | null>(null)
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
@@ -105,6 +127,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const revision = useRef(0)
   // The log is append-only within one authority epoch: read only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
+
+  const onContinued = useCallback(({ status, previousHost }: ContinuedOn) => {
+    host.notify({ kind: 'success', message: words.continuedSummary(status.host.name, status.work?.unknown ?? 0,
+      status.work?.waiting_for_host ?? 0, previousHost) })
+  }, [words])
+
+  const succession = useCanonicalGroupSuccession({ binding, visible, hostFailing: !!readError, events, onMoved, onContinued })
+  const paused = succession.paused
+  const movedAway = succession.fromBinding && succession.status?.state === 'moved_away'
 
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -204,7 +235,26 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     }
   }
 
+  // Paused: keep the message durably and send it once the group resumes, here or on its new host.
+  const hold = () => {
+    if (!restored || busyRef.current || uploadingRef.current || pending || (!draft.trim() && !attachments.length)) {return}
+    const editing = inputRevision.current
+    busyRef.current = true
+    setBusy(true)
+    setError('')
+    void prepareCanonicalGroupSend(binding, { text: draft, attachments }, { held: true }).then(exact => {
+      if (alive.current && inputRevision.current === editing) {
+        setPending(exact)
+        setDraft(String(exact.params.payload.text ?? ''))
+        setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
+      }
+    }).catch(e => {if (alive.current) {setError(e instanceof Error ? e.message : String(e))}})
+      .finally(() => {busyRef.current = false; if (alive.current) {setBusy(false)}})
+  }
+
   const send = () => {
+    if (paused) {return hold()}
+
     if (!restored || busyRef.current || uploadingRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     setSendHint('')
     const editing = inputRevision.current
@@ -301,25 +351,42 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     }
   }
 
+  // A message held while paused goes out once, as soon as the group can take it again.
+  const resumed = !paused && !movedAway && restored && !!pending?.held && !pending.attempted && !!state?.driver_status
+
+  useEffect(() => {if (resumed && !busyRef.current) {send()}})
+
   const members = state?.room.members ?? []
   const name = state?.room.name || labels.loadingGroup
   const pendingActions = state?.driver_status?.pending_actions ?? []
-  const inputDisabled = !restored || busy || !!pending || !state?.driver_status
+  const inputDisabled = !restored || busy || !!pending || !state?.driver_status && !paused
+  const previous = succession.status?.previous_host
+  const previousName = previous ? computerName(succession, previous) : null
+  const unavailable = Object.fromEntries((succession.status?.unavailable_bots ?? []).map(bot => [bot.member_id, words.unavailableWhileOffline(previousName)]))
+
+  const waiting = (state?.driver_status?.tasks ?? []).flatMap(task => task.state === 'waiting_for_host' && typeof task.task_id === 'string' &&
+    typeof task.member_id === 'string' ? [{ task_id: task.task_id, member_id: task.member_id,
+      text: words.waitingTask(typeof task.host_name === 'string' && task.host_name ? task.host_name : previousName, String(task.resource ?? '')) }] : [])
+
+  const nameFor = (installId: string) => installId === succession.status?.host.install_id ? computerName(succession, succession.status.host) ?? undefined
+    : succession.computerFor(installId)?.label
 
   // `running` reports gateway-worker health, including while this chat is idle.
-  const canStop = Boolean(pending || busy || stopping || state?.driver_status && (state.driver_status.working ||
+  const canStop = !paused && !movedAway && Boolean(pending || busy || stopping || state?.driver_status && (state.driver_status.working ||
     ['queued', 'running', 'stopping'].some(status => (state.driver_status?.counts?.[status] ?? 0) > 0) ||
     pendingActions.some(action => action.kind !== 'output_retry')))
 
   return <section className="flex h-full min-h-0 flex-col" data-slot="canonical-group-chat">
-    <CanonicalGroupHeader attention={state?.driver_status && needsAttention(state.driver_status)}
-      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} visible={visible} working={state?.driver_status?.working || pendingActions.some(isPendingFileAction)}>
+    <CanonicalGroupHeader attention={state?.driver_status && needsAttention(state.driver_status)} info={<CanonicalGroupBackups controller={succession} />}
+      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} unavailable={unavailable}
+      visible={visible} working={state?.driver_status?.working || pendingActions.some(isPendingFileAction)}>
       {visible && state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))) })}
     </CanonicalGroupHeader>
+    {visible && <CanonicalGroupSuccessionBanner binding={binding} controller={succession} members={members} />}
     <div aria-label={labels.conversationHistory} className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2"
       onScroll={event => { const node = event.currentTarget; following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48 }} ref={transcript} role="log">
       <div className="mx-auto w-full max-w-3xl pb-4">
-        <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={members} />
+        <CanonicalGroupHistory binding={binding} computerName={nameFor} disabled={!visible} events={events} members={members} />
         {state && !events.length && <div className="grid gap-1 px-3 py-10 text-center">
           <p className="text-sm text-(--ui-text-secondary)">{labels.emptyHistory}</p>
           <p className="text-xs text-(--ui-text-quaternary)">{labels.emptyHistoryHint}</p>
@@ -329,17 +396,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-4">
       <div className="max-h-[min(40vh,24rem)] overflow-y-auto">
         {visible && <CanonicalGroupPendingActions actions={pendingActions} busy={busy} members={members} onAction={act}
-          onDiscard={action => act(action)} onRefresh={refresh} />}
+          onDiscard={action => act(action)} onRefresh={refresh} unknownTitle={previous ? words.unknownAfterMove(previousName) : undefined} waiting={waiting} />}
       </div>
       <div className="grid gap-2 pb-2 text-xs text-(--ui-text-secondary)">
         {notice && <p aria-live="polite">{notice}</p>}
-        {readError && <div className="grid gap-1" role="alert"><div className="flex items-center gap-2"><span>{labels.driverUnavailable}</span><Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="inline" variant="text">{labels.refresh}</Button></div>
+        {paused && <p aria-live="polite" data-slot="paused-composer-hint">{words.pausedComposer}</p>}
+        {readError && !succession.status && <div className="grid gap-1" role="alert"><div className="flex items-center gap-2"><span>{labels.driverUnavailable}</span><Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="inline" variant="text">{labels.refresh}</Button></div>
           <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{readError}</p></details>
         </div>}
         {error && <div className="grid gap-1 text-destructive" role="alert"><p>{labels.pendingActionUnconfirmed}</p>
           <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>
         </div>}
-        {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
+        {state && !state.driver_status && !succession.status && <p>{labels.driverUnavailable}</p>}
         {pending && <p role="status">{labels.restoredPendingSend}</p>}
         {sendHint && <p aria-live="polite">{sendHint}</p>}
         {recoveries.filter(recovery => recovery.entry.params.event_id !== pending?.params.event_id).map(recovery =>
@@ -348,7 +416,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
             <Button disabled={!visible || busy || uploading || !!pending || !!draft.trim() || !!attachments.length} onClick={() => restore(recovery)} size="inline" variant="text">{labels.restorePendingSend}</Button>
           </div>)}
       </div>
-      <form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
+      {movedAway ? <CanonicalGroupMovedAway controller={succession} /> : <form className={`${composerInputSurface} rounded-2xl border border-(--ui-stroke-tertiary) p-2`} data-slot="composer-root"
         onSubmit={event => { event.preventDefault(); send() }}>
         <CanonicalGroupComposerInput disabled={inputDisabled} members={members} name={name} onChange={value => {inputRevision.current++; setDraft(value)}} onSubmit={send} value={draft} />
         <div className="mt-1 flex items-end gap-2">
@@ -363,7 +431,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
               size="icon-xs" type="submit" variant="ghost"><Codicon name={pending ? 'refresh' : 'arrow-up'} /></Button></Tip>
           </div>
         </div>
-      </form>
+      </form>}
     </div>
   </section>
 }

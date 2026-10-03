@@ -13,12 +13,25 @@ export const $canonicalGroupNames = atom<Record<string, string>>({})
 const groupKey = (route: CanonicalGroupRoute, roomId: string) =>
   `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${roomId}`
 
-/** A current, confirmed room snapshot may refresh its label without adding a route. */
-export function updateCanonicalGroupName(binding: CanonicalGroupBinding, name: string) {
-  const key = groupKey(binding, binding.roomId)
-  const names = $canonicalGroupNames.get()
+const sameBinding = (a: CanonicalGroupBinding, b: CanonicalGroupBinding) =>
+  a.connectionId === b.connectionId && a.profile === b.profile && a.roomId === b.roomId
 
-  if ($canonicalGroupBindings.get()[key] && names[key] !== name) {$canonicalGroupNames.set({ ...names, [key]: name })}
+/** A current, confirmed room snapshot may refresh its label without adding a route. A group that moved to another
+ * computer keeps its original key, so every key bound to this route follows the name. */
+export function updateCanonicalGroupName(binding: CanonicalGroupBinding, name: string) {
+  const bindings = $canonicalGroupBindings.get()
+  const names = $canonicalGroupNames.get()
+  const keys = Object.keys(bindings).filter(key => sameBinding(bindings[key], binding) && names[key] !== name)
+
+  if (keys.length) {$canonicalGroupNames.set({ ...names, ...Object.fromEntries(keys.map(key => [key, name])) })}
+}
+
+/** A group that continues on another computer keeps its tab, list row and name; only its route changes. */
+export function moveCanonicalGroup(from: CanonicalGroupBinding, to: CanonicalGroupBinding) {
+  const bindings = $canonicalGroupBindings.get()
+  const keys = Object.keys(bindings).filter(key => sameBinding(bindings[key], from))
+
+  if (keys.length) {$canonicalGroupBindings.set({ ...bindings, ...Object.fromEntries(keys.map(key => [key, { ...to }])) })}
 }
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
@@ -158,7 +171,9 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
       <Button aria-label={labels.refreshGroups} onClick={() => setRefresh(value => value + 1)} size="icon" title={labels.refreshGroups} variant="ghost"><Codicon name="refresh" /></Button>
     </div>
     {error && <p className="px-2 text-xs text-(--ui-text-secondary)" role="alert">{labels.driverUnavailable}</p>}
-    {rooms.filter(room => bindings[room.key]?.connectionId === connectionId && bindings[room.key]?.profile === profile).map(room => <RowButton className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-(--ui-text-primary) hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring" key={room.key} onClick={() => onOpen(room.key)}>
+    {rooms.filter(room => bindings[room.key] && (bindings[room.key].connectionId === connectionId && bindings[room.key].profile === profile ||
+      // A room listed here that moved to another computer stays where its owner looks for it.
+      room.key === groupKey({ connectionId: connectionId ?? '', profile }, bindings[room.key].roomId))).map(room => <RowButton className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-(--ui-text-primary) hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring" key={room.key} onClick={() => onOpen(room.key)}>
       <Codicon className="shrink-0 text-(--ui-text-secondary)" name="comment-discussion" /><span className="truncate">{names[room.key] ?? room.name}</span>
     </RowButton>)}
   </div>

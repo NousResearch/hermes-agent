@@ -9,9 +9,14 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { canonicalGroupRequest, readGroupExecutionMode } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
-export function CanonicalGroupHeader({ name, members, status, working, attention, visible = true, onBack, children }: {
+export function CanonicalGroupHeader({ name, members, status, working, attention, visible = true, onBack, info, unavailable, children }: {
   name: string; members: CanonicalRoomMember[]; status?: string; working?: boolean; attention?: boolean
-  visible?: boolean; onBack?: () => void; children?: ReactNode
+  visible?: boolean; onBack?: () => void
+  /** Where the group runs, with its group info (backup copies). */
+  info?: ReactNode
+  /** Member id → why that Bot can't take part right now. */
+  unavailable?: Record<string, string>
+  children?: ReactNode
 }) {
   const labels = useCanonicalGroupLabels()
 
@@ -34,11 +39,13 @@ export function CanonicalGroupHeader({ name, members, status, working, attention
             <ul aria-label={labels.members} className="grid gap-3">
               {members.map(member => <li className="flex min-w-0 items-center gap-2" key={member.member_id}>
                 <CanonicalMemberFace member={member} name={canonicalMemberName(member, labels.unknownBot)} />
-                <span className="min-w-0 truncate text-xs"><bdi>{canonicalMemberName(member, labels.unknownBot)}</bdi></span>
+                <span className="min-w-0 truncate text-xs"><bdi>{canonicalMemberName(member, labels.unknownBot)}</bdi>
+                  {unavailable?.[member.member_id] && <span className="text-(--ui-text-tertiary)"> · {unavailable[member.member_id]}</span>}</span>
               </li>)}
             </ul>
           </PopoverContent>
         </Popover> : <span>{labels.memberCount.replace('{count}', String(members.length))}</span>)}
+        {visible && info}
         {status && <span aria-live="polite" className="flex min-w-0 items-center gap-1.5"><StatusDot tone={attention ? 'warn' : working ? 'good' : 'muted'} /><span className="truncate">{status}</span></span>}
       </div>
     </div>

@@ -420,7 +420,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   roomSetup: {
     create: input => ipcRenderer.invoke('hermes:room-setup:create', input),
-    recover: () => ipcRenderer.invoke('hermes:room-setup:recover')
+    recover: () => ipcRenderer.invoke('hermes:room-setup:recover'),
+    addBackup: input => ipcRenderer.invoke('hermes:room-setup:addBackup', input)
   },
   preparedSubmissions: {
     owner: () => ipcRenderer.invoke('hermes:prepared-submissions:owner'),

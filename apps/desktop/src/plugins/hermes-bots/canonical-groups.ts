@@ -96,6 +96,8 @@ export async function canonicalGroupRequest<T>(
 interface GroupSurface {
   mode: GroupExecutionMode
   methods?: string[]
+  /** The installation this route reaches (`authority_gateway_id`), when advertised. */
+  installId?: string
   error?: unknown
 }
 
@@ -109,6 +111,12 @@ function advertisedGroupMethods(value: unknown): string[] {
   return Array.isArray(methods) ? methods.filter((method): method is string => typeof method === 'string') : []
 }
 
+function advertisedInstallation(value: unknown): string | undefined {
+  const id = (value as { authority_gateway_id?: unknown } | null)?.authority_gateway_id
+
+  return typeof id === 'string' && id ? id : undefined
+}
+
 export function knownGroupExecutionMode(route: CanonicalGroupRoute): GroupExecutionMode | undefined {
   return groupSurfaces.get(JSON.stringify([route.connectionId, route.profile]))?.mode
 }
@@ -120,7 +128,7 @@ export function readGroupExecutionMode(route: CanonicalGroupRoute, epoch?: numbe
   if (!refresh && epoch !== undefined && previous?.epoch === epoch) {return previous.read}
 
   const record = { epoch, mode: previous?.mode, read: canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    .then(value => ({ mode: groupExecutionMode(value), methods: advertisedGroupMethods(value) }))
+    .then(value => ({ mode: groupExecutionMode(value), methods: advertisedGroupMethods(value), installId: advertisedInstallation(value) }))
     .catch(error => ({ mode: groupExecutionMode(undefined, error, previous?.mode), error })) }
 
   groupSurfaces.set(key, record)
@@ -217,7 +225,8 @@ export function canonicalPeerGroupEligibility(route: CanonicalGroupRoute, member
   return peer
 }
 
-export async function createCanonicalPeerGroup(route: CanonicalGroupRoute, name: string, members: GroupMember[]) {
+/** `successor`: your other computers also allow and are designated to continue the group if its host goes offline. */
+export async function createCanonicalPeerGroup(route: CanonicalGroupRoute, name: string, members: GroupMember[], successor = false) {
   if (!canonicalPeerGroupEligibility(route, members) || !window.hermesDesktop?.roomSetup) {
     throw Object.assign(new Error('peer_setup_failed'), { roomSetupReason: 'canonical_connection_required' })
   }
@@ -225,11 +234,11 @@ export async function createCanonicalPeerGroup(route: CanonicalGroupRoute, name:
     member_id: `member-${index + 1}`, connectionId: member.route?.connectionId ?? member.connectionId ?? route.connectionId,
     profile: member.route?.targetProfile ?? member.targetProfile ?? member.name,
     handle: member.handle ?? member.name, ...(member.display_name ? { display_name: member.display_name } : {})
-  })) })
+  })), ...successor ? { successor: true } : {} })
   if (!result.ok || !result.room) {
     throw Object.assign(new Error('peer_setup_failed'), { roomSetupReason: result.reason || 'setup_failed' })
   }
-  return { room: result.room, binding: { ...route, roomId: result.room.room_id } }
+  return { room: result.room, binding: { ...route, roomId: result.room.room_id }, successors: result.successors }
 }
 
 export function isCanonicalGroupCreateRefusal(error: unknown): boolean {

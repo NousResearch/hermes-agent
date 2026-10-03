@@ -100,13 +100,13 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Return the effective fallback chain merged across old and new config keys.
+def normalized_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """``fallback_providers`` merged with legacy ``fallback_model``, in order, as fresh dicts.
 
-    ``fallback_providers`` remains the primary source of truth and keeps its order. Legacy
-    ``fallback_model`` entries are appended afterwards unless they target the same
-    provider/model/base_url route as an earlier entry. The returned list always contains fresh dict
-    copies.
+    Normalization only — no policy. This is what the ``hermes fallback`` EDITOR reads: it rewrites
+    ``fallback_providers`` from its reader, so handing it a policy-filtered list would silently
+    delete the very entries a ``security.model_allowlist`` is holding back. Runtime readers want
+    :func:`get_fallback_chain`, which is this plus the allowlist.
     """
     config = config or {}
     chain: list[dict[str, Any]] = []
@@ -120,6 +120,27 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     return chain
 
 
+def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return the effective fallback chain merged across old and new config keys.
+
+    ``fallback_providers`` remains the primary source of truth and keeps its order. Legacy
+    ``fallback_model`` entries are appended afterwards unless they target the same
+    provider/model/base_url route as an earlier entry. The returned list always contains fresh dict
+    copies.
+
+    Entries naming a model outside ``security.model_allowlist`` are dropped (#128524): this is the
+    single reader every automatic route passes through — the main agent's chain, the gateway's, a
+    cron job's, a delegated child's inherited chain, and the auxiliary main chain — so filtering here
+    is what makes "never auto-failover to a model the user did not authorize" true end to end
+    instead of per caller. A user without an allowlist is unaffected, and the ``hermes fallback``
+    editor deliberately reads :func:`normalized_fallback_chain` so a blocked entry stays in the file.
+    """
+    from hermes_cli.model_policy import filter_allowed_entries, model_allowlist
+
+    return filter_allowed_entries(
+        normalized_fallback_chain(config), model_allowlist(config), owner="Fallback chain")
+
+
 def scoped_fallback_chain(
     inherited: list[dict[str, Any]] | None, declared: Any, *, pinned: bool, owner: str,
 ) -> list[dict[str, Any]] | None:
@@ -131,13 +152,22 @@ def scoped_fallback_chain(
     when *declared* is absent/None. An explicit ``[]`` disables fallback either way; any other
     *declared* value is the owner's own chain, normalized by :func:`get_fallback_chain` (malformed
     entries are dropped; nothing usable left falls back to the pinned/inherited default).
+
+    The owner's own ``fallback_providers`` is re-filtered against the active
+    ``security.model_allowlist`` (#128524). The synthetic mapping :func:`get_fallback_chain` receives
+    for a *declared* chain carries no ``security`` section, so without this the per-owner block
+    (``delegation.fallback_providers``, a cron job's) would be the one way around the allowlist. The
+    inherited chain needs no second pass: it was normalized by the same reader upstream.
     """
+    from hermes_cli.model_policy import configured_allowlist, filter_allowed_entries
+
     default = None if pinned else (inherited or None)
     if declared is None:
         return default
     if declared == []:
         return None
     normalized = get_fallback_chain({"fallback_providers": declared})
+    normalized = filter_allowed_entries(normalized, configured_allowlist(), owner=owner)
     if not normalized:
         logger.warning("%s fallback_providers has no usable routes; using the %s default",
                        owner, "pinned" if pinned else "inherited")

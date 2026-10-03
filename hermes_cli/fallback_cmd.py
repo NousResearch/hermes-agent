@@ -7,10 +7,13 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import normalized_fallback_chain
 
-# Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
-_read_chain = get_fallback_chain
+# Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy. The EDITOR reads
+# the unfiltered chain on purpose: every subcommand rewrites ``fallback_providers`` from this reader,
+# so reading the runtime-filtered one would delete any entry a security.model_allowlist is holding
+# back. The allowlist gates what Hermes may CALL, not what the user may have written down (#128524).
+_read_chain = normalized_fallback_chain
 
 
 _MISSING_ACTIVE_PROVIDER = object()
@@ -135,7 +138,23 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
         print(f"  Primary:   {primary}\n")
     _print_chain("Fallback chain", chain)
     print("  Tried in order when the primary fails (rate-limit, 5xx, connection errors).")
+    # The allowlist gates which of these Hermes may actually CALL, so an entry outside it is dead
+    # weight the user should see rather than discover as a turn that never failed over (#128524).
+    _print_allowlist_note(config, chain)
     print("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers\n")
+
+
+def _print_allowlist_note(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
+    """Name the chain entries security.model_allowlist is holding back, or print nothing."""
+    from hermes_cli.model_policy import model_allowlist, model_allowed
+
+    allowlist = model_allowlist(config)
+    if not allowlist:
+        return
+    blocked = [e for e in chain if not model_allowed(e.get("model"), allowlist)]
+    if blocked:
+        print("  Blocked by security.model_allowlist (kept in config, never called):")
+        print("".join(f"    - {_format_entry(e)}\n" for e in blocked))
 
 
 def cmd_fallback_add(args) -> None:

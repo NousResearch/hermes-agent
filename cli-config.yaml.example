@@ -576,6 +576,19 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+#
+#   # Hard model allowlist: the only models Hermes may SELECT for itself. Every automatic
+#   # route is filtered against it - fallback_providers / fallback_model (main agent,
+#   # gateway, cron job, delegated child, auxiliary main chain), a per-task
+#   # auxiliary.<task>.fallback_chain entry, a provider's default aux/vision model
+#   # substituted for yours, and the auto-discovery vision chain. A rate-limited
+#   # model no longer auto-fails over to a model you did not authorize, and a
+#   # delegated subagent cannot pick one. A model YOU pinned (model.default,
+#   # delegation.model, -m, /model) is never gated. Exact, case-insensitive; matches
+#   # the full id or the part after the last "/" (so "deepseek-v4-flash" covers
+#   # "deepseek/deepseek-v4-flash"). Empty/absent = off. Refusals are logged with the
+#   # model name, and `hermes fallback list` names the entries this holds back.
+#   model_allowlist: []
 
 # =============================================================================
 # LSP Diagnostics (post-write lint for write_file / patch)

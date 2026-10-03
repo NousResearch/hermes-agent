@@ -918,6 +918,42 @@ TERMINAL_SSH_KEY=~/.ssh/hermes_agent_key
 
 The SSH connection details live in `.env` (not `config.yaml`) so they aren't checked in or shared along with profile exports. This keeps the gateway's messaging connections separate from the agent's command execution.
 
+## Model allowlist {#model-allowlist}
+
+`security.model_allowlist` is a hard list of the models Hermes may **select for itself**. It exists
+because the route Hermes picks on its own is a route that spends your money: a rate-limited primary
+turning into a failover to a different vendor's paid model is invisible until you read a bill.
+
+```yaml
+security:
+  model_allowlist:
+    - qwen3-vl:8b          # local vision
+    - deepseek-v4-flash    # matches deepseek/deepseek-v4-flash too
+```
+
+Every automatic route is filtered against it:
+
+- `fallback_providers` / legacy `fallback_model`, for every reader of the chain (the main agent, the
+  gateway, a cron job, a delegated child's inherited chain, the auxiliary main chain);
+- a route owner's own `fallback_providers` — `delegation.fallback_providers`, a cron job's;
+- a per-task `auxiliary.<task>.fallback_chain` entry;
+- a provider's curated default aux/vision model substituted for yours, and the auto-discovery vision
+  chain that would otherwise "guess whatever else is logged in".
+
+A model **you** pinned is never gated: `model.default`, `delegation.model`, a CLI `-m`, an `/model`
+switch. That pin is the intent the list is written around, and refusing it would make the list
+unusable as a starting point. So the allowlist bounds the fallbacks, not your own choice — pair it
+with a pinned primary and the turn has nowhere unauthorized to go.
+
+Matching is exact and case-insensitive, against the full model id or the part after the last `/`
+(the aggregator-prefix convention `agent/model_metadata.py` already uses). `:` is never a separator,
+so `qwen3-vl:8b` matches literally. Empty or absent means off, which is why nothing changes for an
+install that never sets it.
+
+A blocked entry is not deleted: it stays in `config.yaml`, `hermes fallback list` names it under
+"Blocked by security.model_allowlist", and each refusal is logged with the model name — so a
+configured fallback that never fires is visible instead of a silent turn failure.
+
 ## TLS certificate trust
 
 Hermes initializes the platform verifier through `truststore`. Windows uses

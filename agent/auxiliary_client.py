@@ -811,6 +811,8 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
                 return ""
         except Exception:
             logger.debug("Nous policy check unavailable", exc_info=True)
+    if picked and not _model_allowlist_permits(provider_id, picked):
+        return ""
     return picked
 
 
@@ -833,6 +835,27 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 _FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
 
 
+def _model_allowlist_permits(provider: str, model: Optional[str]) -> bool:
+    """True unless ``security.model_allowlist`` names a set this pick is outside of (#128524).
+
+    A provider's curated default aux/vision model is a model HERMES picked, not one the user chose,
+    so it is inside the allowlist's scope; refusing it here means the caller keeps the user's own
+    model instead of silently substituting a paid cloud id. The refusal is logged so the user can
+    see which model the allowlist removed and why the bill stayed flat.
+    """
+    from hermes_cli.model_policy import configured_allowlist, model_allowed
+
+    allowlist = configured_allowlist()
+    if not allowlist or model_allowed(model, allowlist):
+        return True
+    logger.warning(
+        "Auxiliary: refusing %s default model %r — not in security.model_allowlist. Keeping the "
+        "configured model instead; add %r there to allow it.",
+        provider, model, model,
+    )
+    return False
+
+
 def _task_prefers_fast_model(task: Optional[str]) -> bool:
     """Return whether an eligible task explicitly opts into fast-model routing."""
     return task in _FAST_MODEL_TASKS and is_truthy_value(
@@ -849,16 +872,23 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:
     """Provider default vision model id, or None: static ``_PROVIDER_VISION_MODELS`` (vision-only
-    names absent from any catalog) win, else ``ProviderProfile.default_vision_model()``."""
+    names absent from any catalog) win, else ``ProviderProfile.default_vision_model()``.
+
+    None also answers "the allowlist refused it": a provider default is Hermes's pick, not the user's,
+    so an id outside ``security.model_allowlist`` is dropped and the caller falls back to the user's
+    own model instead of a paid cloud one they never sanctioned (#128524)."""
     static = _PROVIDER_VISION_MODELS.get(provider)
     if static:
-        return static
+        return static if _model_allowlist_permits(provider, static) else None
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(provider)
-        return profile.default_vision_model() if profile is not None else None
+        discovered = profile.default_vision_model() if profile is not None else None
     except Exception:
         return None
+    if discovered and not _model_allowlist_permits(provider, discovered):
+        return None
+    return discovered
 
 
 # Endpoints that reject image input: vision auto-detect skips these to the aggregator chain
@@ -4412,7 +4442,13 @@ def _try_configured_fallback_chain(
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
-    run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
+    run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "").
+
+    This per-task chain is read straight off ``auxiliary.<task>`` and so never passes through
+    ``hermes_cli.fallback_config.get_fallback_chain``; it needs its own ``security.model_allowlist``
+    check on both the model the entry names and the one its provider default resolves to (#128524).
+    Without the resolved-model check a model-less entry would slip past on the entry value alone and
+    still bill whatever default the provider substitutes."""
     if not task:
         return None, None, ""
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
@@ -4432,6 +4468,9 @@ def _try_configured_fallback_chain(
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
         if skip(fb_provider, fb_model_raw, fb_base_url):
             continue
+        if not _model_allowlist_permits(fb_provider, fb_model_raw):
+            tried.append(f"fallback_chain[{i}]({fb_provider}) (not in security.model_allowlist)")
+            continue
         if _is_provider_unhealthy(fb_provider, fb_base_url):
             _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url)
             tried.append(f"fallback_chain[{i}]({fb_provider}) (unhealthy)")
@@ -4443,6 +4482,10 @@ def _try_configured_fallback_chain(
         except Exception:
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            effective_model = resolved_model or fb_model
+            if not _model_allowlist_permits(fb_provider, effective_model):
+                tried.append(f"{label} (resolved {effective_model} not in security.model_allowlist)")
+                continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
             ) if resolved_model else None
@@ -4450,8 +4493,8 @@ def _try_configured_fallback_chain(
                 tried.append(too_small)
                 continue
             logger.info("Auxiliary %s: %s on %s — configured fallback to %s (%s)",
-                        task, reason, failed_provider, label, resolved_model or fb_model or "default")
-            return fb_client, resolved_model or fb_model, label
+                        task, reason, failed_provider, label, effective_model or "default")
+            return fb_client, effective_model, label
         tried.append(label)
     if tried:
         logger.debug("Auxiliary %s: configured fallback_chain exhausted (tried: %s)", task, ", ".join(tried))
@@ -4659,7 +4702,12 @@ def _discovery_chain_allowed(main_provider: str, task: Optional[str] = None) -> 
 
 
 def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
-    """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers."""
+    """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers.
+
+    A candidate whose model is outside ``security.model_allowlist`` is skipped like an unhealthy one.
+    The whole chain is Hermes guessing which account to spend, so it is the last place a user with a
+    hard allowlist must not be billed from (#128524); the skip is logged so the refusal is auditable.
+    """
     tried = []
     for label, try_fn in _get_provider_chain():
         candidate_base_url = _custom_health_base_url(label)
@@ -4669,6 +4717,9 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
             continue
         client, model = try_fn()
         if client is not None:
+            if not _model_allowlist_permits(label, model):
+                tried.append(f"{label} ({model} not in security.model_allowlist)")
+                continue
             if tried:
                 logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
                             label, model or "default", ", ".join(tried))
@@ -5694,8 +5745,13 @@ def _vision_auto_route(
         if candidate == main_provider:
             continue  # already tried above
         sync_client, default_model = _resolve_strict_vision_backend(candidate)
-        if sync_client is not None:
-            return _finalize_vision_client(candidate, sync_client, default_model, resolved_model, async_mode)
+        if sync_client is None:
+            continue
+        if not _model_allowlist_permits(candidate, default_model):
+            # The rate-limited primary's own replacement rung: a provider default Hermes picked is
+            # not a model the user authorized, so the chain continues instead of billing it (#128524).
+            continue
+        return _finalize_vision_client(candidate, sync_client, default_model, resolved_model, async_mode)
     logger.debug("Auxiliary vision client: none available")
     return None, None, None
 

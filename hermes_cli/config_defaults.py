@@ -1771,6 +1771,17 @@ DEFAULT_CONFIG = {
     },
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        # Hard model allowlist: the ONLY models Hermes may SELECT FOR ITSELF. Every automatic route
+        # is filtered against it -- `fallback_providers` / `fallback_model` (all readers: main agent,
+        # gateway, cron job, delegated child, auxiliary main chain), a per-task
+        # `auxiliary.<task>.fallback_chain` entry, a provider's default aux/vision model substituted
+        # for yours, and the auto-discovery vision chain. A model the user pinned themselves
+        # (`model.default`, `delegation.model`, `-m`, `/model`) is never gated: that pin is the
+        # intent this list is written around. Exact, case-insensitive, matched on the full id or the
+        # part after the last "/" (so `deepseek-v4-flash` covers `deepseek/deepseek-v4-flash`); a
+        # comma-separated string is accepted. Empty/absent = off. Refusals are logged with the model
+        # name, so the dropped route is auditable rather than a silent turn failure (#128524).
+        "model_allowlist": [],
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
         # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
         # dials them instead of rejecting them as private. Empty = normal private-address verdict.

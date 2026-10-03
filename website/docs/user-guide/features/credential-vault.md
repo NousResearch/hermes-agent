@@ -95,7 +95,8 @@ Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
 Unlock or save from an interactive session first, or give 1Password a service
-account token (`OP_SERVICE_ACCOUNT_TOKEN`).
+account token (`OP_SERVICE_ACCOUNT_TOKEN`). Bitwarden can unlock from
+`BW_PASSWORD` after a one-time `bw login`.
 
 ```yaml
 vault:
@@ -104,7 +105,7 @@ vault:
     account: ""             # `op --account` shorthand; empty = default
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
-    enabled: false
+    enabled: true
 ```
 
 ## What this does and does not guarantee

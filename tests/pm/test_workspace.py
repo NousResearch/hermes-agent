@@ -144,3 +144,20 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_copy_core_inputs_stages_launchers(tmp_path):
+    source = tmp_path / "src"
+    destination = tmp_path / "dst"
+    source.mkdir()
+    destination.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nname="core"\nversion="0.1"\n', encoding="utf-8")
+    (source / "hermes").write_text("#!/bin/sh\necho launcher\n", encoding="utf-8")
+    (source / "hermes-acp").write_text("#!/bin/sh\necho acp\n", encoding="utf-8")
+
+    ws._copy_core_inputs(source, destination)
+
+    assert (destination / "hermes").is_file()
+    assert (destination / "hermes").read_text(encoding="utf-8") == "#!/bin/sh\necho launcher\n"
+    assert (destination / "hermes-acp").is_file()
+    assert (destination / "hermes-acp").read_text(encoding="utf-8") == "#!/bin/sh\necho acp\n"

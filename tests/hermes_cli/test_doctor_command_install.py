@@ -192,3 +192,19 @@ def test_remedies_and_launcher_repairs_respect_install_owner(tmp_path, monkeypat
     else:
         assert not command.exists()
         assert "hermes pm repair" not in out
+
+
+@pytest.mark.platforms("posix")
+def test_pm_doctor_passes_when_launcher_in_selected_venv(tmp_path, monkeypatch, capsys):
+    project, home, command = _tree(tmp_path, monkeypatch)
+    selected = _generation(project)
+    _pm_source(project, home)
+    (project / "hermes").unlink(missing_ok=True)
+    venv_launcher = selected / "bin" / "hermes"
+    venv_launcher.parent.mkdir(parents=True, exist_ok=True)
+    venv_launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.symlink_to(venv_launcher)
+
+    doctor.run_doctor(Namespace(fix=False))
+    out = capsys.readouterr().out
+    assert "Hermes entry point exists" in out

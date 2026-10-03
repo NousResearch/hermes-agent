@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import agent.auxiliary_client as aux
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -70,7 +72,7 @@ def test_pool_rotation_evicts_client_built_with_revoked_credential(monkeypatch):
 
     pool = MagicMock()
     pool.has_credentials.return_value = True
-    pool.try_refresh_current.return_value = None
+    pool.try_refresh_matching.return_value = None
     pool.mark_exhausted_and_rotate.return_value = SimpleNamespace(id="fresh-oauth-entry")
     auth_error = Exception("revoked OAuth token")
     auth_error.status_code = 401
@@ -80,3 +82,87 @@ def test_pool_rotation_evicts_client_built_with_revoked_credential(monkeypatch):
 
     assert stale_key not in aux._client_cache
     pool.mark_exhausted_and_rotate.assert_called_once()
+
+
+def test_pool_recovery_without_failed_key_does_not_exhaust_current_credential():
+    """An unattributed stale-client error must not park the pool's healthy current entry."""
+    pool = MagicMock()
+    pool.has_credentials.return_value = True
+    rate_error = Exception("rate limited")
+    rate_error.status_code = 429
+
+    with patch("agent.auxiliary_client.load_pool", return_value=pool):
+        assert aux._recover_provider_pool("zai", rate_error) is False
+
+    pool.mark_exhausted_and_rotate.assert_not_called()
+
+
+def test_retry_failure_is_attributed_to_rebuilt_client_not_pool_current():
+    """A stale A failure followed by a B retry failure attributes each request to its own key."""
+    stale_client = SimpleNamespace(api_key="stale-key-a", base_url="https://api.z.ai/v1")
+    retry_client = SimpleNamespace(api_key="healthy-key-b")
+    first_error = Exception("payment required")
+    first_error.status_code = 402
+    rate_error = Exception("rate limited")
+    rate_error.status_code = 429
+    route = aux._LadderRoute(
+        client=stale_client, task="approval", tag="", async_mode=False,
+        base_info="https://api.z.ai/v1", resolved_provider="zai", resolved_model="glm",
+        resolved_base_url=None, resolved_api_key=None, resolved_api_mode="chat_completions",
+        final_model="glm", main_runtime=None, route_info=None,
+    )
+
+    with (
+        patch("agent.auxiliary_client._recover_provider_pool", return_value=True) as recover,
+        patch("agent.auxiliary_client._prepare_same_provider_retry", return_value=(retry_client, {})),
+        patch("agent.auxiliary_client._relay_sync_completion", side_effect=rate_error),
+    ):
+        ladder = aux._ladder_credential_rungs(first_error, route, {}, False)
+        assert next(ladder).kind == "retry_same_provider"
+        with pytest.raises(Exception) as caught:
+            aux._retry_same_provider_sync(
+                resolved_provider="zai", resolved_api_mode="chat_completions", task="approval",
+            )
+        with pytest.raises(StopIteration):
+            ladder.throw(caught.value)
+
+    assert getattr(caught.value, aux._FAILED_API_KEY_ATTR) == "healthy-key-b"
+    assert [call.kwargs["failed_api_key"] for call in recover.call_args_list] == [
+        "stale-key-a", "healthy-key-b",
+    ]
+
+
+def test_auth_refresh_failure_is_attributed_to_rebuilt_client():
+    """An auth-refresh retry on B must not attribute its failure to stale client A."""
+    stale_client = SimpleNamespace(api_key="stale-key-a", base_url="https://api.z.ai/v1")
+    retry_client = SimpleNamespace(api_key="healthy-key-b")
+    auth_error = Exception("unauthorized")
+    auth_error.status_code = 401
+    payment_error = Exception("payment required")
+    payment_error.status_code = 402
+    route = aux._LadderRoute(
+        client=stale_client, task="approval", tag="", async_mode=False,
+        base_info="https://api.z.ai/v1", resolved_provider="zai", resolved_model="glm",
+        resolved_base_url=None, resolved_api_key=None, resolved_api_mode="chat_completions",
+        final_model="glm", main_runtime=None, route_info=None,
+    )
+
+    with (
+        patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True),
+        patch("agent.auxiliary_client._recover_provider_pool", return_value=False) as recover,
+        patch("agent.auxiliary_client._prepare_same_provider_retry", return_value=(retry_client, {})),
+        patch("agent.auxiliary_client._relay_sync_completion", side_effect=payment_error),
+    ):
+        ladder = aux._ladder_credential_rungs(auth_error, route, {}, False)
+        assert next(ladder).kind == "retry_same_provider"
+        with pytest.raises(Exception) as caught:
+            aux._retry_same_provider_sync(
+                resolved_provider="zai", resolved_api_mode="chat_completions", task="approval",
+            )
+        with pytest.raises(StopIteration):
+            ladder.throw(caught.value)
+
+    assert getattr(caught.value, aux._FAILED_API_KEY_ATTR) == "healthy-key-b"
+    recover.assert_called_once_with(
+        "zai", caught.value, failed_api_key="healthy-key-b",
+    )

@@ -363,6 +363,33 @@ async def test_first_internal_event_after_restart_rehydrates_durable_prompt_pins
 
 
 @pytest.mark.asyncio
+async def test_first_internal_event_after_agent_eviction_keeps_effective_prompt(monkeypatch):
+    """/stop, /undo and /model evict the cached agent mid-conversation and clear the context pin
+    while the channel pin survives; a wake arriving next must still send the human turn's bytes."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config, durable_prompt_pin={})
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+    runner._evict_cached_agent(KEY)
+    await _drive(
+        runner,
+        ((True, _wake_thread_source()), (False, _human_thread_source())),
+        channel_prompt="Channel hint.",
+    )
+
+    assert len(calls) == 3
+    eph = [_effective_ephemeral(runner, kw) for kw in calls]
+    assert "Guild / #dev / build thread" in eph[0]
+    assert eph[0] == eph[1] == eph[2], "wake after eviction re-rendered the session context (A->B->A)"
+
+
+@pytest.mark.asyncio
 async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkeypatch):
     durable = {
         "value": {

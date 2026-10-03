@@ -281,15 +281,42 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
         ), "the model's streamed arguments were destroyed in the transcript"
 
     def test_send_copy_is_still_repaired(self):
-        """The API copy must still carry safe JSON — only the aliasing changes."""
+        """The API copy must carry safe, parseable JSON — never the raw truncated
+        bytes, and (since prefix-salvage) never a bare ``{}`` erasure when a
+        streamed prefix exists: the model must see what it already wrote."""
         history, _ = self._history_with_truncated_write()
 
         api_messages = [dict(m) for m in history]
         cl._canonicalize_api_tool_calls(api_messages)
 
         sent = api_messages[0]["tool_calls"][0]["function"]["arguments"]
-        assert sent == "{}"
-        json.loads(sent)  # the whole point of the repair: never ship broken JSON
+        parsed = json.loads(sent)  # the whole point of the repair: never ship broken JSON
+        # The truncated value was mid-string: the salvage closes the string at
+        # the cut, so "content" survives as the prefix that actually streamed.
+        assert "content" in parsed
+        assert "line one" in parsed["content"]
+        assert sent != "{}", (
+            "a dropped long write_file was erased to {} — the model's streamed "
+            "content is gone and the retry is blind (#89207/#119389)"
+        )
+
+    def test_send_copy_erasure_falls_back_to_empty_object_only_when_unsalvageable(self):
+        """No prefix exists (truncation before any member boundary) → old behavior
+        holds: safe ``{}``, broken JSON never shipped."""
+        history = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "write_file", "arguments": '{"conte'},
+            }],
+        }]
+        api_messages = [dict(m) for m in history]
+        cl._canonicalize_api_tool_calls(api_messages)
+
+        sent = api_messages[0]["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(sent) == {}
 
     def test_valid_calls_alongside_a_broken_one_are_untouched(self):
         """A broken call must not disturb its siblings' history entries."""
@@ -312,15 +339,29 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
         assert history == before
         sent = api_messages[0]["tool_calls"]
         assert json.loads(sent[0]["function"]["arguments"]) == json.loads(good)
-        assert sent[1]["function"]["arguments"] == "{}"
+        # The broken sibling is salvaged to its streamed prefix, not erased:
+        # parseable, and strictly more of the model's output than {}.
+        broken_sent = json.loads(sent[1]["function"]["arguments"])
+        assert broken_sent.get("content") == "cut"
 
     def test_repeated_sends_do_not_accumulate_damage(self):
-        """Re-canonicalizing the same history every iteration stays lossless."""
+        """Re-canonicalizing the same history every iteration stays stable: the
+        send copy converges on the same salvaged prefix (itself valid JSON, so
+        later sends take the canonicalize fast-path), history never changes."""
         history, truncated = self._history_with_truncated_write()
+        first = None
         for _ in range(5):
             api_messages = [dict(m) for m in history]
             cl._canonicalize_api_tool_calls(api_messages)
-            assert api_messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+            sent = api_messages[0]["tool_calls"][0]["function"]["arguments"]
+            json.loads(sent)
+            if first is None:
+                first = sent
+            else:
+                assert json.loads(sent) == json.loads(first), (
+                    "the send copy drifts between sends — salvage must be a "
+                    "fixed point"
+                )
         assert (
             history[0]["tool_calls"][0]["function"]["arguments"] == truncated
         )

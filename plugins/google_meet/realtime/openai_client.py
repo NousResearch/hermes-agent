@@ -53,15 +53,20 @@ class RealtimeSession:
             raise RuntimeError("websockets package is required for OpenAI Realtime; "
                                "install with: pip install websockets") from exc
         url = f"{REALTIME_URL}?model={self.model}"
-        headers = [("Authorization", f"Bearer {self.api_key}"), ("OpenAI-Beta", "realtime=v1")]
+        headers = [("Authorization", f"Bearer {self.api_key}")]
         # Newer websockets takes additional_headers=, older extra_headers=.
         try:
             self._ws = connect(url, additional_headers=headers)
         except TypeError:
             self._ws = connect(url, extra_headers=headers)
         self._send_json({"type": "session.update", "session": {
-            "voice": self.voice, "instructions": self.instructions, "modalities": ["audio", "text"],
-            "output_audio_format": "pcm16", "input_audio_format": "pcm16"}})
+            "type": "realtime",
+            "instructions": self.instructions,
+            "audio": {"output": {
+                "voice": self.voice,
+                "format": {"type": "audio/pcm", "rate": self.sample_rate},
+            }},
+        }})
 
     def close(self) -> None:
         if self._ws is not None:
@@ -77,7 +82,7 @@ class RealtimeSession:
         start = time.monotonic()
         self._send_json({"type": "conversation.item.create", "item": {
             "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
-        self._send_json({"type": "response.create", "response": {"modalities": ["audio"]}})
+        self._send_json({"type": "response.create", "response": {"output_modalities": ["audio"]}})
         bytes_written = 0
         with contextlib.ExitStack() as stack:
             sink_fp = None
@@ -92,7 +97,7 @@ class RealtimeSession:
                 if ftype == "error":
                     raise RuntimeError(f"realtime error: {frame.get('error') or frame}")
                 chunk = _decode_audio(frame.get("delta") or frame.get("audio") or "") if (
-                    ftype == "response.audio.delta" and sink_fp is not None) else b""
+                    ftype == "response.output_audio.delta" and sink_fp is not None) else b""
                 if chunk:
                     sink_fp.write(chunk)
                     sink_fp.flush()

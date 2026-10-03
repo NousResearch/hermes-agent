@@ -533,8 +533,8 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     assert tid in sent
 
     # ...but the subscription survives so a respawn-then-same-event cycle
-    # reaches the user too. The cursor (last_event_id) advanced inside
-    # the same write txn as the claim, so the same event won't re-fire.
+    # reaches the user too. The cursor (last_event_id) advances only after
+    # the delivery settles, so the same event won't re-fire.
     conn = kbc.connect()
     try:
         subs = kbn.list_notify_subs(conn, tid)
@@ -546,8 +546,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     )
     assert int(subs[0]["last_event_id"]) >= 1, (
         "Cursor should have advanced past the delivered event "
-        "(claim_unseen_events_for_sub advances atomically inside the "
-        "same write txn as the read)."
+        "(the notifier advances it only after the send settles)."
     )
 
 @pytest.mark.asyncio

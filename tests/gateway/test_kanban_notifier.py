@@ -520,7 +520,7 @@ def _unseen_terminal_events_for(tid, chat_id):
 def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch):
     """One bad subscription must not block delivery for all others.
 
-    Regression for #59269: when claim_unseen_events_for_sub raises for one
+    Regression for #59269: when unseen_events_for_sub raises for one
     subscription, the entire notifier tick used to abort — silently blocking
     delivery for every other subscription.
     """
@@ -547,14 +547,14 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     finally:
         conn.close()
 
-    original_claim = kbn.claim_unseen_events_for_sub
+    original_peek = kbn.unseen_events_for_sub
 
-    def selective_claim(conn, task_id, **kwargs):
+    def selective_peek(conn, task_id, **kwargs):
         if task_id == tid_bad:
             raise RuntimeError("simulated DB corruption for bad task")
-        return original_claim(conn, task_id=task_id, **kwargs)
+        return original_peek(conn, task_id=task_id, **kwargs)
 
-    monkeypatch.setattr(kbn, "claim_unseen_events_for_sub", selective_claim)
+    monkeypatch.setattr(kbn, "unseen_events_for_sub", selective_peek)
 
     # Force the failing subscription to be iterated FIRST regardless of the
     # unordered SELECT's scan order.
@@ -796,3 +796,50 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_notifier_collect_does_not_consume_events_before_delivery(
+    tmp_path, monkeypatch,
+):
+    """A crash between collect and send must not lose terminal events (#120258).
+
+    Collecting a subscription's unseen terminal events must leave
+    ``last_event_id`` untouched: the cursor advances only after a delivery
+    settles. Otherwise a gateway crash/restart in the claim-then-send window
+    permanently consumes the events and the next tick never re-sends them.
+    """
+    from gateway.kanban_watchers_notifier import _notifier_collect
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "crash-window.db"))
+    kb.init_db()
+    tid = _create_completed_subscription(summary="crash window")
+
+    def _collect(runner):
+        profile = getattr(runner, "_kanban_notifier_profile", None) or runner._active_profile_name()
+        return _notifier_collect(
+            runner, kb, notifier_profile=profile, gc_due=False, gc_retention_days=30,
+        )
+
+    # Tick 1 collects the events, then the process "crashes": nothing is
+    # sent, no failure is handled, no rewind runs.
+    runner = _make_runner(RecordingAdapter())
+    collected = _collect(runner)
+    assert len(collected) == 1
+    assert [ev.kind for ev in collected[0]["events"]] == ["completed"]
+
+    # The cursor must still sit where it was: nothing was delivered yet.
+    conn = kbc.connect()
+    try:
+        cursor_after_collect = kbn.list_notify_subs(conn, tid)[0]["last_event_id"]
+    finally:
+        conn.close()
+    assert cursor_after_collect == collected[0]["old_cursor"], (
+        "collect advanced last_event_id before delivery; a crash here "
+        "permanently drops the events (#120258)"
+    )
+
+    # Post-restart tick re-offers the very same events (at-least-once).
+    runner2 = _make_runner(RecordingAdapter())
+    recollected = _collect(runner2)
+    assert len(recollected) == 1
+    assert [ev.kind for ev in recollected[0]["events"]] == ["completed"]

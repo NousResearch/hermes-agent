@@ -12,6 +12,8 @@ import fnmatch
 import os
 import shutil
 import subprocess
+import time
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -158,3 +160,89 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
     assert len(stopped) == 1
     assert fnmatch.fnmatchcase(f"hermes-fg-{os.getpid()}-0123abcd.scope", stopped[0])
     assert not fnmatch.fnmatchcase("hermes-fg-1-0123abcd.scope", stopped[0])  # another gateway's
+
+
+@pytest.fixture
+def real_systemd_gateway(monkeypatch, tmp_path):
+    """Inject gateway identity, but use real scope creation, execution and teardown."""
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_AVAILABLE", None)
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+    if not shutil.which("systemctl") or not process_registry._systemd_run_user_scope_available():
+        pytest.skip("no reachable user systemd scope manager on this host")
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setenv("INVOCATION_ID", "foreground-scope-e2e")
+    monkeypatch.setattr(local_env, "_foreground_scope_issued", False)
+    # Login snapshots are unrelated to cgroup isolation and may source arbitrary user rc files.
+    monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
+    env = local_env.LocalEnvironment(cwd=str(tmp_path))
+    env._prefer_nonlogin = True
+    spawned = []
+    run_bash = env._run_bash
+
+    def record_spawn(*args, **kwargs):
+        proc = run_bash(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(env, "_run_bash", record_spawn)
+    try:
+        yield env, spawned
+    finally:
+        # Only after assertions: cleanup must not turn a production leak into a passing test.
+        for proc in spawned:
+            env._kill_process(proc)
+            proc.wait(timeout=15)
+            if proc.stdout:
+                proc.stdout.close()
+        env.cleanup()
+
+
+def test_real_systemd_foreground_command_has_its_own_cgroup(real_systemd_gateway, tmp_path):
+    env, spawned = real_systemd_gateway
+    result = env.execute('cat /proc/self/cgroup; printf "cwd=%s\\n" "$PWD"; exit 7', timeout=15)
+
+    assert result["returncode"] == 7, result
+    assert f"cwd={tmp_path}" in result["output"], result
+    unit = getattr(spawned[0], "_hermes_scope_unit", None)
+    assert unit and unit.startswith(f"hermes-fg-{os.getpid()}-"), result
+    cgroups = [line.split(":", 2)[2] for line in result["output"].splitlines()
+               if line.count(":") >= 2 and line.split(":", 1)[0].isdigit()]
+    assert any(path.endswith("/" + unit) for path in cgroups), result
+    assert unit not in Path("/proc/self/cgroup").read_text()
+
+
+def test_real_systemd_timeout_removes_detached_process_and_unit(real_systemd_gateway, tmp_path):
+    """Assert the complete timeout guarantee, not scope-stop's isolated contribution."""
+    if not shutil.which("setsid"):
+        pytest.skip("setsid is unavailable")
+    env, spawned = real_systemd_gateway
+    # The child records its own PID after setsid, avoiding the launcher's fork race.
+    result = env.execute(
+        "setsid sh -c 'echo $$ > detached.pid; cat /proc/self/cgroup > detached.cgroup; "
+        "exec sleep 60' & wait", timeout=5)
+    assert result["returncode"] == 124, result
+    unit = getattr(spawned[0], "_hermes_scope_unit", None)
+    assert unit and unit.startswith("hermes-fg-"), result
+    pid = int((tmp_path / "detached.pid").read_text())
+    assert unit in (tmp_path / "detached.cgroup").read_text()
+
+    deadline = time.monotonic() + 15
+    while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not Path(f"/proc/{pid}").exists(), f"detached process {pid} survived {unit}"
+
+    bus_env = process_registry.systemd_user_bus_env()
+    manager = subprocess.run(
+        ["systemctl", "--user", "show", "-p", "Version", "--value"],
+        env=bus_env, capture_output=True, text=True, timeout=15)
+    assert manager.returncode == 0 and manager.stdout.strip(), manager
+    deadline = time.monotonic() + 15
+    while True:
+        state = subprocess.run(
+            ["systemctl", "--user", "show", unit, "-p", "LoadState", "--value"],
+            env=bus_env, capture_output=True, text=True, timeout=15)
+        assert state.returncode == 0, state
+        if state.stdout.strip() == "not-found" or time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    assert state.stdout.strip() == "not-found", state

@@ -48,16 +48,26 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+def _env_cdp_override() -> str:
+    """``BROWSER_CDP_URL`` as the active profile sees it: the routed profile's own value (its ``.env`` /
+    secret source, bound in the per-turn secret scope) first, then the live process env (``/browser
+    connect``). A bare ``os.environ`` read answers with the LAUNCH profile's value for every served
+    profile; ``get_secret`` is not used because this is also a boot-time gate (check_fns) that must not
+    fail closed with no scope bound."""
+    from agent.secret_scope import current_secret_scope
+    scoped = (current_secret_scope() or {}).get("BROWSER_CDP_URL")
+    return str(scoped or os.environ.get("BROWSER_CDP_URL", "")).strip()
+
+
 def _get_cdp_override_raw() -> str:
     """Return the *configured* CDP override without any network I/O.
 
-    Precedence: ``BROWSER_CDP_URL`` env (live ``/browser connect``), then ``browser.cdp_url``. Is-it-configured
-    gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
-    :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
-    schema build with no error.
+    Precedence: ``BROWSER_CDP_URL`` (profile scope, then live ``/browser connect`` env), then ``browser.cdp_url``.
+    Is-it-configured gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use
+    this, not :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every
+    startup's schema build with no error.
     """
-    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
-    return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
+    return _env_cdp_override() or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
 
 
 def _get_cdp_override() -> str:

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Dict, Optional
 
+from agent.agent_runtime_helpers import is_contentless_reasoning
 from agent.message_metadata import append_message
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
@@ -103,6 +104,16 @@ def finish_text_response(
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
     ):
         _promoted = agent._extract_reasoning(assistant_message) or None
+        if _promoted and is_contentless_reasoning(_promoted):
+            # Not one letter or digit (e.g. a provider repeating token id 0 as "!!!!"): a decode
+            # collapse, not a misfiled answer. Leave it unpromoted so the bounded empty-response
+            # ladder below recovers instead of ending the turn on it.
+            logger.warning(
+                "Contentless reasoning-only stop (%d chars) — not promoting; recovering as empty "
+                "(model=%s provider=%s api_calls=%d)",
+                len(_promoted), agent.model, agent.provider, api_call_count,
+            )
+            _promoted = None
         if _promoted:
             # WARNING, not INFO: a model that keeps ending turns this way is stalled
             # (planning monologue, zero tool calls) while the turn reports "complete".

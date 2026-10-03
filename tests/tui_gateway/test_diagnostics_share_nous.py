@@ -189,6 +189,9 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     assert "[REDACTED]]" not in failure["error"]
     assert failure["error"].endswith(" --header X-API-Key Basic [REDACTED]")
     assert real_redact(failure["error"]) == failure["error"]
+    # Prose after an already-masked value is not a key: kept, and a fixed point.
+    benign = real_redact("x-api-key: *** see docs")
+    assert benign.endswith(" see docs") and real_redact(benign) == benign
 
 
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):

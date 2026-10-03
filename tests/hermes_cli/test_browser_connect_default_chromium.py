@@ -184,3 +184,34 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+
+class TestPinnedChromiumResolution:
+    def test_unique_profile_match_does_not_use_default_browser(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bc, "real_profile_data_dir", lambda browser, system=None:
+                            str(tmp_path / browser))
+        monkeypatch.setattr(bc, "chromium_executable", lambda browser, system=None:
+                            str(tmp_path / f"{browser}.exe") if browser == "chrome" else None)
+        (tmp_path / "chrome" / "Default").mkdir(parents=True)
+        browser, err = bc.resolve_pinned_chromium("Default", "Windows")
+        assert (browser, err) == ("chrome", None)
+
+    def test_missing_profile_fails_closed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bc, "real_profile_data_dir", lambda browser, system=None:
+                            str(tmp_path / browser))
+        monkeypatch.setattr(bc, "chromium_executable", lambda browser, system=None:
+                            str(tmp_path / f"{browser}.exe"))
+        browser, err = bc.resolve_pinned_chromium("Profile 2", "Windows")
+        assert browser is None
+        assert err and "Profile 2" in err
+
+    def test_ambiguous_profile_fails_closed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bc, "real_profile_data_dir", lambda browser, system=None:
+                            str(tmp_path / browser))
+        monkeypatch.setattr(bc, "chromium_executable", lambda browser, system=None:
+                            str(tmp_path / f"{browser}.exe"))
+        for browser in ("chrome", "edge"):
+            (tmp_path / browser / "Default").mkdir(parents=True)
+        browser, err = bc.resolve_pinned_chromium("Default", "Windows")
+        assert browser is None
+        assert err and "chrome" in err and "edge" in err

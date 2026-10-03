@@ -29,6 +29,7 @@ from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+from hermes_cli import update_cmd_git
 
 
 GIT = ["git"]
@@ -574,3 +575,162 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
     assert head == remote
+
+
+# ---------------------------------------------------------------------------
+# The printed skip remedy must be non-destructive
+# ---------------------------------------------------------------------------
+
+
+def _printed_git_commands(out):
+    """The runnable `git -C <path> ...` lines out of a printed warning block."""
+    return [
+        line.strip()[len("git -C"):].strip()
+        for line in out.splitlines()
+        if line.strip().startswith("git -C")
+    ]
+
+
+def _run_printed_remedy(repo_pair, out):
+    """Execute each printed git command for real, as a user would."""
+    cmds = _printed_git_commands(out)
+    assert cmds, f"no runnable git commands printed:\n{out}"
+    assert not any("&& hermes update" in c for c in cmds), (
+        "a trailing shell chain cannot be executed step-by-step by the user"
+    )
+    for cmd in cmds:
+        _git(repo_pair, *cmd.split()[1:])  # drop the leading 'git'
+    return cmds
+
+
+def test_skip_advice_reaches_current_upstream_when_followed(repo_pair, capsys):
+    """The printed remedy must actually work — executed, not asserted on text.
+
+    It used to advise a bare `git checkout main`. A local `main` that is stale
+    is exactly the situation this warning is printed in, so following that
+    advice moved the checkout *further* behind (measured on a real host: 359
+    commits; reproduced here in miniature).
+    """
+    # The hazard: rewind the clone's local `main` so it is behind origin/main.
+    _git(repo_pair, "checkout", "-q", "main")
+    _git(repo_pair, "reset", "-q", "--hard", "origin/main~1")
+    stale_main = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip() != stale_main
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+
+    _run_printed_remedy(repo_pair, out)
+
+    # Following the printed remedy must land on the current upstream tip.
+    head = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert head == _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip()
+
+
+def test_skip_advice_preserves_unpushed_target_commits(repo_pair, capsys):
+    """The remedy must not destroy commits on the TARGET branch.
+
+    This is the test whose absence let a previous attempt ship a data-loss bug:
+    that attempt used `git checkout -B <target> origin/<target>`, which
+    force-resets the local target. The guard only runs when the checkout is
+    parked on a DIFFERENT branch, so "parked on a feature branch holding
+    unpushed commits on main" is exactly reachable — and `-B` deletes them.
+
+    So: commit to the target, park elsewhere, run the printed remedy, and
+    assert the commit is still reachable. Executed, not asserted on text.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "unpushed.txt").write_text("work in progress\n")
+    _git(repo_pair, "add", "unpushed.txt")
+    _git(repo_pair, "commit", "-q", "-m", "unpushed work on main")
+    unpushed = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+    _run_printed_remedy(repo_pair, out)
+
+    # The unpushed commit must still exist and still be reachable from `main`.
+    assert _git(repo_pair, "cat-file", "-e", unpushed, check=False).returncode == 0, (
+        "the printed remedy destroyed an unpushed commit on the target branch"
+    )
+    assert unpushed in _git(repo_pair, "rev-list", "main", check=False).stdout, (
+        "the unpushed commit is no longer reachable from the target branch"
+    )
+
+
+def test_skip_advice_preserves_unpushed_commits_when_target_is_ahead(repo_pair, capsys):
+    """The diverged case: local `main` holds commits that origin/main lacks.
+
+    A local main that is AHEAD of its remote is not a fast-forward, so any
+    remedy built on `merge --ff-only` would refuse here and never advance.
+    The remedy must still preserve the work while moving the user onto
+    current upstream code.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "ahead.txt").write_text("local only\n")
+    _git(repo_pair, "add", "ahead.txt")
+    _git(repo_pair, "commit", "-q", "-m", "local commit ahead of origin")
+    ahead = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert ahead not in _git(repo_pair, "rev-list", "origin/main", check=False).stdout
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+    _run_printed_remedy(repo_pair, out)
+
+    assert _git(repo_pair, "cat-file", "-e", ahead, check=False).returncode == 0
+    assert ahead in _git(repo_pair, "rev-list", "main", check=False).stdout
+    # And the user is now on current upstream code.
+    head = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert head == _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip()
+
+
+def test_skip_advice_refuses_when_upstream_branch_name_is_taken(repo_pair, capsys):
+    """The remedy must REFUSE, not overwrite, when its branch name is taken.
+
+    `switch -c` is chosen precisely because it fails closed: if a branch named
+    `{target}-at-upstream` already exists, git errors out and touches nothing.
+    A future edit to `switch -C` (force-create) would silently re-point that
+    branch instead — the same destruction class as the `checkout -B` remedy
+    that was withdrawn, one word away. This test is the guard against that.
+
+    The recommendation came from the independent review of this PR.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "precious.txt").write_text("do not lose me\n")
+    _git(repo_pair, "add", "precious.txt")
+    _git(repo_pair, "commit", "-q", "-m", "work that must survive")
+    precious = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    # Pre-create the branch the remedy intends to create, holding something.
+    _git(repo_pair, "branch", "-q", "main-at-upstream", "origin/main~1")
+    preexisting = _git(repo_pair, "rev-parse", "main-at-upstream", check=False).stdout.strip()
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+
+    # Execute the remedy exactly as printed; the switch must FAIL.
+    ran = _printed_git_commands(out)
+    switch_idx = [i for i, c in enumerate(ran) if " switch " in f" {c} "]
+    assert switch_idx, f"no switch command printed:\n{out}"
+    for i in switch_idx:
+        result = _git(repo_pair, *ran[i].split()[1:], check=False)
+        assert result.returncode != 0, (
+            f"the remedy force-created over an existing branch instead of "
+            f"refusing: {ran[i]}"
+        )
+
+    # Nothing moved: the pre-existing branch and the local work are both intact.
+    assert _git(repo_pair, "rev-parse", "main-at-upstream", check=False).stdout.strip() == preexisting
+    assert _git(repo_pair, "cat-file", "-e", precious, check=False).returncode == 0
+    assert precious in _git(repo_pair, "rev-list", "main", check=False).stdout

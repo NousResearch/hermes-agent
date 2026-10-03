@@ -175,6 +175,61 @@ describe('bounded direct history runtime', () => {
     expect(composer.getState().isEditing).toBe(false)
   })
 
+  it('resubmits an edit composed on a history page against the live id and drops the page (#130629)', async () => {
+    // Live ids (`live-<rowId>`) and history-page synthetic ids
+    // (`<timestamp>-<index>-user`) never match for the same durable row, so a
+    // page edit used to reach `editMessage` with an unresolvable sourceId and
+    // die silently: composer closed, typed edit lost, page trapped
+    // mid-transcript, retry repeating the no-op. The boundary now translates
+    // through the durable rowId and returns to the live tail.
+    vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(10_040))
+    const mounted = mount()
+    let historyId: string | null = null
+    await act(async () => {
+      historyId = await mounted.window.revealRow(10_040, new AbortController().signal)
+    })
+
+    expect(mounted.window.isHistorical).toBe(true)
+
+    const pageMessage = mounted.window.currentMessages?.find(message => message.id === historyId)
+
+    expect(pageMessage?.rowId).toBe(10_040)
+
+    const liveId = `live-${pageMessage?.rowId}`
+
+    expect(mounted.view.$messages.get().some(message => message.id === liveId)).toBe(true)
+    expect(liveId).not.toBe(historyId)
+
+    const thread = mounted.runtime.thread
+    const index = thread.getState().messages.findIndex(message => message.id === historyId)
+
+    expect(index).toBeGreaterThanOrEqual(0)
+
+    const composer = thread.getMessageByIndex(index).composer
+
+    act(() => {
+      composer.beginEdit()
+    })
+    expect(composer.getState().isEditing).toBe(true)
+
+    await act(async () => {
+      composer.setText('edited from the history page')
+      await composer.send()
+    })
+
+    expect(mounted.mutations.onEdit).toHaveBeenCalledTimes(1)
+
+    const sent = mounted.mutations.onEdit.mock.calls[0]?.[0] as {
+      content?: Array<{ text?: string }>
+      parentId?: string | null
+      sourceId?: string | null
+    }
+
+    expect(sent.sourceId ?? sent.parentId).toBe(liveId)
+    expect(sent.content?.map(part => part.text).join('')).toContain('edited from the history page')
+    expect(mounted.window.isHistorical).toBe(false)
+  })
+
   it('latest request wins even when the bridge ignores cancellation', async () => {
     const resolves: ((value: ReturnType<typeof page>) => void)[] = []
     vi.spyOn(window.hermesDesktop, 'api').mockImplementation(() => new Promise(resolve => resolves.push(resolve)))

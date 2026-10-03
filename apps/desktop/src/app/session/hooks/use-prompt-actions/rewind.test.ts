@@ -14,6 +14,7 @@ import {
   planRestore,
   rebindSurvivorRowIds,
   resolveDurableRowId,
+  resolveLiveEditSourceId,
   runRewindSubmit,
   survivorRowIdsFrom,
   truncateSubmitParams
@@ -703,5 +704,97 @@ describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
     expect(next.busy).toBe(true)
     expect(next.turnLive).toBe(false)
     expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
+  })
+})
+
+describe('resolveLiveEditSourceId — historical-page edit translation (#130629)', () => {
+  // A history page hydrates the same backend rows as the live transcript, but
+  // `toChatMessages` mints synthetic ids (`${timestamp}-${index}-${role}`) per
+  // array — so the same durable row carries a DIFFERENT id on the page than in
+  // the live store. `planEdit` matches by id against the live store, so an
+  // edit sent from a historical page never resolved and `editMessage` returned
+  // silently: composer closed, typed edit lost, page trapped mid-transcript.
+  const live = [
+    row('live-u1', 'user', 'first prompt', { rowId: 11 }),
+    row('live-a1', 'assistant', 'first reply'),
+    row('live-u2', 'user', 'second prompt', { rowId: 13 }),
+    row('live-a2', 'assistant', 'second reply')
+  ]
+
+  // Same durable rows as `live`, different synthetic ids — the history-page shape.
+  const page = [
+    row('1700000000-0-user', 'user', 'first prompt', { rowId: 11 }),
+    row('1700000001-1-assistant', 'assistant', 'first reply'),
+    row('1700000002-2-user', 'user', 'second prompt', { rowId: 13 }),
+    row('1700000003-3-assistant', 'assistant', 'second reply')
+  ]
+
+  it('maps a historical synthetic id to the live id through the durable rowId', () => {
+    expect(resolveLiveEditSourceId(page, live, '1700000002-2-user')).toBe('live-u2')
+    expect(resolveLiveEditSourceId(page, live, '1700000000-0-user')).toBe('live-u1')
+  })
+
+  it('needs no translation when the id already lives in the live store', () => {
+    expect(resolveLiveEditSourceId(page, live, 'live-u2')).toBeUndefined()
+  })
+
+  it('returns undefined for a missing, null, or empty source id', () => {
+    expect(resolveLiveEditSourceId(page, live, 'no-such-id')).toBeUndefined()
+    expect(resolveLiveEditSourceId(page, live, null)).toBeUndefined()
+    expect(resolveLiveEditSourceId(page, live, '')).toBeUndefined()
+  })
+
+  it('returns undefined when the page message carries no durable rowId', () => {
+    const rowless = [row('1700000002-2-user', 'user', 'second prompt')]
+
+    expect(resolveLiveEditSourceId(rowless, live, '1700000002-2-user')).toBeUndefined()
+  })
+
+  it('returns undefined when no live user turn shares the row (compressed away)', () => {
+    const compressedLive = live.filter(message => message.id !== 'live-u2')
+
+    expect(resolveLiveEditSourceId(page, compressedLive, '1700000002-2-user')).toBeUndefined()
+  })
+
+  it('never translates to an assistant row holding the same rowId', () => {
+    const assistantOnlyLive = [row('live-a9', 'assistant', 'not a prompt', { rowId: 13 })]
+
+    expect(resolveLiveEditSourceId(page, assistantOnlyLive, '1700000002-2-user')).toBeUndefined()
+  })
+
+  it('never translates an assistant page message', () => {
+    expect(resolveLiveEditSourceId(page, live, '1700000003-3-assistant')).toBeUndefined()
+  })
+
+  it('prefers the newest live turn when a rowId repeats', () => {
+    const forkedLive = [...live, row('live-u2b', 'user', 'second prompt again', { rowId: 13 })]
+
+    expect(resolveLiveEditSourceId(page, forkedLive, '1700000002-2-user')).toBe('live-u2b')
+  })
+
+  it('unblocks planEdit: the translated id resolves a real edit plan', () => {
+    const liveId = resolveLiveEditSourceId(page, live, '1700000002-2-user')
+
+    expect(liveId).toBe('live-u2')
+
+    const plan = planEdit(live, {
+      content: [{ text: 'second prompt, fixed', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: liveId!
+    } as never)
+
+    expect(plan).not.toBeNull()
+    expect(plan).toMatchObject({ text: 'second prompt, fixed', truncateRowId: 13 })
+
+    // And the untranslated historical id is exactly the silent no-op.
+    expect(
+      planEdit(live, {
+        content: [{ text: 'second prompt, fixed', type: 'text' }],
+        parentId: null,
+        role: 'user',
+        sourceId: '1700000002-2-user'
+      } as never)
+    ).toBeNull()
   })
 })

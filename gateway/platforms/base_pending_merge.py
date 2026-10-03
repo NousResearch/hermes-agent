@@ -10,6 +10,12 @@ def _append_text(existing: Optional[str], new: Optional[str]) -> str:
     return f"{existing}\n{new}" if existing else new
 
 
+def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
+    """``msg``'s inline-text flags padded with None to one per media URL."""
+    flags = list(getattr(msg, "media_text_inlined", []) or [])
+    return flags + [None] * (len(msg.media_urls) - len(flags))
+
+
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -24,10 +30,6 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         incoming_is_photo = event.message_type == MessageType.PHOTO
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
-
-        def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
         incoming_inline_flags: List[Optional[bool]] = []
         if incoming_has_media:
             existing.media_text_inlined = _padded_inline_flags(existing)

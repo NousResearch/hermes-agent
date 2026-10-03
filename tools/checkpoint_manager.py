@@ -233,6 +233,26 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
+def _stage_all_args(base: Path, working_dir) -> List[str]:
+    """``git add -A`` that never stages the checkpoint base itself.
+
+    With HERMES_HOME (or a profile home) as the working directory the store sits inside
+    the snapshotted tree, and ``info/exclude`` (relative patterns) cannot name it: every
+    snapshot then staged the previous one's packfiles and index, the store grew by about
+    its own size per checkpoint, and the eventual ``add -A`` timeout left
+    ``indexes/<hash>.lock`` behind. Exclude the base and its ``store_lock`` file by pathspec.
+    """
+    args = ["add", "-A"]
+    try:
+        rel = _normalize_path(str(base)).relative_to(_normalize_path(str(working_dir)))
+    except (OSError, ValueError):
+        return args
+    if not rel.parts:
+        return args
+    lock = rel.parent / f".{rel.name}.lock"
+    return [*args, "--", f":(exclude){rel.as_posix()}", f":(exclude){lock.as_posix()}"]
+
+
 def _ledger_path(store: Path, dir_hash: str) -> Path:
     return store / _LEDGERS_DIRNAME / f"{dir_hash}.json"
 
@@ -872,7 +892,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
             ["diff", "--name-only", "-z", commit_hash, "--cached"],
@@ -1053,7 +1073,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
         ok_stat, stat_out, _ = _run_git(
@@ -1464,7 +1484,7 @@ class CheckpointManager:
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
         ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
+            _stage_all_args(store.parent, working_dir), store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:

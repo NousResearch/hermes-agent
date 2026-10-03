@@ -323,7 +323,11 @@ describe('AppContextMenu', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
-  it.each(['contenteditable', 'textarea', 'input'])('preserves %s select all through delayed focus theft, then stops', async kind => {
+  it.each(
+    ['contenteditable', 'textarea', 'input'].flatMap(kind =>
+      ['teardown', 'pointerdown elsewhere', 'keydown elsewhere', 'pointerdown caret', 'keydown caret'].map(action => ({ kind, action }))
+    )
+  )('respects $action after $kind select all', async ({ kind, action }) => {
     installBridge()
     mountMenu()
 
@@ -378,9 +382,48 @@ describe('AppContextMenu', () => {
     act(() => vi.advanceTimersToNextFrame())
     expectSelected()
 
-    // Presence can remove the menu after the early frame checks all passed.
-    act(() => vi.advanceTimersByTime(280))
+    // Presence can remove the menu after the old twelve-frame limit.
+    act(() => vi.advanceTimersByTime(300))
+
+    if (action !== 'teardown') {
+      const destination = action.endsWith('caret') ? editable : other
+
+      // New user intent must win even when a control stops event bubbling.
+      destination.addEventListener(action.split(' ')[0], event => event.stopPropagation(), { once: true })
+
+      if (action.startsWith('pointerdown')) {
+        fireEvent.pointerDown(destination)
+      } else {
+        fireEvent.keyDown(destination, { key: 'ArrowRight' })
+      }
+
+      destination.focus()
+
+      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+        editable.setSelectionRange(2, 2)
+      } else {
+        window.getSelection()!.collapse(editable.firstChild, 2)
+      }
+
+      act(() => vi.advanceTimersByTime(1000))
+      expect(document.activeElement).toBe(destination)
+
+      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+        expect(editable.selectionStart).toBe(2)
+        expect(editable.selectionEnd).toBe(2)
+      } else {
+        expect(window.getSelection()!.isCollapsed).toBe(true)
+        expect(window.getSelection()!.anchorOffset).toBe(2)
+      }
+
+      expect(vi.getTimerCount()).toBe(0)
+
+      return
+    }
+
     stealSelection()
+    act(() => vi.advanceTimersToNextFrame())
+    expectSelected()
     act(() => vi.advanceTimersByTime(250))
     expectSelected()
 

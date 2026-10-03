@@ -139,14 +139,16 @@ function applySelectAll(editable: HTMLElement) {
 
 function guardEditableSelection(editable: HTMLElement) {
   const started = performance.now()
-  let attempts = 0
   let frame: number
+
+  const stop = () => {
+    cancelAnimationFrame(frame)
+    document.removeEventListener('pointerdown', stop, true)
+    document.removeEventListener('keydown', stop, true)
+  }
 
   const verify = () => {
     if (!editable.isConnected) {
-      cancelAnimationFrame(frame)
-      clearTimeout(finalCheck)
-
       return false
     }
 
@@ -165,26 +167,22 @@ function guardEditableSelection(editable: HTMLElement) {
     return true
   }
 
-  // Menu animation delays DOM removal past our initial frame, stealing focus
-  // and collapsing the selection. Keep a final check past that unmount window,
-  // even when early checks pass or the bounded frame retries finish first.
-  const finalCheck = setTimeout(() => {
-    cancelAnimationFrame(frame)
-    verify()
-  }, 500)
-
+  // Cover the full teardown window regardless of the display's frame rate:
+  // Radix can remove the menu and steal focus after early checks have passed.
   const retry = () => {
-    if (performance.now() - started >= 450 || !verify()) {
+    if (!verify() || performance.now() - started >= 500) {
+      stop()
+
       return
     }
 
-    attempts += 1
-
-    if (attempts < 12) {
-      frame = requestAnimationFrame(retry)
-    }
+    frame = requestAnimationFrame(retry)
   }
 
+  // New user intent beats restoration; DOM-only teardown emits neither event.
+  // Register after the initial selection so its initiating click cannot cancel it.
+  document.addEventListener('pointerdown', stop, true)
+  document.addEventListener('keydown', stop, true)
   frame = requestAnimationFrame(retry)
 }
 

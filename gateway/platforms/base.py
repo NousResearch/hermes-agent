@@ -3604,25 +3604,31 @@ class BasePlatformAdapter(ABC):
         if is_network:
             # A server-requested retry_after (Telegram FloodWait) overrides backoff, once per send.
             server_retry_after = result.retry_after
+            inline_waited = 0.0
             for attempt in range(1, max_retries + 1):
                 backoff = server_retry_after
                 if backoff is None:
                     backoff = base_delay * (2 ** (attempt - 1))
-                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
-                    # Never hold this coroutine open for a long server penalty: a 97-minute
-                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
-                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
+                delay = backoff + random.uniform(0, 1)
+                if inline_waited + delay > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
+                    # Never hold this coroutine open past the inline cap — measured per
+                    # send, not per wait (#91969: a 97-minute FloodWait slept verbatim
+                    # once froze inbound on every platform). Sub-cap waits chain too:
+                    # a locally measured breaker cooldown refills ``retry_after`` on
+                    # every failed attempt, so a per-value check lets the total hold
+                    # grow to ~max_retries x the breaker width (#126213). Return the
+                    # typed failure; the delivery ledger redelivers after the cooldown.
                     logger.error(
-                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
+                        "[%s] Inline wait would reach %.1fs (> %.0fs inline cap); returning "
                         "typed failure for redelivery instead of sleeping: %s",
-                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
+                        self.name, inline_waited + delay, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
                     )
                     return result
-                delay = backoff + random.uniform(0, 1)
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
                                attempt, max_retries, delay, error_str)
                 await asyncio.sleep(delay)
+                inline_waited += delay
                 resumed = await _send_again(result)
                 if resumed is None:
                     logger.warning(

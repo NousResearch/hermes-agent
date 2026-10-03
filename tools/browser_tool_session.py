@@ -5,7 +5,6 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 """
 
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -151,8 +150,7 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     # agent-browser appends the full session name to this directory when constructing its
     # Unix socket path. Keep the externally visible session name intact, but use a compact,
     # deterministic directory component so UUID-shaped names do not exceed AF_UNIX limits.
-    session_digest = hashlib.sha256(session_name.encode("utf-8")).hexdigest()[:16]
-    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_digest}")
+    socket_dir = _lifecycle._socket_dir_for_session(session_name)
     os.makedirs(socket_dir, mode=0o700, exist_ok=True)
     _lifecycle._write_owner_pid(socket_dir, session_name)
     return socket_dir

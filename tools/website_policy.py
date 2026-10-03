@@ -154,10 +154,13 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
     Fails open on policy errors (warn + ``None``) so a config typo can't break all web tools — except with
     an explicit ``config_path`` (tests), where errors propagate.
     """
-    # Fast path: cached policy disabled/empty → no YAML read, no host extraction.
+    # Fast path: a *fresh* cached disabled policy needs no YAML read or host extraction.
+    # The TTL still applies here, or a long-lived process that cached the default disabled
+    # state would never notice the operator enabling the blocklist (until restart).
     if config_path is None:
         with _cache_lock:
-            if _cached_policy is not None and not _cached_policy.get("enabled"):
+            if (_cached_policy is not None and not _cached_policy.get("enabled")
+                    and (time.monotonic() - _cached_policy_time) < _CACHE_TTL_SECONDS):
                 return None
     host = _extract_host_from_urlish(url)
     if not host:

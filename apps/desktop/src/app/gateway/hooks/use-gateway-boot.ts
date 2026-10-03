@@ -9,6 +9,7 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { isIntentionalDesktopQuitError } from '@/app/gateway/desktop-quitting'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -865,6 +866,12 @@ export function useGatewayBoot({
         // commands silently cannot run — say so once, with a way out.
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
+        // Quit teardown already aborted the backend. The process is exiting;
+        // a boot-failure overlay here is the stuck "couldn't start" screen.
+        if (isIntentionalDesktopQuitError(err)) {
+          return
+        }
+
         const mayPublishFailure =
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
 
@@ -1379,8 +1386,8 @@ export function useGatewayBoot({
       }
     })
 
-    const offExit = desktop.onBackendExit(() => {
-      if ($gatewaySwitching.get()) {
+    const offExit = desktop.onBackendExit((payload: any) => {
+      if ($gatewaySwitching.get() || isIntentionalDesktopQuitError(payload)) {
         return
       }
 
@@ -1567,7 +1574,7 @@ export function useGatewayBoot({
         // launch is the common path, so it must warn too, not only softSwitch.
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !isIntentionalDesktopQuitError(err)) {
           const message = err instanceof Error ? err.message : String(err)
 
           // Main's classification (#82679) still decides every failure it can

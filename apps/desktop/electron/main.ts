@@ -500,7 +500,7 @@ import {
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
-import { createQuitFinalization } from './quit-finalization'
+import { createManagedUpdateQuitCoordinator, createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
   backendOwnedByApp,
@@ -6536,10 +6536,18 @@ function getWindowState(win = mainWindow) {
   }
 }
 
+// A quit or update handoff kills renderers while their windows can still report
+// live; the renderer lifecycle must treat that as teardown, not a crash to reload.
+function rendererTeardownInProgress(): boolean {
+  return isQuittingForHandoff || (typeof backendShutdown !== 'undefined' && backendShutdown.hasStarted())
+}
+
 function sendBackendExit(payload) {
   // Intentional soft re-home (gateway mode apply) kills the child on purpose —
   // don't surface the "backend stopped" error toast / boot-failure path.
-  if (softRehomeInProgress) {
+  // Neither should intentional quit teardown, which aborts the backend
+  // while the window is still open and waiting for follow-up quit.
+  if (softRehomeInProgress || rendererTeardownInProgress()) {
     return
   }
 
@@ -9722,8 +9730,17 @@ const managedConnectionUpdateGate = new ManagedConnectionUpdateGate(
 const managedConnectionUpdates = new Map<string, Promise<any>>()
 const managedConnectionRecoveries = new Map<string, Promise<void>>()
 const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
-let managedUpdateQuitWait: Promise<void> | null = null
-let managedUpdateQuitWaitDone = false
+
+const managedUpdateQuit = createManagedUpdateQuitCoordinator({
+  hasInFlightUpdates: () => managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0,
+  waitForUpdates: () =>
+    waitForManagedUpdateOperations(() => [
+      ...managedConnectionUpdates.values(),
+      ...managedConnectionRecoveries.values()
+    ]),
+  requestQuit: () => app.quit(),
+  armSealedTeardown: delayMs => quitFinalization.armAfterSealedTeardown(delayMs)
+})
 
 function assertCanMutateManagedPrimaryRouting() {
   const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
@@ -12628,14 +12645,27 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   }
 })
 
-const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
-
 const quitFinalization = createQuitFinalization({
   isWindows: IS_WINDOWS,
   hardExit: code => {
-    rememberLog(`[quit] forcing Windows process exit after Electron quit finalization stalled`)
+    rememberLog('[quit] forcing process exit; Electron did not finish quitting')
     app.exit(code)
   }
+})
+
+// A deferred quit preventDefault's the first before-quit (the renderer stays
+// up) and aborts the backend. The follow-up app.quit() is what should close
+// the window. If that quit never emits `quit` — hung beforeunload, or a close
+// handler that cancels it — every IPC fails with "Hermes Desktop is quitting"
+// and the overlay says the app couldn't start. The sealed-teardown timer is
+// the exit that follow-up quit failed to deliver.
+function armSealedQuitExit(delayMs?: number): void {
+  managedUpdateQuit.armSealedQuitExit(delayMs)
+}
+
+const quitTeardown = createQuitTeardownCoordinator(() => {
+  app.quit()
+  armSealedQuitExit()
 })
 
 async function teardownSshForQuit(): Promise<void> {
@@ -12896,12 +12926,6 @@ function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: bool
   void start.then(releaseStart, releaseStart)
 
   return start
-}
-
-// A quit or update handoff kills renderers while their windows can still report
-// live; the renderer lifecycle must treat that as teardown, not a crash to reload.
-function rendererTeardownInProgress(): boolean {
-  return isQuittingForHandoff || backendShutdown.hasStarted()
 }
 
 function primaryRecoveryState() {
@@ -19615,7 +19639,12 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   // before the guard runs), so merge in the last summary any renderer sent.
   const work = mergeActiveWork([...activeWorkByWebContents.values(), lastActiveWorkSeen])
 
-  const prompt = quitPromptFor(work, isQuittingForHandoff, quitStopsBackendWork())
+  const prompt = quitPromptFor(
+    work,
+    isQuittingForHandoff,
+    quitStopsBackendWork(),
+    backendShutdown.hasStarted()
+  )
 
   // A tray quit with live work still needs the ordinary visible confirmation.
   if (prompt && minimizeToTray.status().available) {
@@ -19736,22 +19765,7 @@ app.on('before-quit', event => {
   // normal teardown. A crash still fails closed on next launch via the remote
   // install-marker preflight in both POSIX and Windows lifecycle
   // implementations.
-  if (
-    !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
-  ) {
-    event.preventDefault()
-
-    if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
-        managedUpdateQuitWaitDone = true
-        app.quit()
-      })
-    }
-
+  if (managedUpdateQuit.handleBeforeQuit(event)) {
     return
   }
 
@@ -19779,8 +19793,16 @@ app.on('before-quit', event => {
     teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
   }
 
-  if (quitTeardown.begin(teardownTasks)) {
+  const deferQuit = quitTeardown.begin(teardownTasks)
+
+  if (deferQuit) {
     event.preventDefault()
+    // Teardown is bounded (~7s) but the follow-up app.quit() can still fail
+    // to land. Start the deadline here so a hung teardown cannot leave the
+    // sealed process up. A later arm is a no-op while this timer is live.
+    armSealedQuitExit(20_000)
+  } else if (backendShutdown.hasStarted()) {
+    armSealedQuitExit()
   }
 
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).

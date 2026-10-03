@@ -75,6 +75,30 @@ class TestRaftWakePayload:
 
 class TestRaftWakeHttp:
 
+    @pytest.mark.asyncio
+    async def test_paused_gateway_defers_wake(self):
+        """`hermes pause`: a bridge wake is new work, so it must not start a turn while paused; the
+        bridge gets a retryable 503. The pause state stays behind the bridge-token check."""
+        from agent import estop
+
+        adapter = _make_adapter()
+        adapter.set_message_handler(AsyncMock())
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        estop.engage(reason="maintenance")
+        try:
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(DEFAULT_PATH, json={"eventId": "wake-1"},
+                                         headers={BRIDGE_TOKEN_HEADER: "bridge-secret"})
+                assert resp.status == 503 and resp.headers["Retry-After"] == "60"
+                assert (await resp.json())["error"] == "paused"
+                unauth = await client.post(DEFAULT_PATH, json={"eventId": "wake-2"})
+                assert unauth.status == 401
+        finally:
+            estop.disengage()
+        adapter.handle_message.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_rejects_content_bearing_payload(self):

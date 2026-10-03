@@ -42,7 +42,7 @@ class _FakeProc:
 
 
 @pytest.mark.parametrize("case", ["scoped", "not_the_gateway", "no_scope", "no_wrapper"])
-def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, case):
+def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, caplog, case):
     seen: dict = {}
     monkeypatch.setattr(local_env.subprocess, "Popen",
                         lambda args, **kw: (seen.update(argv=list(args), kwargs=kw), _FakeProc())[1])
@@ -55,13 +55,13 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     real_which = shutil.which
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: (
         None if case == "no_wrapper" else "/usr/bin/systemd-run") if name == "systemd-run" else real_which(name, *a, **k))
-    degraded: list[str] = []
-    monkeypatch.setattr(local_env, "_warn_foreground_scope_degraded", degraded.append)
+    monkeypatch.setattr(local_env, "_foreground_degraded_warned", False)
     # No real snapshot bootstrap (it would wait out its timeouts against the fake Popen) and
     # never a real `systemctl --user stop` from the kill path.
     monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
     monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit: True)
     env = local_env.LocalEnvironment()
+    caplog.set_level("WARNING", logger=local_env.logger.name)
 
     proc = env._run_bash("true")
 
@@ -71,7 +71,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         assert getattr(proc, "_hermes_scope_unit", None) is None
         assert kwargs["env"] == local_env._make_run_env(env.env)
         # Every fallback after the gateway check is a degraded failure domain, reported once.
-        assert bool(degraded) is (case != "not_the_gateway")
+        assert ("share the gateway cgroup" in caplog.text) is (case != "not_the_gateway")
         return
     assert argv[0].endswith("systemd-run")
     assert argv[argv.index("--") + 1:] == ["/bin/bash", "-c", "true"]
@@ -84,7 +84,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     # The availability probe derives the user-bus variables, so the spawn must carry them
     # too or a system-level unit would fail where the probe succeeded.
     assert kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/1/bus"
-    assert not degraded
+    assert "share the gateway cgroup" not in caplog.text
 
 
 def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(monkeypatch, tmp_path):

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import unquote_plus
 
 from agent.redact import (
     _SENSITIVE_QUERY_PARAMS,
     REDACTION_UNAVAILABLE,
     SECRET_HEADER_NAME_LIST,
+    _canonical_url_param_name,
     redact_sensitive_text,
 )
 
@@ -96,13 +96,7 @@ _SUPPORT_BEARER_RE = re.compile(
 )
 
 def _decoded_compact_name(value: object) -> str:
-    text = str(value or "")
-    for _ in range(3):
-        decoded = unquote_plus(text)
-        if decoded == text:
-            break
-        text = decoded
-    return "".join(ch for ch in text.casefold() if ch.isalnum())
+    return "".join(ch for ch in _canonical_url_param_name(str(value or "")) if ch.isalnum())
 
 
 def _redact_url_params(text: str) -> str:

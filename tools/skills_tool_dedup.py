@@ -1,4 +1,4 @@
-"""skill_view repeat-view dedup registry: per-task cache of (skill name, file_path) ->
+"""skill_view repeat-view dedup registry: per-profile/task cache of (skill name, file_path) ->
 (skill file mtime+size). A repeat view of an UNCHANGED file returns a short stub — the earlier
 tool result already carries the content verbatim. Cleared via ``reset_skill_view_dedup()`` on
 context compression AND on a committed proactive tool-result prune, because both replace the
@@ -10,7 +10,9 @@ import os
 import threading
 from typing import Dict
 
-_skill_view_tracker: Dict[str, Dict[tuple, tuple]] = {}
+from hermes_constants import hermes_home_key
+
+_skill_view_tracker: Dict[tuple[str, str], Dict[tuple, tuple]] = {}
 _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
 
@@ -43,7 +45,7 @@ def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
         return
     key = (str(payload.get("name") or name), file_path or "")
     with _skill_view_tracker_lock:
-        cache = _skill_view_tracker.setdefault(str(task_id), {})
+        cache = _skill_view_tracker.setdefault((hermes_home_key(), str(task_id)), {})
         cache[key] = fp
         while len(cache) > _SKILL_VIEW_DEDUP_CAP:  # FIFO eviction
             del cache[next(iter(cache))]
@@ -56,7 +58,7 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
         return None
     n = str(name)
     with _skill_view_tracker_lock:
-        if not (cache := _skill_view_tracker.get(str(task_id))):
+        if not (cache := _skill_view_tracker.get((hermes_home_key(), str(task_id)))):
             return None
         # Record key is the RESOLVED name; match raw and resolved forms so
         # 'category/skill' and bare-name views coalesce.
@@ -82,9 +84,9 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
 
 
 def reset_skill_view_dedup(task_id: str | None = None) -> None:
-    """Clear the dedup cache (all tasks when task_id is None); called on context compression."""
+    """Clear the active profile/task cache, or every cache when task_id is None."""
     with _skill_view_tracker_lock:
         if task_id is None:
             _skill_view_tracker.clear()
         else:
-            _skill_view_tracker.pop(str(task_id), None)
+            _skill_view_tracker.pop((hermes_home_key(), str(task_id)), None)

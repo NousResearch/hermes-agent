@@ -217,32 +217,44 @@ class _KanbanDispatcher:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
 
-    def ready_nonempty(self) -> bool:
-        """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
+    def board_ready_flags(self) -> dict[str, bool]:
+        """Per-board: is there a ready+assigned+unclaimed task THIS board would spawn for?
 
         Control-plane lanes (e.g. ``orion-cc``) are pulled by terminals via
         ``claim_task`` and never spawnable — a queue full of those is
         "correctly idle", not "stuck". The review column is probed only when
         review dispatch is on (same gate as the dispatcher): a task waiting
         for a human reviewer is idle, not stuck.
+
+        Kept per-board (not folded into a single ``any()``) so health
+        telemetry can tell a genuinely-idle board apart from one whose own
+        ready work was held back by something other than capacity — a board
+        at its OWN ``max_spawn`` cap must not hide a real stall on a
+        different, uncapped board sharing the same tick (#DRE-292).
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
         from hermes_cli import kanban_db as _kb
+        flags: dict[str, bool] = {}
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 conn = None
                 try:
                     conn = _kbc().connect(board=slug)
-                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
-                        return True
+                    flags[slug] = bool(
+                        kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn))
+                    )
                 except Exception:
-                    continue
+                    flags[slug] = False
                 finally:
                     if conn is not None:
                         with contextlib.suppress(Exception):
                             conn.close()
-        return False
+        return flags
+
+    def ready_nonempty(self) -> bool:
+        """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?"""
+        return any(self.board_ready_flags().values())
 
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.

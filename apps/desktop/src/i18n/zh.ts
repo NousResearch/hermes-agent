@@ -278,6 +278,7 @@ export const zh = defineLocale({
       codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
     voice: {
+      echoDropped: '已忽略播放回声。请尝试重新说话。',
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',
       couldNotStartSession: '无法启动语音会话',
       microphoneAccessDenied: '麦克风访问被拒绝。',
@@ -1004,6 +1005,7 @@ export const zh = defineLocale({
         maxSnapshots: '检查点上限'
       },
       voice: {
+        bargeInThresholdMultiplier: '打断阈值',
         maxRecordingSeconds: '最长录音时长',
         autoTts: '朗读回复',
         voiceChatMode: '语音聊天模式',
@@ -1182,6 +1184,8 @@ export const zh = defineLocale({
           '本地浏览使用你的真实登录状态。Hermes 会把你默认浏览器的配置（Cookie、登录、偏好）复制为受管快照，并用自带的 Chromium 驱动它——不会直接打开你的实时配置，且每次运行都会从实时配置刷新副本。还允许智能体在配置了云端浏览器后端时，按需打开本地真实配置会话。仅支持 Chromium 系浏览器（Chrome、Edge、Brave、Brave Origin、Chromium）；默认浏览器不是 Chromium 系时会给出明确报错。默认关闭。'
       },
       voice: {
+        bargeInThresholdMultiplier:
+          '分步语音回复的打断灵敏度。请输入正数；较低的值可检测更轻的说话声，但也可能拾取扬声器声音。默认值：3。',
         autoTts: '自动朗读助手回复。',
         voiceChatMode:
           'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -14,6 +15,44 @@ import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow, ToggleRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+
+interface InterruptionThresholdInputProps {
+  label: string
+  onChange: (value: number) => void
+  value: unknown
+}
+
+function InterruptionThresholdInput({ label, onChange, value }: InterruptionThresholdInputProps) {
+  const saved = value == null ? '' : String(value)
+  const [draft, setDraft] = useState(saved)
+
+  useEffect(() => setDraft(saved), [saved])
+
+  const valid = draft !== '' && Number.isFinite(Number(draft)) && Number(draft) > 0
+
+  return (
+    <Input
+      aria-invalid={draft !== '' && !valid}
+      aria-label={label}
+      className={CONTROL_TEXT}
+      min={0}
+      onBlur={() => !valid && setDraft(saved)}
+      onChange={event => {
+        const raw = event.target.value
+        setDraft(raw)
+
+        // Keep intermediate edits (blank, zero, a decimal prefix) in the
+        // input without saving a value that restores the stock thresholds.
+        if (raw !== '' && Number.isFinite(Number(raw)) && Number(raw) > 0) {
+          onChange(Number(raw))
+        }
+      }}
+      step="any"
+      type="number"
+      value={draft}
+    />
+  )
+}
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -178,6 +217,10 @@ export function ConfigField({
         </SelectContent>
       </Select>
     )
+  }
+
+  if (schemaKey === 'voice.barge_in_threshold_multiplier') {
+    return row(<InterruptionThresholdInput label={label} onChange={onChange} value={value} />)
   }
 
   if (schema.type === 'number') {

@@ -575,6 +575,7 @@ export const deOverrides = {
       openMaintenance: 'Wartung öffnen'
     },
     voice: {
+      echoDropped: 'Wiedergabeecho ignoriert. Bitte sprechen Sie erneut.',
       configureSpeechToText: 'Richten Sie Speech-to-Text ein, um den Sprachmodus zu verwenden.',
       couldNotStartSession: 'Sprachsession konnte nicht gestartet werden',
       microphoneAccessDenied: 'Mikrofonzugriff verweigert.',
@@ -1363,6 +1364,7 @@ export const deOverrides = {
         maxSnapshots: 'Checkpoint-Limit'
       },
       voice: {
+        bargeInThresholdMultiplier: 'Unterbrechungsschwelle',
         maxRecordingSeconds: 'Maximale Aufnahmelänge',
         autoTts: 'Antworten vorlesen',
         voiceChatMode: 'Sprachchat-Modus',
@@ -1542,6 +1544,8 @@ export const deOverrides = {
         }
       },
       voice: {
+        bargeInThresholdMultiplier:
+          'Empfindlichkeit beim Unterbrechen einer verketteten Sprachantwort. Verwenden Sie eine positive Zahl; kleinere Werte erkennen leisere Sprache, können aber auch Lautsprecherton erfassen. Standard: 3.',
         autoTts: 'Assistentenantworten automatisch vorlesen.',
         voiceChatMode:
           'chained: Sprache zu Text → Hermes → Text zu Sprache mit den Anbietern unten. gpt-live: Ein Vollduplex-Sprachmodell von OpenAI (gpt-live-1) hört zu und spricht und übergibt jede echte Anfrage an Hermes – das von Ihnen gewählte Modell antwortet mit allen Tools. Erfordert einen OpenAI-API-Schlüssel; die Sprachschicht kostet 0,05 $ pro Minute.',

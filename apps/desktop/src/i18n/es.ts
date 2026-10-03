@@ -576,6 +576,7 @@ export const esOverrides = {
       openMaintenance: 'Abrir Mantenimiento'
     },
     voice: {
+      echoDropped: 'Se ignoró el eco de la reproducción. Intenta hablar de nuevo.',
       configureSpeechToText: 'Configura voz a texto para usar el modo de voz.',
       couldNotStartSession: 'No se pudo iniciar la sesión de voz',
       microphoneAccessDenied: 'Acceso al micrófono denegado.',
@@ -1362,6 +1363,7 @@ export const esOverrides = {
         maxSnapshots: 'Límite de checkpoints'
       },
       voice: {
+        bargeInThresholdMultiplier: 'Umbral de interrupción',
         maxRecordingSeconds: 'Duración máxima de grabación',
         autoTts: 'Leer respuestas en voz alta',
         voiceChatMode: 'Modo de chat de voz',
@@ -1543,6 +1545,8 @@ export const esOverrides = {
         }
       },
       voice: {
+        bargeInThresholdMultiplier:
+          'Sensibilidad al interrumpir una respuesta de voz en modo encadenado. Usa un número positivo; los valores más bajos detectan una voz más suave, pero también pueden captar el audio de los altavoces. Predeterminado: 3.',
         autoTts: 'Lee automáticamente en voz alta las respuestas del asistente.',
         voiceChatMode:
           'chained: voz a texto → Hermes → texto a voz con los proveedores de abajo. gpt-live: un modelo de voz full-duplex de OpenAI (gpt-live-1) escucha y habla, y pasa cada solicitud real a Hermes; el modelo que hayas seleccionado responde con todas las herramientas. Requiere una clave API de OpenAI; la capa de voz cuesta 0,05 US$ por minuto.',

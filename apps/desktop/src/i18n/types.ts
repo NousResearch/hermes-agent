@@ -587,6 +587,7 @@ export interface Translations {
       openMaintenance: string
     }
     voice: {
+      echoDropped: string
       configureSpeechToText: string
       couldNotStartSession: string
       microphoneAccessDenied: string

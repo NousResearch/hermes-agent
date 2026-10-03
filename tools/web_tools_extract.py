@@ -11,9 +11,10 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from tools.interrupt import is_interrupted
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import _interrupted_extract_results, _rescue_eligible, _rescue_extract
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -154,6 +155,8 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
+    if is_interrupted():
+        return _interrupted_extract_results(fetch_urls, [])
     timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
@@ -165,6 +168,8 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
         else:
             results = await coro
     except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
+        if is_interrupted():
+            return _interrupted_extract_results(fetch_urls, [])
         logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
                        provider.name, timeout, len(fetch_urls))
         failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
@@ -173,10 +178,14 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             return failed
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
+        if is_interrupted():
+            return _interrupted_extract_results(fetch_urls, [])
         if not _rescue_eligible(provider):
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+    if is_interrupted():
+        return _interrupted_extract_results(fetch_urls, results)
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
@@ -187,6 +196,8 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
     requested = set(fetch_urls)
     for fetched in results:
+        if is_interrupted():
+            return _interrupted_extract_results(fetch_urls, results)
         meta = fetched.get("metadata")
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)

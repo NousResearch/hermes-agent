@@ -7,14 +7,23 @@ receipts only after rechecking the captured run/status/contract under its lock.
 login: :func:`_gh_env` resolves that profile's own credentials/config for the
 subprocess — a multi-profile host's default ``gh`` login cannot read another
 org's private repos (#122689).
+
+``gh`` failures are typed. Identity refusals stay ``auth``. A rate-limit 403 is
+``rate_limited`` (checked before the 401/403/404 identity match). A missing
+``gh`` binary is ``capability``, a timeout is ``network``, and any other ``gh``
+exit is ``provider_error`` with a fixed rc sentence. Generic ``infra`` is only
+the final net. stderr is never stored — it only classifies.
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
@@ -35,24 +44,54 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         command += ["-f", "query=" + query]
     if paginate:
         command += ["--paginate", "--slurp"]
+    path = endpoint.split("?")[0]
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
+    except FileNotFoundError:
+        raise _AcceptanceFailure(
+            "capability",
+            "gh CLI is not installed or not on PATH; install GitHub CLI to use PR completion contracts.",
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise _AcceptanceFailure(
+            "network",
+            "GitHub API request timed out; check the network and retry completion.",
+        ) from None
     except subprocess.CalledProcessError as exc:
-        # 401/403/404 = the login cannot see this repository (wrong profile identity
-        # or missing grant), not a transient API failure. Persist only the status
-        # code + endpoint, never gh's stderr (credentials/host details).
+        # stderr classifies only. A rate-limited 403 names both "rate limit" and
+        # HTTP 403, so the rate-limit check wins; otherwise 401/403/404 is an
+        # identity refusal. The persisted detail never includes stderr.
+        low = (exc.stderr or "").lower()
+        if "rate limit" in low:
+            raise _AcceptanceFailure(
+                "rate_limited",
+                "GitHub API rate limit exhausted; wait for the reset window and retry completion.",
+            ) from None
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
-            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
-        if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
-            raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
-        raise
+            raise _GateAuthError(f"HTTP {denied[1]} on {path}") from None
+        if exc.returncode == 4 or "gh auth login" in low:
+            raise _GateAuthError(f"gh has no login for {path}") from None
+        logger.warning("gh api failed for %s (rc=%s); stderr suppressed", path, exc.returncode)
+        raise _AcceptanceFailure("provider_error", f"GitHub API call failed (rc={exc.returncode}).") from None
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
+        messages = [str(e.get("message", "")) for e in value["errors"] if isinstance(e, dict)]
+        if any("bad credentials" in message.lower() for message in messages):
+            raise _GateAuthError("GraphQL rejected the acceptance credential") from None
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+class _AcceptanceFailure(Exception):
+    """Typed ``gh`` failure whose ``detail`` is safe to persist."""
+
+    def __init__(self, classification: str, detail: str):
+        super().__init__(detail)
+        self.classification = classification
+        self.detail = detail
 
 
 class _GateAuthError(RuntimeError):
@@ -179,6 +218,9 @@ def collect_acceptance(contract: str, published_pr: str | None,
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
+        return receipt
+    except _AcceptanceFailure as exc:
+        receipt.update(classification=exc.classification, detail=exc.detail)
         return receipt
     except _GateAuthError as exc:
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"

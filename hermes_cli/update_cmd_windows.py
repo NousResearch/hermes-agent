@@ -920,6 +920,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
         from gateway.status import get_process_start_time, terminate_pid
         from hermes_cli.gateway import _capture_gateway_argv
+    from hermes_cli import update_pause_record as pause_record
+    # A previous update killed mid-pause left its set stopped: bring it back with this run's resume.
+    orphan = pause_record.orphaned_record()
+    adopted = pause_record.drop_never_stopped(dict(orphan["token"])) if orphan else None
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         token = _windows_cold_start_plan()
@@ -927,7 +931,37 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # (clean exit, autostart not installed): give them a token to ride on.
         probe = token if token is not None else {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": []}
         _record_attested_cold_start_profiles(probe, set())
-        return probe if probe.get("cold_start_profiles") else token
+        token = probe if probe.get("cold_start_profiles") else token
+        if adopted is None:
+            return pause_record.stamp_tree(token) if token is not None else None
+        token = pause_record.stamp_tree(pause_record.merge_into(token, adopted))
+        with _abort_on_error("Could not record the adopted paused-gateway set"):
+            pause_record.write(token, owner=pause_record.identity())
+        return token
+    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
+    # Snapshot unmapped gateways' argv *before* anything stops so resume (or a later launch) can replay it.
+    # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
+    unmapped = [
+        {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
+                                            "Could not capture argv for unmapped gateway %s: %s", int(pid))}
+        for pid in unmapped_pids
+    ]
+    # Durable BEFORE the first stop: a killed updater must leave a record the next launch can resume.
+    intended = {
+        "resume_needed": True, "unmapped_pids": unmapped_pids, "unmapped": unmapped,
+        "profiles": {str(profile_processes[pid].profile): int(pid) for pid in running_pids
+                     if pid in profile_processes and pid not in service_gateway_pids},
+        "identities": {str(pid): pause_record.identity(pid)["ct"] for pid in running_pids},
+    }
+    if service_gateways:
+        names = [str(s.name) for s in service_gateways]
+        intended.update(services=names, expected_services=list(names), restarted_services=[],
+                        service_profiles={str(s.name): str(s.profile) for s in service_gateways})
+    if adopted is not None:
+        pause_record.merge_into(intended, adopted)
+    pause_record.stamp_tree(intended)
+    with _abort_on_error("Could not record the gateways this update pauses"):
+        pause_record.write(intended, owner=pause_record.identity())
     profiles, mapped_pids, socket_acks = _request_socket_pauses(running_pids, profile_processes, service_gateway_pids)
     # Resolve venv-side launchers BEFORE draining: a dead worker's parent cannot be recovered (NoSuchProcess).
     # The launcher keeps ``.pyd`` mapped and would trip the venv-holder guard; it is killed with the survivors.
@@ -935,14 +969,6 @@ def _pause_windows_gateways_for_update() -> dict | None:
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     drain_timeout = _gateway_drain_timeout(socket_acks)
     survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
-    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
-    # Snapshot unmapped gateways' argv *before* force-killing so resume can replay it.
-    # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
-    unmapped = [
-        {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
-                                            "Could not capture argv for unmapped gateway %s: %s", int(pid))}
-        for pid in unmapped_pids
-    ]
     # Tree-kill survivors, unmapped gateways, and pre-drain launchers; a launcher
     # already gone with its worker raises ProcessLookupError and is skipped.
     force_killed = []
@@ -963,7 +989,17 @@ def _pause_windows_gateways_for_update() -> dict | None:
     # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
     running_profiles = set(profiles) | {str(p.profile) for p in profile_processes.values()} | {str(s.profile) for s in service_gateways}
     _record_attested_cold_start_profiles(token, running_profiles)
-    return _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
+    try:
+        token = _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
+    except RuntimeError as exc:
+        if "rollback failures" not in str(exc):  # everything stopped was restarted in-line
+            pause_record.discharge(intended)
+        raise
+    if adopted is not None:
+        pause_record.merge_into(token, adopted)
+    token.update({key: intended[key] for key in ("pause_id", "pre_sha", "dirty_at_pause", "identities") if key in intended})
+    pause_record.sync(token)
+    return token
 
 
 def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> None:
@@ -1299,6 +1335,27 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     if not _m()._is_windows():
         token["resume_needed"] = False
         return
+    from hermes_cli import update_pause_record as pause_record
+    if token.get("pause_id"):
+        whole, why = pause_record.tree_is_whole(token)
+        if not whole:
+            # Starting gateways now would boot them on a half-written tree or the pre-sync
+            # dependencies. The durable record keeps the obligation for the next launch, which
+            # runs after the interrupted-pull restore and the dependency sync.
+            print(f"  ⚠ Paused gateway(s) left stopped: {why}.\n"
+                  "    The next `hermes` command (or `hermes update`) restarts them.")
+            token["resume_needed"] = False
+            token["resume_deferred"] = why
+            pause_record.sync(token)
+            return
+    try:
+        _resume_paused_set(token)
+    finally:
+        pause_record.sync(token)
+
+
+def _resume_paused_set(token: dict) -> None:
+    from hermes_cli.update_cmd import _m
     # Regenerate launcher scripts before respawning so a legacy pythonw-era
     # autostart entry comes back on the current design at next login too.
     _m()._refresh_windows_gateway_launchers()

@@ -20,7 +20,11 @@ Contracts asserted here (mutation-survivable)
 ----------------------------------------------
 Proxy and direct-DNS ``HTTPXRequest`` instances must receive
 ``httpx_kwargs["limits"]`` with a ``keepalive_expiry`` strictly below
-httpx's 5.0 default.  The fallback-IP instances must pass equivalent
+httpx's 5.0 default AND ``max_keepalive_connections == 0``: Telegram's
+edge silently kills idle keep-alive sockets (no FIN), so expiry cannot win
+the race — an expired-window socket that died early is still handed out
+and the reuse dies as ``ConnectError('')``/``ReadTimeout`` (dnk gateway
+clusters, 2026-09-27..29).  The fallback-IP instances must pass equivalent
 limits into both inner ``AsyncHTTPTransport`` pools because httpx ignores
 client-level limits when a custom transport is supplied.
 """
@@ -128,8 +132,14 @@ def _assert_keepalive_tight(instances):
             "keepalive_expiry must be < httpx default 5.0 so idle/CLOSE_WAIT "
             "sockets drain promptly behind a proxy (#31599)."
         )
-        assert limits.max_keepalive_connections is not None
-        assert 1 <= limits.max_keepalive_connections <= 50
+        # Telegram's edge silently kills idle keep-alive sockets (no FIN before the
+        # hang). No expiry is short enough to win that race, so the adapter keeps
+        # NO idle sockets anywhere — every pool, general included, opens fresh.
+        assert limits.max_keepalive_connections == 0, (
+            "the general Telegram pool must not reuse idle sockets: the edge "
+            "drops them silently and the reuse dies as ConnectError('')/"
+            "ReadTimeout before any expiry could close the socket."
+        )
         # PTB's connection_pool_size (max_connections) must be preserved.
         assert limits.max_connections is not None and limits.max_connections > 0
 
@@ -179,7 +189,9 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
             for opt in sock_opts
         )
         if index == 0:
-            assert limits.max_keepalive_connections >= 1
+            # General pool too: the edge kills idle sockets silently, so the
+            # fallback-IP pools must reuse nothing either (see _assert_keepalive_tight).
+            assert limits.max_keepalive_connections == 0
         else:
             assert limits.max_keepalive_connections == 0
 

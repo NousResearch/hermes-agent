@@ -3049,11 +3049,15 @@ class TelegramAdapter(BasePlatformAdapter):
         _base_limits = platform_httpx_limits()
         if _base_limits is not None:
             import httpx as _httpx
+            # Telegram's edge silently drops idle keep-alive sockets (no FIN arrives before the next
+            # write hangs). Expiry cannot win that race: a socket killed inside the expiry window is
+            # still handed out as "available", and the request dies as ConnectError('')/ReadTimeout
+            # while the peer already forgot it. Same rule as getUpdates below — applied to *every*
+            # pool this adapter builds: never keep an idle socket, always open fresh.
+            # (getUpdates: long-poll is continuously active — never reuse a previous poll's socket.)
             _pool_limits = _httpx.Limits(
                 max_connections=request_kwargs["connection_pool_size"],
-                max_keepalive_connections=_base_limits.max_keepalive_connections, keepalive_expiry=_base_limits.keepalive_expiry)
-            # A long-poll is continuously active, so keepalive expiry can't protect it from a server-side
-            # close: never hand getUpdates a pooled socket from a previous poll.
+                max_keepalive_connections=0, keepalive_expiry=_base_limits.keepalive_expiry)
             _updates_limits = _httpx.Limits(
                 max_connections=request_kwargs["connection_pool_size"], max_keepalive_connections=0,
                 keepalive_expiry=_base_limits.keepalive_expiry)

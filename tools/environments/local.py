@@ -659,6 +659,31 @@ def _managed_runtime_path_entries() -> list[str]:
         return []
 
 
+def _dependency_python_path(entries: list[str]) -> list[str]:
+    """Put the committed venv immediately before PM's standalone tool Python.
+
+    Other managed tools keep their order; a missing venv leaves PATH alone.
+    """
+    try:
+        from pm.environments import committed_venv, venv_bin_dir
+
+        venv = committed_venv(_hermes_repo_root)
+        bin_dir = venv_bin_dir(venv) if venv is not None else None
+        if bin_dir is None or not bin_dir.is_dir():
+            return entries
+        import pm
+
+        path = str(bin_dir)
+        tool_python_dirs = set(pm.env_for("python", base_env={"PATH": ""}).get("PATH", "").split(os.pathsep))
+        python_index = next((i for i, entry in enumerate(entries) if entry in tool_python_dirs), None)
+        if python_index is None or (path in entries and entries.index(path) < python_index):
+            return entries
+        remaining = [entry for entry in entries if entry != path]
+        return [*remaining[:python_index], path, *remaining[python_index:]]
+    except (OSError, RuntimeError, ValueError):
+        return entries
+
+
 def _user_local_bin_entries() -> list[str]:
     """``~/.local/bin`` when it exists — the pip --user / pipx / uv-tool install
     target. A backend launched by a non-interactive SSH session, systemd or a GUI
@@ -686,7 +711,7 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     ordered = dict.fromkeys(entry for entry in existing_path.split(":") if entry)
     ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries(),
                                   *_user_local_bin_entries()]))
-    return ":".join(ordered)
+    return ":".join(_dependency_python_path(list(ordered)))
 
 
 def _apply_windows_msys_bash_env_defaults(env: dict) -> None:

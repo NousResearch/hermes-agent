@@ -15,7 +15,10 @@ from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
+from hermes_state_common import (
+    SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active,
+    validate_session_id,
+)
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -489,13 +492,15 @@ class SessionPortabilityMixin:
         seen_ids: set[str] = set()
         totals = {"messages": 0, "bytes": 0}
         for index, raw in enumerate(sessions):
-            session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+            raw_session_id = str(raw.get("id") or "") if isinstance(raw, dict) else ""
+            session_id = raw_session_id.strip()
             try:
+                validate_session_id(raw_session_id)
                 item = self._validate_import_session(raw, session_id, seen_ids, totals)
             except ValueError as exc:
                 item = {"index": index, "error": str(exc)}
-                if session_id:
-                    item["session_id"] = session_id
+                if raw_session_id:
+                    item["session_id"] = raw_session_id
                 errors.append(item)
                 continue
             seen_ids.add(session_id)

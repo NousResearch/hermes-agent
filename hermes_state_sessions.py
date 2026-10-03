@@ -22,6 +22,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    validate_session_id,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -356,6 +357,7 @@ class SessionSessionsMixin:
         sidebar even though its transcript is intact (#99222). Stores outside the profile tree (explicit
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
         """
+        validate_session_id(session_id)
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
         def _do(conn):

@@ -15,6 +15,7 @@
  * drift on the next page.
  */
 
+import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
@@ -274,13 +275,40 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
+  const refreshedBySource = new Map<number, ChatMessage>()
+
+  for (const message of refreshedTail) {
+    for (const rowId of transcriptRowIds(message)) {
+      refreshedBySource.set(rowId, message)
+    }
+  }
+
   const byRowId = new Map<number, StoredRowSlot>()
 
   const place = (messages: ChatMessage[], fresh: boolean): ChatMessage[] => {
     let pending: ChatMessage[] = []
 
     for (const message of messages) {
-      if (message.rowId === undefined) {
+      const sourceIds = transcriptRowIds(message)
+      const folded = sourceIds.length ? refreshedBySource.get(sourceIds[0]) : undefined
+
+      // A completed live reply is addressed by its final row; hydration can
+      // fold that row into an earlier tool bubble. Give both the fold's slot,
+      // so the fresh copy replaces the live one without losing its leading rows.
+      // Partial/live bubbles may still hold an uncommitted suffix.
+      const covered =
+        !fresh &&
+        !message.pending &&
+        !message.interim &&
+        !message.error &&
+        message.durableComplete !== false &&
+        message.persistedTurn?.complete !== false &&
+        folded?.role === message.role &&
+        sourceIds.every(id => refreshedBySource.get(id) === folded)
+
+      const rowId = covered ? (folded?.rowId ?? message.rowId) : message.rowId
+
+      if (rowId === undefined) {
         // The fresh page's copy of an unstored row wins over the window's.
         if (fresh || !refreshedIds.has(message.id)) {
           pending.push(message)
@@ -289,7 +317,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
         continue
       }
 
-      const existing = byRowId.get(message.rowId)
+      const existing = byRowId.get(rowId)
 
       if (!fresh && existing) {
         pending = []
@@ -300,7 +328,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
       // The fresh page replaces the row; keep the window's leading rows when
       // the page brought none of its own for it.
       const leading = fresh && existing && pending.length === 0 ? existing.leading : pending
-      byRowId.set(message.rowId, { message, leading })
+      byRowId.set(rowId, { message, leading })
       pending = []
     }
 

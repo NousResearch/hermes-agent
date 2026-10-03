@@ -308,7 +308,12 @@ class PooledCredential:
     @property
     def runtime_base_url(self) -> Optional[str]:
         if self.provider == "nous":
-            return self.inference_base_url or self.base_url
+            # Pool rows retain the Portal-provided inference URL, but an
+            # operator's scoped override must win whenever an entry is read.
+            # ``_swap_credential`` reads this property after 401 recovery, so
+            # applying the overlay here keeps the retry on the same host as
+            # the initial request.
+            return get_secret_str("NOUS_INFERENCE_BASE_URL", "").strip().rstrip("/") or self.inference_base_url or self.base_url
         if self.provider == "openai-codex":
             # Pool rows keep the canonical ChatGPT URL; the profile-scoped proxy override must win
             # for every reader of the row — initial resolution AND a 401/429 rotation

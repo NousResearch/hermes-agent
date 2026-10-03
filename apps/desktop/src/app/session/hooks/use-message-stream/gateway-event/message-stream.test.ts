@@ -56,3 +56,43 @@ describe('handleMessageStreamEvent session-control integration', () => {
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledWith('s1')
   })
 })
+
+describe('message.user_echo (#55564)', () => {
+  type EchoState = { messages: { id: string; role: string; rowId?: number }[]; streamId: null }
+
+  function echo(payload: Record<string, unknown>, state: EchoState, seq = 7) {
+    const ctx = context('message.user_echo')
+    ctx.event = { type: 'message.user_echo', seq } as GatewayEventContext['event']
+    ctx.payload = payload as GatewayEventContext['payload']
+    expect(handleMessageStreamEvent(ctx)).toBe(true)
+
+    const update = vi.mocked(ctx.deps.updateSessionState).mock.calls[0]?.[1] as unknown as
+      | ((s: EchoState) => EchoState & { busy?: boolean })
+      | undefined
+
+    return update ? update(state) : null
+  }
+
+  const empty = (): EchoState => ({ messages: [], streamId: null })
+
+  it('seeds a user bubble for a prompt submitted by another client', () => {
+    const next = echo({ text: 'hi from elsewhere', row_id: 42 }, empty())
+
+    expect(next?.messages).toHaveLength(1)
+    expect(next?.messages[0]).toMatchObject({ role: 'user', rowId: 42 })
+    expect(next?.busy).toBe(true)
+  })
+
+  it('does not double a bubble on replay or when the row is already hydrated', () => {
+    const once = echo({ text: 'hi', row_id: 42 }, empty())!
+    expect(echo({ text: 'hi', row_id: 42 }, once)?.messages).toHaveLength(1)
+
+    const hydrated: EchoState = { messages: [{ id: '1700-0-user', role: 'user', rowId: 42 }], streamId: null }
+    expect(echo({ text: 'hi', row_id: 42 }, hydrated)?.messages).toHaveLength(1)
+  })
+
+  it('ignores hidden and empty echoes', () => {
+    expect(echo({ text: 'scaffolding', display_kind: 'hidden' }, empty())).toBeNull()
+    expect(echo({ text: '   ' }, empty())).toBeNull()
+  })
+})

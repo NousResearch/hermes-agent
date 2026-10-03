@@ -108,6 +108,20 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 event("message.start", None, doc="A turn began streaming; no payload.")
 
 
+class MessageUserEchoPayload(Payload):
+    """``tui_gateway/methods_prompt.py`` prompt.submit user-echo (#55564): the submitted
+    text echoed to every OTHER transport watching the session (the submitter renders its own
+    optimistic bubble). ``display_kind`` mirrors the submit's; the row id lets clients dedupe
+    against the durable row a resume replays. ``text`` is the sanitized submit text."""
+    text: str
+    display_kind: str | None = None
+    row_id: int | None = None
+
+
+event("message.user_echo", MessageUserEchoPayload,
+      doc="A user message arrived from another client watching this session (#55564): render it as a user bubble.")
+
+
 class StreamDeltaPayload(Payload):
     """``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),
     ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``

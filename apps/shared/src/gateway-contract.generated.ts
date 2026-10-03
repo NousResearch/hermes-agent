@@ -4541,6 +4541,12 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+/** ``tui_gateway/methods_prompt.py`` prompt.submit user-echo (#55564): the submitted text echoed to every OTHER transport watching the session (the submitter renders its own optimistic bubble). ``display_kind`` mirrors the submit's; the row id lets clients dedupe against the durable row a resume replays. ``text`` is the sanitized submit text. */
+export interface MessageUserEchoPayload {
+  text: string
+  display_kind?: string | null
+  row_id?: number | null
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5732,6 +5738,8 @@ export interface BackendGatewayEventMap {
   'message.reaction': MessageReactionPayload
   /** A turn began streaming; no payload. */
   'message.start': Record<string, never>
+  /** A user message arrived from another client watching this session (#55564): render it as a user bubble. */
+  'message.user_echo': MessageUserEchoPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */
@@ -5861,6 +5869,7 @@ export const GATEWAY_EVENT_TYPES = [
   'message.interim',
   'message.reaction',
   'message.start',
+  'message.user_echo',
   'moa.aggregating',
   'moa.phase',
   'moa.progress',

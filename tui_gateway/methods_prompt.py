@@ -236,6 +236,40 @@ def _pending_reaction_notes(session: dict) -> str:
 
 # ── prompt.submit pieces ────────────────────────────────────────────────────
 
+
+def _echo_external_submit_to_session_peers(sid: str, session: dict, text: Any,
+                                           display_kind: str | None, row_id: int | None) -> None:
+    """#55564: announce a user message submitted from ANOTHER client to every other peer.
+
+    An external prompt.submit (a second window, the CLI against a Desktop-owned session) attaches
+    additively via FanoutTransport and streams the turn to everyone, but the submitted user text
+    itself reached only the submitter — Desktop windows watching the session saw the assistant
+    answer an invisible prompt (indicator-only chrome, no user bubble). Emit ``message.user_echo``
+    through the session transport so every attached client (and, via the replay ring, a window
+    that reconnects mid-turn) can seed the user bubble; the submitter's own transport is skipped
+    because it already rendered its optimistic bubble and would otherwise double it.
+    """
+    if not isinstance(text, str) or not text.strip() or display_kind == "hidden":
+        return
+    submitter = current_transport()
+    peers = [peer for peer in _session_live_transports(session) if peer is not submitter]
+    if not peers:
+        return
+    payload: dict = {"text": text}
+    if display_kind:
+        payload["display_kind"] = display_kind
+    if isinstance(row_id, int):
+        payload["row_id"] = row_id
+    frame = _event_frame("message.user_echo", sid, payload)
+    from tui_gateway.event_replay import _stamp_event
+    _stamp_event(frame)
+    for peer in peers:
+        try:
+            peer.write(frame)
+        except Exception:
+            logger.debug("message.user_echo delivery failed; peer will replay on resume", exc_info=True)
+
+
 def _typed_stop_phrase_response(rid, text):
     """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
     mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
@@ -781,6 +815,10 @@ def _(rid, params: dict) -> dict:
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):
         survivor_fields["user_row_id"] = staged_user["_row_id"]
+    # A submit from another client (CLI against a Desktop-owned session, a second window) must
+    # reach the session's OTHER watchers as a user bubble, not indicator-only chrome (#55564).
+    _echo_external_submit_to_session_peers(
+        sid, session, text, display_kind, _message_row_id(staged_user) if isinstance(staged_user, dict) else None)
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)

@@ -817,6 +817,22 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
     }
   }
 
+  // ponytail: single re-read guard in the shared cleanup; per-attempt supersede
+  // handling if lock churn ever needs finer reconciliation.
+  // A superseded spawn's catch must not delete the newer attempt's lock: the
+  // lock is keyed by spawnNonce, so only remove it when it still names our
+  // spawn (or is already gone/unreadable). Our own pid kill + per-nonce log
+  // removal above stay unconditional — they cannot hit the newer owner.
+  try {
+    const current = await readLockfile(ssh, ownershipId)
+
+    if (current && lock?.spawnNonce && current.spawnNonce !== lock.spawnNonce) {
+      return
+    }
+  } catch {
+    // best effort: fall through and remove
+  }
+
   await removeLockfile(ssh, ownershipId)
 }
 

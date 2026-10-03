@@ -2216,7 +2216,28 @@ test('connect() post-spawn cleanup that cannot prove ownership keeps the origina
 
   assert.ok(
     !ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
-    'record must survive for the next connect to reap'
+    'record must survive for the next connect to reap'  )
+})
+
+test('cleanupStale never deletes a newer owner lock (superseded spawn race #126006)', async () => {
+  const nonceA = 'aaaaaaaaaaaaaaaa'
+  const nonceB = 'bbbbbbbbbbbbbbbb'
+  const lockB = ownedLock({ spawnNonce: nonceB, pid: 777, logPath: spawnLogPath(OWNERSHIP_ID, nonceB) })
+  const ssh = fakeSsh([
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/cat .*backend\.lock\.json/, JSON.stringify(lockB)]
+  ])
+  await cleanupStale(ssh, OWNERSHIP_ID, {
+    pid: 111,
+    spawnNonce: nonceA,
+    hermesPath: '/x/hermes',
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, nonceA)
+  })
+  assert.ok(ssh.calls.some(c => /kill 111\b/.test(c)), 'superseded spawn still reaps its own orphan pid')
+  assert.ok(
+    !ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
+    'RED: superseded attempt deleted the newer owner lock'
   )
 })
 

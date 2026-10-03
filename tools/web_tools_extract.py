@@ -76,13 +76,60 @@ def _refuse_all(error: str):
 def _merge_in_order(
     total: int, fixed: Dict[int, dict], fetch_positions: List[int], fetch_urls: List[str], results: List[dict]
 ) -> List[dict]:
-    """Rebuild a ``total``-long result list: *fixed* entries by position, fetched *results* at
-    *fetch_positions* (a short provider list yields ``_NO_RESULT_ERROR`` entries for the rest)."""
+    """Rebuild a ``total``-long result list: *fixed* entries by position, fetched *results* matched
+    by URL identity to *fetch_urls* at *fetch_positions* (out-of-order or missing provider entries
+    are reordered or filled with ``_NO_RESULT_ERROR``)."""
     merged = dict(fixed)
+    requested = set(fetch_urls)
+
+    # If every result lacks a recognizable URL and counts match, fall back to positional mapping
+    # for backwards compatibility with test stubs or providers returning anonymous entries.
+    has_urls = any(_result_url(r, requested) for r in results if isinstance(r, dict))
+    if not has_urls and len(results) == len(fetch_urls):
+        for pos, position in enumerate(fetch_positions):
+            merged[position] = results[pos]
+        return [merged[i] for i in range(total)]
+
+    by_url: Dict[str, List[dict]] = {}
+    for result in results:
+        if isinstance(result, dict):
+            key = _result_url(result, requested)
+            if key:
+                by_url.setdefault(key, []).append(result)
+
     for pos, position in enumerate(fetch_positions):
-        missing = _result_entry(fetch_urls[pos], _NO_RESULT_ERROR)
-        merged[position] = results[pos] if pos < len(results) else missing
+        url = fetch_urls[pos]
+        entries = by_url.get(url)
+        hit = entries.pop(0) if entries else None
+        if hit is not None:
+            merged[position] = hit
+        else:
+            merged[position] = _result_entry(url, _NO_RESULT_ERROR)
+
     return [merged[i] for i in range(total)]
+
+
+def _result_url(result: dict, requested: Optional[set[str]] = None) -> Optional[str]:
+    """Identify the requested URL corresponding to *result* using ``url`` or ``metadata.sourceURL``."""
+    if not isinstance(result, dict):
+        return None
+    url = result.get("url")
+    meta = result.get("metadata")
+    source = meta.get("sourceURL") if isinstance(meta, dict) else None
+    if requested:
+        if source and source in requested:
+            return source
+        if url and url in requested:
+            return url
+        if source and source.rstrip("/") in requested:
+            return source.rstrip("/")
+        if url and url.rstrip("/") in requested:
+            return url.rstrip("/")
+        if source and (source + "/") in requested:
+            return source + "/"
+        if url and (url + "/") in requested:
+            return url + "/"
+    return url or source
 
 
 def _validate_extract_urls(urls: List[Any]):
@@ -222,6 +269,4 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
         return [cached_results[i] for i in range(len(safe_urls))]
     logger.info("Web extract via %s: %d URL(s)", provider.name, len(fetch_urls))
     results = await _dispatch_extract(provider, fetch_urls, format)
-    if not cached_results:
-        return results
     return _merge_in_order(len(safe_urls), cached_results, fetch_positions, fetch_urls, results)

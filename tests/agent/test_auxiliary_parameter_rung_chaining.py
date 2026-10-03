@@ -16,6 +16,10 @@ from agent.auxiliary_client import (
     _ladder_parameter_rungs,
     _LadderRoute,
 )
+from agent.auxiliary_reasoning_floor import (
+    REASONING_FLOOR_EFFORT,
+    known_reasoning_floor,
+)
 
 
 class _Bad400(Exception):
@@ -144,3 +148,83 @@ def test_rate_limit_after_parameter_strip_falls_through_to_later_rungs():
 
     assert resp is None and err is rate_limited
     assert "max_tokens" not in final_kwargs
+
+
+# Z.ai China (open.bigmodel.cn) and Chinese relays answer a thinking-off request in Chinese. The body
+# names no ASCII reasoning field at all, so a classifier that only reads English markers sees nothing
+# to match — and the auxiliary floor rung must still step the disable up to ``low`` for the session.
+_ZH_MANDATORY_400 = (
+    'Error code: 400 - {"error":{"code":"1214","message":"'
+    '该模型始终思考，不支持关闭思考；'
+    '请使用 low、high 或 max"}}'
+)
+
+
+def _zh_mandatory_client():
+    """Z.ai China: 400 while reasoning is switched off, accepts the request at the floor effort."""
+    client = MagicMock(base_url="https://open.bigmodel.cn/api/paas/v4")
+    disabled = {"none", "off", "disabled", "false", "0"}
+
+    def create(**kwargs):
+        body = dict(kwargs)
+        body.update(body.pop("extra_body", None) or {})
+        reasoning = body.get("reasoning")
+        wants_thinking_off = (
+            str(body.get("reasoning_effort", "")).strip().lower() in disabled
+            or reasoning == {"enabled": False}
+        )
+        if wants_thinking_off:
+            raise _Bad400(_ZH_MANDATORY_400)
+        return _ok()
+
+    client.chat.completions.create.side_effect = create
+    return client
+
+
+def _zh_route(client):
+    return _LadderRoute(**{**dict.fromkeys(_LadderRoute._fields), "client": client,
+                           "task": "title_generation", "tag": "", "async_mode": False,
+                           "base_info": "", "resolved_provider": "custom"})
+
+
+def test_chinese_mandatory_400_steps_the_call_up_to_the_floor_effort():
+    """A disable refused in Chinese must land on the reasoning-floor rung like the English wordings do:
+    the same title request goes out again at ``low`` instead of the call 400ing into an untitled session."""
+    client = _zh_mandatory_client()
+    kwargs = {"model": "glm-5.3", "messages": [], "max_tokens": 64, "reasoning_effort": "none"}
+    learned = set(known_reasoning_floor.__globals__["_FLOORED_ROUTES"])
+    try:
+        resp, err, final_kwargs = _drive_ladder(
+            _ladder_parameter_rungs(_Bad400(_ZH_MANDATORY_400), _zh_route(client), kwargs, 64),
+            lambda step: step.args[0].chat.completions.create(**step.args[1]))
+        assert err is None and resp.choices[0].message.content == "ok"
+        assert final_kwargs["reasoning_effort"] == REASONING_FLOOR_EFFORT
+        # The ladder is entered with the rejection already in hand, so its only call is the stepped-up
+        # retry: nothing goes out at the refused "none" a second time.
+        assert [c.kwargs.get("reasoning_effort")
+                for c in client.chat.completions.create.call_args_list] == [REASONING_FLOOR_EFFORT]
+    finally:
+        known_reasoning_floor.__globals__["_FLOORED_ROUTES"].clear()
+        known_reasoning_floor.__globals__["_FLOORED_ROUTES"].update(learned)
+
+
+def test_route_learned_from_a_chinese_400_sends_later_aux_calls_at_the_floor():
+    """The memoised (route, model) pair is what stops the guaranteed 400 from repeating every session:
+    the next thinking-off aux call on it leaves at the floor without paying the rejection first."""
+    client = _zh_mandatory_client()
+    kwargs = {"model": "glm-5.3", "messages": [], "max_tokens": 64,
+              "extra_body": {"reasoning": {"enabled": False}}}
+    learned = set(known_reasoning_floor.__globals__["_FLOORED_ROUTES"])
+    try:
+        resp, err, _ = _drive_ladder(
+            _ladder_parameter_rungs(_Bad400(_ZH_MANDATORY_400), _zh_route(client), kwargs, 64),
+            lambda step: step.args[0].chat.completions.create(**step.args[1]))
+        assert err is None and resp.choices[0].message.content == "ok"
+        retried = client.chat.completions.create.call_args_list[-1].kwargs
+        assert retried["extra_body"]["reasoning"] == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
+        assert known_reasoning_floor(
+            {"enabled": False}, "custom", None, "glm-5.3", "title_generation"
+        ) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
+    finally:
+        known_reasoning_floor.__globals__["_FLOORED_ROUTES"].clear()
+        known_reasoning_floor.__globals__["_FLOORED_ROUTES"].update(learned)

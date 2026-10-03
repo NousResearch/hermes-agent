@@ -15,6 +15,57 @@ from tools.file_tools import (
 )
 
 
+class TestSpilloverExpiryNote:
+    """#126351: a read that misses a spillover cache path must say the saved copy
+    expired, not return a bare "File not found" the model may retry forever."""
+
+    @staticmethod
+    def _not_found_ops(missing):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = None
+        result_obj.to_dict.return_value = {
+            "error": f"File not found: {missing}",
+            "similar_files": [],
+        }
+        mock_ops.read_file.return_value = result_obj
+        return mock_ops
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_missing_spillover_path_explains_expiry(self, mock_get, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from tools.file_tools_read_tracking import _read_tracker
+        from tools.tool_result_storage import get_spillover_dir
+
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        missing = spill_dir / "tc_gone.txt"
+        mock_get.return_value = self._not_found_ops(missing)
+
+        tid = "spill-expiry-note"
+        _read_tracker.pop(tid, None)
+        out = json.loads(read_file_tool(str(missing), task_id=tid))
+
+        assert "File not found" in out["error"]
+        assert "pruned" in out["error"]
+        assert "Re-run the original tool" in out["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_ordinary_missing_path_has_no_expiry_note(self, mock_get, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from tools.file_tools_read_tracking import _read_tracker
+
+        missing = tmp_path / "ordinary" / "gone.txt"
+        mock_get.return_value = self._not_found_ops(missing)
+
+        tid = "spill-expiry-none"
+        _read_tracker.pop(tid, None)
+        out = json.loads(read_file_tool(str(missing), task_id=tid))
+
+        assert "File not found" in out["error"]
+        assert "pruned" not in out["error"]
+
+
 class TestReadFileHandler:
 
 

@@ -28,6 +28,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
@@ -584,7 +585,7 @@ _STATUS_HANDLERS: dict[str, Any] = {
         conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
-    "review": lambda conn, tid, p: kanban_db.request_review(
+    "review": lambda conn, tid, p: kbr.request_review(
         conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
     "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),

@@ -27,8 +27,8 @@ def _fmt_pending_list(subsystem: str) -> str:
             lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
-    if subsystem == wa.SKILLS:
-        lines.append("Review full diff: /skills diff <id>")
+    if subsystem in (wa.SKILLS, wa.MEMORY):
+        lines.append(f"Review full diff: /{subsystem} diff <id>")
     return "\n".join(lines)
 
 
@@ -50,8 +50,12 @@ def handle_pending_subcommand(
         return _approve(subsystem, rest, memory_store)
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
-    if sub == "diff" and subsystem == wa.SKILLS:
-        return _diff(rest)
+    if sub == "diff":
+        if subsystem == wa.MEMORY:
+            from hermes_cli.memory_pending_review import memory_pending_diff
+            return memory_pending_diff(rest, memory_store=memory_store)
+        if subsystem == wa.SKILLS:
+            return _diff(rest)
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
         return _set_approval(subsystem, rest, set_mode_fn)
     return None  # not ours — caller handles

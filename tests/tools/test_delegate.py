@@ -1260,6 +1260,61 @@ class TestChildCredentialLeasing(unittest.TestCase):
         self.assertEqual(child._swap_credential.call_args[0][0].base_url, azure)
         self.assertEqual(pool._active_leases, {"az": 2})
 
+    @staticmethod
+    def _codex_lease_fixture(pool_tokens):
+        """A real Codex pool and a child built on ``tok-a`` whose ``_swap_credential`` is the real one;
+        ``_replace_primary_openai_client`` is the rebuild seam that logs ``credential_rotation``."""
+        from types import MethodType, SimpleNamespace
+        from agent.credential_pool import CredentialPool, PooledCredential
+        from run_agent import AIAgent
+
+        codex = "https://chatgpt.com/backend-api/codex"
+        pool = CredentialPool("openai-codex", [
+            PooledCredential(provider="openai-codex", id=eid, label=eid, auth_type="oauth", priority=0,
+                             source="manual:device_code", access_token=token, base_url=codex)
+            for eid, token in pool_tokens.items()
+        ])
+        child = SimpleNamespace(
+            provider="openai-codex", model="gpt-5.3-codex", api_mode="codex_responses", api_key="tok-a",
+            base_url=codex, _client_kwargs={"api_key": "tok-a", "base_url": codex}, _credential_pool=pool,
+            _credential_pool_entry_id=None, client=object(),
+            _reapply_route_client_config=MagicMock(), _replace_primary_openai_client=MagicMock(),
+        )
+        child._swap_credential = MethodType(AIAgent._swap_credential, child)
+        return pool, child
+
+    def test_lease_of_the_credential_the_child_already_holds_keeps_its_client(self):
+        """A sole-entry pool leases back the key the child was built with: no ``credential_rotation`` rebuild, but
+        the lease is held and the child is attributed to the leased entry."""
+        from tools.delegate_tool_child_run import _lease_child_credential
+
+        pool, child = self._codex_lease_fixture({"a": "tok-a"})
+        client = child.client
+
+        self.assertEqual(_lease_child_credential(child), (pool, "a"))
+        child._replace_primary_openai_client.assert_not_called()
+        self.assertIs(child.client, client)
+        self.assertEqual((child.api_key, child._credential_pool_entry_id), ("tok-a", "a"))
+        self.assertEqual(pool._active_leases, {"a": 1})
+
+    def test_lease_of_a_different_credential_still_swaps_the_child_onto_it(self):
+        """Another entry, or the same entry after a token refresh, is a real credential change: the child adopts
+        the leased key and rebuilds its client."""
+        from tools.delegate_tool_child_run import _lease_child_credential
+
+        for label, tokens, pre_leased, leased_id, leased_token in (
+            ("another entry", {"a": "tok-a", "b": "tok-b"}, "a", "b", "tok-b"),
+            ("refreshed token", {"a": "tok-a-refreshed"}, None, "a", "tok-a-refreshed"),
+        ):
+            with self.subTest(label):
+                pool, child = self._codex_lease_fixture(tokens)
+                if pre_leased:
+                    pool.acquire_lease(pre_leased)  # tilt least-leased selection away from the child's own entry
+
+                self.assertEqual(_lease_child_credential(child), (pool, leased_id))
+                child._replace_primary_openai_client.assert_called_once_with(reason="credential_rotation")
+                self.assertEqual((child.api_key, child._credential_pool_entry_id), (leased_token, leased_id))
+
 
 class TestDelegateHeartbeat(unittest.TestCase):
     """Heartbeat propagates child activity to parent during delegation.

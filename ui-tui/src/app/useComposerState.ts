@@ -105,6 +105,27 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
+/** Resolve `/image` against the composer that exists after the slash command clears. */
+export async function resolveImagePathAttachment(
+  request: () => Promise<ImageAttachResponse & { path?: string }>,
+  readCurrentInput: () => string,
+  attach: (
+    attached: ImageAttachResponse & { path?: string },
+    value: string,
+    cursor: number
+  ) => ComposerPasteResult
+): Promise<ComposerPasteResult | null> {
+  const attached = await request()
+
+  if (!attached?.name) {
+    return null
+  }
+
+  const value = readCurrentInput()
+
+  return attach(attached, value, value.length)
+}
+
 export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInputState] = useState('')
   const [inputBuf, setInputBuf] = useState<string[]>([])
@@ -367,25 +388,26 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   )
 
   const attachImagePath = useCallback(
-    (path: string) =>
-      appendAttachment(async (value, cursor) => {
-        const sid = getUiState().sid
+    (path: string) => {
+      const sid = getUiState().sid
 
-        if (!sid || !path.trim()) {
-          return null
-        }
+      if (!sid || !path.trim()) {
+        return
+      }
 
-        const attached = await gw
-          .request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
-          .catch((e: Error) => {
-            sys(`error: ${e.message}`)
-
-            return null
-          })
-
-        return attached?.name ? attachImageToken(attached, value, cursor) : null
-      }),
-    [appendAttachment, attachImageToken, gw, sys]
+      void resolveImagePathAttachment(
+        () => gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid }),
+        () => inputRef.current,
+        attachImageToken
+      )
+        .then(next => {
+          if (next) {
+            setInput(next.value)
+          }
+        })
+        .catch((e: Error) => sys(`error: ${e.message}`))
+    },
+    [attachImageToken, gw, setInput, sys]
   )
 
   const openEditor = useCallback(async () => {

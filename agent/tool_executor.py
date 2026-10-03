@@ -1512,6 +1512,42 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
     return function_result, tool_duration, effect_disposition
 
 
+def _truncate_error_preview(text: str, limit: int = 200) -> str:
+    """Truncate a serialized tool result for the ``returned error`` log line.
+
+    A plain ``text[:limit]`` slice cuts inside the free-text ``output`` of
+    JSON-shaped results (terminal's ``finalize_foreground_result`` payload),
+    so the logged line stops mid-string as invalid JSON and loses
+    ``exit_code`` / ``error`` -- the only fields that classify the failure.
+    When the preview parses as a JSON object carrying those status fields,
+    truncate the long fields instead and re-serialize so the line stays
+    valid JSON with the failure classification intact.
+    """
+    if len(text) <= limit:
+        return text
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            data = json.loads(stripped)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and ("exit_code" in data or "error" in data):
+            preview = dict(data)
+            status_json = json.dumps({k: v for k, v in preview.items() if k != "output"}, default=str)
+            room = max(24, limit - len(status_json) - 24)
+            output = preview.get("output")
+            if isinstance(output, str) and len(output) > room:
+                preview["output"] = output[:room] + "...[truncated]"
+            err = preview.get("error")
+            if isinstance(err, str) and len(err) > 96:
+                preview["error"] = err[:96] + "..."
+            try:
+                return json.dumps(preview, default=str)
+            except (TypeError, ValueError):
+                return text[:limit]
+    return text[:limit]
+
+
 def _append_batch_results(agent, messages: list, effective_task_id: str, batch: _ConcurrentBatch, budget: BudgetConfig) -> bool:
     """Append every slot's result in original call order; returns False at the first
     failed flush (the caller must stop the batch)."""
@@ -1533,7 +1569,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
             effect_disposition=effect_disposition, observed=r is not None,
-            error_preview=lambda res: _multimodal_text_summary(res)[:200],
+            error_preview=lambda res: _truncate_error_preview(_multimodal_text_summary(res)),
         )
         if committed is None:
             return False
@@ -1804,7 +1840,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
         effect_disposition="unknown" if _execution_timed_out else None, observed=True,
-        error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
+        error_preview=lambda res: _truncate_error_preview(res) if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,
     )

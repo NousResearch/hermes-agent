@@ -141,37 +141,14 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # providers appear automatically. Also carries two non-catalog rows the Accounts tab needs:
 # the Anthropic credential-status card and the synthetic ``claude-code`` row.
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
-_OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
-    # status_fn None → dispatched via auth.get_<provider>_auth_status.
-    {"id": "nous", "name": "Nous Portal", "flow": "device_code", "cli_command": "hermes auth add nous",
-     "docs_url": "https://portal.nousresearch.com", "status_fn": None},
-    {"id": "openai-codex", "name": "ChatGPT or Codex Subscription", "flow": "device_code",
-     "cli_command": "hermes auth add openai-codex", "docs_url": "https://platform.openai.com/docs",
-     "status_fn": None},
-    {"id": "qwen-oauth", "name": "Qwen (via Qwen CLI)", "flow": "external",
-     "cli_command": "hermes auth add qwen-oauth", "docs_url": "https://github.com/QwenLM/qwen-code",
-     "status_fn": None},
-    # Structurally device-code (verification URI + user code + token polling) with a PKCE
-    # code-binding extension that doesn't change the operator UX.
-    {"id": "minimax-oauth", "name": "MiniMax (OAuth)", "flow": "device_code",
-     "cli_command": "hermes auth add minimax-oauth", "docs_url": "https://www.minimax.io", "status_fn": None},
-    # Device code works in remote shells/containers without a reachable 127.0.0.1 callback.
-    {"id": "xai-oauth", "name": "xAI Grok OAuth (SuperGrok / Premium+)", "flow": "device_code",
-     "cli_command": "hermes auth add xai-oauth",
-     "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth", "status_fn": None},
-    # `copilot login` is the non-interactive subcommand; `copilot /login` is not valid
-    # (slash-commands only exist inside an interactive session).
-    {"id": "copilot-acp", "name": "GitHub Copilot (ACP)", "flow": "external", "cli_command": "copilot login",
-     "docs_url": "https://docs.github.com/en/copilot", "status_fn": _copilot_acp_status},
-    # Anthropic / Claude entries sit at the bottom. Deliberately flow == "external": an
-    # in-dashboard Connect button would let a scriptable HTTP endpoint mint Claude Pro/Max
-    # subscription tokens outside Anthropic's own client, against its OAuth usage policies.
-    # Login works via the terminal (`hermes auth add anthropic`) or a plain API key.
-    {"id": "anthropic", "name": "Anthropic Account", "flow": "external", "cli_command": "hermes auth add anthropic",
-     "docs_url": "https://docs.claude.com/en/api/getting-started", "status_fn": _anthropic_oauth_status},
-    {"id": "claude-code", "name": "Anthropic OAuth: Required Extra Usage Credits to Use Subscription",
-     "flow": "external", "cli_command": "claude setup-token",
-     "docs_url": "https://docs.claude.com/en/docs/claude-code", "status_fn": _claude_code_only_status},
+from hermes_cli.provider_catalog import OAUTH_FLOW_OVERRIDES
+_OAUTH_STATUS_FNS = {
+    "copilot-acp": _copilot_acp_status,
+    "anthropic": _anthropic_oauth_status,
+    "claude-code": _claude_code_only_status,
+}
+_OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = tuple(
+    {**row, "status_fn": _OAUTH_STATUS_FNS.get(row["id"])} for row in OAUTH_FLOW_OVERRIDES
 )
 _oauth_sessions: Dict[str, Dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()

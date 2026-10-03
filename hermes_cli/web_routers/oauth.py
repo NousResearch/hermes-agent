@@ -9,7 +9,6 @@ import contextlib
 import logging
 import os
 import secrets
-import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -590,39 +589,17 @@ async def _start_device_code_flow(provider_id: str, profile: Optional[str] = Non
     return await starter(profile)
 
 
-def _claude_code_disconnect_command(platform: str) -> str:
-    """Host-native command that removes Claude Code's borrowed credential file.
-
-    Windows must not emit ``rm -f``. PowerShell aliases ``rm`` to ``Remove-Item``,
-    and ``-f`` binds both ``-Force`` and ``-Filter`` (AmbiguousParameter).
-    """
-    if platform == "win32":
-        literal = '"$HOME/.claude/.credentials.json"'
-        return (
-            f"if (Test-Path -LiteralPath {literal}) {{ "
-            f"Remove-Item -LiteralPath {literal} -Force -ErrorAction Stop }}"
-        )
-    rm_file = "rm -f ~/.claude/.credentials.json"
-    if platform == "darwin":
-        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
-    return rm_file
-
-
 def _oauth_provider_disconnect_command(
     provider: Dict[str, Any], platform: Optional[str] = None
 ) -> Optional[str]:
     """Shell command that clears an external provider's credentials, or None.
 
-    The disconnect API never silently deletes files another CLI owns; the GUI runs
-    this in its embedded terminal so the user sees exactly what executes. Claude Code
-    has no scriptable logout, so remove what logout would: the macOS Keychain entry
-    and/or ``~/.claude/.credentials.json`` (the two ``read_claude_code_credentials()`` sources).
     ``platform`` is the host the command will run on (default: this process). Pass it
-    explicitly in tests; do not fake ``sys.platform``.
+    explicitly in tests; do not fake ``sys.platform``. The one authority is
+    ``provider_catalog.disconnect_command_for``.
     """
-    if provider.get("flow") != "external" or provider.get("id") != "claude-code":
-        return None
-    return _claude_code_disconnect_command(platform or sys.platform)
+    from hermes_cli.provider_catalog import disconnect_command_for
+    return disconnect_command_for(provider.get("id", ""), provider.get("flow", ""), platform)
 
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:

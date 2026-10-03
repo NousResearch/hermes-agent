@@ -111,3 +111,96 @@ def provider_catalog() -> list[ProviderDescriptor]:
 def provider_catalog_by_slug() -> dict[str, ProviderDescriptor]:
     """Convenience: the catalog keyed by slug."""
     return {d.slug: d for d in provider_catalog()}
+
+
+# ---------------------------------------------------------------------------
+# Login-flow metadata
+# ---------------------------------------------------------------------------
+#
+# These rows used to live only inside ``hermes_cli/web_server_oauth.py`` as
+# ``_OAUTH_PROVIDER_CATALOG`` — welded to the dashboard process and unreachable from any
+# surface that does not run it. The module docstring above already names that tuple as one
+# of the hand-maintained lists this module exists to unify, so the DATA moves here and the
+# dashboard keeps only the binding of its per-provider ``status_fn`` callables.
+#
+# ``flow`` describes the login SHAPE so any client can pick the right UI:
+#   ``pkce``        — open a URL, paste the callback code back
+#   ``device_code`` — show a user code + verification URI, poll for the token
+#   ``external``    — delegated to a third-party CLI; Hermes only reads it
+#
+# Two rows are deliberately NOT catalog providers but must still be offered as sign-ins:
+# the Anthropic account card and the synthetic ``claude-code`` subscription row.
+OAUTH_FLOW_OVERRIDES: tuple[dict, ...] = ({'id': 'nous',
+  'name': 'Nous Portal',
+  'flow': 'device_code',
+  'cli_command': 'hermes auth add nous',
+  'docs_url': 'https://portal.nousresearch.com'},
+ {'id': 'openai-codex',
+  'name': 'ChatGPT or Codex Subscription',
+  'flow': 'device_code',
+  'cli_command': 'hermes auth add openai-codex',
+  'docs_url': 'https://platform.openai.com/docs'},
+ {'id': 'qwen-oauth',
+  'name': 'Qwen (via Qwen CLI)',
+  'flow': 'external',
+  'cli_command': 'hermes auth add qwen-oauth',
+  'docs_url': 'https://github.com/QwenLM/qwen-code'},
+ {'id': 'minimax-oauth',
+  'name': 'MiniMax (OAuth)',
+  'flow': 'device_code',
+  'cli_command': 'hermes auth add minimax-oauth',
+  'docs_url': 'https://www.minimax.io'},
+ {'id': 'xai-oauth',
+  'name': 'xAI Grok OAuth (SuperGrok / Premium+)',
+  'flow': 'device_code',
+  'cli_command': 'hermes auth add xai-oauth',
+  'docs_url': 'https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth'},
+ {'id': 'copilot-acp',
+  'name': 'GitHub Copilot (ACP)',
+  'flow': 'external',
+  'cli_command': 'copilot login',
+  'docs_url': 'https://docs.github.com/en/copilot'},
+ {'id': 'anthropic',
+  'name': 'Anthropic Account',
+  'flow': 'external',
+  'cli_command': 'hermes auth add anthropic',
+  'docs_url': 'https://docs.claude.com/en/api/getting-started'},
+ {'id': 'claude-code',
+  'name': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
+  'flow': 'external',
+  'cli_command': 'claude setup-token',
+  'docs_url': 'https://docs.claude.com/en/docs/claude-code'})
+
+
+def disconnect_command_for(slug: str, flow: str, platform: str | None = None) -> str | None:
+    """The documented command that clears an EXTERNAL provider's credentials.
+
+    External providers store credentials outside Hermes, so Hermes never
+    deletes them behind a silent API call — it hands the operator the exact
+    command instead. Returns None for providers we cannot safely clear (the UI
+    shows a manual hint) and for every non-external flow.
+
+    Claude Code has no scriptable logout (only the interactive ``/logout``), so
+    the command removes the same two sources ``read_claude_code_credentials()``
+    consults, host-native per ``platform`` (default: this process).
+    """
+    if flow != "external":
+        return None
+    if slug == "claude-code":
+        import sys as _sys
+
+        host = platform or _sys.platform
+        if host == "win32":
+            literal = '"$HOME/.claude/.credentials.json"'
+            return (
+                f"if (Test-Path -LiteralPath {literal}) {{ "
+                f"Remove-Item -LiteralPath {literal} -Force -ErrorAction Stop }}"
+            )
+        rm_file = "rm -f ~/.claude/.credentials.json"
+        if host == "darwin":
+            return (
+                'security delete-generic-password -s "Claude Code-credentials" '
+                f"2>/dev/null; {rm_file}"
+            )
+        return rm_file
+    return None

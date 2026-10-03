@@ -133,17 +133,21 @@ class _Work:
     error: str = ""
 
 
+def _target_key(target: Target) -> tuple[str, str]:
+    return (target.kind, target.name)
+
+
 class _Runner:
     """Resolved catalog facts and install work for one operation's rows."""
 
     def __init__(self, installer: HostInstaller):
         self.installer = installer
         self.op_id: Optional[str] = None
-        self.facts: Dict[str, Any] = {}  # row name -> PluginCatalogEntry | skill meta; never on the wire
-        self.work: Dict[str, _Work] = {}
+        self.facts: Dict[tuple[str, str], Any] = {}  # (kind, id) -> resolved fact; never on the wire
+        self.work: Dict[tuple[str, str], _Work] = {}
         # The Advanced values the user approved per row; Try again (env null) reuses them. Values
         # are credentials in part, so they stay here, off the target.
-        self.approved_env: Dict[str, Dict[str, str]] = {}
+        self.approved_env: Dict[tuple[str, str], Dict[str, str]] = {}
 
     # -- prepare: resolve each id and draw its row ------------------------------------------------
 
@@ -162,7 +166,7 @@ class _Runner:
             entry = self.installer.plugin_entry(target.name)
             if entry is None:
                 raise LookupError(f"'{target.name}' is not in the Hermes plugin catalog")
-            self.facts[target.name] = entry
+            self.facts[_target_key(target)] = entry
             target.extra = _plugin_row(entry)
             target.required_env = [{"name": name, "required": False, "secret": True, "default": ""}
                                    for name in entry.capabilities.requires_env]
@@ -171,7 +175,7 @@ class _Runner:
         meta = self.installer.skill_meta(target.name)
         if not meta:
             raise LookupError(f"'{target.name}' was not found in the skills hub")
-        self.facts[target.name] = meta
+        self.facts[_target_key(target)] = meta
         target.extra = {
             "display": str(meta.get("name") or _display(target.name)),
             "description": _first_sentence(meta.get("description") or ""),
@@ -182,9 +186,9 @@ class _Runner:
     # -- the card's answer ------------------------------------------------------------------------
 
     def approve(self, operation: ConnectionOperation, target: Target, env: Optional[Dict[str, str]]) -> None:
-        approved = {**self.approved_env.get(target.name, {}), **(env or {})}
+        approved = {**self.approved_env.get(_target_key(target), {}), **(env or {})}
         actor = Actor.user if target.state == TargetState.failed else Actor.backend_watcher
-        if target.name not in self.facts:  # failed at prepare: Try again resolves once more
+        if _target_key(target) not in self.facts:  # failed at prepare: Try again resolves once more
             try:
                 self._resolve(target)
             except Exception as exc:
@@ -194,7 +198,7 @@ class _Runner:
         if error:
             _fail(operation, target, error)
             return
-        self.approved_env[target.name] = approved
+        self.approved_env[_target_key(target)] = approved
         if not _move(operation, target, TargetState.initiated, actor, detail=""):
             return
         self._spawn(operation, target, approved)
@@ -205,7 +209,7 @@ class _Runner:
         ref = env.get("ref")
         if ref and not _COMMIT_SHA.match(ref):
             return "the pin must be a full 40-character commit SHA"
-        declared = set(target_declared_env(self.facts.get(target.name)))
+        declared = set(target_declared_env(self.facts.get(_target_key(target))))
         undeclared = sorted(k for k in env if k not in _OPTION_KEYS and k not in declared)
         if undeclared:
             return f"'{target.name}' does not declare {', '.join(undeclared)}"
@@ -213,7 +217,7 @@ class _Runner:
 
     def _spawn(self, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
         work = _Work()
-        self.work[target.name] = work
+        self.work[_target_key(target)] = work
 
         def body() -> None:
             try:
@@ -233,7 +237,7 @@ class _Runner:
         with target_scope(profile):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
-                identifier = str(self.facts[target.name].get("identifier") or target.name)
+                identifier = str(self.facts[_target_key(target)].get("identifier") or target.name)
                 return {"profile": profile, **self.installer.install_skill(identifier, force=force)}
             enable = _flag(env.get("enable"), True)
             result = self.installer.install_plugin(target.name, force=force, enable=enable, ref=env.get("ref") or None)
@@ -245,10 +249,10 @@ class _Runner:
 
     def observe(self, operation: ConnectionOperation) -> None:
         for target in operation.targets:
-            work = self.work.get(target.name)
+            work = self.work.get(_target_key(target))
             if operation.settled or target.state != TargetState.initiated or work is None or not work.done.is_set():
                 continue
-            self.work.pop(target.name, None)
+            self.work.pop(_target_key(target), None)
             if work.error:
                 _fail(operation, target, work.error)
                 continue
@@ -263,7 +267,7 @@ class _Runner:
         from agent.redact import redact_sensitive_text
 
         text = str(exc) or exc.__class__.__name__
-        for value in self.approved_env.get(target.name, {}).values():
+        for value in self.approved_env.get(_target_key(target), {}).values():
             if value and len(value) > 3:
                 text = text.replace(value, "[REDACTED]")
         return redact_sensitive_text(text, force=True) or "error"
@@ -347,13 +351,15 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
     for entry in answer.get("targets") or ():
         if not isinstance(entry, dict):
             continue
-        target = operation.target(str(entry.get("name") or "").strip())
+        name = str(entry.get("name") or "").strip()
+        kind = str(entry.get("kind") or "").strip() or None
+        target = operation.target(name, kind)
         if target is None:
             continue
         status = str(entry.get("status") or "").lower()
         if status == "skipped":
             try:
-                operation.transition(target.name, TargetState.skipped, Actor.user)
+                operation.transition(target.name, TargetState.skipped, Actor.user, kind=target.kind)
             except IllegalTransition:
                 if not target.resolved and not operation.settled:
                     raise

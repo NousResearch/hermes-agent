@@ -1,0 +1,17 @@
+name: hermes-quiet
+repo: https://github.com/steveafrost/hermes-quiet
+sha: 401b04ff2dc2447d5c3f40af1254d7fe8413013a
+subdir: codex-chat-look
+description: "Independent Catppuccin Latte/Mocha desktop theme with peach accents, SDK-native gateway/profile switching and host-owned session density. Legacy plugin identity: codex-chat-look. No self-updater or native layout overrides."
+maintainer: steveafrost
+tier: community
+category: desktop
+docs_url: https://github.com/steveafrost/hermes-quiet
+version: "2.0.0"
+readme: false
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

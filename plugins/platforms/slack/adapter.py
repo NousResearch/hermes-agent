@@ -4661,9 +4661,9 @@ class SlackAdapter(BasePlatformAdapter):
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
-            user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
-            reply_expected=self._slack_reply_expected(
+            user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, is_one_to_one=is_one_to_one_dm,
+            media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
+            channel_context=channel_context, reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
@@ -4685,7 +4685,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        media_text_inlined: List[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None,
+        is_one_to_one: bool = False) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4710,6 +4711,9 @@ class SlackAdapter(BasePlatformAdapter):
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))
+        # An IM is always the sender and the Bot alone (an MPIM is not): owner-only /group
+        # commands treat it as a private chat (gateway.group_chat_identity.is_private_source).
+        source.is_one_to_one = is_one_to_one
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.
@@ -6037,6 +6041,7 @@ class SlackAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
+        source.is_one_to_one = is_dm  # a D… conversation is an IM: the sender and the Bot alone
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),

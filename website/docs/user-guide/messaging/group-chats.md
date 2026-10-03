@@ -29,8 +29,9 @@ group, a channel, a thread, or a direct message that could hold more people) is 
 whole: everyone in it can read what `/group` shows there, and only people on that chat's admin
 list can use it.
 
-Platforms whose direct messages can include several people, such as Slack and Matrix, are
-always treated as shared (their direct messages still use `allow_admin_from`).
+Direct messages that can include several people, such as a Slack group DM or any Matrix
+direct room, are treated as shared (they still use `allow_admin_from`). A one-to-one Slack
+DM is private.
 
 ## Connect a chat
 

@@ -5191,9 +5191,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             if (
                 asst_anchored_cut < cut_idx
                 and allow_split_turn
-                and self._walk_tail_budget(
-                    messages, asst_anchored_cut, soft_ceiling, 0, cut_at_break=False
-                )[0] > asst_anchored_cut
+                and any(messages[i].get("tool_calls") for i in range(asst_anchored_cut, cut_idx))
+                and sum(
+                    _estimate_msg_budget_tokens(m) for m in messages[asst_anchored_cut:cut_idx]
+                ) > soft_ceiling
             ):
                 if not self.quiet_mode:
                     logger.debug(

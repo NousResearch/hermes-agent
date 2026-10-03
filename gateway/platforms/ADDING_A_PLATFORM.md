@@ -45,6 +45,11 @@ status display, gateway setup, and more.
   `deliver=<name>` job fires correctly but the actual send returns
   `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
   for end-to-end cron support.  See the docsite for the signature.
+- `direct_toolsets: tuple[str, ...]` — toolsets sent to the model directly
+  (never deferred behind tool search) in this platform's own sessions, for
+  tools that act on the surface the user is on (the device they are holding).
+  Other platforms' sessions keep deferring them and reach them through
+  `tool_call`.  MCP toolsets always defer.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.

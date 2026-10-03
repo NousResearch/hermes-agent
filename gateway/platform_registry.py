@@ -108,6 +108,10 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Toolsets sent to the model directly (never deferred behind tool search) in THIS platform's
+    # sessions: its own surface, e.g. the tools that drive the device the user is talking through.
+    # Other platforms' sessions keep deferring them (``tools/tool_search.py::session_direct_toolsets``).
+    direct_toolsets: tuple = ()
 
 
 class PlatformRegistry:

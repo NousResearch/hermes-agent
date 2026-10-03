@@ -681,7 +681,7 @@ _TEXT_SENDERS = {
     "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
@@ -712,6 +712,24 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _, empty_media, sender = route
         return await _send_chunks(chunks, lambda chunk, is_last: sender(
             platform, pconfig, chat_id, chunk, media_files if is_last else empty_media, thread_id, force_document))
+
+    # --- QQ Bot: native media via REST upload + MSG_TYPE_MEDIA (issue #37315).
+    # Guild channels are unsupported for native media (same as QQBotAdapter);
+    # C2C / group use /v2/{users|groups}/{id}/files then .../messages.
+    if platform == Platform.QQBOT and media_files:
+        qq_caption, _ = _media_caption_split(
+            message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
+        if qq_caption is not None:
+            return await _send_qqbot(pconfig, chat_id, "", media_files=media_files, caption=qq_caption)
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot(
+                pconfig, chat_id, chunk, media_files=media_files if is_last else None)
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
 
     # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
     warning = None

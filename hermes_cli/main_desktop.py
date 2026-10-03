@@ -7,6 +7,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 import logging
 import contextlib
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -206,13 +207,19 @@ _DESKTOP_PREVIOUS_SUFFIX = ".previous"
 _DESKTOP_SWAP_RENAME_RETRY_DELAYS_S = (0.5, 1.0, 1.0, 1.0)
 
 
+def _is_sharing_or_lock_oserror(exc: OSError) -> bool:
+    return getattr(exc, "winerror", None) in (5, 32, 33) or exc.errno in (errno.EACCES, errno.EPERM, errno.EBUSY)
+
+
 def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:
-    """``os.rename`` that retries a transient PermissionError with bounded backoff; re-raises the last one."""
+    """Retry only transient sharing and lock errors; propagate other rename failures immediately."""
     for attempt, delay in enumerate(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S, start=1):
         try:
             os.rename(src, dst)
             return
-        except PermissionError as exc:
+        except OSError as exc:
+            if not _is_sharing_or_lock_oserror(exc):
+                raise
             logger.warning(
                 "desktop promotion rename %s -> %s hit a file lock (attempt %d/%d), retrying in %.1fs: %s",
                 src.name, dst.name, attempt, len(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S) + 1, delay, exc,
@@ -239,7 +246,7 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
-def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path, error_sink: Optional[list] = None) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
     staged_exe = _desktop_packaged_executable_in(staging_dir)
@@ -274,6 +281,8 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             shutil.rmtree(previous, ignore_errors=True)
     except (OSError, ValueError) as exc:
         logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
+        if error_sink is not None:
+            error_sink.append(exc)
         return None
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -519,13 +528,23 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
             info = proc.info
             pid = info.get("pid")
             exe = info.get("exe")
-            if not exe or pid is None or pid == me or pid in spared:
+            if pid is None or pid == me or pid in spared:
                 continue
-            exe_path = Path(exe).resolve()
+            selected = False
+            if exe:
+                with contextlib.suppress(Exception):
+                    selected = release_dir in Path(exe).resolve().parents
+            # A third-party helper can hold a release-directory handle through its CWD while
+            # its executable sits elsewhere. This blocks Windows rename but is irrelevant on POSIX.
+            if not selected and sys.platform == "win32":
+                with contextlib.suppress(Exception):
+                    cwd = proc.cwd()
+                    cwd_path = Path(cwd).resolve() if cwd else None
+                    selected = cwd_path == release_dir or (cwd_path is not None and release_dir in cwd_path.parents)
+            if selected:
+                victims.append(proc)
         except Exception:
             continue
-        if release_dir in exe_path.parents:
-            victims.append(proc)
 
     stopped: list[int] = []
     for proc in victims:
@@ -1540,9 +1559,12 @@ def _promote_staged_desktop_app(
             print(f"✗ The built {staged_executable.name} failed its integrity check: {error}\n"
                   f"    at: {staged_executable}")
         raise RuntimeError(f"Desktop build produced no launchable app. {_PREVIOUS_APP_KEPT}")
-    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+    swap_errors: list = []
+    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir, error_sink=swap_errors)
     if packaged_executable is None:
-        print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
+        detail = f" ({swap_errors[0]})" if swap_errors else ""
+        print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}{detail}")
+        print(_PREVIOUS_APP_KEPT)
         raise RuntimeError(f"Could not publish the desktop build. {_PREVIOUS_APP_KEPT}")
     return packaged_executable
 

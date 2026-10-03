@@ -150,7 +150,9 @@ def test_build_footer_per_platform_off_suppresses():
         (60.0, "1m00s"),
         (65.0, "1m05s"),
         (125.0, "2m05s"),
-        (3600.0, "60m00s"),
+        # Minutes must roll into hours past 60m (was the "60m00s" >=60 defect).
+        (3600.0, "1h00m"),
+        (3661.0, "1h01m"),
     ],
 )
 def test_format_latency(seconds, expected):

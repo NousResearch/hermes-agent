@@ -19,10 +19,14 @@ DRAIN_REPORT_INTERVAL_S = 30.0
 
 
 def _fmt_elapsed(seconds: object) -> str:
+    """``42s`` / ``7m01s`` / ``1h05m`` (minutes roll into hours past 60m)."""
     try:
         total = int(float(seconds))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return "?"
+    hours, rem = divmod(total, 3600)
+    if hours:
+        return f"{hours}h{rem // 60:02d}m"
     return f"{total // 60}m{total % 60:02d}s" if total >= 60 else f"{total}s"
 
 

@@ -230,3 +230,34 @@ describe('a hidden bot stays quiet without going deaf', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 })
+
+describe('the private flag is read the way the gateway reads it', () => {
+  // `_boolish` on the gateway accepts true / 1 / "yes" / "on" and treats anything else as NOT
+  // private, so a typo can never quietly drop a working teammate. Plain JS truthiness gets both
+  // ends wrong: `private: "no"` would hide a public bot, and a strict `=== true` would publish
+  // `private: 1` to the relay.
+  it.each([
+    [true, true],
+    [1, true],
+    ['true', true],
+    ['yes', true],
+    [' ON ', true],
+    [false, false],
+    [0, false],
+    ['no', false],
+    ['false', false],
+    ['0', false],
+    ['maybe', false],
+    ['', false],
+    [undefined, false],
+    [null, false],
+    [2, false],
+    [['yes'], false]
+  ])('reads %o as private=%s', async (value, expected) => {
+    const { isBotPrivate, isPrivateFlag } = await import('./hidden-bots')
+    const bot = { name: 'lucky' } as RosterRow
+
+    expect(isPrivateFlag(value)).toBe(expected)
+    expect(isBotPrivate(bot, { lucky: { private: value } } as never)).toBe(expected)
+  })
+})

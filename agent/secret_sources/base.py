@@ -74,6 +74,7 @@ class ErrorKind(str, Enum):
     NETWORK = "network"                  # transport-level failure
     EMPTY_VALUE = "empty_value"          # backend returned nothing for a ref
     TIMEOUT = "timeout"                  # fetch exceeded its wall-clock budget
+    RATE_LIMITED = "rate_limited"        # server throttled the request (429)
     INTERNAL = "internal"                # anything else (bug, unexpected shape)
 
 

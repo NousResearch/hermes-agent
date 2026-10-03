@@ -6,6 +6,7 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -42,6 +43,7 @@ def _make_adapter():
     adapter._set_status_indicator = AsyncMock()
     adapter._release_platform_lock = lambda: None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
+    adapter._text_batch_split_delay_seconds = 0.1
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
@@ -50,14 +52,29 @@ def _make_adapter():
     adapter._held_inbound_events = []
     adapter._held_inbound_redispatch_task = None
     adapter.HELD_INBOUND_MAX = 64
+    adapter._background_tasks = set()
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    *,
+    reply_to_message_id: str | None = None,
+    reply_to_text: str | None = None,
+    reply_to_author_id: str | None = None,
+    reply_to_author_name: str | None = None,
+    reply_to_is_own_message: bool = False,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        reply_to_message_id=reply_to_message_id,
+        reply_to_text=reply_to_text,
+        reply_to_author_id=reply_to_author_id,
+        reply_to_author_name=reply_to_author_name,
+        reply_to_is_own_message=reply_to_is_own_message,
     )
 
 
@@ -511,3 +528,69 @@ class TestHoldInboundAcrossReconnect:
         await adapter._redispatch_held_inbound()
         held_texts = [e.text for e in adapter._held_inbound_events]
         assert held_texts == ["boom", "after"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary,disconnect",
+    [
+        pytest.param("same", False, id="same-quote"),
+        pytest.param("reply_to_message_id", False, id="different-target"),
+        pytest.param("reply_to_text", False, id="different-quote"),
+        pytest.param("reply_to_author_id", False, id="different-author-id"),
+        pytest.param("reply_to_author_name", False, id="different-author-name"),
+        pytest.param("reply_to_is_own_message", False, id="different-author-kind"),
+        pytest.param("plain-first", False, id="plain-before-reply"),
+        pytest.param("plain-last", False, id="plain-after-reply"),
+        pytest.param("long-continuation", False, id="client-split-reply"),
+        pytest.param("reply_to_message_id", True, id="disconnect-at-boundary"),
+    ],
+)
+async def test_reply_batches_preserve_context_and_pending_delivery(
+    boundary, disconnect
+):
+    adapter = _make_adapter()
+    adapter._text_batch_delay_seconds = 0
+    adapter._text_batch_split_delay_seconds = 0
+    context = {
+        "reply_to_message_id": "reply-42",
+        "reply_to_text": "quoted text",
+        "reply_to_author_id": "author-a",
+        "reply_to_author_name": "Author A",
+        "reply_to_is_own_message": False,
+    }
+    first_context = {} if boundary == "plain-first" else context
+    second_context = (
+        {} if boundary in {"plain-last", "long-continuation"} else dict(context)
+    )
+    if boundary in context:
+        second_context[boundary] = (
+            True if boundary == "reply_to_is_own_message" else "different"
+        )
+    first_text = (
+        "x" * adapter._SPLIT_THRESHOLD if boundary == "long-continuation" else "first"
+    )
+    first = _make_event(first_text, **first_context)
+    second = _make_event("second", **second_context)
+    expected = (
+        [replace(first, text=f"{first_text}\nsecond")]
+        if boundary in {"same", "long-continuation"}
+        else [replace(first), replace(second)]
+    )
+
+    adapter._enqueue_text_event(first)
+    adapter._enqueue_text_event(second)
+    if disconnect:
+        adapter._mark_disconnected()
+        await adapter._cancel_pending_delivery_tasks()
+        assert adapter.handle_message.await_args_list == []
+        assert adapter._held_inbound_events == expected
+        assert (adapter._pending_text_batches, adapter._pending_text_batch_tasks) == (
+            {},
+            {},
+        )
+        return
+
+    assert adapter._held_inbound_redispatch_task is None  # boundary never uses the hold queue
+    await asyncio.gather(*adapter._background_tasks, *adapter._pending_text_batch_tasks.values())
+    assert [call.args[0] for call in adapter.handle_message.await_args_list] == expected

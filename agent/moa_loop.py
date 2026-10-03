@@ -577,13 +577,6 @@ def _settle_interrupted(
     for future, idx in futures.items():
         if results[idx] is not None:
             continue
-        # #38922: a slow confirmation does NOT necessarily mean the send failed — but we must distinguish
-        # two cases via future.cancel()'s return value: cancel() == False -> the coroutine was already
-        # running on the gateway loop when the timeout fired; the request is in flight on the wire and
-        # cannot be un-sent. Re-sending via standalone would be a guaranteed DUPLICATE, so treat it as
-        # delivered (assume-delivered). cancel() == True -> the scheduled callback never started executing
-        # (loop wedged/backlogged for the full 60s), so nothing was sent. We MUST fall through to the
-        # standalone path or the message is silently dropped (worse than a duplicate).
         cancelled = future.cancel()
         if not cancelled and future.done():
             results[idx] = future.result()

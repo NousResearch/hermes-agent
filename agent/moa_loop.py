@@ -893,6 +893,12 @@ def _guidance_inputs(
     return agg_refs, _degraded_notice(failed_labels, policy), bool(reference_outputs) and not successful
 
 
+def _check_aggregator_interrupt(agent: Any) -> None:
+    """Do not start a new paid request after the owning turn was cancelled."""
+    if getattr(agent, "_interrupt_requested", False):
+        raise InterruptedError("Agent interrupted before MoA aggregator call")
+
+
 def aggregate_moa_context(
     *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
@@ -916,6 +922,7 @@ def aggregate_moa_context(
         reference_models, _reference_messages(api_messages), temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
     )
+    _check_aggregator_interrupt(agent)
     privacy_full = False
     try:
         from hermes_cli.config import load_config as _load_config
@@ -956,11 +963,13 @@ def aggregate_moa_context(
         agg_messages = _maybe_apply_moa_cache_control(
             [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
         )
+        _check_aggregator_interrupt(agent)
         synthesis = _extract_text(call_llm(
             task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
             reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
         ))
     except Exception as exc:
+        _check_aggregator_interrupt(agent)
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
         synthesis = ""
 
@@ -1192,6 +1201,7 @@ class MoAChatCompletions:
 
     def _call_prepared_aggregator(self, prepared: dict[str, Any], api_kwargs: dict[str, Any]) -> Any:
         """Send an already prepared MoA aggregator request exactly once."""
+        _check_aggregator_interrupt(getattr(self, "_agent", None))
         aggregator = prepared["aggregator"]
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
@@ -1227,6 +1237,7 @@ class MoAChatCompletions:
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        _check_aggregator_interrupt(getattr(self, "_agent", None))
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1241,6 +1252,7 @@ class MoAChatCompletions:
                 "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
             )
             agg_messages = retry_messages
+            _check_aggregator_interrupt(getattr(self, "_agent", None))
             agg_response = send(messages=agg_messages)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).

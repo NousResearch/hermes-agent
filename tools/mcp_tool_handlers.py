@@ -22,6 +22,7 @@ from tools.mcp_tool_content import (
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_result_filter import apply_result_filter
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -577,7 +578,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name)
+            return apply_result_filter(_render_call_tool_result(result, server_name),
+                                       getattr(server, "_config", None))
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)

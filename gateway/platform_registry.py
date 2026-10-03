@@ -319,6 +319,33 @@ class PlatformRegistry:
             or (scope, name) in self._inflight or (None, name) in self._inflight
         )
 
+    def has_failed_load(self, name: str, *, scope: Optional[str] = None) -> bool:
+        """True when a deferred load for *name* previously failed (its loader is parked as consumed).
+
+        A failed deferred load is terminal for normal lookups: ``get()``/``is_registered()``
+        intentionally do not retry it (the failure was already logged). The gateway's reconnect
+        path uses this + :meth:`retry_failed_load` to give a transiently failed platform plugin
+        (e.g. a load-deadline overrun during startup I/O contention, #126356) a second chance
+        without re-running full discovery.
+        """
+        with self._lock:
+            active = scope or self.current_scope_key()
+            return (active, name) in self._consumed_loaders or (None, name) in self._consumed_loaders
+
+    def retry_failed_load(self, name: str, *, scope: Optional[str] = None) -> bool:
+        """Re-queue a failed deferred loader so the next lookup retries it. True when revived."""
+        with self._lock:
+            active = scope or self.current_scope_key()
+            for key in ((active, name), (None, name)):
+                loader = self._consumed_loaders.pop(key, None)
+                if loader is None:
+                    continue
+                entries, deferred = self._scope_maps(key[0], create=True)
+                if name not in entries and name not in deferred:
+                    deferred[name] = loader
+                return True
+            return False
+
     def get(self, name: str) -> Optional[PlatformEntry]:
         """Look up a platform entry by name."""
         scope = self.current_scope_key()

@@ -43,6 +43,11 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 # abandoned loaders one process may accumulate (#98382) — past it, further loads are refused, not run inline.
 _LOAD_TIMEOUT_SECS = 10.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
+# Floor applied while the startup watchdog holds a progress lease (e.g. state.db integrity check/repair):
+# the system is known to be I/O-saturated by a self-inflicted phase, so a fixed 10s deadline would time
+# out healthy plugins for contention rather than a hang (#126356). Mirrors the documented workaround
+# ``plugins.load_timeout_seconds: 60`` without requiring users to set it.
+_LOAD_TIMEOUT_CONTENTION_FLOOR_SECS = 60.0
 _MAX_ABANDONED_LOADERS = 8
 _ABANDONED_LOADERS: List[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
@@ -60,14 +65,21 @@ def in_plugin_load_worker() -> bool:
 
 def _resolve_plugin_load_timeout() -> float:
     """Effective per-plugin load deadline from ``plugins.load_timeout_seconds`` (default 10s; ``0`` runs
-    loads inline with no deadline; clamped to ``_MAX_LOAD_TIMEOUT_SECS``)."""
+    loads inline with no deadline; clamped to ``_MAX_LOAD_TIMEOUT_SECS``).
+
+    While the startup watchdog holds a progress lease the system is known to be saturated by a
+    self-inflicted I/O phase (state.db integrity check / repair), so the floor is raised to
+    ``_LOAD_TIMEOUT_CONTENTION_FLOOR_SECS`` instead of timing out healthy plugins for contention
+    (#126356). An explicit ``0`` (deadline disabled) is always honored.
+    """
     default = _LOAD_TIMEOUT_SECS
     try:
         from hermes_cli.config import load_config_readonly
         plugins_cfg = (load_config_readonly() or {}).get("plugins")
         if not isinstance(plugins_cfg, dict) or plugins_cfg.get("load_timeout_seconds") is None:
-            return default
-        timeout = float(plugins_cfg["load_timeout_seconds"])
+            timeout = default
+        else:
+            timeout = float(plugins_cfg["load_timeout_seconds"])
     except (TypeError, ValueError):
         logger.warning("plugins.load_timeout_seconds is not a number; using default %gs", default)
         return default
@@ -80,7 +92,29 @@ def _resolve_plugin_load_timeout() -> float:
         logger.warning("plugins.load_timeout_seconds=%g exceeds max %gs; clamping", timeout,
                        _MAX_LOAD_TIMEOUT_SECS)
         return _MAX_LOAD_TIMEOUT_SECS
+    if timeout > 0 and _startup_lease_holds_contention():
+        floored = min(max(timeout, _LOAD_TIMEOUT_CONTENTION_FLOOR_SECS), _MAX_LOAD_TIMEOUT_SECS)
+        if floored != timeout:
+            logger.info(
+                "Extending plugin load deadline %gs -> %gs while a startup progress lease is held "
+                "(system I/O-saturated by integrity check/repair, not a hung plugin)",
+                timeout, floored,
+            )
+        return floored
     return timeout
+
+
+def _startup_lease_holds_contention() -> bool:
+    """True while the startup progress window holds a live lease (best-effort, never raises).
+
+    The window survives watchdog disarm (see ``startup_watchdog_lease_active``):
+    deferred loads materializing after the loop goes live still run inside it."""
+    try:
+        from hermes_startup_watchdog import startup_watchdog_lease_active
+        active, _, _ = startup_watchdog_lease_active()
+        return bool(active)
+    except Exception:
+        return False
 
 
 def _reserve_abandoned_loader_slot() -> None:

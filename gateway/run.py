@@ -3401,6 +3401,11 @@ class GatewayRunner(
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
+    # Secondary profiles with a platform whose adapter never materialized (failed
+    # plugin load, #126356): profile -> set of platform values still needing a
+    # rescan retry. A failed load touches neither config.yaml nor .env, so the
+    # signature check alone would never re-enter the profile.
+    _profile_plugin_retry_pending: Optional[Dict[str, set]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
     _startup_warmup_task: Optional[asyncio.Task] = None
@@ -3471,6 +3476,16 @@ class GatewayRunner(
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
+        # Claim the startup progress lease BEFORE config load: the load runs the
+        # first plugin discovery sweep (the real eager loads), and the state.db
+        # schema/migration leases below only start after it — without this the
+        # contention floor never sees a live lease during the loads it exists
+        # for (#126356 review). No-op when the watchdog is not armed; never raises.
+        try:
+            from hermes_startup_watchdog import report_startup_progress
+            report_startup_progress(900.0, phase="gateway_startup")
+        except Exception:
+            pass
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
@@ -3556,6 +3571,7 @@ class GatewayRunner(
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
+        self._profile_plugin_retry_pending: Dict[str, set] = {}
         self._systemd_watchdog = None
         # External (NAS-driven) drain, distinct from one-way ``_draining``: set while ``.drain_request.json``
         # exists — NEW turns refused, process stays up, removing the marker reverts to ``running``.

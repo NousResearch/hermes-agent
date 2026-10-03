@@ -228,14 +228,24 @@ class GatewayAdapterLifecycleMixin:
     def _reconnect_queue_entry(
         self, platform, adapter, platform_config, *, attempts: int, delay: float, queued: bool = True
     ) -> dict:
-        """Build a ``_failed_platforms`` entry (startup failures and runtime fatals share the shape)."""
+        """Build a ``_failed_platforms`` entry (startup failures and runtime fatals share the shape).
+
+        ``adapter`` may be None for a platform whose adapter could never be created (failed plugin
+        load, #126356): credential/dedup claims are then empty and the reconnect pass rebuilds the
+        adapter from scratch.
+        """
         now = time.monotonic()
         return {
             "config": platform_config, "attempts": attempts, "next_retry": now + delay,
             **({"queued_at": now} if queued else {}),
-            "credential_claim": self._adapter_credential_claim(platform, adapter),
-            "listener_claim": self._adapter_listener_claim(platform, adapter),
-            "inbound_dedup": inbound_dedup_caches(adapter),
+            "credential_claim": (
+                self._adapter_credential_claim(platform, adapter) if adapter is not None else None
+            ),
+            "listener_claim": (
+                self._adapter_listener_claim(platform, adapter) if adapter is not None else None
+            ),
+            "inbound_dedup": inbound_dedup_caches(adapter) if adapter is not None else {},
+            **({"missing_adapter": True} if adapter is None else {}),
         }
 
     def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
@@ -788,6 +798,21 @@ class GatewayAdapterLifecycleMixin:
         try:
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
+                # The adapter was never created (failed plugin load, #126356): revive a failed
+                # deferred load once per attempt, then retry the creation before giving up on
+                # this pass. A platform that still has no adapter stays queued with backoff —
+                # dropping it here is what made a transient 10s overrun a permanent outage.
+                adapter = self._retry_missing_adapter_creation(platform)
+            if not adapter:
+                if self._missing_adapter_is_retryable(platform):
+                    backoff = self._bump_reconnect_backoff(
+                        platform, info, attempt, "adapter_missing",
+                        "no adapter available (plugin failed to load); will retry",
+                    )
+                    logger.info(
+                        "Reconnect %s has no adapter yet, next retry in %ds", platform.value, backoff
+                    )
+                    return
                 self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                 return
             carry_inbound_dedup(info.get("inbound_dedup"), adapter)
@@ -833,6 +858,68 @@ class GatewayAdapterLifecycleMixin:
     def _drop_from_reconnect_queue(self, platform, reason: str) -> None:
         logger.warning("Reconnect %s: %s, removing from retry queue", platform.value, reason)
         del self._failed_platforms[platform]
+
+    def _retry_missing_adapter_creation(self, platform):
+        """Second-chance adapter creation after a failed plugin load (never raises).
+
+        A deferred platform whose loader failed (timeout, import error) parks its loader as
+        consumed, so a plain ``_create_adapter()`` keeps returning None. Re-queue the loader
+        once per attempt and try again — the retry runs after startup contention has cleared,
+        so a transient overrun heals instead of disabling the platform for the process lifetime
+        (#126356). Returns the adapter or None.
+        """
+        try:
+            from gateway.platform_registry import platform_registry
+            if not platform_registry.retry_failed_load(platform.value):
+                return None
+        except Exception:
+            logger.debug("Retrying failed platform load for %s raised", platform.value, exc_info=True)
+            return None
+        logger.info("Retrying failed platform load for %s...", platform.value)
+        try:
+            return self._create_adapter(platform, self._failed_platforms[platform]["config"])
+        except Exception:
+            logger.debug("Retried platform load for %s raised", platform.value, exc_info=True)
+            return None
+
+    def _missing_adapter_is_retryable(self, platform) -> bool:
+        """Whether a still-missing adapter should stay queued (vs. dropped as permanently absent).
+
+        Retryable when the platform is a known/bundled platform (its code exists, so a missing
+        adapter means a transient load failure) or when a failed load / failed plugin is recorded
+        for it. A genuinely unknown platform with no loader and no plugin record is permanent.
+        """
+        try:
+            from gateway.platform_registry import platform_registry
+            if platform_registry.has_failed_load(platform.value):
+                return True
+            if platform_registry.is_registered(platform.value):
+                return True
+        except Exception:
+            pass
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            manager = get_plugin_manager()
+            plugins = getattr(manager, "_plugins", {}) or {}
+            for key, loaded in plugins.items():
+                if getattr(loaded, "error", None) and platform.value in str(key):
+                    return True
+        except Exception:
+            pass
+        try:
+            from pathlib import Path as _Path
+            bundled = _Path(__file__).parent.parent / "plugins" / "platforms" / platform.value
+            if bundled.is_dir():
+                return True
+        except Exception:
+            pass
+        try:
+            from gateway.config import Platform as _Platform
+            if platform.value in {m.value for m in _Platform.__members__.values()}:
+                return True
+        except Exception:
+            pass
+        return False
 
     def _publish_primary_adapter(self, platform, adapter) -> None:
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
@@ -1182,6 +1269,47 @@ class GatewayAdapterLifecycleMixin:
             )
         return lines
 
+    def _note_secondary_missing_platform(self, profile_name: str, platform) -> None:
+        """Record a secondary platform whose adapter never materialized (#126356).
+
+        Bare test runners build the runner via ``object.__new__`` without
+        ``__init__``, so the store is fetched tolerantly and created on demand.
+        """
+        try:
+            pending = getattr(self, "_profile_plugin_retry_pending", None)
+            if not isinstance(pending, dict):
+                pending = self._profile_plugin_retry_pending = {}
+            entries = pending.get(profile_name)
+            if not isinstance(entries, set):
+                entries = pending[profile_name] = set()
+            entries.add(getattr(platform, "value", platform))
+        except Exception:
+            pass
+
+    def _clear_secondary_missing_platform(self, profile_name: str, platform) -> None:
+        """Drop a healed pending entry; removes the profile key when drained."""
+        try:
+            pending = getattr(self, "_profile_plugin_retry_pending", None)
+            if not isinstance(pending, dict):
+                return
+            entries = pending.get(profile_name)
+            if isinstance(entries, set):
+                entries.discard(getattr(platform, "value", platform))
+                if not entries:
+                    pending.pop(profile_name, None)
+        except Exception:
+            pass
+
+    def _secondary_retry_pending_profiles(self) -> set:
+        """Served profiles owed a rescan retry for a never-materialized platform."""
+        try:
+            pending = getattr(self, "_profile_plugin_retry_pending", None)
+            if not isinstance(pending, dict):
+                return set()
+            return {name for name, entries in pending.items() if entries}
+        except Exception:
+            return set()
+
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
     ) -> int:
@@ -1231,12 +1359,34 @@ class GatewayAdapterLifecycleMixin:
                 platform.value, exc_info=True,
             ):
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                    # A previous sweep's failed deferred load parks its loader as
+                    # consumed: revive it before recreating so a rescan retry
+                    # actually re-runs the load instead of returning None again
+                    # (#126356 review). No-op when nothing is parked.
+                    try:
+                        from gateway.platform_registry import platform_registry
+                        platform_registry.retry_failed_load(platform.value)
+                    except Exception:
+                        pass
                     adapter = self._create_adapter(platform, platform_config)
                 if not adapter:
                     logger.warning(
                         "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
                         profile_name, platform.value,
                     )
+                    # Same visibility as the primary path (#126356): a never-loaded secondary
+                    # platform must leave a ``<profile>:<platform>`` retrying status instead of
+                    # nothing at all. The next served-profile rescan retries it (missing is
+                    # neither live nor queued, so it is not skipped).
+                    self._update_platform_runtime_status(
+                        f"{profile_name}:{platform.value}", platform_state="retrying",
+                        error_code="adapter_missing",
+                        error_message=(
+                            f"no adapter available for {platform.value} "
+                            "(plugin failed to load; will retry on rescan)"
+                        ),
+                    )
+                    self._note_secondary_missing_platform(profile_name, platform)
             if not adapter:
                 continue
             # Same-token / same-listener conflict detection — refuse a duplicate poll or bind.
@@ -1267,6 +1417,8 @@ class GatewayAdapterLifecycleMixin:
                 self._schedule_secondary_profile_startup_reconnect(profile_name, platform, adapter)
                 continue
             profile_map[platform] = adapter
+            # A rescan retry healed what a previous sweep recorded as missing.
+            self._clear_secondary_missing_platform(profile_name, platform)
             # Restore persisted /voice state for this bot (primary startup and reconnects do too).
             # See #84872.
             self._sync_voice_mode_state_to_adapter(adapter)

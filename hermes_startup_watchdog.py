@@ -96,6 +96,37 @@ _FIRING = "firing"
 _handle_lock = threading.Lock()
 _handle: Optional["StartupWatchdogHandle"] = None
 
+# Sticky memory of the last claimed progress lease (monotonic deadline + phase).
+# ``disarm_startup_watchdog()`` drops the singleton so the watchdog thread stands
+# down once the loop is live, but plugin loads materializing after the disarm
+# (deferred platform adapters built during ``runner.start()``) still run inside
+# the lease window the startup phases claimed — the contention they were
+# protected from has not cleared just because the watchdog stood down (#126356
+# review). Guarded by its own lock so ``lease()`` (which holds the handle state
+# lock) never inverts the ``_handle_lock -> _state_lock`` order ``disarm()`` uses.
+_last_lease_lock = threading.Lock()
+_last_lease_until = 0.0
+_last_lease_phase = ""
+
+
+def _remember_lease(expected_s: float, phase: str) -> None:
+    """Record the lease window beyond the armed handle's lifetime (never raises)."""
+    global _last_lease_until, _last_lease_phase
+    try:
+        until = time.monotonic() + min(max(float(expected_s), 0.0), _MAX_LEASE_S)
+    except (TypeError, ValueError):
+        return
+    if until <= 0.0:
+        return
+    try:
+        with _last_lease_lock:
+            if until > _last_lease_until:
+                _last_lease_until = until
+                if phase:
+                    _last_lease_phase = str(phase)
+    except Exception:
+        pass
+
 
 def _process_hermes_home() -> Path:
     """Use the stdlib-only process resolver before application startup."""
@@ -239,6 +270,8 @@ class StartupWatchdogHandle:
             if phase:
                 self._lease_phase = str(phase)
             self._lease_count += 1
+        # Survives disarm: post-loop plugin loads still run inside this window.
+        _remember_lease(expected, phase)
 
     @property
     def disarmed(self) -> bool:
@@ -482,6 +515,42 @@ def _with_armed_handle(method: str, failure_msg: str, *args) -> None:
         logger.debug(failure_msg, exc_info=True)
 
 
+def startup_watchdog_lease_active() -> tuple[bool, str, float]:
+    """Whether the startup progress window holds a live lease (never raises).
+
+    Returns ``(active, phase, remaining_s)``. A live lease means a startup phase
+    is doing legitimately long synchronous I/O (e.g. ``state_db`` integrity
+    check/repair) and the system is known to be saturated — callers measuring
+    fixed wall-clock deadlines (plugin loads) should extend their budget rather
+    than treat slowness as a hang (#126356).
+
+    The window survives :func:`disarm_startup_watchdog`: the disarm only stands
+    down the watchdog thread once the loop is live, but deferred plugin loads
+    materializing after it still run inside the claimed window.
+    """
+    try:
+        with _handle_lock:
+            handle = _handle
+        if handle is not None:
+            with handle._state_lock:
+                remaining = handle._lease_until - time.monotonic()
+                phase = handle._lease_phase or ""
+            if remaining > 0:
+                return (True, phase, remaining)
+        # Disarmed (or lease lapsed on the handle): fall back to the sticky
+        # window so post-disarm loads inside it still see the contention.
+        with _last_lease_lock:
+            sticky_remaining = _last_lease_until - time.monotonic()
+            sticky_phase = _last_lease_phase
+        if sticky_remaining > 0:
+            return (True, sticky_phase, sticky_remaining)
+        if handle is not None:
+            return (False, phase, 0.0)
+        return (False, sticky_phase, 0.0)
+    except Exception:
+        return (False, "", 0.0)
+
+
 def kick_startup_watchdog(extra_s: float = 0.0) -> None:
     """Extend the armed watchdog's deadline. No-op when not armed; never raises.
 
@@ -505,9 +574,15 @@ def report_startup_progress(expected_s: float, phase: str = "") -> None:
 
 def _reset_for_tests() -> None:
     """Drop the module singleton (test isolation only)."""
-    global _handle
+    global _handle, _last_lease_until, _last_lease_phase
     with _handle_lock:
         handle = _handle
         _handle = None
     if handle is not None:
         handle.disarm()
+    try:
+        with _last_lease_lock:
+            _last_lease_until = 0.0
+            _last_lease_phase = ""
+    except Exception:
+        pass

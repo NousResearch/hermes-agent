@@ -125,6 +125,19 @@ class GatewayProfileReconcileMixin:
             removed = [n for n in known if n not in current and n != active]
             changed = [n for n in current if n in known and n != active and n not in added
                        and profile_serve_signature(current[n]) != sigs.get(n)]
+            # A failed plugin load touches neither config.yaml nor .env, so the
+            # signature check alone would never re-enter the profile and the
+            # ``will retry on rescan`` promise would never fire (#126356
+            # review). Force profiles owed a missing-platform retry back into
+            # the rescanned set.
+            try:
+                pending_retry = self._secondary_retry_pending_profiles()
+            except Exception:
+                pending_retry = set()
+            for name in sorted(pending_retry):
+                if name in current and name in known and name != active and name not in added \
+                        and name not in changed:
+                    changed.append(name)
             return await self._apply_profile_changes(current, added, removed, changed, reason=reason)
 
     async def _apply_profile_changes(self, current, added, removed, changed, *, reason):
@@ -244,6 +257,9 @@ class GatewayProfileReconcileMixin:
                 self._served_profile_homes.pop(name, None)
             if isinstance(self._served_profile_signatures, dict):
                 self._served_profile_signatures.pop(name, None)
+            retry_pending = getattr(self, "_profile_plugin_retry_pending", None)
+            if isinstance(retry_pending, dict):
+                retry_pending.pop(name, None)
             from gateway.session import _session_key_namespace
             prefix = _session_key_namespace(name) + ":"
             cache = getattr(self, "_agent_cache", None)

@@ -1188,7 +1188,10 @@ class GatewayStartupMixin:
             enabled_platform_count += 1
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
+                # A failed plugin load (timeout/contention, import error) must not silently disable
+                # the platform for the process lifetime (#126356). Stamp a visible retrying status
+                # (the same signal a disconnected-then-retrying platform carries) and queue it for
+                # the reconnect watcher — even a single delayed retry heals a transient overrun.
                 if platform.value in {m.value for m in Platform.__members__.values()}:
                     logger.warning("No adapter available for %s", platform.value)
                 else:
@@ -1196,6 +1199,7 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
+                self._queue_missing_adapter_for_retry(platform, platform_config)
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).
@@ -1257,6 +1261,31 @@ class GatewayStartupMixin:
         )
         startup_retryable_errors.append(f"{platform.value}: {message}")
         self._failed_platforms[platform] = self._startup_retry_entry(platform, adapter, platform_config)
+
+    def _queue_missing_adapter_for_retry(self, platform, platform_config) -> None:
+        """Queue an enabled platform whose adapter could not be created (failed plugin load).
+
+        Writes the same ``retrying`` runtime status a failed-connect platform carries (so
+        ``needs_attention`` escalation, the status indicator and ``gateway status`` all see a
+        never-loaded platform exactly like a loaded-then-disconnected one, #126356) and parks
+        it in ``_failed_platforms`` with ``adapter=None`` for the reconnect watcher. The
+        watcher rebuilds the adapter from scratch on each pass, reviving failed deferred
+        loaders — a transient 10s overrun heals on the first retry instead of disabling the
+        platform until a manual restart.
+        """
+        message = (
+            f"no adapter available for {platform.value} "
+            "(plugin failed to load; queued for retry)"
+        )
+        self._update_platform_runtime_status(
+            platform.value, platform_state="retrying", error_code="adapter_missing",
+            error_message=message,
+        )
+        failed = getattr(self, "_failed_platforms", None)
+        if not isinstance(failed, dict):
+            failed = self._failed_platforms = {}
+        if platform not in failed:
+            failed[platform] = self._startup_retry_entry(platform, None, platform_config)
 
     async def _start_aggregate_connect_results(
         self, _raw: list, startup_retryable_errors: list, startup_nonretryable_errors: list
@@ -1414,11 +1443,25 @@ class GatewayStartupMixin:
             logger.warning("No messaging platforms enabled.")
             logger.info("Gateway will continue running for cron job execution.")
             return False
-        if startup_retryable_errors:
+        # Platforms whose adapter never materialized (failed plugin load, #126356) are queued in
+        # ``_failed_platforms`` with ``missing_adapter`` but never touched ``startup_retryable_errors``
+        # (that list is populated only by the connect phase). Treat them as retryable here so a boot
+        # that lost every platform to a transient load overrun reports ``degraded`` with a retry queue
+        # instead of a healthy-looking ``running`` with no per-platform status.
+        _missing_retryable = [
+            p.value for p, info in (getattr(self, "_failed_platforms", None) or {}).items()
+            if isinstance(info, dict) and info.get("missing_adapter")
+        ]
+        if startup_retryable_errors or _missing_retryable:
             # All retryable: stay alive (cron runs, watcher recovers) rather than systemd restart-loop.
+            _retry_desc = list(startup_retryable_errors) + [
+                f"{name}: no adapter available (plugin failed to load; queued for retry)"
+                for name in _missing_retryable
+                if not any(str(e).startswith(f"{name}:") for e in startup_retryable_errors)
+            ]
             logger.warning(
                 "Gateway started with no connected platforms — %d platform(s) queued for retry: %s",
-                len(self._failed_platforms), "; ".join(startup_retryable_errors),
+                len(self._failed_platforms), "; ".join(_retry_desc),
             )
             _write_runtime_status_quiet(gateway_state="degraded", exit_reason=None)
         # No adapter for any enabled platform: fleet nodes share one config.yaml but hold a subset of

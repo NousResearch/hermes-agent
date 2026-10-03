@@ -1206,8 +1206,63 @@ export const frOverrides = {
         window: 'Fenêtre entière',
         sidebar: 'Barre latérale uniquement'
       },
+      wallpaper: {
+        title: 'Fond d’écran personnalisé',
+        description:
+          'Enregistré sur cet appareil pour chaque profil. Les images sont optimisées lors de leur importation.',
+        choose: 'Choisir une image',
+        replace: 'Remplacer',
+        remove: 'Supprimer',
+        reset: 'Réinitialiser les réglages',
+        error:
+          'Impossible de charger cette image. Vérifiez que le fichier JPEG, PNG ou WebP est valide et ne dépasse pas 32 Mo.',
+        unsupported: 'Redémarrez Hermes pour activer le sélecteur de fond d’écran.',
+        profileNote: profile => `Enregistré localement pour le profil ${profile}.`,
+        preview: 'Aperçu',
+        previewEffect: 'Rendu dans le chat',
+        previewFull: 'Image entière',
+        visibility: 'Affichage',
+        displayMode: 'Mode d’affichage',
+        adaptiveTheme: 'Palette du fond d’écran',
+        adaptiveThemeDesc:
+          'Teinte les accents et les surfaces à partir de l’image tout en préservant le contraste du texte.',
+        adaptiveThemeAnalyzing: 'Analyse des couleurs…',
+        adaptiveThemeError: 'Impossible d’extraire les couleurs de cette image.',
+        paletteMode: 'Source de la palette',
+        paletteModes: {
+          auto: 'Auto',
+          manual: 'Manuel'
+        },
+        paletteManualDesc:
+          'La couleur d’accent est appliquée telle quelle. La teinte est mélangée légèrement aux surfaces pour préserver la lisibilité.',
+        paletteDominant: 'Teinte',
+        paletteAccent: 'Accent',
+        modes: {
+          fill: 'Remplir',
+          fit: 'Ajuster',
+          tile: 'Mosaïque',
+          center: 'Centrer'
+        },
+        opacity: 'Intensité de l’image',
+        blur: 'Flou',
+        overlay: 'Masque de lisibilité',
+        overlayShape: 'Forme du masque',
+        overlayShapes: {
+          ellipse: 'Ellipse',
+          strip: 'Bande verticale'
+        },
+        overlayColor: 'Couleur du masque',
+        overlayColorTheme: 'Suivre le thème',
+        overlayFeather: 'Contour progressif du masque',
+        overlayWidth: 'Largeur du masque',
+        overlayHeight: 'Hauteur du masque',
+        overlayPosition: 'Position du masque',
+        left: 'Gauche',
+        center: 'Centre',
+        right: 'Droite'
+      },
       backdropTitle: 'Arrière-plan de la conversation',
-      backdropDesc: "L'image de statue discrète derrière la conversation.",
+      backdropDesc: 'La statue intégrée estompée affichée lorsqu’aucun fond d’écran personnalisé n’est visible.',
       userBubbleTitle: 'Bulle des messages',
       userBubbleDesc: 'Transparence de vos messages : fond opaque à 0 ; seul le contour reste visible à 100.',
       textDirectionTitle: 'Sens du texte',

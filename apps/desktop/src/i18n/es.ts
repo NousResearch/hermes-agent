@@ -1202,8 +1202,61 @@ export const esOverrides = {
         window: 'Toda la ventana',
         sidebar: 'Solo la barra lateral'
       },
+      wallpaper: {
+        title: 'Fondo de pantalla personalizado',
+        description: 'Se guarda en este dispositivo para cada perfil. Las imágenes se optimizan al importarlas.',
+        choose: 'Elegir imagen',
+        replace: 'Reemplazar',
+        remove: 'Eliminar',
+        reset: 'Restablecer ajustes',
+        error: 'No se pudo cargar la imagen. Comprueba que sea un archivo JPEG, PNG o WebP válido de hasta 32 MB.',
+        unsupported: 'Reinicia Hermes para activar el selector de fondos.',
+        profileNote: profile => `Guardado localmente para el perfil ${profile}.`,
+        preview: 'Vista previa',
+        previewEffect: 'Efecto en el chat',
+        previewFull: 'Imagen completa',
+        visibility: 'Visualización',
+        displayMode: 'Modo de visualización',
+        adaptiveTheme: 'Paleta del fondo',
+        adaptiveThemeDesc:
+          'Tiñe los acentos y las superficies a partir de la imagen, manteniendo el contraste del texto.',
+        adaptiveThemeAnalyzing: 'Analizando los colores…',
+        adaptiveThemeError: 'No se pudieron extraer los colores de esta imagen.',
+        paletteMode: 'Origen de la paleta',
+        paletteModes: {
+          auto: 'Automático',
+          manual: 'Manual'
+        },
+        paletteManualDesc:
+          'El color de acento se aplica tal cual. El tinte se mezcla suavemente con las superficies para mantener la legibilidad.',
+        paletteDominant: 'Tinte',
+        paletteAccent: 'Acento',
+        modes: {
+          fill: 'Rellenar',
+          fit: 'Ajustar',
+          tile: 'Mosaico',
+          center: 'Centrar'
+        },
+        opacity: 'Intensidad de la imagen',
+        blur: 'Desenfoque',
+        overlay: 'Máscara de legibilidad',
+        overlayShape: 'Forma de la máscara',
+        overlayShapes: {
+          ellipse: 'Elipse',
+          strip: 'Franja vertical'
+        },
+        overlayColor: 'Color de la máscara',
+        overlayColorTheme: 'Seguir el tema',
+        overlayFeather: 'Difuminado del borde',
+        overlayWidth: 'Ancho de la máscara',
+        overlayHeight: 'Alto de la máscara',
+        overlayPosition: 'Posición de la máscara',
+        left: 'Izquierda',
+        center: 'Centro',
+        right: 'Derecha'
+      },
       backdropTitle: 'Fondo del chat',
-      backdropDesc: 'La tenue imagen de la estatua detrás de la conversación.',
+      backdropDesc: 'La tenue estatua integrada que se muestra cuando no se ve un fondo personalizado.',
       userBubbleTitle: 'Burbuja de mensaje',
       userBubbleDesc: 'Cuánta transparencia tienen tus propios mensajes. Opaca en 0; en 100 solo queda el contorno.',
       textDirectionTitle: 'Dirección del texto',

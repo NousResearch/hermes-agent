@@ -1202,8 +1202,62 @@ export const deOverrides = {
         window: 'Ganzes Fenster',
         sidebar: 'Nur Seitenleiste'
       },
+      wallpaper: {
+        title: 'Eigenes Hintergrundbild',
+        description: 'Wird pro Profil auf diesem Gerät gespeichert. Bilder werden beim Import einmalig optimiert.',
+        choose: 'Bild auswählen',
+        replace: 'Ersetzen',
+        remove: 'Entfernen',
+        reset: 'Anpassungen zurücksetzen',
+        error:
+          'Dieses Bild konnte nicht geladen werden. Prüfe, ob es eine gültige JPEG-, PNG- oder WebP-Datei mit höchstens 32 MB ist.',
+        unsupported: 'Starte Hermes neu, um die Hintergrundbildauswahl zu aktivieren.',
+        profileNote: profile => `Lokal für das Profil ${profile} gespeichert.`,
+        preview: 'Vorschau',
+        previewEffect: 'Chatansicht',
+        previewFull: 'Ganzes Bild',
+        visibility: 'Anzeige',
+        displayMode: 'Anzeigemodus',
+        adaptiveTheme: 'Hintergrundbildpalette',
+        adaptiveThemeDesc: 'Färbt Akzente und Oberflächen anhand des Bildes ein und erhält dabei den Textkontrast.',
+        adaptiveThemeAnalyzing: 'Bildfarben werden analysiert…',
+        adaptiveThemeError: 'Die Farben dieses Bildes konnten nicht ermittelt werden.',
+        paletteMode: 'Palettenquelle',
+        paletteModes: {
+          auto: 'Automatisch',
+          manual: 'Manuell'
+        },
+        paletteManualDesc:
+          'Die Akzentfarbe wird exakt übernommen. Die Tönung wird dezent mit Oberflächen gemischt, damit der Text lesbar bleibt.',
+        paletteDominant: 'Tönung',
+        paletteAccent: 'Akzent',
+        modes: {
+          fill: 'Ausfüllen',
+          fit: 'Einpassen',
+          tile: 'Kacheln',
+          center: 'Zentrieren'
+        },
+        opacity: 'Bildstärke',
+        blur: 'Unschärfe',
+        overlay: 'Lesbarkeitsmaske',
+        overlayShape: 'Maskenform',
+        overlayShapes: {
+          ellipse: 'Ellipse',
+          strip: 'Vertikaler Streifen'
+        },
+        overlayColor: 'Maskenfarbe',
+        overlayColorTheme: 'Design folgen',
+        overlayFeather: 'Weicher Maskenrand',
+        overlayWidth: 'Maskenbreite',
+        overlayHeight: 'Maskenhöhe',
+        overlayPosition: 'Maskenposition',
+        left: 'Links',
+        center: 'Mitte',
+        right: 'Rechts'
+      },
       backdropTitle: 'Chat-Hintergrund',
-      backdropDesc: 'Das zarte Statuenbild hinter der Konversation.',
+      backdropDesc:
+        'Die dezente integrierte Statue, die angezeigt wird, wenn kein eigenes Hintergrundbild sichtbar ist.',
       userBubbleTitle: 'Nachrichten-Blase',
       userBubbleDesc:
         'Wie durchsichtig Ihre eigenen Nachrichten sind. Bei 0 deckend; bei 100 bleibt nur die Kontur übrig.',

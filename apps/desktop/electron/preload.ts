@@ -336,6 +336,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
+  wallpaper: {
+    get: profile => ipcRenderer.invoke('hermes:wallpaper:get', profile),
+    onProfileReset: callback => {
+      const listener = (_event, profile) => callback(String(profile || ''))
+      ipcRenderer.on('hermes:wallpaper:profile-reset', listener)
+
+      return () => ipcRenderer.removeListener('hermes:wallpaper:profile-reset', listener)
+    },
+    palette: profile => ipcRenderer.invoke('hermes:wallpaper:palette', profile),
+    select: profile => ipcRenderer.invoke('hermes:wallpaper:select', profile),
+    remove: profile => ipcRenderer.invoke('hermes:wallpaper:remove', profile)
+  },
   // The handler resolves an expected 404 with a sentinel instead of rejecting
   // (Electron logs a stack for every rejected invoke). Turn it back into the
   // rejection the renderer expects — see electron/api-expected-404.ts.

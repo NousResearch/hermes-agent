@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import contextlib
 import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -126,6 +127,124 @@ class TestDataInitialized:
 
         # The bridge HTTP server is up, so timeout uses the warn-and-proceed path.
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Windows job-object breakaway fallback
+# ---------------------------------------------------------------------------
+
+_BREAKAWAY_FLAGS = 0x01000000 | 0x08000000 | 0x00000200  # BREAKAWAY | NO_WINDOW | NEW_GROUP
+_NO_BREAKAWAY_FLAGS = 0x08000000 | 0x00000200
+
+
+def _spawn_patches(mock_proc):
+    """Patches to drive connect() to (and past) the bridge Popen call."""
+    adapter_patches = [
+        patch("plugins.platforms.whatsapp.adapter.find_node_executable", return_value="/fake/node.exe"),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._reuse_running_bridge", new_callable=AsyncMock, return_value=False),
+        patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"),
+        patch("plugins.platforms.whatsapp.adapter._kill_port_process"),
+        patch("plugins.platforms.whatsapp.adapter._write_bridge_pidfile"),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._ensure_bridge_deps", return_value=True),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._acquire_platform_lock", return_value=True),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._wait_for_bridge", new_callable=AsyncMock, return_value=True),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._attach_to_bridge"),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._mark_connected"),
+        patch("plugins.platforms.whatsapp.adapter.WhatsAppAdapter._wire_plugin_handlers"),
+    ]
+    return adapter_patches
+
+
+class TestBreakawayFallback:
+    """The bridge spawn must fall back to no-breakaway flags when the gateway's
+    job object forbids CREATE_BREAKAWAY_FROM_JOB (#68128: WinError 5 from
+    Desktop/Electron- or Task-Scheduler-launched gateways made every reconnect
+    fail forever because the retry reused the same rejected flags)."""
+
+    @pytest.mark.asyncio
+    async def test_breakaway_denied_retries_without_breakaway(self):
+        adapter = _make_adapter()
+
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+
+        common = _connect_patches(mock_proc, mock_fh)
+        adapter_patches = _spawn_patches(mock_proc)
+        with contextlib.ExitStack() as stack:
+            for cp in common[:4] + common[5:] + adapter_patches:
+                stack.enter_context(cp)
+            mock_popen = stack.enter_context(common[4])
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True))
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_flags", return_value=_BREAKAWAY_FLAGS))
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_flags_without_breakaway", return_value=_NO_BREAKAWAY_FLAGS))
+            mock_popen.side_effect = [PermissionError(5, "Access is denied"), mock_proc]
+            result = await adapter.connect()
+
+        assert result is True
+        assert mock_popen.call_count == 2
+        first_flags = mock_popen.call_args_list[0].kwargs["creationflags"]
+        second_flags = mock_popen.call_args_list[1].kwargs["creationflags"]
+        assert first_flags & 0x01000000  # breakaway attempted first
+        assert not second_flags & 0x01000000  # fallback drops only the breakaway bit
+        assert second_flags == _NO_BREAKAWAY_FLAGS
+        assert adapter._bridge_process is mock_proc
+        # Each attempt stamps the breakaway state (gateway_windows._spawn_detached pattern):
+        # a fallback-spawned bridge stays in the parent's job, and without the stamp a
+        # job-teardown kill is indistinguishable from a clean exit.
+        from hermes_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+        first_env = mock_popen.call_args_list[0].kwargs["env"]
+        second_env = mock_popen.call_args_list[1].kwargs["env"]
+        assert first_env[_WINDOWS_GATEWAY_BREAKAWAY_ENV] == "1"
+        assert second_env[_WINDOWS_GATEWAY_BREAKAWAY_ENV] == "0"
+
+    @pytest.mark.asyncio
+    async def test_breakaway_allowed_keeps_breakaway_flags(self):
+        adapter = _make_adapter()
+
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+
+        common = _connect_patches(mock_proc, mock_fh)
+        adapter_patches = _spawn_patches(mock_proc)
+        with contextlib.ExitStack() as stack:
+            for cp in common[:4] + common[5:] + adapter_patches:
+                stack.enter_context(cp)
+            mock_popen = stack.enter_context(common[4])
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True))
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_flags", return_value=_BREAKAWAY_FLAGS))
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_flags_without_breakaway", return_value=_NO_BREAKAWAY_FLAGS))
+            result = await adapter.connect()
+
+        assert result is True
+        assert mock_popen.call_count == 1
+        assert mock_popen.call_args.kwargs["creationflags"] & 0x01000000
+        from hermes_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+        assert mock_popen.call_args.kwargs["env"][_WINDOWS_GATEWAY_BREAKAWAY_ENV] == "1"
+
+    @pytest.mark.asyncio
+    async def test_posix_keeps_start_new_session_no_windows_fallback(self):
+        adapter = _make_adapter()
+
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+
+        common = _connect_patches(mock_proc, mock_fh)
+        adapter_patches = _spawn_patches(mock_proc)
+        with contextlib.ExitStack() as stack:
+            for cp in common[:4] + common[5:] + adapter_patches:
+                stack.enter_context(cp)
+            mock_popen = stack.enter_context(common[4])
+            stack.enter_context(patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False))
+            result = await adapter.connect()
+
+        assert result is True
+        assert mock_popen.call_count == 1
+        kwargs = mock_popen.call_args.kwargs
+        assert kwargs["start_new_session"] is True
+        assert "creationflags" not in kwargs
 
 
 # ---------------------------------------------------------------------------

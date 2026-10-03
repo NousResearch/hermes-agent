@@ -17,7 +17,11 @@ from typing import Dict, Optional, Any
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import (
+    _WINDOWS_GATEWAY_BREAKAWAY_ENV,
+    windows_detach_flags,
+    windows_detach_flags_without_breakaway,
+)
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -534,9 +538,38 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(
-                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            bridge_argv = [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
+                           "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
+            if _IS_WINDOWS:
+                # Diagnostic-only on this child: bridge.js never reads the stamp
+                # (its only child use is execFileSync('ffmpeg')); the value is
+                # consumed by the respawned gateway's breakaway-state probe
+                # (_windows_gateway_breakaway_state), mirrored here so a
+                # job-teardown kill stays distinguishable in env dumps.
+                bridge_env = self._bridge_env()
+                try:
+                    self._bridge_process = subprocess.Popen(
+                        bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh,
+                        env={**bridge_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"},
+                        creationflags=windows_detach_flags())
+                except OSError as exc:
+                    # CREATE_BREAKAWAY_FROM_JOB is rejected with WinError 5 when the gateway sits
+                    # in a job that forbids breakaway (Desktop/Electron, scheduled tasks); the
+                    # hidden-console flags are enough on their own — same fallback as
+                    # gateway_windows._spawn_detached (#68128).
+                    error_code = getattr(exc, "winerror", None)
+                    if error_code is None:
+                        error_code = exc.errno
+                    logger.warning("[%s] Bridge breakaway spawn failed (error=%s); "
+                                   "retrying without CREATE_BREAKAWAY_FROM_JOB", self.name, error_code)
+                    self._bridge_process = subprocess.Popen(
+                        bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh,
+                        env={**bridge_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"},
+                        creationflags=windows_detach_flags_without_breakaway())
+            else:
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
+                    start_new_session=True)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

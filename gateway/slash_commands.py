@@ -133,11 +133,20 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     import shutil
     import subprocess
     if sys.platform == "win32":
-        from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
-        subprocess.Popen(
-            [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
-             sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
+        from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
+        update_argv = [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
+                       sys.executable, "-m", "hermes_cli.main", "update", "--gateway"]
+        # A job object without BREAKAWAY_OK (Desktop/Electron, scheduled tasks) rejects
+        # CREATE_BREAKAWAY_FROM_JOB with OSError; /update must not die with it after the pending
+        # receipt was already written — retry once without the bit (same fallback as the run_shutdown
+        # restart watcher, #68128).
+        try:
+            subprocess.Popen(
+                update_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
+        except OSError:
+            subprocess.Popen(
+                update_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=windows_detach_flags_without_breakaway())
         return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
     update_cmd = (

@@ -1204,7 +1204,10 @@ def drain_truncation_warnings() -> list:
 # per profile × platform), so the old cap of 8 could thrash on a gateway multiplexing default + several bots
 # (each miss = full os.walk manifest rebuild). ~32 costs low single-digit MB worst case.
 _SKILLS_PROMPT_CACHE_MAX = 32
-_SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
+# Value is (prompt, app_gated): whether the rendered index has requires_apps entries decides if the entry may
+# be served without re-checking the tree, since that visibility tracks live app presence rather than SKILL.md
+# content. Recorded at build time so the warm path needs no manifest rebuild to learn it (#11431).
+_SKILLS_PROMPT_CACHE: OrderedDict[tuple, "tuple[str, bool]"] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
 _SKILLS_SNAPSHOT_VERSION = 3
@@ -1521,15 +1524,16 @@ def _build_skills_system_prompt_inner(
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(),
     )
-    snapshot = _load_skills_snapshot(skills_dir)
-    app_gated = snapshot is not None and any(
-        entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
-    )
     with _SKILLS_PROMPT_CACHE_LOCK:
-        cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None and not app_gated:
-            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
-            return cached
+        cached_entry = _SKILLS_PROMPT_CACHE.get(cache_key)
+        if cached_entry is not None:
+            cached, cached_app_gated = cached_entry
+            # A non-app-gated index is fully determined by the cache key, so it is served without touching the
+            # skills tree. App-gated entries fall through: their visibility follows app presence on this host,
+            # which changes with no SKILL.md edit.
+            if not cached_app_gated:
+                _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+                return cached
 
     def hides(frontmatter_name: str, skill_name: str, conditions: dict) -> bool:
         """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
@@ -1539,6 +1543,7 @@ def _build_skills_system_prompt_inner(
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
+    snapshot = _load_skills_snapshot(skills_dir)
     if snapshot is not None:
         # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
@@ -1550,6 +1555,9 @@ def _build_skills_system_prompt_inner(
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
+    # Read off the entries this build considered rather than a prior snapshot: on the cold scan path there is
+    # no snapshot yet, and the entry about to be written carries the same requires_apps.
+    app_gated = any(entry.get("requires_apps") for entry, _ in candidates if isinstance(entry, dict))
     visible_entries: list[dict] = [
         entry for entry, is_compatible in candidates
         if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
@@ -1584,7 +1592,7 @@ def _build_skills_system_prompt_inner(
 
     result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
     with _SKILLS_PROMPT_CACHE_LOCK:
-        _SKILLS_PROMPT_CACHE[cache_key] = result
+        _SKILLS_PROMPT_CACHE[cache_key] = (result, app_gated)
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
         while len(_SKILLS_PROMPT_CACHE) > _SKILLS_PROMPT_CACHE_MAX:
             _SKILLS_PROMPT_CACHE.popitem(last=False)

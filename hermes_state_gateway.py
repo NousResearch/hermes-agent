@@ -758,7 +758,10 @@ class SessionGatewayMixin:
         counts: Dict[str, int] = {}
         if not name:
             return counts
-        ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
+        from gateway.session import _session_key_namespace
+        session_namespace = _session_key_namespace(name)
+        ns = f"{session_namespace}:"
+        ns_len = len(ns)
 
         def _do(conn):
             existing = {row[0] for row in conn.execute(

@@ -20,7 +20,8 @@ import hmac
 import logging
 import secrets
 import webbrowser
-from typing import Any, Dict, Optional
+from contextlib import suppress
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode
 
 from hermes_cli.auth_constants import AuthError, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL, _codex_err
@@ -108,7 +109,8 @@ def _codex_browser_exchange_code(code: str, *, redirect_uri: str, code_verifier:
 
 
 def _codex_browser_login(
-    *, open_browser: bool = True, timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
+    *, open_browser: bool = True, timeout_seconds: Optional[float] = None,
+    on_verification: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     """Authorization-code + PKCE login on the loopback listener; returns the device-flow creds shape.
 
     Raises ``AuthError(code=CODEX_BROWSER_PORT_BUSY_CODE)`` when :1455 cannot be bound so the caller
@@ -139,6 +141,11 @@ def _codex_browser_login(
             opened = False
         print("Browser opened for OpenAI authorization." if opened
               else "Could not open the browser automatically; use the URL above.")
+    # Same contract as ``_nous_device_code_login(on_verification=)``: fired after the instructions
+    # print and before waiting, so a caller whose stdout is not a terminal can render the link.
+    if on_verification is not None:
+        with suppress(Exception):
+            on_verification(auth_url, "")
     wait = float(timeout_seconds or CODEX_BROWSER_CALLBACK_TIMEOUT_SECONDS)
     print(f"Waiting for the OpenAI callback on {redirect_uri} (timeout {int(wait)}s, Ctrl+C to cancel)...")
     try:

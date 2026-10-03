@@ -1129,10 +1129,20 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
             session_db.close()
 
 
-def _start_agent_build(sid: str, session: dict) -> None:
+def _start_agent_build(sid: str, session: dict, speculative: bool = False) -> None:
     """Start building the real AIAgent for a TUI session, once. Deferred until the first prompt (or any
     command needing the agent) so the composer isn't blocked on tool discovery / model metadata;
-    the ready/error event contract is unchanged."""
+    the ready/error event contract is unchanged.
+
+    ``speculative`` marks a build kicked off only to pre-warm a session the
+    user is *browsing* (cold resume / hydration), not one they have decided to
+    continue. When such a pre-warm fails — most often because the session's
+    stored model/provider is no longer available to the current install — we
+    must NOT spam the intrusive ``error`` event: the user opened the session to
+    *read* it, and the failure is irrelevant until they actually send a turn.
+    The error is still recorded on the session, so the prompt path surfaces it
+    properly at the moment the user tries to continue.
+    """
     ready = session.get("agent_ready")
     if ready is None:
         return
@@ -1200,12 +1210,17 @@ def _start_agent_build(sid: str, session: dict) -> None:
         except Exception as e:
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            # A client can route "no provider is set up" to its setup flow instead of a dead-end
-            # error toast — but only if it can tell. The sentence is for the reader, the code is
-            # for the client; older clients keep matching the text.
-            _emit("error", sid, {
-                "message": agent_init_failed_message(e),
-                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
+            if not speculative:
+                # A speculative pre-warm (browsing a resumed session) that fails
+                # because the stored model/provider is unavailable must stay
+                # silent: the user is only reading the transcript, not continuing
+                # it. The recorded agent_error surfaces on the actual prompt path.
+                # A client can route "no provider is set up" to its setup flow instead of a dead-end
+                # error toast — but only if it can tell. The sentence is for the reader, the code is
+                # for the client; older clients keep matching the text.
+                _emit("error", sid, {
+                    "message": agent_init_failed_message(e),
+                    **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1247,7 +1262,7 @@ def _sess_building(params, rid):
     reader thread, where waiting on a cold build stalled every RPC behind it ("text is instant, images hang")."""
     s, err = _sess_nowait(params, rid)
     if not err:
-        _start_agent_build(params.get("session_id") or "", s)
+        _start_agent_build(params.get("session_id") or "", s, speculative=True)
     return (None, err) if err else (s, None)
 
 
@@ -2930,7 +2945,7 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
 
     def _run():
         if (session := _sessions.get(sid)) is not None:
-            _start_agent_build(sid, session)
+            _start_agent_build(sid, session, speculative=True)
     timer = threading.Timer(delay, _run)
     timer.daemon = True
     timer.start()
@@ -2992,7 +3007,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             _emit("session.resume_progress", sid,
                   {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
-            _start_agent_build(sid, session)
+            _start_agent_build(sid, session, speculative=True)
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return

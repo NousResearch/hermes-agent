@@ -3231,6 +3231,23 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 
+_TRAILING_CONTINUE_INTENT_CJK_RE = re.compile(
+    r"(?:^|[，,；;。！？!?\n])\s*"
+    r"(?:(?:现在|接下来|下面|然后|接着)\s*)?"
+    r"(?:让我(?:先|来|现在|再|接着|直接|用|把|去|继续)?"
+    r"|我(?:现在|接下来|下面|先)?(?:来|去|继续|将|再)"
+    r"|接下来我|下面我|那我)"
+    r"[^。！？!?\n]{2,60}[。：:]?\s*$"
+)
+# A trailing clause that hands the outcome back ("……，结论是 X") is a conclusion, not a dangling
+# announcement; the stall guard must stay quiet for it.
+_TRAILING_CONTINUE_INTENT_CJK_CONCLUSION_RE = re.compile(r"(?:结论|答案是|因此|所以|已完成)")
+_TRAILING_CONTINUE_INTENT_CJK_ACTION_RE = re.compile(
+    r"(?:搜|查|检索|扫|抓|爬|拉取|拉|下载|读|打开|看|翻"
+    r"|分析|解析|对比|统计|计算|算|定位|排查|检查|校验|核对|验证|测试|试"
+    r"|生成|写|改|修改|替换|更新|补|重试|处理|整理|提取|抽取|收集|调用|执行|切|换)"
+)
+
 # Content longer than this is a substantive reply, not a dangling ack.
 _TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
 
@@ -3240,7 +3257,16 @@ def trailing_continue_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
-    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+    tail = t[-160:]
+    if _TRAILING_CONTINUE_INTENT_RE.search(tail):
+        return True
+    cjk = _TRAILING_CONTINUE_INTENT_CJK_RE.search(tail)
+    if not cjk:
+        return False
+    announcement = cjk.group(0)
+    if _TRAILING_CONTINUE_INTENT_CJK_CONCLUSION_RE.search(announcement):
+        return False
+    return bool(_TRAILING_CONTINUE_INTENT_CJK_ACTION_RE.search(announcement))
 
 
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered

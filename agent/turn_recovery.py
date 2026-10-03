@@ -1016,7 +1016,7 @@ def nonretryable_client_error_result(
     # collapsed here or they leak verbatim via the ``error`` field.
     _nonretryable_summary = agent._summarize_api_error(api_error)
     _plabel = provider_label_for(provider)
-    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
+    _label = _NONRETRYABLE_LABELS.get(classified.display_reason, f"{_plabel} rejected the request and retrying won't help")
     agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
     # The endpoint/status trace is developer detail: verbose only (the log has it always).
     if getattr(agent, "verbose_logging", False):
@@ -1917,7 +1917,8 @@ def route_classified_error(
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
-            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+            if agent._try_activate_fallback(
+                reason=classified.reason, reset_at=reset_at, display_reason=classified.display_reason):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
@@ -1932,7 +1933,9 @@ def route_classified_error(
             "🔐 Authentication failed and could not be refreshed — "
             "switching to fallback provider..."
         )
-        if agent._try_activate_fallback(reason=classified.reason):
+        if agent._try_activate_fallback(
+            reason=classified.reason, display_reason=classified.display_reason,
+        ):
             return _fallback_break()
 
     # Nous Portal: a genuine account-level 429 is recorded to a shared file so ALL

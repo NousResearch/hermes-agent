@@ -1257,6 +1257,14 @@ export const frOverrides = {
       themeDesc: "Palettes desktop uniquement. Le mode sélectionné s'applique par-dessus.",
       themeSearchPlaceholder: 'Rechercher dans vos thèmes ou sur le Marketplace VS Code…',
       themeProfileNote: profile => `Enregistré pour le profil ${profile} — chaque profil conserve son propre thème.`,
+      themeSharedNote: 'Partagé entre tous les profils et passerelles — choisissez une fois, il vous suit partout.',
+      themeScopeTitle: 'Portée du thème',
+      themeScopePerProfile: 'Par profil',
+      themeScopeShared: 'Partagé',
+      themeScopePerProfileDesc:
+        'Chaque profil et passerelle mémorise son propre thème et son mode clair/sombre : changer de profil change l’apparence.',
+      themeScopeSharedDesc:
+        'Un seul thème et mode clair/sombre pour toute l’application, sur chaque profil et passerelle. Le reste de l’Apparence est déjà partagé.',
       installTitle: 'Installer depuis VS Code',
       installDesc:
         "Collez un identifiant d'extension Marketplace (ex. dracula-theme.theme-dracula) pour convertir son thème de couleur en palette desktop.",

@@ -90,6 +90,27 @@ class TestGatewayPrompt:
 class TestUpdateCommandGatewayFlag:
     """Verify the gateway spawns hermes update --gateway."""
 
+    def test_windows_detached_update_uses_resolved_launcher(self, tmp_path, monkeypatch):
+        """Windows update must execute the launcher resolved by the gateway."""
+        import subprocess
+        from gateway import slash_commands
+        from hermes_cli import _subprocess_compat
+
+        launcher = [str(tmp_path / ".hermes" / "bin" / "hermes.exe")]
+        output_path = tmp_path / "update.out"
+        exit_code_path = tmp_path / "update.rc"
+        popen = MagicMock()
+
+        monkeypatch.setattr(slash_commands.sys, "platform", "win32")
+        monkeypatch.setattr(_subprocess_compat, "windows_detach_popen_kwargs", lambda: {})
+        monkeypatch.setattr(subprocess, "Popen", popen)
+
+        slash_commands._spawn_detached_update(launcher, output_path, exit_code_path)
+
+        argv = popen.call_args.args[0]
+        assert argv[5:] == [*launcher, "update", "--gateway"]
+        assert "hermes_cli.main" not in argv
+
     @pytest.mark.asyncio
     @pytest.mark.platforms("linux")
     async def test_spawns_with_gateway_flag(self, tmp_path):

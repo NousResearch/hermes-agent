@@ -762,8 +762,10 @@ class GatewaySessionCommandsMixin:
             adapter = self._delivery_adapter_for(source)
             if not adapter:
                 return t("gateway.save.no_adapter")
-            await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,
-                                        caption=t("gateway.save.caption", filename=filename), file_name=filename)
+            sent = await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,
+                                               caption=t("gateway.save.caption", filename=filename), file_name=filename)
+            if not sent.success:
+                return t("gateway.save.failed", error=sent.error)
             return t("gateway.save.complete")
         except Exception as e:
             logger.warning("Session /save failed: %s", e)

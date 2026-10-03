@@ -881,6 +881,9 @@ class GatewayShutdownMixin:
         for _sk, _agent in list(self._running_agents.items()):
             if _agent is _AGENT_PENDING_SENTINEL:
                 continue
+            _state = self._peek_session_state(_sk)
+            if _state is not None and self._reply_is_private(_state.turn.event):
+                continue
             with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
                 await self.async_session_store.mark_resume_pending(_sk, reason)
                 marked.append(_sk)

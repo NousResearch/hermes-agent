@@ -359,14 +359,14 @@ def _run_single_child(
         owner_session_record=owner_session_record,
     )
     run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb, heartbeat=heartbeat)
-    # Set when a timed-out Future still owns the child: closing it from this
-    # thread before the worker settles races the conversation's finally path.
-    _child_close_deferred = False
+    # The worker Future is the safe cleanup boundary after a timeout; None on
+    # normal/settled paths, which clean up synchronously in our finally block.
+    _deferred_worker = None
     try:
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
         run.seed_workspace()
-        result, failure_entry, _child_close_deferred = run.await_child()
+        result, failure_entry, _deferred_worker = run.await_child()
         if failure_entry is not None:
             return failure_entry
 
@@ -393,7 +393,10 @@ def _run_single_child(
             preview=str(exc), summary=str(exc), status="failed",
         )
     finally:
-        run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
+        run.cleanup(
+            heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id,
+            deferred_worker=_deferred_worker,
+        )
 
 
 def _build_children(

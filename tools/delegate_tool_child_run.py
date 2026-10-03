@@ -413,6 +413,8 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     resources until process exit.
     """
     child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
+    if child_future.done():
+        return
     # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
     # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
@@ -457,6 +459,13 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
             if leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id
+
+def _release_child_credential(child_pool: Any, leased_cred_id: Optional[str]) -> None:
+    """Best-effort release of one delegated child's credential lease."""
+    if child_pool is None or leased_cred_id is None:
+        return
+    with _quiet("Failed to release credential lease: %s"):
+        child_pool.release_lease(leased_cred_id)
 
 def _merge_late_steer(result: Dict[str, Any], subagent_id: Optional[str], child: Any) -> None:
     """Linearization boundary for registry steering: from here the child cannot consume another steer. Closing under
@@ -824,9 +833,9 @@ class _ChildRun:
                 warned = True
                 _warn_child_budget(self.child, child_timeout - (deadline - time.monotonic()), child_timeout)
 
-    def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
-        """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
-        close_deferred)`` on timeout/exception.
+    def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Any]]:
+        """Run the child's conversation on a daemon worker: ``(result, None, None)`` or ``(None, error_entry,
+        deferred_worker)`` on timeout/exception.
 
         Hard timeout is off by default (``result(timeout=None)``; stuck children are the heartbeat's job). Daemon
         worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join. The
@@ -834,8 +843,8 @@ class _ChildRun:
         dangerous-command prompts never fall back to ``input()`` and deadlock the parent TUI. On failure: steer
         acceptance closes BEFORE the stop signal (a concurrent steer is drained into the entry or rejected, never
         lost); a 0-API-call timeout gets a diagnostic dump; a worker that still owns the child gets ``child.close()``
-        via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
-        path.
+        via a Future done-callback (returned as ``deferred_worker``) — closing here would race its still-unwinding
+        finally path.
         """
         from tools.delegate_tool import (_get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb)
         from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -872,7 +881,7 @@ class _ChildRun:
             if not future.done():
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
                 raise FuturesTimeoutError()
-            return future.result(), None, False
+            return future.result(), None, None
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
         finally:
@@ -935,10 +944,12 @@ class _ChildRun:
             "diagnostic_path": diagnostic_path,
         }
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
-        close_deferred = is_timeout and not future.done()
-        if close_deferred:
+        # Keep every timeout on the Future boundary even if the worker settled
+        # after timeout classification; close must still precede lease release.
+        deferred_worker = future if is_timeout else None
+        if deferred_worker is not None:
             _defer_close_after_timeout(child, future)
-        return None, _error_entry, close_deferred
+        return None, _error_entry, deferred_worker
 
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:
         """Warn the parent when this child wrote files the parent had already read. Checks writes by ANY non-parent
@@ -1016,11 +1027,11 @@ class _ChildRun:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
         _safe_progress(self.child_progress_cb, "subagent.complete", **complete_kwargs)
 
-    def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
+    def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, deferred_worker: Any) -> None:
         """Finally-path teardown (idempotent, never raises). Order matters: stop heartbeat → drop registry entry →
-        release credential lease → restore the parent's process-global tool names → detach from the parent's
-        interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
-        no turn is active."""
+        release the credential lease (at the worker-done boundary after a timeout) → restore the parent's
+        process-global tool names → detach from the parent's interrupt list → close the child (unless a timed-out
+        worker still owns it) → pop the child's Relay scope if no turn is active."""
         child = self.child
         heartbeat.stop()
 
@@ -1028,9 +1039,12 @@ class _ChildRun:
         if self.subagent_id:
             _unregister_subagent(self.subagent_id, agent=child)
 
-        if child_pool is not None and leased_cred_id is not None:
-            with _quiet("Failed to release credential lease: %s"):
-                child_pool.release_lease(leased_cred_id)
+        if deferred_worker is None:
+            _release_child_credential(child_pool, leased_cred_id)
+        elif child_pool is not None and leased_cred_id is not None:
+            deferred_worker.add_done_callback(
+                lambda _done: _release_child_credential(child_pool, leased_cred_id)
+            )
 
         # Restore the parent's tool names so the process-global is correct for
         # any subsequent execute_code calls or other consumers.
@@ -1043,7 +1057,7 @@ class _ChildRun:
 
         # Close tool resources (terminal sandboxes, browser daemons, background
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
-        if not close_deferred:
+        if deferred_worker is None:
             _close_child(child, "Failed to close child agent after delegation")
         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
         # cap while it runs); dispose them here so they never squat the cap after the child is gone.

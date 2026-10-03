@@ -238,7 +238,33 @@ def strip_stale_dangerous_confirmations(
             age, expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
-        redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+        # Ordinary user authorization expires as a whole, independent of the
+        # language, word order, or target of any remaining instruction. Only a
+        # producer-marked summary has a separate reference segment to preserve;
+        # user-authored labels such as "Reference:" do not establish that fact.
+        redacted_content = _EXPIRED_CONFIRMATION_SENTINEL
+        content = msg.get("content")
+        if msg.get("_compressed_summary") and isinstance(content, str):
+            from agent.context_compressor import split_user_originated_turn
+
+            handoff, _ = split_user_originated_turn(msg)
+            reference = handoff.get("content") if handoff else None
+            if isinstance(reference, str) and reference and reference in content:
+                start = content.index(reference)
+                before, after = content[:start], content[start + len(reference):]
+                # The existing projection owns both merged-carrier layouts.
+                # Expire the entire live segment if it contains a confirmation,
+                # but only redact quoted phrases in non-actionable reference.
+                before = _EXPIRED_CONFIRMATION_SENTINEL if is_dangerous_confirmation(before) else before
+                after = _EXPIRED_CONFIRMATION_SENTINEL if is_dangerous_confirmation(after) else after
+                reference = re.sub(
+                    "|".join(re.escape(pattern) for pattern in _DANGEROUS_CONFIRMATION_PATTERNS),
+                    _EXPIRED_CONFIRMATION_SENTINEL,
+                    reference,
+                    flags=re.IGNORECASE,
+                )
+                redacted_content = before + reference + after
+        redacted["content"] = redacted_content
         # The api_content sidecar carries the exact bytes sent — the confirmation itself; replaying it would undo the redaction.
         drop_stale_api_content(redacted)
         cleaned.append(redacted)

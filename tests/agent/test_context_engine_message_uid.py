@@ -434,6 +434,8 @@ def test_the_inflight_task_restated_onto_the_carrier_records_its_uid():
     out = compressor._reappend_inflight_user_task([carrier], inflight)
 
     assert out == [carrier] and _INFLIGHT_TASK_REPLAY_HEADER in carrier["content"]
+    from agent.context_compressor import INFLIGHT_TASK_REPLAY_METADATA_KEY
+    assert carrier["display_metadata"][INFLIGHT_TASK_REPLAY_METADATA_KEY] is True
     assert carrier["message_uid"] == "s" * UID_LEN
     assert carrier["_absorbed_message_uids"] == ["a" * UID_LEN]
 

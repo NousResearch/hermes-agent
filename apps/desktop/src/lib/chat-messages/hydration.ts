@@ -1,7 +1,7 @@
 import { skillInvocationText } from '@hermes/shared'
 
 import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
-import { extractImageRefs } from '@/lib/embedded-images'
+import { extractImageRefs, nativeImageHintRefs } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName } from '@/lib/todos'
@@ -463,7 +463,15 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
     const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
     const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
-    const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
+    // Path hints stay in the prompt text. `sameAttachmentTurn` matches a pasted
+    // image against its optimistic caption by seeing those markers (#120978).
+    // The bubble hides the lines and draws these refs as thumbnails.
+    const hintRefs = displayRole === 'user' && rawDisplayContent ? nativeImageHintRefs(rawDisplayContent) : []
+
+    const liftedRefs = [
+      ...new Set([...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? []), ...hintRefs])
+    ]
+
     const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
     const parts: ChatMessagePart[] = []

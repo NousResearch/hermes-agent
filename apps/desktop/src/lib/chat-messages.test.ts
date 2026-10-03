@@ -376,6 +376,16 @@ describe('toChatMessages', () => {
     expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
   })
 
+  it('attaches thumbnails for flattened native-vision path hints without erasing the markers', () => {
+    const path = String.raw`C:\img\shot.png`
+    const content = `unable to publish\n\n[Image attached at: ${path}]\n[screenshot]`
+
+    const [message] = toChatMessages([{ role: 'user', content, timestamp: 1 }])
+
+    expect(chatMessageText(message)).toBe(content)
+    expect(message.attachmentRefs).toEqual([`@image:${path}`])
+  })
+
   it('leaves a plain user prompt without attachment refs untouched', () => {
     const [message] = toChatMessages([
       {

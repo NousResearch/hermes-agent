@@ -195,3 +195,73 @@ export function extractImageRefs(text: string): { cleanedText: string; refs: str
 
   return { cleanedText, refs }
 }
+
+// Native vision writes one hint per attachment into the user text
+// (`[Image attached at: <path>]` / `[Image attached: <url>]`). The session
+// store then flattens each image part to a `[screenshot]` line. Those lines
+// stay in the prompt text: attachment-turn identity (#120978) matches on them.
+// The bubble hides the lines and renders the paths as `@image:` thumbnails.
+const NATIVE_IMAGE_HINT_LINE_RE = /^\[Image attached at:[ \t]*([^\n\]]+)\][ \t]*$/
+const NATIVE_IMAGE_URL_HINT_LINE_RE = /^\[Image attached:[ \t]*([^\n\]]+)\][ \t]*$/
+
+function quoteImageRefValue(value: string): string {
+  // Same quoting as formatRefValue, so DirectiveContent can parse the ref.
+  if (!/[\s()[\]{}<>"'`]/.test(value)) {
+    return value
+  }
+
+  if (!value.includes('`')) {
+    return `\`${value}\``
+  }
+
+  if (!value.includes('"')) {
+    return `"${value}"`
+  }
+
+  if (!value.includes("'")) {
+    return `'${value}'`
+  }
+
+  return value
+}
+
+function nativeImageHintPath(line: string): string | null {
+  const match = NATIVE_IMAGE_HINT_LINE_RE.exec(line.trimEnd()) ?? NATIVE_IMAGE_URL_HINT_LINE_RE.exec(line.trimEnd())
+  const raw = match?.[1]?.trim()
+
+  if (!raw) {
+    return null
+  }
+
+  const quoted = raw.match(/^(`|"|')([\s\S]*)\1$/)
+  const path = (quoted?.[2] ?? raw).trim()
+
+  return path || null
+}
+
+export function nativeImageHintRefs(text: string): string[] {
+  const refs: string[] = []
+
+  for (const line of text.split('\n')) {
+    const path = nativeImageHintPath(line)
+
+    if (path) {
+      refs.push(`@image:${quoteImageRefValue(path)}`)
+    }
+  }
+
+  return refs
+}
+
+/** Caption shown in the bubble. Identity comparisons keep the original text. */
+export function hideNativeImageHintLines(text: string): string {
+  if (!nativeImageHintRefs(text).length) {
+    return text
+  }
+
+  return text
+    .split('\n')
+    .filter(line => nativeImageHintPath(line) === null && line.trimEnd() !== '[screenshot]')
+    .join('\n')
+    .replace(/\n+$/, '')
+}

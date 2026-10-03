@@ -283,6 +283,61 @@ module.exports = {
       ? 'Remote-only desktop client for Hermes Agent.'
       : 'Native desktop shell for Hermes Agent.',
     target: ['AppImage']
+  },
+  // electron-builder's fpm defaults (FpmTarget.getDefaultDepends) list GTK,
+  // NSS, libnotify, at-spi2 and xdg-utils, but no XDG desktop portal. On a
+  // Wayland session Electron resolves native file dialogs through
+  // org.freedesktop.portal.FileChooser, and that interface only lands on the
+  // session bus when a portal *backend* advertises
+  // org.freedesktop.impl.portal.FileChooser: the frontend package
+  // (xdg-desktop-portal) implements no portal itself and declares no backend
+  // depends, so `depends: xdg-desktop-portal` guarantees nothing. A session
+  // whose only backend is FileChooser-less (the reporter had
+  // xdg-desktop-portal-hyprland, which does not implement it) fails every file
+  // dialog with `No such interface "org.freedesktop.portal.FileChooser"` /
+  // `Failed to read portal version property` (#126231).
+  // xdg-desktop-portal-gtk is the package that Depends on the frontend AND
+  // ships org.freedesktop.impl.portal.FileChooser, so it is the declaration
+  // that actually pulls a FileChooser-capable portal in. Declaring `depends`
+  // REPLACES the defaults rather than extending them, so each list below is
+  // the builder default verbatim plus that backend package; the lists are
+  // pinned by tests-js/desktop-linux-portal-depends.test.ts.
+  // ponytail: `linux.target` stays AppImage-only, so these two blocks are inert
+  // for the default `dist:linux` invocation. They bind for the explicit
+  // `--linux deb` / `--linux rpm` builds the config accepts, and declaring the
+  // dependency is the only place the packaging config can state a Wayland
+  // runtime requirement at all. Widening `linux.target` is a release-policy
+  // decision (Linux legs are disabled in the release workflow), not this
+  // issue's to make. An unpacked tree (`release/linux-unpacked/`, which is what
+  // `hermes desktop` launches) runs no depends line at all, so this cannot
+  // reach the reporter's failure path either; it only covers fresh deb/rpm
+  // installs.
+  deb: {
+    depends: [
+      'libgtk-3-0',
+      'libnotify4',
+      'libnss3',
+      'libxss1',
+      'libxtst6',
+      'xdg-utils',
+      'libatspi2.0-0',
+      'libuuid1',
+      'libsecret-1-0',
+      'xdg-desktop-portal-gtk'
+    ]
+  },
+  rpm: {
+    depends: [
+      'gtk3',
+      'libnotify',
+      'nss',
+      'libXScrnSaver',
+      '(libXtst or libXtst6)',
+      'xdg-utils',
+      'at-spi2-core',
+      '(libuuid or libuuid1)',
+      'xdg-desktop-portal-gtk'
+    ]
   }
 }
 

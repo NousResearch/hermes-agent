@@ -76,7 +76,16 @@ class OnePasswordLoginBackend(LoginBackend):
         cmd = [str(self._op()), "signin", "--raw"]
         if account := str(self.cfg.get("account") or ""):
             cmd += ["--account", account]
-        proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
+        # The desktop CLI connector owns a local IPC handshake. Keep it out of
+        # the long-lived agent session while retaining stdin-only credentials.
+        proc = run_with_stdin_secret(
+            cmd,
+            env=self._env(None),
+            secret=master_password,
+            timeout=_TIMEOUT,
+            label="op",
+            start_new_session=True,
+        )
         token = (proc.stdout or "").strip()
         if proc.returncode != 0 or not token:
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")

@@ -60,12 +60,12 @@ class LoginBackend(ABC):
 
 
 def run_with_stdin_secret(argv: Sequence[str], *, env: Dict[str, str], secret: str, timeout: float,
-                          label: str) -> subprocess.CompletedProcess:
+                          label: str, start_new_session: bool = False) -> subprocess.CompletedProcess:
     """Run a manager CLI feeding *secret* on stdin (never argv, never env). Spawn/timeout → RuntimeError."""
     try:
         return subprocess.run(  # noqa: S603 — argv list, no shell
             list(argv), env=env, input=secret + "\n", capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout)
+            encoding="utf-8", errors="replace", timeout=timeout, start_new_session=start_new_session)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
     except OSError as exc:

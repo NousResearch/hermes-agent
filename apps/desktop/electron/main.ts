@@ -18297,7 +18297,8 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
   event.returnValue = {
     ...resolveFeatureFlags({
       argv: process.argv,
-      canary: resolveUpdaterChannelFromStamp() === 'canary'
+      canary: resolveUpdaterChannelFromStamp() === 'canary',
+      platform: process.platform
     }),
     guestOnboarding: GUEST_ONBOARDING
   }

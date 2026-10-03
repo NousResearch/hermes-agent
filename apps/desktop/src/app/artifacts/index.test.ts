@@ -48,6 +48,27 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('applies configured ignore rules to heuristic values but keeps explicit deliveries', () => {
+    const artifacts = collectArtifactsForSession(
+      makeSession(),
+      [
+        {
+          content: 'Noise https://example.com/loading.png and /tmp/loading.png',
+          role: 'assistant',
+          timestamp: 2000
+        },
+        {
+          content: 'MEDIA:/tmp/loading.png',
+          role: 'assistant',
+          timestamp: 2001
+        }
+      ],
+      { ignore: [/loading\.png/] }
+    )
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual(['/tmp/loading.png'])
+  })
+
   it('strips Markdown code delimiters from discovered link artifacts', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

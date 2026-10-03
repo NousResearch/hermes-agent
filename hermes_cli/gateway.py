@@ -4664,6 +4664,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     )
     _atexit.register(lambda: _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info())))
 
+    # A native crash (SIGILL/SIGSEGV — an illegal instruction in a C dependency) runs no Python
+    # handler. GatewayRunner.start arms faulthandler once config resolves (#70344); arm it here too
+    # so the startup window before that — imports, config load, the watchdog — is covered and the
+    # signal name plus traceback land in the gateway log (#126099).
+    from gateway.run_startup import arm_faulthandler_at_process_entry
+    arm_faulthandler_at_process_entry()
+
     _respawn_storm_backoff()
 
     def _hard_exit_after_gateway_teardown(code: int) -> None:

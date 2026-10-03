@@ -1763,3 +1763,72 @@ class TestTopLevelBlockVsAuthoredExtra:
             adapter.config = config.platforms[Platform.TELEGRAM]
             assert adapter._telegram_require_mention() is True
             assert os.environ["TELEGRAM_REQUIRE_MENTION"] == "true"
+
+
+class TestAuthoredExtraFallbacksAndWarning:
+    """An authored ``platforms.<plat>.extra`` value also beats a global default; the warning is exact."""
+
+    @staticmethod
+    def _write(tmp_path, monkeypatch, cfg: dict, prefix: str) -> None:
+        import json
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for key in list(os.environ):
+            if key.startswith(prefix):
+                monkeypatch.delenv(key)
+
+    @staticmethod
+    def _precedence_warnings(caplog) -> list:
+        return [r.getMessage() for r in caplog.records if "took precedence" in r.getMessage()]
+
+    @pytest.mark.parametrize("authored,expected", [(True, "true"), (None, "false")], ids=["authored", "global-only"])
+    def test_authored_require_mention_beats_the_global_one(self, authored, expected, tmp_path, monkeypatch):
+        # The stock telegram: block carries no require_mention, so the Telegram hook falls back to
+        # the top-level key; the user's own platforms.telegram.extra value must win on the env rung.
+        cfg = {"require_mention": False, "telegram": {"reactions": False, "extra": {"rich_messages": False}}}
+        if authored is not None:
+            cfg["platforms"] = {"telegram": {"enabled": True, "extra": {"require_mention": authored}}}
+        self._write(tmp_path, monkeypatch, cfg, "TELEGRAM_")
+        config = load_gateway_config()
+        assert os.environ["TELEGRAM_REQUIRE_MENTION"] == expected
+        if authored is not None:
+            assert config.platforms[Platform.TELEGRAM].extra["require_mention"] is True
+
+    def test_warning_names_the_gateway_platforms_block(self, tmp_path, monkeypatch, caplog):
+        self._write(tmp_path, monkeypatch, {
+            "gateway": {"platforms": {"slack": {"strict_mention": False}}},
+            "platforms": {"slack": {"enabled": True, "extra": {"strict_mention": True}}},
+        }, "SLACK_")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+        assert config.platforms[Platform.SLACK].extra["strict_mention"] is True
+        assert self._precedence_warnings(caplog) == [
+            "strict_mention set in both gateway.platforms.slack and platforms.slack.extra; "
+            "platforms.slack.extra took precedence"
+        ]
+
+    def test_equivalent_spellings_do_not_warn(self, tmp_path, monkeypatch, caplog):
+        self._write(tmp_path, monkeypatch, {
+            "slack": {"free_response_channels": "C1,C2", "strict_mention": "true"},
+            "platforms": {"slack": {"enabled": True, "extra": {
+                "free_response_channels": ["C1", "C2"], "strict_mention": True}}},
+        }, "SLACK_")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            load_gateway_config()
+        assert self._precedence_warnings(caplog) == []
+        assert os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C1,C2"
+
+    def test_relay_predicate_resolves_without_logging(self, tmp_path, monkeypatch, caplog):
+        from gateway.relay import relay_explicitly_disabled
+
+        self._write(tmp_path, monkeypatch, {
+            "relay": {"enabled": False, "reply_prefix": "A"},
+            "platforms": {"relay": {"extra": {"reply_prefix": "B"}}},
+        }, "GATEWAY_RELAY")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            assert relay_explicitly_disabled() is True
+            assert relay_explicitly_disabled() is True
+        assert self._precedence_warnings(caplog) == []

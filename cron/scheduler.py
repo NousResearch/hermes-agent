@@ -2838,17 +2838,10 @@ def run_one_job(
                 # (#123401). Without this the outage is silent — no cron_incidents
                 # row, no ping — while executions.db keeps piling up failed rows.
                 if not post_handoff:
-                    # The notice reads the home channel and bot credentials through
-                    # get_secret, which fails closed under multiplex with no scope.
-                    # _run_one_job_body installs the firing profile's scope, and
-                    # record_unknown_worker_outcome does the same for the post-handoff
-                    # notice; this branch returns before either runs.
-                    scope_tokens = _install_fire_secret_scope()
-                    try:
+                    # Returns before _run_one_job_body / record_unknown_worker_outcome install the scope; get_secret fails closed without one under multiplex.
+                    with _fire_secret_scope():
                         delivery_error, delivery_outcome = _deliver_crash_failure(
                             job, error, adapters=adapters, loop=loop)
-                    finally:
-                        _reset_fire_secret_scope(scope_tokens)
                 from cron.unreachable_retry import is_retry_run
                 mark_job_run(
                     job["id"],
@@ -3312,6 +3305,16 @@ def _reset_fire_secret_scope(tokens: "tuple[contextvars.Token, Optional[contextv
     reset_secret_scope(scope_token)
 
 
+@contextlib.contextmanager
+def _fire_secret_scope():
+    """``_install_fire_secret_scope`` for the ``with`` block, reset on the way out."""
+    tokens = _install_fire_secret_scope()
+    try:
+        yield
+    finally:
+        _reset_fire_secret_scope(tokens)
+
+
 def _run_one_job_body(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, claim_lost: Optional[_CancelEventLike] = None,
@@ -3738,8 +3741,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     profile_home = _get_hermes_home().resolve()
     # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
     # the env build; the helper's reset order keeps the context from outliving its scope.
-    fire_scope_tokens = _install_fire_secret_scope()
-    try:
+    with _fire_secret_scope():
         # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
         # import, and strip_launch_profile_env leaves managed keys in place.
         worker_env = strip_launch_profile_env(build_subprocess_env(
@@ -3747,8 +3749,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
         ))
-    finally:
-        _reset_fire_secret_scope(fire_scope_tokens)
     worker_env = systemd_user_bus_env(worker_env)
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the

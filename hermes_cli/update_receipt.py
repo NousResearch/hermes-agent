@@ -251,6 +251,28 @@ def record_skip(name: str, reason: str) -> None:
     _record("skip", f"update skip {name}", name, reason)
 
 
+def record_failure_detail(detail: str) -> None:
+    """Land the reason an early-exit path is failing on the open receipt.
+
+    Early ``sys.exit(1)`` sites print an error but never reach an inner finalize, so the
+    command boundary stamps ``stop_reason: "sys.exit(1)"`` with no diagnosable trace
+    (#132089) — and under schedulers that discard stdout the receipt is the only record.
+    Copy-on-write like every other recorder; no-op when no receipt is open, never raises.
+    """
+    import copy
+
+    try:
+        current = _current.get()
+        if current is None:
+            return
+        clone = copy.copy(current)
+        clone.data = copy.deepcopy(current.data)
+        clone.data["failure_detail"] = str(detail)
+        _current.set(clone)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not record failure detail: %s", exc)
+
+
 def record_stage(name: str, outcome: str, **facts: str) -> None:
     """Mark the END of a pipeline stage (``success``/``failed``/``skipped``) with a timestamp."""
     _record("stage", f"update stage {name}", name, outcome, **facts)

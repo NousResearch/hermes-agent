@@ -238,6 +238,34 @@ def _record_update_skip(step: str, reason: str) -> None:
         record_skip(step, reason)
 
 
+def _record_failure_detail(detail: str) -> None:
+    """Best-effort receipt record of WHY this path is exiting early.
+
+    A bare ``sys.exit(1)`` reaches the command boundary as ``stop_reason: "sys.exit(1)"``
+    with no context (#132089); recording here keeps a scheduled run whose stdout is
+    discarded diagnosable from the receipt alone."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_failure_detail
+        record_failure_detail(detail)
+
+
+def _sweep_stale_git_state_before_start() -> None:
+    """Self-heal abandoned ``.git`` locks/pack temp files BEFORE the first git write.
+
+    The apply-path sweep runs later (before the fetch); a run that dies between the
+    snapshot and that point — or before it — leaves ``.git/index.lock`` behind, and the
+    next attempt's own sweep arrives too late to let it start clean (#132089). Idempotent:
+    the apply-path sweep stays as the belt-and-braces second pass."""
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+
+    cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
+    if cleared:
+        print("  (removed stale git lock(s) before start: %s)" % ", ".join(cleared))
+    swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
+    if swept:
+        print("  (removed %d aborted-fetch pack temp file(s) before start)" % len(swept))
+
+
 def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
     """Record the pre-update backup as a skip when it was disabled, else as a step.
 
@@ -1257,6 +1285,7 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
     if use_zip_update and sys.platform != "win32":
         print("✗ Not a git repository. Please reinstall:")
         print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
+        _record_failure_detail("not a git repository (reinstall required)")
         sys.exit(1)
 
     from hermes_cli._subprocess_compat import expose_pm_git
@@ -1451,6 +1480,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
+    # Before the first git write, not only in the apply path (#132089): a run that dies
+    # between the snapshot and the apply-path sweep strands .git/index.lock, and the next
+    # attempt's own sweep runs too late to let it start clean.
+    _sweep_stale_git_state_before_start()
+
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
     # reason, not as a failed step (see _record_pre_update_backup_outcome).
@@ -1500,6 +1534,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
+            _record_failure_detail(f"resolve {selected_channel} source channel: {exc}")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
         if target.retired:

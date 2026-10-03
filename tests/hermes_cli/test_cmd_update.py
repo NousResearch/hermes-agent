@@ -127,3 +127,39 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+
+def test_stale_git_state_swept_before_start(tmp_path, monkeypatch, capsys):
+    """#132089: the .git lock/tmp-pack sweep must also run at update start, not
+    only in the apply path — a run dying between the snapshot and the apply
+    sweep strands .git/index.lock that the next run inherits."""
+    from types import SimpleNamespace
+
+    from hermes_cli import gitlock
+
+    # Stub the lazy main facade: importing hermes_cli.main runs import-time
+    # recovery I/O against the real checkout (home_io_guard refuses that).
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(PROJECT_ROOT=tmp_path))
+    monkeypatch.setattr(
+        gitlock, "clear_stale_git_locks", lambda root, **kw: [str(root / ".git" / "index.lock")])
+    monkeypatch.setattr(gitlock, "clear_stale_tmp_packs", lambda root, **kw: ["pack_tmp"])
+
+    update_cmd._sweep_stale_git_state_before_start()
+
+    out = capsys.readouterr().out
+    assert "removed stale git lock(s) before start" in out
+    assert "aborted-fetch pack temp file(s) before start" in out
+
+
+def test_stale_git_state_sweep_silent_when_clean(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from hermes_cli import gitlock
+
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(PROJECT_ROOT=tmp_path))
+    monkeypatch.setattr(gitlock, "clear_stale_git_locks", lambda root, **kw: [])
+    monkeypatch.setattr(gitlock, "clear_stale_tmp_packs", lambda root, **kw: [])
+
+    update_cmd._sweep_stale_git_state_before_start()
+
+    assert capsys.readouterr().out == ""

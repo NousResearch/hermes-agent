@@ -844,7 +844,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                                   current=current, repair=repair, explicit=explicit)
         outcome = "ok"
     except BaseException as exc:
-        receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
+        # Resolver exceptions may contain opaque credentials from index URLs.
+        receipt.record_step("dependency-sync", False, type(exc).__name__)
         raise
     finally:
         receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)

@@ -492,6 +492,10 @@ RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json && \
     rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock
 # Build helpers use system Python above; TUI gateway children need the sealed runtime.
 ENV HERMES_PYTHON=/opt/hermes/.venv/bin/python
+# Any unhandled cont-init failure (including dependency reconciliation) must
+# stop /init before gateways or the main program start. Expected best-effort
+# operations in the setup hooks explicitly handle their own failures.
+ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 VOLUME [ "/opt/data" ]
 
 # The image ENTRYPOINT is a tiny dispatcher rather than `/init` directly.

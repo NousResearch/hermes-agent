@@ -18,6 +18,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { $pluginRecords, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
@@ -34,9 +35,19 @@ import {
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
 
+import { installedDesktopHalfIds } from './desktop-half-enable'
+
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
+
+/** The install dialog is the consent. A unified half loads opt-in, so turn it
+ *  on once the copy is on disk — otherwise the composer control never appears. */
+async function enableInstalledDesktopHalf(names: Array<string | null | undefined>): Promise<void> {
+  for (const id of installedDesktopHalfIds(Object.values($pluginRecords.get()), names)) {
+    await setPluginEnabled(id, true)
+  }
+}
 
 type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
 
@@ -293,10 +304,8 @@ export function PluginInstallModal() {
 
           if (agentInstalled || touched.length > 0) {
             successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
-          }
-
-          if (touched.length > 0) {
             await discoverRuntimePlugins()
+            await enableInstalledDesktopHalf([probe.agentName])
           }
         } else {
           const installFn = window.hermesDesktop?.installDesktopPlugin
@@ -309,6 +318,7 @@ export function PluginInstallModal() {
             if (result.ok) {
               successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
               await discoverRuntimePlugins()
+              await enableInstalledDesktopHalf([result.pluginName, probe.agentName])
             } else {
               errors.push(result.error || m.desktopFailed)
             }

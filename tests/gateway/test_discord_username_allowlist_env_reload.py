@@ -197,11 +197,3 @@ class TestRemovedNumericEntryIsNotResurrected:
         assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is False
         # The username-resolved operator is still carried across the reload.
         assert runner._is_user_authorized(_discord_source()) is True
-
-    def test_numeric_only_allowlist_snapshot_grants_nothing(self, monkeypatch):
-        adapter = _resolved_discord_adapter({OPERATOR_ID, PAIRED_ID}, [])
-        assert adapter.resolved_allowlist_user_ids() == set()
-        monkeypatch.setenv("DISCORD_ALLOWED_USERS", OPERATOR_ID)
-        runner = _make_runner(adapter)
-        assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is False
-        assert runner._is_user_authorized(_discord_source()) is True

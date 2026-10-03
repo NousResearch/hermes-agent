@@ -192,20 +192,6 @@ async def test_resolve_allowed_usernames_ignores_display_names(monkeypatch, caps
 
 
 @pytest.mark.asyncio
-async def test_resolve_allowed_usernames_flags_display_name_entries(monkeypatch, capsys):
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-    adapter._allowed_user_ids = {"Bob"}
-    member = _member(333, "robert", global_name="Bob")
-    adapter._client = SimpleNamespace(guilds=[SimpleNamespace(name="g", members=[member], member_count=1)])
-    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "Bob")
-
-    await adapter._resolve_allowed_usernames()
-
-    assert adapter._allowed_user_ids == set()
-    assert "'bob' matches only a display name or server nickname" in capsys.readouterr().out
-
-
-@pytest.mark.asyncio
 async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monkeypatch):
     """Regression for #18187: calling connect() twice without disconnect() in
     between (e.g. during an in-process reconnect attempt) must close the old

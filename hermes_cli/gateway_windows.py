@@ -1470,8 +1470,26 @@ def is_installed() -> bool:
     return is_task_registered() or is_startup_entry_installed()
 
 
+_TASK_HAS_NOT_RUN_RESULTS = frozenset({"267011", "0x41303", "0x00041303"})
+
+
+def task_has_never_run(info: dict[str, str]) -> bool:
+    """Whether Task Scheduler says the registered task has never executed.
+
+    ``SCHED_S_TASK_HAS_NOT_RUN`` is 0x00041303 / 267011. Match the result
+    value, not a localized ``schtasks /FO LIST`` field label.
+    """
+    result = (info.get("last run result") or "").strip().casefold()
+    return result in _TASK_HAS_NOT_RUN_RESULTS
+
+
 def query_task_status() -> dict[str, str]:
-    """Parse ``schtasks /Query /V /FO LIST`` and pull the interesting keys."""
+    """Parse ``schtasks /Query /V /FO LIST`` into the fields status needs.
+
+    Field labels are localized by Windows, so the scheduler's stable
+    ``SCHED_S_TASK_HAS_NOT_RUN`` value is recognized independently of the
+    label. English labels remain best-effort display metadata.
+    """
     code, out, err = _exec_schtasks(["/Query", "/TN", get_task_name(), "/V", "/FO", "LIST"])
     if code != 0:
         return {}
@@ -1483,7 +1501,12 @@ def query_task_status() -> dict[str, str]:
         key, _, value = line.partition(":")
         key = key.strip().lower()
         value = value.strip()
-        # Some Windows locales emit "Last Result" instead of "Last Run Result".
+        # The numeric Scheduler result is locale-stable even when the label is
+        # translated (e.g. Chinese/German Windows).
+        if value.casefold() in _TASK_HAS_NOT_RUN_RESULTS:
+            info["last run result"] = value
+        # Some English Windows versions emit "Last Result" instead of
+        # "Last Run Result".
         if key == "last result":
             info.setdefault("last run result", value)
         elif key in {"status", "last run time", "last run result"}:
@@ -1624,11 +1647,18 @@ def status(deep: bool = False) -> None:
     pids = _gateway_pids()
 
     if task_installed:
-        print(f"✓ Scheduled Task registered: {task_name}")
         info = query_task_status()
+        never_ran = task_has_never_run(info)
+        marker = "⚠" if never_ran else "✓"
+        suffix = " (registered but has never run)" if never_ran else ""
+        print(f"{marker} Scheduled Task registered: {task_name}{suffix}")
         for key in ("status", "last run time", "last run result"):
             if key in info:
                 print(f"  {key.title()}: {info[key]}")
+        if never_ran:
+            print("  Task Scheduler result 267011 / 0x41303 means no task action has executed yet.")
+            print("  If this persists after sign-out/sign-in, inspect the LogonTrigger/principal.")
+            print("  Repair: hermes gateway install")
         _print_scheduled_task_drift(task_name)
     elif startup_installed:
         entry = get_startup_entry_path()

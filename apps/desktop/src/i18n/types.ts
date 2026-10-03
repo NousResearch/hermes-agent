@@ -985,6 +985,8 @@ export interface Translations {
       composerPopoutDesc: string
       fileBrowserTitle: string
       fileBrowserDesc: string
+      sessionTabAgentNamesTitle: string
+      sessionTabAgentNamesDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
       embedsTitle: string

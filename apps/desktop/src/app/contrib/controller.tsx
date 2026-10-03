@@ -34,7 +34,7 @@ import {
   togglePaneVisible,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import { $workspaceOwnerLabels } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -105,6 +105,7 @@ import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchPreviewTiles } from '../chat/preview-tile'
 import { watchRouteTiles } from '../chat/route-tile'
 import { startSessionDrag } from '../chat/session-drag'
+import { SessionTabLabel, sessionTabOwnerLabel, sessionTabText } from '../chat/session-tab-label'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
@@ -522,10 +523,12 @@ const syncWorkspaceTitle = () => {
     // that. Keeping it here would re-register the pane on every keystroke.
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
     // the same name, which told two open bots apart by nothing (#99152).
-    title: workspaceOwnerTitle(
-      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
-      selected ? $botChatScopes.get()[selected] : undefined
-    ),
+    title: stored
+      ? sessionTabText(
+          sessionTabOwnerLabel(stored, selected ? $botChatScopes.get()[selected] : undefined),
+          storedSessionTitle(stored)
+        )
+      : NEW_SESSION_TITLE,
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. A
@@ -535,7 +538,22 @@ const syncWorkspaceTitle = () => {
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
-      tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
+      tabTitle: stored
+        ? () => (
+            <SessionTabLabel
+              scope={selected ? $botChatScopes.get()[selected] : undefined}
+              session={stored}
+              title={storedSessionTitle(stored)}
+            />
+          )
+        : () => <SessionDraftTitle scope={selected} />,
+      tabTitleText: stored
+        ? () =>
+            sessionTabText(
+              sessionTabOwnerLabel(stored, selected ? $botChatScopes.get()[selected] : undefined),
+              storedSessionTitle(stored)
+            )
+        : undefined,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       // Page-owned controls take the vetoed tab row. Deliberately NOT the

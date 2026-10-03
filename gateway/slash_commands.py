@@ -1034,9 +1034,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.config_save_failed", error=e)
         example = ""
         if new_state:
-            # Show a preview using current agent state if available.
+            # Show a preview using the lane's channel_overrides model when pinned (the route
+            # the turn actually runs), else the global default. Never let a broken override
+            # break the confirmation.
+            try:
+                lane_model, _ = self._session_route_for_source(event.source)
+            except Exception:
+                lane_model = None
             preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
+                model=lane_model or _resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"])
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)

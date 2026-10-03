@@ -85,6 +85,21 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_show_hints_when_task_is_on_another_board(kanban_home):
+    kb.create_board("finance")
+    with kbc.connect_closing(board="finance") as conn:
+        task_id = kb.create_task(conn, title="cross-board task")
+
+    output = kc.run_slash(f"show {task_id}")
+
+    assert f"no such task on board 'default': {task_id}" in output
+    assert "found on 'finance'" in output
+    assert f"hermes kanban --board finance show {task_id}" in output
+
+    json_output = kc.run_slash(f"show {task_id} --json")
+    assert json_output == f"no such task: {task_id}"
+
+
 def test_kanban_edit_updates_documented_task_fields(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="old title", body="old body", priority=2)
@@ -239,5 +254,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

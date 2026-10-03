@@ -892,6 +892,13 @@ class ClientLifecycleMixin:
         current_key = str(self._anthropic_api_key or "")
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
+        # A pool-bound agent refreshes the entry it is bound to. The global resolver below walks
+        # env vars, Claude Code credentials and the first pool row, so on a pool-bound agent it
+        # reverted every rotation and sent another account's token while errors were still
+        # attributed to the bound entry (#118379).
+        pool = getattr(self, "_credential_pool", None)
+        if pool is not None:
+            return self._refresh_bound_anthropic_pool_entry(pool)
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
             new_token = resolve_anthropic_token(model=self.model)
@@ -911,6 +918,39 @@ class ClientLifecycleMixin:
             return False
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
         return True
+
+    def _refresh_bound_anthropic_pool_entry(self, pool) -> bool:
+        """Pre-request refresh for a pool-bound agent: renew only the bound entry, never another account.
+
+        The binding is the key the agent sends (``api_key``), else ``_credential_pool_entry_id``. A
+        healthy token is left alone (``force=False``); a near-expiry one is renewed in place. When the
+        bound entry is gone the agent keeps its key rather than borrowing a global credential, and
+        ``_swap_credential`` moves the wire key, ``api_key`` and the entry id together so a later 429/401
+        is attributed to the credential that actually sent the request.
+        """
+        if getattr(pool, "provider", None) != "anthropic":
+            return False
+        try:
+            key_hint = getattr(self, "api_key", None) or None
+            credential_id = (pool.entry_id_for_api_key(key_hint) if key_hint else None) or getattr(
+                self, "_credential_pool_entry_id", None)
+            if not credential_id:
+                return False
+            if not key_hint and not any(e.id == credential_id for e in pool.entries()):
+                # Without a key, an unknown id would fall back to the pool cursor: another account.
+                return False
+            entry = pool.try_refresh_matching(api_key_hint=key_hint, credential_id=credential_id, force=False)
+        except Exception as exc:
+            logger.debug("Anthropic pool credential refresh failed: %s", exc)
+            return False
+        if entry is None or not getattr(entry, "runtime_api_key", None):
+            return False
+        runtime_key = entry.runtime_api_key
+        if (runtime_key == self._anthropic_api_key and runtime_key == key_hint
+                and entry.id == getattr(self, "_credential_pool_entry_id", None)):
+            return False
+        # A refused swap (route cannot serve the model) leaves the agent untouched: "no refresh".
+        return bool(self._swap_credential(entry))
 
     # ------------------------------------------------------------------ route-derived client config
     def _apply_client_headers_for_base_url(self, base_url: str, *, apply_user_headers: bool = True) -> None:

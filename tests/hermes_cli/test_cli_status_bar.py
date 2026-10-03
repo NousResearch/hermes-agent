@@ -107,7 +107,7 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
 
         assert "claude-sonnet-4-20250514" in text
-        assert "12.4K/200K" in text
+        assert "12.4k/200k" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
@@ -325,7 +325,7 @@ class TestStatusBarFieldConfig:
         text = self._cli_with_fields(["model", "duration"])
         assert "claude-sonnet-4-20250514" in text
         assert "15m" in text
-        assert "12.4K/200K" not in text
+        assert "12.4k/200k" not in text
         assert "🗜️" not in text
         assert "%" not in text
 
@@ -334,7 +334,7 @@ class TestStatusBarFieldConfig:
 
     def test_total_tokens_when_explicitly_requested(self):
         text = self._cli_with_fields(["model", "total_tokens"])
-        assert "Σ12.4K" in text
+        assert "Σ12.4k" in text
         assert "claude-sonnet-4-20250514" in text
 
 
@@ -363,13 +363,13 @@ class TestStatusBarFieldConfig:
         assert any("claude-sonnet-4-20250514" in t for t in frag_texts)
         assert any("15m" in t for t in frag_texts)
         assert not any("🗜️" in t for t in frag_texts)
-        assert not any("12.4K" in t for t in frag_texts)
+        assert not any("12.4k" in t for t in frag_texts)
 
 
     def test_empty_fields_list_uses_defaults(self):
         text = self._cli_with_fields([])
         assert "claude-sonnet-4-20250514" in text
-        assert "12.4K/200K" in text
+        assert "12.4k/200k" in text
         assert "🗜️" in text
 
 

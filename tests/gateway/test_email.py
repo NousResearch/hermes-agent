@@ -225,6 +225,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "How do I use lists?",
             "attachments": [],
             "date": "",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -253,6 +254,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "Thanks for the help!",
             "attachments": [],
             "date": "",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -283,6 +285,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "Check this photo",
             "attachments": [{"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"}],
             "date": "",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -320,44 +323,6 @@ class TestDispatchMessage(unittest.TestCase):
             adapter._message_handler.assert_not_called()
 
 
-    def test_unauthenticated_allowed_with_allow_all(self):
-        """EMAIL_ALLOW_ALL_USERS=true makes sender identity moot — gate skipped.
-
-        With allow-all and no restrictive allowlist, an unauthenticated sender
-        is forwarded: the operator has explicitly chosen to accept anyone.
-        """
-        import asyncio
-        with patch.dict(os.environ, {
-            "EMAIL_ALLOW_ALL_USERS": "true",
-        }):
-            os.environ.pop("EMAIL_ALLOWED_USERS", None)
-            os.environ.pop("GATEWAY_ALLOWED_USERS", None)
-            adapter = self._make_adapter()
-            captured = []
-
-            async def capture_handle(event):
-                captured.append(event)
-
-            adapter.handle_message = capture_handle
-
-            msg_data = {
-                "uid": b"203",
-                "sender_addr": "stranger@elsewhere.com",
-                "sender_name": "Stranger",
-                "subject": "Hi",
-                "message_id": "<s@elsewhere.com>",
-                "in_reply_to": "",
-                "body": "Hello",
-                "attachments": [],
-                "date": "",
-                "sender_authenticated": False,
-                "auth_reason": "no Authentication-Results header",
-            }
-
-            asyncio.run(adapter._dispatch_message(msg_data))
-            self.assertEqual(len(captured), 1)
-
-
 class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
     """The pre-dispatch gate must not drop mail the gateway would authorize (GATEWAY_ALLOWED_USERS,
     an approved pairing) or answer itself (an explicit pair/decline unauthorized_dm_behavior)."""
@@ -374,7 +339,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
     def tearDown(self):
         self._env.stop()
 
-    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True):
+    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True, auth_reason=None):
         """Dispatch one mail from STRANGER with the real GatewayRunner auth callback wired, as startup does;
         return the events handed to the gateway. Each call gets its own pairing store."""
         import asyncio
@@ -383,7 +348,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         from gateway.config import GatewayConfig, Platform, PlatformConfig
         from gateway.pairing import PairingStore
         from gateway.run import GatewayRunner
-        from plugins.platforms.email.adapter import EmailAdapter
+        from plugins.platforms.email.adapter import _NO_AUTH_RESULTS_REASON, EmailAdapter
         with tempfile.TemporaryDirectory() as pairing_dir, \
                 patch("gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
                 patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
@@ -408,8 +373,33 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
                 "uid": b"301", "sender_addr": self.STRANGER, "sender_name": "Stranger", "subject": "Hello",
                 "message_id": "<m301@example.com>", "in_reply_to": "", "body": "Hi there", "attachments": [],
                 "date": "", "sender_authenticated": authenticated,
-                "auth_reason": "dmarc=pass" if authenticated else "no Authentication-Results header"}))
+                "auth_reason": auth_reason or ("dmarc=pass" if authenticated else _NO_AUTH_RESULTS_REASON)}))
         return captured
+
+    def test_only_a_missing_auth_results_header_warns_with_the_opt_out_hint(self):
+        """A granted sender's mail with no Authentication-Results suggests a server that never stamps it, so the drop
+        warns with the opt-out hint; no stamp from the pinned authserv-id warns to check authserv_id; a listed sender's
+        failing verdict warns without a hint; forged stranger mail under open access stays at debug."""
+        from plugins.platforms.email.adapter import _UNTRUSTED_AUTHSERV_REASON
+
+        adapter_log = "plugins.platforms.email.adapter"
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            self.assertEqual(self._reached_gateway(authenticated=False, env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
+        self.assertIn("require_authenticated_sender: false", logs.output[0])
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            self.assertEqual(self._reached_gateway(authenticated=False, auth_reason=_UNTRUSTED_AUTHSERV_REASON,
+                                                   env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
+        self.assertIn("authserv_id", logs.output[0])
+        self.assertNotIn("require_authenticated_sender", logs.output[0])
+        with self.assertNoLogs(adapter_log, level="WARNING"):
+            self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
+                                                   env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
+        # A listed contact's failing mail (broken DKIM, a forwarder) is worth seeing, but the opt-out is wrong advice.
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
+                                                   env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
+        self.assertIn("dmarc=fail", logs.output[0])
+        self.assertNotIn("require_authenticated_sender", logs.output[0])
 
     def test_mail_the_gateway_admits_or_answers_reaches_it(self):
         cases = {
@@ -418,6 +408,13 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             "GATEWAY_ALLOWED_USERS": {"env": {"GATEWAY_ALLOWED_USERS": self.STRANGER}},
             "EMAIL_ALLOWED_USERS JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": f'["{self.STRANGER}"]'}},
             "approved pairing": {"paired": True},
+            # Open access admits any sender whose From: authenticates, or any From: once the operator opts out.
+            "allow-all, authenticated From": {"env": {"EMAIL_ALLOW_ALL_USERS": "true"}},
+            "allow-all, EMAIL_TRUST_FROM_HEADER=true, unauthenticated From": {
+                "authenticated": False, "env": {"EMAIL_ALLOW_ALL_USERS": "true", "EMAIL_TRUST_FROM_HEADER": "true"}},
+            "allow-all, require_authenticated_sender: false, unauthenticated From": {
+                "authenticated": False, "env": {"EMAIL_ALLOW_ALL_USERS": "true"},
+                "extra": {"require_authenticated_sender": False}},
         }
         for label, kwargs in cases.items():
             with self.subTest(label):
@@ -428,6 +425,10 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             "default ignore": {},
             "pair opt-in, unauthenticated From": {"extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False},
             "approved pairing, unauthenticated From": {"paired": True, "authenticated": False},
+            # Open access admits any sender, not any From:: a forged one would land in that address's session.
+            "EMAIL_ALLOW_ALL_USERS, unauthenticated From": {"authenticated": False, "env": {"EMAIL_ALLOW_ALL_USERS": "true"}},
+            "GATEWAY_ALLOW_ALL_USERS, unauthenticated From": {
+                "authenticated": False, "env": {"GATEWAY_ALLOW_ALL_USERS": "true"}},
             # Open access grants a stranger nothing beside a list, so a pairing code must not go to a forged From:.
             "pair opt-in, allow-all beside EMAIL list, unauthenticated From": {
                 "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,

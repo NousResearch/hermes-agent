@@ -1640,7 +1640,12 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         resp = client.post(f"{server_url}/api/show", json={"name": model})
         return _ollama_show_context(resp.json(), gguf_first=False) if resp.status_code == 200 else None
     def _model_detail_ctx(client) -> Optional[int]:
-        # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}
+        # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}.
+        # Skipped for unrecognised servers (server_type None, e.g. LiteLLM proxies): they commonly
+        # gate this endpoint behind admin auth (#25848) and log an ERROR per probe even though the
+        # 401 falls through to the /v1/models list below, which works universally.
+        if server_type is None:
+            return None
         resp = client.get(f"{server_url}/v1/models/{model}")
         return _context_length_from_model_payload(resp.json()) if resp.status_code == 200 else None
     typed = {

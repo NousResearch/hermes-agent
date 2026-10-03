@@ -18299,7 +18299,35 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
         )
 
-    assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
+    assert {k: resp["result"][k] for k in ("connected", "url")} == {"connected": True, "url": "http://lan:9222"}
+
+
+def test_browser_manage_use_swaps_the_profiles_browser_tools_for_new_agents(monkeypatch, tmp_path):
+    """Desktop/TUI ``/browser use [off]``: the target profile's ``browser.backend`` flips, ``status``
+    reports it, and the tool surface a NEW agent resolves swaps (stale check_fn verdicts dropped).
+    ``profile`` scopes the write: the launch profile's config stays untouched."""
+    from hermes_cli.config import read_raw_config
+    from hermes_constants import get_hermes_home
+    from tools import browser_use_cli
+    import model_tools
+    import hermes_yaml as yaml
+
+    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
+    manage = lambda **p: server.handle_request({"id": "1", "method": "browser.manage", "params": p})["result"]
+    exec_offered = lambda: "browser_exec" in {
+        t["function"]["name"] for t in model_tools.get_tool_definitions(enabled_toolsets=["browser", "terminal"])}
+
+    assert manage(action="use", enabled=False)["browser_use"] is False
+    assert manage(action="status")["browser_use"] is False and not exec_offered()
+    assert manage(action="use")["browser_use"] is True
+    assert read_raw_config()["browser"]["backend"] == "browser-use" and exec_offered()
+
+    other_home = tmp_path / "profiles" / "other"
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
+    manage(action="use", enabled=False, profile="other")
+    backend = lambda home: yaml.safe_load((home / "config.yaml").read_text())["browser"]["backend"]
+    assert (backend(other_home), backend(get_hermes_home())) == ("off", "browser-use")
 
 
 
@@ -20227,8 +20255,7 @@ def test_periodic_trim_runs_once_every_session_is_quiescent(monkeypatch):
 
 
 def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch):
-    """The finishing session is still marked running when _finish_turn runs, so only OTHER sessions gate its
-    trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
+    """Only OTHER sessions gate the post-turn trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
     calls = _periodic_trim_calls(monkeypatch)
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     now = time.time()
@@ -20236,12 +20263,12 @@ def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch
     server._sessions.clear()
     server._sessions["own"] = own
     try:
-        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        server._post_turn_housekeeping("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
         assert len(calls) == 1
 
         calls.clear()
         server._sessions["other"] = _idle_evictable_session(now) | {"running": True}
-        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        server._post_turn_housekeeping("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
         assert calls == []
     finally:
         server._sessions.clear()

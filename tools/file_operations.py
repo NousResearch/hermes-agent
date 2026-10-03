@@ -26,8 +26,8 @@ from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
-    _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
+    _UTF8_BOM, _detect_line_ending, _has_bom, _keep_untouched_line_endings, _normalize_line_endings,
+    _strip_bom, _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 
@@ -1518,6 +1518,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        edited_from = pre_content
         has_bom, pre_content, original_ending = self._probe_write_target(path, pre_content, want_pre)
         if ext == ".json":
             refused = _refuse_introduced_json_constant(path, content, pre_content)
@@ -1525,7 +1526,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 return refused
         # read_file strips the BOM and models send bare-LF text, so a round-trip would
         # otherwise normalize CRLF files and drop the BOM (prepend only when absent).
-        if original_ending == "\r\n":
+        if edited_from is not None:
+            # The patch modes hand over the exact text they edited: only the lines they
+            # changed may take a new ending.
+            content = _keep_untouched_line_endings(_strip_bom(edited_from)[0], content, original_ending)
+        elif original_ending == "\r\n":
             content = _normalize_line_endings(content, "\r\n")
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
@@ -1623,11 +1628,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content, old_string, new_string, replace_all)
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
-        # Models send bare-LF old/new strings; normalize the substituted region to
-        # the file's ending so CRLF files stay consistent.
-        file_ending = _detect_line_ending(content)
-        if file_ending:
-            new_content = _normalize_line_endings(new_content, file_ending)
+        # Models send bare-LF old/new strings; write_file gives the substituted region
+        # the file's ending and leaves every other line's ending as it was.
         write_result = self.write_file(path, new_content, pre_content=raw_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")

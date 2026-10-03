@@ -27,6 +27,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from agent.interrupt_control import STOP_KIND_CLIENT_DISCONNECT
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -705,7 +706,7 @@ async def _abandon_agent_task(
     if agent is not None:
         with suppress(Exception):
             # The abandoning client/server is the issuer, not the user (#112647).
-            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower(), stop_kind=STOP_KIND_CLIENT_DISCONNECT)
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()

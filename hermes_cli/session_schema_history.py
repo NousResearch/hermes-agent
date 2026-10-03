@@ -246,6 +246,10 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'tool_call_uids', 'absorbed_message_uids'),
             ('+', 'tool_call_uid', 'tool_call_uids'),
         )),
+        # stop_kind lands after effect_disposition so the column sits next to
+        # the other per-turn outcome it is read alongside. Schema 17 because
+        # main already spent 16 on message_uid.
+        ('17 2026-09-16T17:59Z 672873a1fb', (('+', 'stop_kind', 'effect_disposition'),)),
         ),
     ),
     "session_model_usage": _TableHistory(

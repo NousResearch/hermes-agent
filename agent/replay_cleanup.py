@@ -17,6 +17,7 @@ from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_context import drop_stale_api_content
 from hermes_cli.timefmt import coerce_epoch
+from agent.interrupt_control import STOP_KIND_USER_STOP, STOP_KIND_CLIENT_DISCONNECT
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +72,24 @@ def _any_side_effecting(calls: List[Dict[str, Any]]) -> bool:
     return any(tool_may_have_side_effect(_call_name(call)) for call in calls)
 
 
-def _orphan_recovery(name: str, notices: tuple) -> tuple:
+def _orphan_recovery(name: str, notices: tuple, stop_kind: Optional[str] = None) -> tuple:
     """(effect_disposition, content) for an interrupted/dangling call named ``name``."""
     if tool_may_have_side_effect(name):
+        # Interrupt provenance (#84207): when the tool result carries a
+        # structured stop_kind, phrase the note after the actual cause — a
+        # deliberate stop is the user's own action, not an unexpected failure.
+        if stop_kind == STOP_KIND_USER_STOP:
+            return "unknown", (
+                "[Orphan recovery: you stopped this tool; "
+                "interrupted side-effecting tool may have executed — "
+                "its effect is UNKNOWN. Inspect state before retrying.]"
+            )
+        if stop_kind == STOP_KIND_CLIENT_DISCONNECT:
+            return "unknown", (
+                "[Orphan recovery: the client connection dropped; "
+                "interrupted side-effecting tool may have executed — "
+                "its effect is UNKNOWN. Inspect state before retrying.]"
+            )
         return "unknown", notices[0]
     return "none", notices[1]
 
@@ -101,7 +117,7 @@ def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Di
                     for tool_result in tool_results:
                         if is_interrupted_tool_result(tool_result.get("content", "")):
                             name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
-                            disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES)
+                            disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES, tool_result.get("stop_kind"))
                             tool_result = {**tool_result, "effect_disposition": disposition, "content": content}
                         cleaned.append(tool_result)
                 else:

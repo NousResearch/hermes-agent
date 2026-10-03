@@ -78,6 +78,35 @@ def test_deliberately_archived_canonical_chat_releases_name_for_replacement(db):
     assert row and row["id"] == "replacement"
 
 
+def test_archived_visible_bot_chat_releases_name_for_replacement(db):
+    """Regression for #119730: a malformed archived row must not lock the registry."""
+    retired = _make_canonical(db, "retired")
+    assert db.set_session_archived(retired, True)
+    assert db.set_session_hidden(retired, False)
+
+    db.create_session("replacement", source="desktop")
+    assert db.set_session_title("replacement", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_hidden("replacement", True)
+
+    old_row = db.get_session(retired)
+    assert old_row["archived"]
+    assert not old_row["hidden"]
+    assert old_row["end_reason"] is None
+    assert old_row["title"] is None
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == "replacement"
+
+
+def test_visible_unarchived_bot_chat_still_blocks_replacement(db):
+    """A live visible row is not a retired registry entry."""
+    db.create_session("visible", source="cli")
+    assert db.set_session_title("visible", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+
+    db.create_session("replacement", source="desktop")
+    with pytest.raises(ValueError, match="already in use"):
+        db.set_session_title("replacement", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+
+
 def test_auto_archive_sweep_skips_the_canonical_chat(db):
     """Only a deliberate archive may retire a Bot Chat; the idle sweep must not
     (it would strand an unrecoverable, soon-to-be-untitled row)."""

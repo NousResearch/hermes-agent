@@ -731,6 +731,14 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            requested_runtime={
+                "provider": agent_overrides.get("requested_provider"),
+                "model": agent_overrides.get("requested_model"),
+            },
+            route_source=("model_routes" if route else
+                          "raw_request" if agent_overrides else "global"),
+            confirmed_runtime_lock=_coerce_request_bool(
+                body.get("require_model_lock"), default=False),
             relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
@@ -823,10 +831,12 @@ class OpenAICompatRoutesMixin:
         # Soft partial (some text, run incomplete): 200 + finish_reason="length"/Hermes extras.
         response_data = {
             "id": completion_id, "object": "chat.completion", "created": created,
-            "model": model_name,
+            "model": ((result.get("runtime") or {}).get("model") or model_name),
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
+        if isinstance(result.get("runtime"), dict):
+            response_data["runtime"] = result["runtime"]
         # Non-streaming twin of ``delta.reasoning_content`` (#99552).
         reasoning_text = _turn_reasoning_text(history, user_message, result)
         if reasoning_text and not presentation_muted:

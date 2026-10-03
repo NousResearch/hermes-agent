@@ -2977,6 +2977,10 @@ class BasePlatformAdapter(ABC):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
 
+    def get_typing_refresh_interval(self) -> float:
+        """Return the shared inbound typing refresh cadence for this platform."""
+        return 2.0
+
     async def stop_typing(self, chat_id: str) -> None:
         """Stop a persistent typing indicator; override where typing runs as a loop."""
 
@@ -3605,6 +3609,7 @@ class BasePlatformAdapter(ABC):
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
         thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
+        event._gateway_accepted = True
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
             return
@@ -3862,6 +3867,7 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+                    event._gateway_accepted = True
                 return
         now = time.monotonic()
         if state is None:
@@ -3881,6 +3887,7 @@ class BasePlatformAdapter(ABC):
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        event._gateway_accepted = True
 
     async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
         """Timer task that flushes the debounced text buffer."""
@@ -4472,6 +4479,8 @@ class BasePlatformAdapter(ABC):
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
             kwargs["stop_event"] = interrupt_event
+        if self._accepts_kwarg(self._keep_typing, "interval", var_kw=False, unknown=True):
+            kwargs["interval"] = self.get_typing_refresh_interval()
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,

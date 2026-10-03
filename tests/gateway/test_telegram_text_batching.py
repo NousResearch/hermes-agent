@@ -39,6 +39,7 @@ def _make_adapter():
     adapter._fatal_error_message = None
     adapter._fatal_error_retryable = True
     adapter._drop_delayed_deliveries = False
+    adapter._background_tasks = set()
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
     adapter._pending_photo_batches = {}
@@ -598,8 +599,8 @@ async def test_reply_batches_preserve_context_and_pending_delivery(
         )
         return
 
-    redispatch = adapter._held_inbound_redispatch_task
-    if redispatch is not None:
-        await redispatch
-    await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+    assert adapter._held_inbound_redispatch_task is None
+    await asyncio.gather(
+        *adapter._background_tasks, *adapter._pending_text_batch_tasks.values()
+    )
     assert [call.args[0] for call in adapter.handle_message.await_args_list] == expected

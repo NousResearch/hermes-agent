@@ -123,7 +123,8 @@ class Rig:
         self.fetch_log = root / "fetch.log"
         wrap = root / "wrap"
         wrap.mkdir()
-        real_git = subprocess.run(["sh", "-c", "command -v git"], capture_output=True, text=True).stdout.strip()
+        real_git = subprocess.run(["sh", "-c", "command -v git"], text=True, encoding="utf-8",
+                                  capture_output=True).stdout.strip()
         (wrap / "git").write_text(
             "#!/usr/bin/env bash\n"
             'for a in "$@"; do if [ "$a" = fetch ]; then\n'
@@ -158,7 +159,7 @@ class Rig:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
     def fetchers(self) -> list[str]:
-        return self.fetch_log.read_text(encoding="utf-8").splitlines() if self.fetch_log.exists() else []
+        return self.fetch_log.read_text(encoding="utf-8-sig").splitlines() if self.fetch_log.exists() else []
 
     def marker(self, name: str) -> Path:
         return Path(self.env(name)["HERMES_HOME"]) / ".hermes-update-in-progress"

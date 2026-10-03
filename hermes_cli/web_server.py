@@ -447,6 +447,9 @@ app.add_middleware(
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS as _PUBLIC_API_PATHS
+# Shared Host-authority normalization: the cookie https-policy must agree with this
+# validation, or a Host that passes validation loses its identity (IPv6 literals) in cookies.
+from hermes_cli.dashboard_auth.prefix import host_header_hostname as _host_header_hostname
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -558,40 +561,6 @@ def _desktop_loopback_auth_exempt(
         and os.environ.get("HERMES_DESKTOP") == "1"
         and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or ssh_session_token or ssh_owner_nonce)
     )
-
-
-def _host_header_hostname(host_header: str) -> str:
-    """Return a normalized hostname from a valid HTTP Host authority.
-
-    Host headers are authorities, not full URLs. Reject ambiguous ports,
-    malformed IPv6 brackets, and URL syntax so validation always fails closed.
-    """
-    value = (host_header or "").strip()
-    if not value or "://" in value or any(c in value for c in '"\'<> \n\r\t/?#@'):
-        return ""
-
-    if value.startswith("["):
-        close = value.find("]")
-        if close == -1:
-            return ""
-        hostname = value[1:close]
-        # Bracket notation is reserved for IPv6 literals.
-        if ":" not in hostname:
-            return ""
-        suffix = value[close + 1:]
-        if suffix and not re.fullmatch(r":\d+", suffix):
-            return ""
-        return hostname.lower()
-
-    # Unbracketed IPv6 authorities are ambiguous with a port separator.
-    if value.count(":") > 1:
-        return ""
-    if ":" in value:
-        hostname, port = value.rsplit(":", 1)
-        if not hostname or not port.isdigit():
-            return ""
-        return hostname.lower()
-    return value.lower()
 
 
 def _is_accepted_host(

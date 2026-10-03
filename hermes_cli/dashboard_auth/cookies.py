@@ -234,9 +234,12 @@ def detect_https(request: Request) -> bool:
     """
     if request.url.scheme == "https":
         return True
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_cli.dashboard_auth.prefix import host_header_hostname, resolve_public_url
     parsed = urlparse(resolve_public_url())
     if parsed.scheme != "https":
         return False
-    host = request.headers.get("host", "").split(":")[0].lower()
+    # Same bracket-aware authority normalization the server's Host validation uses, so an
+    # IPv6 literal that passes validation (``[2001:db8::1]:8443``) keeps its identity here
+    # instead of being cut at the first ``:`` (#127165).
+    host = host_header_hostname(request.headers.get("host", ""))
     return bool(host) and host == (parsed.hostname or "").lower()

@@ -566,6 +566,16 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
             )
             return r
 
+        @app.get("/set-pkce-prefixed")
+        def set_pkce_prefixed(request: Request):
+            r = Response("ok")
+            set_pkce_cookie(
+                r,
+                payload={"provider": "stub", "state": "s", "verifier": "v"},
+                use_https=detect_https(request), prefix="/hermes",
+            )
+            return r
+
         return app
 
     def _client(self, probe_app):
@@ -612,6 +622,81 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
         monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
         r = self._client(probe_app).get("/probe", headers={"Host": "Dash.Example.COM"})
         assert r.json()["https"] is True
+
+    # --- IPv6 literal Hosts (#127165): the server's Host validation uses bracket-aware
+    # authority normalization; the cookie policy must share it, or a Host that passes
+    # validation gets cut at the first ":" and loses the https cookie hardening.
+
+    @pytest.mark.parametrize("host", ["[2001:db8::1]:8443", "[2001:db8::1]"])
+    def test_https_declaration_ipv6_literal_host_matches(
+        self, probe_app, monkeypatch, host
+    ):
+        """A bracketed IPv6 authority (with or without port) certifies like a DNS
+        name — ``split(":")[0]`` would leave ``[2001`` and silently drop the
+        hardening on an origin the declaration vouches for."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://[2001:db8::1]")
+        assert self._client(probe_app).get("/probe", headers={"Host": host}).json()[
+            "https"
+        ] is True
+
+    def test_https_declaration_ipv6_literal_hardens_pkce_cookie(self, probe_app, monkeypatch):
+        """End-to-end pin on the emitted Set-Cookie, not just the boolean: behind
+        the proxy the IPv6-origin PKCE cookie still gets the HTTPS shape."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://[2001:db8::1]")
+        cookies = self._client(probe_app).get(
+            "/set-pkce", headers={"Host": "[2001:db8::1]:8443"}
+        ).headers.get_list("set-cookie")
+        pkce = next(c for c in cookies if c.startswith(f"__Host-{PKCE_COOKIE}="))
+        assert "samesite=none" in pkce.lower()
+        assert "; Secure" in pkce
+        assert "HttpOnly" in pkce
+
+    def test_https_declaration_ipv6_literal_under_prefix_uses_secure_variant(
+        self, probe_app, monkeypatch
+    ):
+        """Under a proxy prefix the hardened name is ``__Secure-`` (``__Host-``
+        forbids Path != /) with the prefixed Path."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://[2001:db8::1]")
+        cookies = self._client(probe_app).get(
+            "/set-pkce-prefixed", headers={"Host": "[2001:db8::1]:8443"}
+        ).headers.get_list("set-cookie")
+        pkce = next(c for c in cookies if c.startswith(f"__Secure-{PKCE_COOKIE}="))
+        assert "path=/hermes" in pkce.lower()
+        assert "samesite=none" in pkce.lower()
+        assert "; Secure" in pkce
+
+    def test_https_declaration_other_ipv6_host_keeps_plain_cookies(
+        self, probe_app, monkeypatch
+    ):
+        """An undeclared IPv6 origin stays plain exactly like an undeclared LAN
+        host — the declaration certifies only its own address."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://[2001:db8::1]")
+        client = self._client(probe_app)
+        assert client.get(
+            "/probe", headers={"Host": "[2001:db8::dead]:8443"}
+        ).json()["https"] is False
+        cookies = client.get(
+            "/set-pkce", headers={"Host": "[2001:db8::dead]:8443"}
+        ).headers.get_list("set-cookie")
+        pkce = next(
+            c for c in cookies
+            if c.startswith(f"{PKCE_COOKIE}=") and not c.startswith("__")
+        )
+        assert "samesite=lax" in pkce.lower()
+        assert "; Secure" not in pkce
+
+    @pytest.mark.parametrize(
+        "host", ["[2001:db8::1", "[2001:db8::1]suffix", "2001:db8::1:8443"]
+    )
+    def test_malformed_ipv6_authority_fails_closed(self, probe_app, monkeypatch, host):
+        """Malformed bracket/port shapes never inherit the https policy, even
+        when fragments of them would textually match the declaration."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://[2001:db8::1]")
+        assert self._client(probe_app).get(
+            "/probe", headers={"Host": host}
+        ).json()["https"] is False
 
     @pytest.mark.parametrize("host", ["127.0.0.1:8080", "box.lan:8080", "backend:8080"])
     def test_https_declaration_ignored_for_non_public_hosts(

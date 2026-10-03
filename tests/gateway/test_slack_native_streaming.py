@@ -259,6 +259,19 @@ class TestSendFinalization:
         client.chat_postMessage.assert_not_awaited()
         assert not _open_streams(adapter)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("trailing_whitespace", ("\n", "  ", "\t\n"))
+    async def test_trailing_frame_whitespace_does_not_duplicate(self, trailing_whitespace):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, f"Hello world{trailing_whitespace}", metadata=META)
+
+        result = await adapter.send("D1", "Hello world", metadata=META)
+
+        assert result.success
+        assert result.message_id == "123.456"
+        client.chat_postMessage.assert_not_awaited()
+        assert not _open_streams(adapter)
+
 
     @pytest.mark.asyncio
     async def test_unrelated_send_passes_through(self):

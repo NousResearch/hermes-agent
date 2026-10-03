@@ -77,11 +77,12 @@ class BaseTextDebounceMixin:
             await self._flush_text_debounce_now(session_key)
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                    return
+                # Same sender stays in the buffer: merging into the older pending slot would
+                # jump this text ahead of the still-buffered one (one→X, two→Y, three→X).
                 if not self._same_text_debounce_sender(state.event, event):
+                    existing_pending = self._pending_messages.get(session_key)
+                    if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
+                        merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
                     return
                 logger.debug("[%s] Busy text for %s replies to a third message; merging it into the "
                              "debounce buffer, which keeps its own reply context", self.name, session_key)

@@ -318,6 +318,13 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
         ),
         pytest.param(
             "debounce",
+            ("a", "b", "a"),
+            (None, None, None),
+            (("one", 0, 0, (0,)), ("two\nthree", 1, 2, (1, 2))),
+            id="debounce-same-sender-keeps-order",
+        ),
+        pytest.param(
+            "debounce",
             (None, "a"),
             (None, "image"),
             (("one\ntwo", 1, 1, (0, 1)),),

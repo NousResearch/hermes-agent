@@ -407,12 +407,30 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
-def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:
+def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str],
+                                 result: Dict[str, Any],
+                                 active_default_model: Optional[str] = None) -> None:
     """Copy model / capabilities / extra_headers / request_overrides onto a
-    resolved custom runtime. An explicit ``target_model`` wins over the provider's configured
-    default (auxiliary slots / background-review resolve a concrete model and must not fall back to
-    ``default_model``). ``extra_headers`` may carry credentials — NEVER log them."""
-    model_name = target_model or custom_provider.get("model")
+    resolved custom runtime.
+
+    Model priority:
+
+    1. an explicit ``target_model`` — ``/model`` selections, auxiliary slots and
+       background-review resolve a concrete model and must not fall back to
+       ``default_model``
+    2. ``active_default_model`` — the top-level ``model.default`` when the entry
+       being resolved IS the active provider's plan. An external switcher (CC
+       Switch and friends) rewrites that block but does not sync the entry's own
+       trailing ``model:``, which keeps the first model of the plan's catalog;
+       without this the stale catalog value would win and both the calls and
+       ``/status`` would use the wrong model (#124930). Left ``None`` for every
+       other plan so those keep their own configured defaults.
+    3. the entry's configured ``model:`` — a plan's own default when nothing
+       else names a model
+
+    ``extra_headers`` may carry credentials — NEVER log them.
+    """
+    model_name = target_model or active_default_model or custom_provider.get("model")
     if model_name:
         result["model"] = model_name
     _lift_model_capabilities(custom_provider, model_name, result)
@@ -548,13 +566,30 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
+    # An external switcher (CC Switch and friends) manages the plan list by
+    # rewriting the top-level ``model`` block; the per-entry trailing ``model:``
+    # goes stale at the first model of the plan's catalog. When THIS entry is the
+    # active provider's plan and no explicit target model was requested, the
+    # top-level default is the operator's real selection (#124930). Other plans
+    # pass None and keep their own configured default.
+    active_default_model = None
+    if not (target_model or "").strip():
+        top_level = rp._get_model_config() or {}
+        top_provider = str(top_level.get("provider") or "").strip()
+        requested_norm_for_match = (requested_provider or "").strip()
+        entry_name = str(custom_provider.get("name") or "").strip()
+        if top_level.get("default") and (
+            (top_provider and (top_provider == requested_norm_for_match or top_provider == entry_name))
+            or (not top_provider and requested_norm_for_match in ("", "custom"))
+        ):
+            active_default_model = str(top_level.get("default") or "").strip() or None
     pool_result = rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
-        _apply_custom_provider_extras(custom_provider, target_model, pool_result)
+        _apply_custom_provider_extras(custom_provider, target_model, pool_result, active_default_model)
         return pool_result
     explicit_key = (explicit_api_key or "").strip()
     candidates = [
@@ -576,14 +611,17 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)
-    _apply_custom_provider_extras(custom_provider, target_model, result)
+    _apply_custom_provider_extras(custom_provider, target_model, result, active_default_model)
     # OpenCode-family custom providers (opencode-go/zen names, or opencode.ai hosts) serve models
     # on different API surfaces — a static api_mode 503s for /v1/responses-only models. Re-derive
     # api_mode from the model and normalize /v1 like the built-in paths.
     family = _opencode_family_for_custom(requested_provider, base_url)
     if family is not None and not custom_provider.get("api_mode"):
         from hermes_cli.models import normalize_opencode_base_url, opencode_model_api_mode
-        effective_model = str(target_model or custom_provider.get("model") or rp._get_model_config().get("default") or "").strip()
+        # The resolved model (result["model"], which already carries the active
+        # plan's top-level default when it applies) is the api_mode input — not
+        # the entry's possibly-stale trailing model (#124930).
+        effective_model = str(result.get("model") or "").strip()
         if effective_model:
             result["api_mode"] = opencode_model_api_mode(family, effective_model)
         result["base_url"] = normalize_opencode_base_url(family, result["api_mode"], result["base_url"])

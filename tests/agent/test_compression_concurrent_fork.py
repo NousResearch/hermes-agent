@@ -2103,3 +2103,47 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
                 "error": "must propagate",
             },
         )
+
+
+@pytest.mark.parametrize("reason", ["payload_too_large", "context_overflow"])
+def test_hard_cancel_during_overflow_preserves_session(tmp_path: Path, reason: str) -> None:
+    """Real compression rollback must not become an exhausted/resettable session."""
+    from agent import auxiliary_client as aux
+    from agent.error_classifier import FailoverReason
+    from agent.turn_overflow import recover_from_overflow
+    from agent.turn_retry_state import TurnRetryState
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "OVERFLOW_CANCEL"
+    db.create_session(sid, source="cli")
+    agent = _build_agent_with_db(db, sid)
+    agent.context_compressor.context_length = 100_000
+    agent._try_strip_image_parts_from_tool_messages = MagicMock(return_value=False)
+    messages = [{"role": "user" if i % 2 == 0 else "assistant", "content": "history " * 1000} for i in range(20)]
+    original = copy.deepcopy(messages)
+
+    def cancel(current, **kwargs):
+        agent.interrupt(hard_cancel=True)
+        current[0]["content"] = "must be rolled back"
+        raise aux.AuxiliaryExplicitCancellation()
+
+    agent.context_compressor.compress.side_effect = cancel
+    try:
+        verdict = recover_from_overflow(
+            agent, RuntimeError("context length exceeded: 120000 tokens"),
+            SimpleNamespace(reason=FailoverReason(reason)), TurnRetryState(),
+            status_code=413 if reason == "payload_too_large" else 400,
+            error_msg="context length exceeded: 120000 tokens", wrapped_output_cap_budget=None,
+            messages=messages, api_messages=messages, system_message="sys", active_system_prompt="sys",
+            conversation_history=[], approx_tokens=120_000, compression_attempts=0,
+            max_compression_attempts=3, api_call_count=1, effective_task_id=None,
+        )
+        assert verdict.result.get("interrupted") is True
+        assert not verdict.result.get("compression_exhausted")
+        assert not verdict.result.get("failed")
+        assert [(m["role"], m["content"]) for m in verdict.messages] == [(m["role"], m["content"]) for m in original]
+        assert [(m["role"], m["content"]) for m in db.get_messages(sid)] == [(m["role"], m["content"]) for m in original]
+        assert db.get_compression_lock_holder(sid) is None
+        db.append_message(sid, "user", "next turn remains writable")
+    finally:
+        db.close()

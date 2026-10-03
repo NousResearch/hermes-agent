@@ -30,7 +30,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Tip, TipHintLabel } from '@/components/ui/tooltip'
+import { OverflowTip, Tip, TipHintLabel } from '@/components/ui/tooltip'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -51,7 +51,6 @@ import {
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { $showModelPricing } from '@/store/model-pricing'
-import { modelPresetServiceTier } from '@/store/model-presets'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -376,6 +375,42 @@ export function ModelCatalogMenu({
     [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
   )
 
+  // Section-level collision fallback: rows within one section that render with
+  // the same name+tag get a distinguishing chip (aggregator path prefix, or
+  // the full id). Computed for the Favorites section and each provider group.
+  const fallbackTags = useMemo(() => {
+    const toRows = (
+      rows: ReadonlyArray<{ family: ModelFamily; provider: ModelOptionProvider }>,
+      scoped = false
+    ): CollisionRow[] =>
+      rows.map(({ family, provider }) => {
+        const parts = modelDisplayParts(family.id)
+
+        return {
+          id: family.id,
+          name: parts.name,
+          ...(scoped ? { scope: provider.slug } : {}),
+          sectionKey: `${provider.slug}:${family.id}`,
+          tag: parts.tag
+        }
+      })
+
+    const sections: ReadonlyArray<CollisionRow>[] = [
+      toRows(favoriteRows, true),
+      ...groups.map(group => toRows(group.families.map(family => ({ family, provider: group.provider }))))
+    ]
+
+    const merged = new Map<string, FallbackChip>()
+
+    for (const section of sections) {
+      for (const [key, chip] of collisionFallbackTags(section)) {
+        merged.set(key, chip)
+      }
+    }
+
+    return merged
+  }, [favoriteRows, groups])
+
   // Presets are searchable rows like everything else — an unfiltered preset
   // sitting under zero model matches would otherwise become the "first match"
   // Enter commits.
@@ -428,16 +463,14 @@ export function ModelCatalogMenu({
       return false
     }
 
-    // A model without a stored preset inherits the profile defaults (effort,
     // standard speed): apply them to the session on switch, but do not persist
     // them as the model's preset. Stored presets restore the remembered values.
     const storedEffort = preset.effort !== undefined
-    const storedTier = modelPresetServiceTier(preset) !== undefined
+    const storedTier = preset.serviceTier !== undefined || preset.fast !== undefined
 
-    // The remembered tier rides the exact-tier field; capability-gate it the
-    // way the fast flag is gated below. `fast` mirrors the tier for surfaces
-    // that still speak the legacy flag.
-    const rememberedTier = modelPresetServiceTier(preset) ?? (preset.fast ? 'priority' : 'normal')
+    // The remembered tier rides the exact-tier field; capability-gate it below.
+    // `fast` mirrors the tier for surfaces that still speak the legacy flag.
+    const rememberedTier = preset.serviceTier ?? (preset.fast ? 'priority' : 'normal')
 
     const tier =
       rememberedTier === 'ultrafast' ? (caps?.ultrafast ? 'ultrafast' : 'normal') : rememberedTier === 'priority' && caps?.fast ? 'priority' : 'normal'
@@ -759,6 +792,7 @@ export function ModelCatalogMenu({
                     controller={controller}
                     current={current}
                     defaultEffort={defaultEffort}
+                    fallbackChip={fallbackTags.get(`${provider.slug}:${family.id}`)}
                     family={family}
                     favorite
                     kbProps={kbRowProps(`${provider.slug}:${family.id}`)}
@@ -807,6 +841,7 @@ export function ModelCatalogMenu({
                       controller={controller}
                       current={current}
                       defaultEffort={defaultEffort}
+                      fallbackChip={fallbackTags.get(`${group.provider.slug}:${family.id}`)}
                       family={family}
                       favorite={favoriteSet.has(favoriteModelKey(group.provider.slug, family.id))}
                       kbProps={kbRowProps(`${group.provider.slug}:${family.id}`)}
@@ -965,6 +1000,8 @@ interface ModelFamilyRowProps {
   controller: ModelMenuController
   current: ModelChoice
   defaultEffort: string
+  /** Distinguishing chip assigned by the section collision fallback. */
+  fallbackChip?: FallbackChip
   family: ModelFamily
   /** Whether this model is starred — paints the filled star. */
   favorite: boolean
@@ -988,6 +1025,7 @@ function ModelFamilyRow({
   controller,
   current,
   defaultEffort,
+  fallbackChip,
   family,
   favorite,
   kbProps,
@@ -1040,13 +1078,13 @@ function ModelFamilyRow({
       ? { kind: 'none' }
       : resolveFastControl(activeId ?? family.id, provider.models ?? [], caps?.fast ?? false, effFast)
 
-  // Identity on the left, settings on the right. The name and its variant tag
-  // (`…-flash`, `…-preview`: WHICH model) lead; fast and effort are how this
-  // row is SET, so they sit by the caret that edits them instead of queueing
-  // after the name (#130349). The provider is never a per-row chip; a mixed
-  // Favorites section names it once over its rows. An inherited effort would
-  // be the same chip on every row, so it shows only on the active model and
-  // on a row whose remembered preset chose one.
+  // Identity on the left, settings on the right. The model name (including
+  // tier words such as `…-flash`, `…-preview`: WHICH model) leads; fast and
+  // effort are how this row is SET, so they sit by the caret that edits them
+  // instead of after the name (#130349). Rows that would render identically
+  // within the section carry the collision-fallback chip beside the name. The
+  // provider is never a per-row chip; a mixed Favorites section names it once
+  // over its rows.
   const settings = [
     fastControl.kind !== 'none' && fastControl.on && !(fastControl.kind === 'param' && fastControl.canEnable === false)
       ? effTier === 'ultrafast'
@@ -1129,10 +1167,17 @@ function ModelFamilyRow({
         </Tip>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
-          <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
-          </span>
+          <OverflowTip label={family.id}>
+            <span className="min-w-0 truncate">
+              <HighlightMatches foldSeparators query={search} text={name} />
+            </span>
+          </OverflowTip>
           {tag ? <ModelChip>{tag}</ModelChip> : null}
+          {fallbackChip ? (
+            <Tip label={fallbackChip.visible === fallbackChip.full ? null : fallbackChip.full}>
+              <ModelChip>{fallbackChip.visible}</ModelChip>
+            </Tip>
+          ) : null}
           {decoration.badge ? (
             <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}
@@ -1277,6 +1322,125 @@ function DownloadingModelRow({
       </span>
     </DropdownMenuItem>
   )
+}
+
+/** One rendered row of a section for collision detection. */
+export interface CollisionRow {
+  /** Full id as listed by the provider. */
+  id: string
+  name: string
+  /** Extra collision scope (the provider slug for the Favorites section):
+   *  rows in different scopes are not compared. */
+  scope?: string
+  /** Section-unique key the returned map is keyed by. */
+  sectionKey: string
+  tag: string
+}
+
+// Maximum VISIBLE characters in any fallback chip. Chips longer than this are
+// shortened with an ellipsis; the full text is shown on hover (Tip).
+const FALLBACK_CHIP_MAX_CHARS = 12
+
+/** Truncate text for a chip when it exceeds FALLBACK_CHIP_MAX_CHARS: keep
+ *  MAX-1 characters plus an ellipsis (drawn as ~1 character). */
+function capChipText(text: string): string {
+  return text.length > FALLBACK_CHIP_MAX_CHARS ? `${text.slice(0, FALLBACK_CHIP_MAX_CHARS - 1)}…` : text
+}
+
+/** Cap chip texts to the length rule; if shortening would make two chips in the
+ *  group identical, widen ONLY those chips just enough to stay distinct — a chip
+ *  exists to distinguish, so within-group uniqueness overrides the cap. Returns
+ *  [visible, full] per group entry. */
+function capGroupChips(entries: readonly string[]): ReadonlyArray<readonly [string, string]> {
+  let visible = entries.map(capChipText)
+  let budget = FALLBACK_CHIP_MAX_CHARS
+  const maxLength = Math.max(...entries.map(e => e.length))
+
+  // Widen until distinct. budget is the visible-width allowance: an entry
+  // longer than it keeps budget-1 characters plus the ellipsis, so at
+  // budget == entry length the last character is still ellipsis-replaced —
+  // never silently returning the uncapped token.
+  while (new Set(visible).size < visible.length && budget <= maxLength) {
+    budget += 1
+    visible = entries.map(text => (text.length > budget - 1 ? `${text.slice(0, budget - 1)}…` : text))
+  }
+
+  return entries.map((text, index) => [visible[index], text] as const)
+}
+
+/** One fallback chip: `visible` is what the row renders (length-capped);
+ *  `full` is the original token, shown on hover when they differ. */
+export interface FallbackChip {
+  full: string
+  visible: string
+}
+
+/** Within one displayed section, rows whose rendered name+tag are identical get
+ *  a fallback chip with the shortest token that distinguishes them:
+ *
+ *  1. When every colliding id carries a path prefix, the SHALLOWEST prefix level
+ *     at which the rows differ (`deepseek/…` vs `LORA/…`, not full paths).
+ *  2. Otherwise the full id.
+ *  3. The visible chip never exceeds FALLBACK_CHIP_MAX_CHARS; overlong chips are
+ *     ellipsized (full text on hover) while staying distinct within the group.
+ *
+ *  Unique rows get no chip. The returned map is sectionKey → chip. */
+export function collisionFallbackTags(rows: readonly CollisionRow[]): ReadonlyMap<string, FallbackChip> {
+  const groups = new Map<string, CollisionRow[]>()
+
+  for (const row of rows) {
+    const key = `${row.name}\u0001${row.tag}\u0001${row.scope ?? ''}`
+    const group = groups.get(key)
+
+    if (group) {
+      group.push(row)
+    } else {
+      groups.set(key, [row])
+    }
+  }
+
+  const chips = new Map<string, FallbackChip>()
+
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      continue
+    }
+
+    // Candidate prefixes, shallowest level first. Every id needs a slash; if
+    // any has none, the group falls back to full ids. A prefix deep enough to
+    // include the id's own final segment drops its trailing slash (it is then
+    // the id itself, not a directory prefix).
+    const pathParts = group.map(row => (row.id.includes('/') ? row.id.split('/') : null))
+    let entries: readonly string[] | null = null
+
+    if (pathParts.every(parts => parts !== null)) {
+      const partsList = pathParts as string[][]
+      const maxDepth = Math.max(...partsList.map(parts => parts.length))
+
+      for (let depth = 1; depth <= maxDepth; depth += 1) {
+        const prefixes = partsList.map(parts => {
+          const joined = parts.slice(0, depth).join('/')
+
+          return depth < parts.length ? `${joined}/` : joined
+        })
+
+        if (new Set(prefixes).size === prefixes.length) {
+          entries = prefixes
+
+          break
+        }
+      }
+    }
+
+    const full = entries ?? group.map(row => row.id)
+    const capped = capGroupChips(full)
+
+    group.forEach((row, index) => {
+      chips.set(row.sectionKey, { full: capped[index][1], visible: capped[index][0] })
+    })
+  }
+
+  return chips
 }
 
 // Collapsed we show the user's chosen models (or the curated default); typing

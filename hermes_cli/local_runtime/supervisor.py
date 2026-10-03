@@ -59,6 +59,18 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _port_in_use(port: int) -> bool:
+    """True only while a live socket holds the port. SO_REUSEADDR so a just-stopped server's
+    TIME_WAIT connections (a normal stop/refresh/restart) are not mistaken for an occupant."""
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
 def _stable_port() -> int:
     """The stable default port, or an ephemeral one only when something else already listens
     there (a leftover managed server would have been cleaned up by stop())."""
@@ -215,6 +227,10 @@ class LlamaServerSupervisor:
         with self._lifecycle_lock:
             self._stopping = False
             self._stop_event.clear()
+            # An explicit port another server already holds would make the new router fail to
+            # bind while that server answers /health, so it must be refused, not adopted.
+            if _port_in_use(self.port):
+                raise RuntimeError(f"port {self.port} already in use; not spawning a second router")
             self._spawn()
         self._wait_health(timeout_s)
         self._watchdog = threading.Thread(target=self._watch, daemon=True, name="llamacpp-supervisor")
@@ -246,6 +262,11 @@ class LlamaServerSupervisor:
             with suppress(urllib.error.URLError, OSError, TimeoutError):
                 with urllib.request.urlopen(self._url("/health"), timeout=3) as r:
                     if r.status == 200:
+                        # A 200 only counts if OUR router is still alive; otherwise another
+                        # process on this port answered.
+                        if self.proc and self.proc.poll() is not None:
+                            raise RuntimeError(f"llama-server exited rc={self.proc.returncode} during startup; "
+                                               f"/health was answered by another process (log: {self.log_path})")
                         return
             time.sleep(1)
         raise TimeoutError(f"llama-server not healthy after {timeout_s}s (log: {self.log_path})")

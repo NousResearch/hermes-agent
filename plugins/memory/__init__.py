@@ -451,8 +451,22 @@ class _ProviderCollector:
             raise AttributeError(attr)
 
         def _forward(*args, **kwargs):
+            ctx = self._plugin_context()
+            # Probe the hook on the REAL context before building a callable. __getattr__ exists so a
+            # provider can call any register_* it likes, but it must not fabricate support: a plugin's
+            # capability check then "finds" the hook, calls it, and the AttributeError below is logged
+            # as a registration failure. Open Second Brain probes register_health_check on every load and
+            # the host has no such hook, so that produced one WARNING per load for a
+            # permanent capability mismatch with nothing to fix and nothing lost — the provider is
+            # already registered by the time secondary hooks are probed.
+            if not hasattr(ctx, attr):
+                logger.debug(
+                    "Memory provider '%s' skipped optional hook %s: not supported by this host",
+                    self.name, attr,
+                )
+                return None
             try:
-                return self._plugin_context().__getattribute__(attr)(*args, **kwargs)
+                return ctx.__getattribute__(attr)(*args, **kwargs)
             except Exception as exc:
                 # A secondary registration must not cost the provider itself.
                 logger.warning("Memory provider '%s' failed to %s: %s", self.name, attr, exc)

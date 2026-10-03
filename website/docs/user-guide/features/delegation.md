@@ -339,6 +339,31 @@ Certain tools are blocked for subagents even when the parent has them:
 
 Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
+### Subagent-Only MCP Servers
+
+To give subagents an MCP server the main agent should never see, define it under `mcp_servers` as usual and list its name under `delegation.mcp_servers`:
+
+```yaml
+mcp_servers:
+  filesystem:            # main agent and subagents
+    command: uvx
+    args: [mcp-filesystem]
+  minimax:               # subagents only (listed below)
+    command: uvx
+    args: [minimax-coding-plan-mcp]
+    env:
+      MINIMAX_API_KEY: "${MINIMAX_API_KEY}"
+    lazy: true           # optional: don't connect until a subagent first calls it
+
+delegation:
+  mcp_servers: [minimax]
+```
+
+- The main agent, on every surface (CLI, TUI, gateway, cron, ACP), never has the reserved server's tools in its schema, including after `/reload-mcp`.
+- Every `delegate_task` child gets them in addition to whatever it inherits. This is an explicit grant, so it also applies when `inherit_mcp_toolsets` is `false`.
+- The server is defined once, so `hermes mcp`, OAuth, `${VAR}` interpolation, secret redaction, and per-server `tools.include` / `tools.exclude` filters all apply as usual. `enabled: false` turns it off for subagents too.
+- The server process is shared by the whole Hermes process. Add `lazy: true` (see [MCP](./mcp.md)) to defer connecting until a subagent first calls one of its tools.
+
 ## Max Iterations
 
 Each subagent has an iteration limit (default: 250) that controls how many tool-calling turns it can take. The limit is set globally in `config.yaml` and applies to every child; it is not a per-call parameter of `delegate_task`:

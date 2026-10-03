@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -583,3 +583,85 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesReplyToMode:
+    """``reply_to_mode`` decides which outbound bubbles become inline iMessage replies
+    (``selectedMessageGuid``); "off" must send plain messages like the other adapters."""
+
+    @staticmethod
+    def _adapter(monkeypatch, reply_to_mode=None):
+        adapter = _make_adapter(monkeypatch)
+        if reply_to_mode is not None:
+            adapter._reply_to_mode = reply_to_mode
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        payloads = []
+
+        async def fake_resolve(chat_id):
+            return "iMessage;-;+15550100"
+
+        async def fake_post_message(path, payload):
+            payloads.append(payload)
+            return SendResult(success=True, message_id=f"sent-{len(payloads)}")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_post_message", fake_post_message)
+        return adapter, payloads
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode, threaded", [
+        (None, [True, False]),       # default is "first"
+        ("first", [True, False]),
+        ("all", [True, True]),
+        ("off", [False, False]),
+    ])
+    async def test_reply_anchor_follows_reply_to_mode(self, monkeypatch, mode, threaded):
+        adapter, payloads = self._adapter(monkeypatch, mode)
+
+        result = await adapter.send("+15550100", "first bubble\n\nsecond bubble", reply_to="inbound-guid")
+
+        assert result.success
+        assert [p["message"] for p in payloads] == ["first bubble", "second bubble"]
+        assert [p.get("selectedMessageGuid") == "inbound-guid" for p in payloads] == threaded
+
+    @pytest.mark.asyncio
+    async def test_yaml_reply_to_mode_off_reaches_the_send_payload(self, monkeypatch, tmp_path):
+        """config.yaml → load_gateway_config → adapter → wire payload, with the documented
+        string form. (A bare YAML ``off`` is a bool; normalizing that is config-layer work.)"""
+        from gateway.config import load_gateway_config
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  bluebubbles:\n"
+            "    enabled: true\n"
+            "    reply_to_mode: 'off'\n"
+            "    extra:\n"
+            "      server_url: http://localhost:1234\n"
+            "      password: secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        adapter = BlueBubblesAdapter(load_gateway_config().platforms[Platform.BLUEBUBBLES])
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        payloads = []
+
+        async def fake_resolve(chat_id):
+            return "iMessage;-;+15550100"
+
+        async def fake_post_message(path, payload):
+            payloads.append(payload)
+            return SendResult(success=True, message_id="sent-1")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_post_message", fake_post_message)
+
+        await adapter.send("+15550100", "hello", reply_to="inbound-guid")
+
+        assert len(payloads) == 1
+        assert "selectedMessageGuid" not in payloads[0]

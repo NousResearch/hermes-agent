@@ -183,6 +183,9 @@ Shows "typing..." in the iMessage conversation while the agent is processing. Re
 ### Read Receipts
 Automatically marks messages as read after processing. Requires Private API.
 
+### Inline Replies
+With the Private API, Hermes answers as an inline iMessage reply to your message. `platforms.bluebubbles.reply_to_mode` controls this: `"first"` (default) makes only the first bubble of a response an inline reply, `"all"` makes every bubble one, and `"off"` sends plain messages. Quote `"off"` in YAML so it stays a string.
+
 ### Chat Addressing
 You can address chats by email or phone number — Hermes resolves them to BlueBubbles chat GUIDs automatically. No need to use raw GUID format.
 

@@ -293,6 +293,14 @@ class TestListAndFork:
         assert fork_resp.session_id != new_resp.session_id
 
     @pytest.mark.asyncio
+    async def test_fork_session_raises_instead_of_returning_empty_id(self, agent):
+        """Regression for #124540: an unforkable source (unknown id) must surface
+        as a JSON-RPC error, not a session with an empty id a client would treat
+        as valid."""
+        with pytest.raises(acp.RequestError):
+            await agent.fork_session(cwd="/forked", session_id="does-not-exist")
+
+    @pytest.mark.asyncio
     async def test_list_sessions_includes_title_and_updated_at(self, agent):
         with patch.object(
             agent.session_manager,

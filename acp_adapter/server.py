@@ -668,8 +668,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> ForkSessionResponse:
         state = await asyncio.to_thread(self.session_manager.fork_session, session_id, cwd=cwd)
         if state is None:
-            logger.info("Forked session %s -> %s", session_id, "")
-            return ForkSessionResponse(session_id="")
+            logger.info("Failed to fork session %s: source not found or not restorable", session_id)
+            raise acp.RequestError(-32603, f"Cannot fork session: {session_id} not found")
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)

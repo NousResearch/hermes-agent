@@ -137,6 +137,10 @@ class SessionState:
     cwd: str = "."
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
+    # Set on a forked session (and restored back from the DB row) so every later
+    # _persist() re-marks the durable ``_branched_from`` lineage instead of it
+    # being dropped the next time model_config is rewritten.
+    parent_session_id: str = ""
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
     # A state-mutating slash command (/reset, /compress, /model) is in flight. Turn claims
@@ -195,7 +199,9 @@ class SessionManager:
             return state if state is not None else self._restore(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
-        """Deep-copy a session's history into a new session."""
+        """Deep-copy a session's history into a new session, recording lineage
+        (``parent_session_id`` + the ``_branched_from`` marker) the same way
+        CLI /branch, the gateway /branch, and the API server's fork already do."""
         cwd = _translate_acp_cwd(cwd)
         original = self.get_session(session_id)  # checks DB too
         if original is None:
@@ -203,7 +209,8 @@ class SessionManager:
         new_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
         model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history),
+                                    parent_session_id=original.session_id)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -304,10 +311,12 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: List[Dict[str, Any]], *, persist: bool = True,
+                       parent_session_id: str = "") -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             history=history, cancel_event=threading.Event(),
+                             parent_session_id=parent_session_id)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -348,6 +357,11 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        if state.parent_session_id:
+            # Re-asserted on every persist (not just at creation): update_session_meta below
+            # overwrites model_config wholesale, so a state that lost this from session_meta
+            # would silently erase the marker on the session's very next save.
+            session_meta["_branched_from"] = state.parent_session_id
         for key in ("provider", "base_url", "api_mode"):
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
@@ -358,8 +372,15 @@ class SessionManager:
                 if not state.history:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
+                # parent_session_id is a foreign key: a parent that never got a row (forked
+                # before any message) would fail the INSERT and lose the whole transcript.
+                # The _branched_from marker in model_config still records the lineage.
+                parent_id = state.parent_session_id
+                if parent_id and db.get_session(parent_id) is None:
+                    parent_id = ""
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config=session_meta, cwd=state.cwd or None)
+                                  model_config=session_meta, cwd=state.cwd or None,
+                                  parent_session_id=parent_id or None)
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
@@ -485,7 +506,8 @@ class SessionManager:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False,
+                                    parent_session_id=row.get("parent_session_id") or meta.get("_branched_from") or "")
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

@@ -22,7 +22,7 @@ PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
-SPILLOVER_MAX_AGE_HOURS = 24
+SPILLOVER_MAX_AGE_HOURS = 720
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 # The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
 # keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
@@ -272,8 +272,8 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         f"Full output saved to: {file_path}\n"
         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
         "Recovery: page through the saved file with read_file (offset/limit) or "
-        "process it with execute_code — do NOT re-request the same data from the "
-        "remote API; the full result is already on disk.\n\n"
+        "process it with execute_code — the full result is cached on disk. If "
+        "you need it again later and the file has expired, re-run the tool.\n\n"
         f"Preview (first {len(preview)} chars):\n"
         + preview + ("\n..." if has_more else "")
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")

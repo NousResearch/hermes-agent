@@ -130,6 +130,29 @@ async def update_config(
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
+
+                # #109357 cross-machine overwrite protection:
+                # If a client connected to a pristine backend reads a defaults-only config,
+                # then switches connection to a populated backend and issues a PUT, the payload
+                # overwrites the remote's custom settings with explicit defaults.
+                # Since the UI only resets one category tab at a time, reverting 3+ root keys
+                # simultaneously is almost certainly a destructive state drift.
+                if len(existing) >= 3:
+                    reversions = sum(
+                        1 for k, v in existing.items()
+                        if k in DEFAULT_CONFIG and v != DEFAULT_CONFIG.get(k)
+                        and k in incoming and incoming[k] == DEFAULT_CONFIG.get(k)
+                    )
+                    if reversions >= 3 and not body.config.get("_unsafe_bypass_overwrite_protection"):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Safety abort: incoming config reverts {reversions} custom sections "
+                                "to factory defaults. This usually indicates a cross-connection state drift "
+                                "(saving a config loaded from a different backend). Reload the page and try again."
+                            )
+                        )
+
                 merged = _deep_merge(existing, incoming)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page

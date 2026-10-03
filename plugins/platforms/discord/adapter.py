@@ -4721,19 +4721,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         thread_id = None
         if is_dm:
             chat_type = "dm"
+            chat_name = interaction.user.display_name
         elif is_thread:
             chat_type = "thread"
             thread_id = str(interaction.channel_id)
+            chat_name = self._format_thread_chat_name(interaction.channel)
         else:
             chat_type = "group"
-        chat_name = ""
-        if not is_dm and hasattr(interaction.channel, "name"):
-            chat_name = interaction.channel.name
-            if hasattr(interaction.channel, "guild") and interaction.channel.guild:
-                chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+            chat_name = ""
+            if hasattr(interaction.channel, "name"):
+                chat_name = interaction.channel.name
+                if hasattr(interaction.channel, "guild") and interaction.channel.guild:
+                    chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
         # Forum threads inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
-        # guild_id/parent_chat_id feed profile_routes matching, as on_message does.
         # guild_id/parent_chat_id feed profile_routes matching in build_source, exactly as on_message passes
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
@@ -4749,6 +4750,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
+            auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
         )
 
     # --- Thread creation helpers ---
@@ -4783,21 +4785,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             await self._threads.mark_async(thread_id)
         starter = (message or "").strip()
         if starter and thread_id:
-            await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+            await self._dispatch_thread_session(interaction, result.get("thread"), text=starter)
 
     async def _dispatch_thread_session(
-        self, interaction: discord.Interaction, thread_id: str, thread_name: str, text: str,
+        self, interaction: discord.Interaction, thread: Any, text: str,
     ) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
-        guild_name = ""
-        if hasattr(interaction, "guild") and interaction.guild:
-            guild_name = interaction.guild.name
-        chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
-        # Inherit forum topic when the thread was created inside a forum channel.
-        _chan = getattr(interaction, "channel", None)
-        chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
+        thread_id = str(thread.id) if thread else ""
+        chat_name = self._format_thread_chat_name(thread)
+        chat_topic = self._get_effective_topic(thread, is_thread=True)
+        _parent_id = self._get_parent_channel_id(thread) or ""
         source = self.build_source(
             chat_id=thread_id, chat_name=chat_name, chat_type="thread",
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
@@ -5346,7 +5343,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     @staticmethod
     def _thread_created(thread: Any, name: str) -> Dict[str, Any]:
-        return {"success": True, "thread_id": str(thread.id), "thread_name": getattr(thread, "name", None) or name}
+        return {"success": True, "thread_id": str(thread.id), "thread_name": getattr(thread, "name", None) or name, "thread": thread}
 
     # ------------------------------------------------------------------
     # Auto-thread helpers

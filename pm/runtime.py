@@ -162,7 +162,26 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
             print("Preparing the isolated Hermes runtime…", file=sys.stderr, flush=True)
             executable = stage_runtime(uv, python, environment, project=project, offline=offline, cache=cache)
             (environment / ".lease-managed").touch()
-            _write(environment / "pm-runtime.json", {"inputs": identity})
+            # Determine site-packages path from pyvenv.cfg version (no section headers)
+            version = "3.14"
+            pyvenv_cfg = environment / "pyvenv.cfg"
+            if pyvenv_cfg.is_file():
+                for line in pyvenv_cfg.read_text(encoding="utf-8-sig").splitlines():
+                    key, _, value = line.partition("=")
+                    if key.strip() == "version":
+                        version = value.strip()
+                        break
+            
+            python_rel = executable.relative_to(environment)
+            site_packages_rel = Path("lib") / f"python{version}" / "site-packages"
+            if os.name == "nt":
+                site_packages_rel = Path("Lib") / "site-packages"
+
+            _write(environment / "pm-runtime.json", {
+                "inputs": identity,
+                "python": python_rel.as_posix(),
+                "sitePackages": site_packages_rel.as_posix(),
+            })
             _write(selected, {"inputs": identity, "generation": generation.as_posix()})
         except BaseException:
             shutil.rmtree(environment, ignore_errors=True)

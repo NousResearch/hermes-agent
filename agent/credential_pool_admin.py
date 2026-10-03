@@ -82,6 +82,8 @@ class CredentialPoolAdminMixin:
             return self._find(lambda e: e.id == credential_id)
 
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+        """Resolve a CLI target: exact entry id, then 1-based index for pure-digit
+        strings, then a unique exact label. Returns (index, entry, error)."""
         raw = str(target or "").strip()
         if not raw:
             return None, None, "No credential target provided."
@@ -94,17 +96,36 @@ class CredentialPoolAdminMixin:
             label_matches = [
                 (idx, entry)
                 for idx, entry in enumerate(self._entries, start=1)
-                if entry.label.strip().lower() == raw.lower()
+                if str(entry.label or "").strip().lower() == raw.lower()
             ]
+
+            # A pure-digit target is an index, never a label: otherwise a numeric
+            # label silently shadows the numbered position a destructive command
+            # shows in `auth list`, and duplicated numeric labels made the
+            # ambiguous-label advice ("use the numeric index") unreachable.
+            # isdecimal() admits only strings int() can parse; isdigit() would
+            # also admit codepoints like superscript '2' which raise here.
+            if raw.isdecimal():
+                try:
+                    index = int(raw)
+                except ValueError:
+                    # Beyond int()'s str-digit cap; it can never be an index,
+                    # so let the label rules below decide.
+                    index = None
+                if index is not None:
+                    if 1 <= index <= len(self._entries):
+                        return index, self._entries[index - 1], None
+                    if label_matches:
+                        return None, None, (
+                            f'No credential #{index}. A credential is labelled "{raw}"; '
+                            "a digit target always means the numbered position, "
+                            "so address it by entry id (see `hermes auth list`).")
+                    return None, None, f"No credential #{index}."
+
             if len(label_matches) == 1:
                 return label_matches[0][0], label_matches[0][1], None
             if len(label_matches) > 1:
                 return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
-            if raw.isdigit():
-                index = int(raw)
-                if 1 <= index <= len(self._entries):
-                    return index, self._entries[index - 1], None
-                return None, None, f"No credential #{index}."
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:

@@ -145,7 +145,9 @@ providers retain their existing source-specific refresh support.
 ## Rotation Strategies
 
 Priority positions are zero-based and clamp to the pool's ends; displayed targets
-are one-based indices, entry IDs, or unambiguous exact labels. `auth add --priority`
+are one-based indices, entry IDs, or unambiguous exact labels. An all-digit
+target is always the numbered position, so a credential labelled "2" must be
+addressed by its entry id. `auth add --priority`
 also places an existing entry updated by reauthentication. Anthropic keeps manual
 credentials ahead of seeded credentials, so the command reports the effective
 position when that rule changes it. Other strategies may override priority, and

@@ -66,8 +66,8 @@ _MAX_FROM_LEN = 2048
 # limit so a truncated preflight fails closed without downloading the MIME body.
 _MAX_PREAUTH_HEADER_BYTES = 64 * 1024
 _PREAUTH_FETCH = (
-    "(BODY.PEEK[HEADER.FIELDS (FROM AUTHENTICATION-RESULTS AUTO-SUBMITTED PRECEDENCE "
-    f"X-AUTO-RESPONSE-SUPPRESS LIST-UNSUBSCRIBE)]<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
+    f"(BODY.PEEK[HEADER.FIELDS (FROM AUTHENTICATION-RESULTS {' '.join(h.upper() for h in _AUTOMATED_HEADERS)})]"
+    f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 )
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
@@ -202,6 +202,15 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
     addr = address.lower()
     return any(pattern in addr for pattern in _NOREPLY_PATTERNS) or any(
         (value := headers.get(header, "")) and check(value) for header, check in _AUTOMATED_HEADERS.items())
+
+
+def _imap_payload(data: Any) -> Optional[bytes]:
+    """The bytes of a one-message IMAP FETCH response, or ``None`` for an unexpected shape (see #80032)."""
+    try:
+        payload = data[0][1]
+    except (IndexError, TypeError):
+        return None
+    return bytes(payload) if isinstance(payload, (bytes, bytearray)) else None
 
 
 def check_email_requirements() -> bool:
@@ -662,19 +671,9 @@ class EmailAdapter(BasePlatformAdapter):
                     header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
                     if header_status != "OK":
                         continue
-                    try:
-                        raw_headers = header_data[0][1]
-                    except (IndexError, TypeError):
-                        logger.warning("[Email] Unexpected IMAP header response for UID %s, skipping", uid)
-                        self._mark_uid_consumed(imap, uid)
-                        continue
-                    if not isinstance(raw_headers, (bytes, bytearray)):
-                        logger.warning("[Email] Non-bytes IMAP header payload for UID %s, skipping", uid)
-                        self._mark_uid_consumed(imap, uid)
-                        continue
-                    if len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
-                        logger.warning("[Email] Pre-authorization headers exceed %d bytes for UID %s, skipping",
-                                       _MAX_PREAUTH_HEADER_BYTES, uid)
+                    raw_headers = _imap_payload(header_data)
+                    if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
+                        logger.warning("[Email] Unusable pre-authorization headers for UID %s, skipping", uid)
                         self._mark_uid_consumed(imap, uid)
                         continue
                     try:
@@ -691,17 +690,10 @@ class EmailAdapter(BasePlatformAdapter):
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
-                    # IMAP fetch can return unexpected structures (e.g. a single bytes item instead of a
-                    # list of tuples). See #80032.
                     self._seen_uids.add(uid)
                     self._trim_seen_uids()
-                    try:
-                        raw_email = msg_data[0][1]
-                    except (IndexError, TypeError):
+                    if (raw_email := _imap_payload(msg_data)) is None:
                         logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
-                        continue
-                    if not isinstance(raw_email, (bytes, bytearray)):
-                        logger.warning("[Email] Non-bytes IMAP payload for UID %s, skipping", uid)
                         continue
                     # One poison message (unparseable headers, pathological attachment, DNS hiccup) must not abort the batch or force a reconnect.
                     try:

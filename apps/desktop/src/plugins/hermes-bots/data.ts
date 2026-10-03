@@ -942,7 +942,7 @@ export function cachedUnionRoster(): RosterSnapshot | null {
  *  source label so BotRow can badge them, warm the captured agent, and route
  *  every open directly through that descriptor. Pure — exercised directly by
  *  the tests. */
-function mergeMultiSourceRoster(
+export function mergeMultiSourceRoster(
   local: RosterSnapshot | null | undefined,
   union: UnionRoster | null | undefined,
   activeConnectionId?: null | string,
@@ -1120,6 +1120,7 @@ function mergeMultiSourceRoster(
         profiles.push({
           ...row,
           remoteSource: true,
+          retained: true,
           sourceScoped: true
         })
         present.add(key)

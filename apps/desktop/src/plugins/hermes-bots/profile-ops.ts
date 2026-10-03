@@ -256,6 +256,12 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
   }
 
   for (const bot of roster) {
+    // A row retained from an earlier paint (its source did not answer this
+    // fetch) is as old as that paint: it cannot correct anything.
+    if (bot.retained || bot.sourceReachable === false) {
+      continue
+    }
+
     const raw = bot.ui_meta?.['hermes-bots']
     const server = raw && typeof raw === 'object' ? raw : null
     const title = serverReportedTitle(bot, server)
@@ -264,6 +270,13 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
       const key = botMetaKey(bot)
 
       if (fetchedAt && fetchedAt < (botMetaWriteAt.get(key) || 0)) {
+        continue
+      }
+
+      // A title alone only corrects an existing record. Minting one would
+      // shadow a configured alias's appearance (botRosterMeta prefers the
+      // direct key), and the row already carries its backend's title.
+      if (!server && !next[key]) {
         continue
       }
 

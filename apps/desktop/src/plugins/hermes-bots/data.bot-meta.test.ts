@@ -18,7 +18,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $botMeta, $lastRoster, botMentionTag, botMetaWriteAt, saveBotMeta } from './data'
+import { $botMeta, $lastRoster, botMentionTag, botMetaWriteAt, mergeMultiSourceRoster, saveBotMeta } from './data'
+import { editedLook } from './edit-profile-look'
 import { groupSpeakerLabel } from './group-chat'
 import { buildGroupChatTurnPrompt } from './group-round-prompt'
 import { displayName } from './labels'
@@ -440,5 +441,35 @@ describe('a bot is named by its own backend, never by another bot\'s cached reco
     // A keyed speaker with no live roster row (Bots pane not mounted).
     $lastRoster.set([])
     expect(groupSpeakerLabel('vps::default')).not.toBe('Agent B')
+  })
+
+  it('only a fresh answer from the bot\'s backend corrects its record, and a title alone never mints one', () => {
+    $botMeta.set({ 'vps::default': { color: '#00ff00', title: 'New title' } })
+    // The VPS stops answering; the pane keeps its last-painted row, which predates the rename.
+    const painted = { ...vps, title: 'Old title' } as RosterRow
+
+    const kept = mergeMultiSourceRoster(
+      { profiles: [] },
+      { agents: [], sources: [{ connectionId: 'vps', reachable: false }] },
+      'local',
+      [painted]
+    )
+
+    mergeServerMeta(kept.profiles as RosterRow[], Date.now())
+    expect($botMeta.get()['vps::default']).toEqual({ color: '#00ff00', title: 'New title' })
+
+    // No record yet (a configured alias may own this bot's look): the backend's
+    // title rides the row, and no empty record appears to shadow the alias.
+    $botMeta.set({})
+    mergeServerMeta([{ ...vps, title: 'Agent A' } as RosterRow])
+    expect($botMeta.get()).toEqual({})
+  })
+
+  it('Edit Profile sends only what the user changed since it opened', () => {
+    const opened = { color: '#ff0000', image: null, shape: 'circle' as const, title: 'Old title' }
+
+    // Renamed elsewhere meanwhile; this dialog only changes the color.
+    expect(editedLook(opened, { ...opened, color: '#0000ff' })).toEqual({ color: '#0000ff', custom: true })
+    expect(editedLook(opened, { ...opened, title: ' Old title ' })).toBeNull()
   })
 })

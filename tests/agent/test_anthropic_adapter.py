@@ -678,6 +678,74 @@ class TestConvertTools:
 
 class TestConvertMessages:
 
+    def test_deduplicates_replayed_tool_use_ids(self):
+        """Replayed history reusing a tool_use id must not reach Anthropic.
+
+        Anthropic rejects the whole request with "tool_use ids must be unique",
+        which surfaces to the user as "model provider failed after retries".
+        Orphan stripping does not catch this because each duplicated pair is
+        individually well-formed and adjacent.
+        """
+        call = {"id": "tc_dup", "function": {"name": "search", "arguments": "{}"}}
+        messages = [
+            {"role": "user", "content": "find it"},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "tc_dup", "content": "first result"},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "tc_dup", "content": "replayed result"},
+            {"role": "user", "content": "and now?"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(messages)
+
+        tool_use_ids = [
+            b.get("id")
+            for m in converted
+            if isinstance(m.get("content"), list)
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        tool_result_ids = [
+            b.get("tool_use_id")
+            for m in converted
+            if isinstance(m.get("content"), list)
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        assert tool_use_ids == ["tc_dup"], f"duplicate tool_use survived: {tool_use_ids}"
+        assert tool_result_ids == ["tc_dup"], f"duplicate tool_result survived: {tool_result_ids}"
+        # Anthropic's actual constraint: ids unique across the whole request.
+        assert len(tool_use_ids) == len(set(tool_use_ids))
+        assert len(tool_result_ids) == len(set(tool_result_ids))
+
+    def test_distinct_tool_use_ids_are_preserved(self):
+        """Deduplication must not collapse genuinely different tool calls."""
+        messages = [
+            {"role": "user", "content": "two things"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_a", "function": {"name": "search", "arguments": "{}"}},
+                    {"id": "tc_b", "function": {"name": "read", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_a", "content": "a"},
+            {"role": "tool", "tool_call_id": "tc_b", "content": "b"},
+            {"role": "user", "content": "thanks"},
+        ]
+
+        _system, converted = convert_messages_to_anthropic(messages)
+
+        tool_use_ids = {
+            b.get("id")
+            for m in converted
+            if isinstance(m.get("content"), list)
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        }
+        assert tool_use_ids == {"tc_a", "tc_b"}
+
 
     def test_strips_tool_use_when_result_not_immediately_adjacent(self):
         """A tool_use whose result appears LATER but not in the immediately

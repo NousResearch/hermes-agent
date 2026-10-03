@@ -247,3 +247,42 @@ class TestTableRealignment:
         assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
         assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
         assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
+class TestCodeIsVerbatim:
+    """Code is never reformatted: heading and inline markers inside it are code, and each MONOSPACE
+    range covers exactly the code, whatever headings or markers precede it."""
+
+    CODE = "# retry up to 3 times\ndef __call__(self, *args, **kwargs):\n    return a*b*c  # `x`"
+
+    @staticmethod
+    def _u16_slice(text: str, style: str) -> str:
+        start, length = (int(p) for p in style.split(":")[:2])
+        return text.encode("utf-16-le")[start * 2 : (start + length) * 2].decode("utf-16-le")
+
+    def test_fenced_code_survives_headings_and_markers_around_it(self):
+        for prefix in ("", "Replace it:\n\n", "## Fix\n\n**Replace** it:\n\n", "# 東京 🚀\n\n"):
+            text, styles = _m2s(f"{prefix}```python\n{self.CODE}\n```\n\n## After\n\n*done*")
+            assert self.CODE in text, prefix
+            assert [self._u16_slice(text, s) for s in _find_style(styles, "MONOSPACE")] == [self.CODE], prefix
+            assert self._u16_slice(text, _find_style(styles, "ITALIC")[-1]) == "done", prefix
+
+    def test_inline_code_markers_are_kept(self):
+        text, styles = _m2s("## Call `__init__` then `a*b*c`, not **bold**")
+        assert text == "Call __init__ then a*b*c, not bold"
+        assert [self._u16_slice(text, s) for s in _find_style(styles, "MONOSPACE")] == ["__init__", "a*b*c"]
+        assert [self._u16_slice(text, s) for s in _find_style(styles, "BOLD")] == [
+            "Call __init__ then a*b*c, not bold", "bold"]
+
+    def test_many_spans_convert_in_linear_time_with_exact_ranges(self):
+        """send() converts synchronously on the gateway loop, so a long reply with thousands of spans must
+        not cost per-span whole-string work; every range still lands on its own text (UTF-16 offsets
+        included)."""
+        import time
+
+        count = 6000
+        started = time.perf_counter()
+        text, styles = _m2s("".join(f"🚀 use `c{i}` and **b{i}** " for i in range(count)))
+        assert time.perf_counter() - started < 2.0
+        assert [self._u16_slice(text, s) for s in _find_style(styles, "MONOSPACE")] == [f"c{i}" for i in range(count)]
+        assert [self._u16_slice(text, s) for s in _find_style(styles, "BOLD")] == [f"b{i}" for i in range(count)]

@@ -196,7 +196,7 @@ def _repair_internal_alpha_holes(image):
     return rgba
 
 
-def _fit_to_cell(image):
+def fit_to_cell(image):
     """Crop to content, scale to fit a padded cell, and center on transparent."""
     image = _drop_side_bleed(image)
     if (bbox := image.getbbox()) is None:
@@ -206,6 +206,9 @@ def _fit_to_cell(image):
     if scale != 1.0:
         sprite = sprite.resize((max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale))), _NEAREST)
     return _place(sprite, (CELL_WIDTH, CELL_HEIGHT), ((CELL_WIDTH - sprite.width) // 2, (CELL_HEIGHT - sprite.height) // 2))
+
+
+_fit_to_cell = fit_to_cell  # original private spelling, kept as an alias
 
 
 def _drop_side_bleed(image):
@@ -234,7 +237,7 @@ def _thin_groups(indices: list[int]) -> list[tuple[int, int]]:
     return [(run[0], run[-1] + 1) for run in runs if len(run) <= 4]
 
 
-def _erase_long_axis_lines(image):
+def erase_long_axis_lines(image):
     """Remove thin slot-spanning guide/floor/divider lines (they survive keying and bridge clean poses)."""
     rgba = image.convert("RGBA").copy()
     w, h = rgba.size
@@ -245,6 +248,9 @@ def _erase_long_axis_lines(image):
     for left, right in _thin_groups([x for x in range(w) if sum(row[x] for row in opaque) >= h * 0.85]):
         _clear_region(rgba, (left, 0, right, h))
     return rgba
+
+
+_erase_long_axis_lines = erase_long_axis_lines  # original private spelling, kept as an alias
 
 
 def _component_boxes(image) -> list[tuple[tuple[int, int, int, int], int]]:
@@ -364,7 +370,7 @@ def _component_crops(strip, frame_count: int, *, require_padding: bool = False) 
     return attempt(strip) or attempt(_erase_long_axis_lines(strip))
 
 
-def _sever_expected_gutters(strip, frame_count: int):
+def sever_expected_gutters(strip, frame_count: int):
     """Cut narrow transparent bands at expected frame boundaries (shared shadows/1px bridges merge poses)."""
     if frame_count <= 1:
         return strip
@@ -376,6 +382,9 @@ def _sever_expected_gutters(strip, frame_count: int):
         alpha.paste(0, (max(0, x - half), 0, min(out.width, x + half + 1), out.height))
     out.putalpha(alpha)
     return out
+
+
+_sever_expected_gutters = sever_expected_gutters  # original private spelling, kept as an alias
 
 
 def _clean_slot(image):
@@ -405,7 +414,7 @@ def _content_runs(profile: list[int], *, threshold: int = 2) -> list[tuple[tuple
     return runs
 
 
-def _frame_x_ranges(strip, frame_count: int) -> list[tuple[int, int]] | None:
+def frame_x_ranges(strip, frame_count: int) -> list[tuple[int, int]] | None:
     """Per-frame ``(left, right)`` column ranges from the row's empty gutters.
 
     Extra spans merge across the smallest gaps (a detached halo sits closer to its body than to the next pose); fewer spans than frames → ``None``.
@@ -419,6 +428,9 @@ def _frame_x_ranges(strip, frame_count: int) -> list[tuple[int, int]] | None:
         groups[gi][1] = groups[gi + 1][1]
         del groups[gi + 1]
     return [tuple(g) for g in groups]
+
+
+_frame_x_ranges = frame_x_ranges  # original private spelling, kept as an alias
 
 
 def _significant_subject_boxes(image, *, min_mass: int = 32) -> list[tuple[int, int, int, int]]:
@@ -548,7 +560,7 @@ def single_frame(image, *, fit: bool = True):
     return _fit_to_cell(keyed) if fit else _drop_side_bleed(keyed)
 
 
-def _clear_transparent_rgb(image):
+def clear_transparent_rgb(image):
     """Zero the RGB of fully-transparent pixels (no colored-halo residue)."""
     rgba = image.convert("RGBA")
     data = bytearray(rgba.tobytes())
@@ -556,6 +568,9 @@ def _clear_transparent_rgb(image):
         if data[i] == 0:
             data[i - 3 : i] = b"\0\0\0"
     return Image.frombytes("RGBA", rgba.size, bytes(data))
+
+
+_clear_transparent_rgb = clear_transparent_rgb  # original private spelling, kept as an alias
 
 
 def mirror_frames(frames: list) -> list:

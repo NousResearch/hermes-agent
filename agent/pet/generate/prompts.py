@@ -56,7 +56,7 @@ _STYLE_HINTS: dict[str, str] = {
     "painterly": " Render in a soft painterly style.",
 }
 
-_BACKGROUND = (
+BACKGROUND = (
     "Center the character on a SINGLE flat, uniform, high-contrast chroma-key "
     "background — pure hot magenta #FF00FF (only if magenta appears on the "
     "character, use pure green #00FF00 instead). The background is ONE continuous "
@@ -66,16 +66,18 @@ _BACKGROUND = (
     "cleanly. The background color must not appear anywhere on the character. "
     "No text, no labels, no speech bubbles, no UI."
 )
+_BACKGROUND = BACKGROUND  # original private spelling, kept as an alias
 
 
 def style_hint(style: str | None) -> str:
     return _STYLE_HINTS.get((style or "auto").strip().lower(), "")
 
 
-_ASSUMED_STRIP_WIDTH = 1536  # landscape row canvas; used only to cite concrete pixel numbers
+ASSUMED_STRIP_WIDTH = 1536  # landscape row canvas; used only to cite concrete pixel numbers
+_ASSUMED_STRIP_WIDTH = ASSUMED_STRIP_WIDTH  # original private spelling, kept as an alias
 
 
-def _spacing_spec(frame_count: int) -> tuple[int, int]:
+def spacing_spec(frame_count: int) -> tuple[int, int]:
     """(per-pose width px, gap px) for a row of *frame_count* poses.
 
     Pixel counts alone don't hold — the model fills each slot edge-to-edge. The lever
@@ -85,6 +87,9 @@ def _spacing_spec(frame_count: int) -> tuple[int, int]:
     slots = max(1, frame_count)
     slot_w = _ASSUMED_STRIP_WIDTH / slots
     return round(slot_w * 0.7), max(48, round(slot_w * 0.3))
+
+
+_spacing_spec = spacing_spec  # original private spelling, kept as an alias
 
 
 # Per-draft nudges so base options are distinct (gpt-image near-duplicates one

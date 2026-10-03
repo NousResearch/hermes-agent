@@ -577,16 +577,12 @@ class BatchRunner:
         skipped_indices = []
 
         for idx, entry in enumerate(self.dataset):
-            prompt_text = entry.get("prompt", "").strip()
-
-            # Also check conversations format
-            if not prompt_text:
-                conversations = entry.get("conversations", [])
-                for msg in conversations:
-                    role = msg.get("role") or msg.get("from")
-                    if role in {"user", "human"}:
-                        prompt_text = (msg.get("content") or msg.get("value", "")).strip()
-                        break
+            # Extract the prompt with the same defensive helper the resume
+            # content scan uses (_entry_prompt_text): non-string ``prompt``
+            # values (#95322) and flat/sharegpt/messages shapes must be
+            # treated identically by both paths, or filtering drifts from
+            # what the scan actually recorded.
+            prompt_text = _entry_prompt_text(entry)
 
             if prompt_text in completed_prompts:
                 skipped_indices.append(idx)
@@ -640,14 +636,48 @@ class BatchRunner:
             config[key] = getattr(self, key)
         return config
 
-    def _run_pool(self, config, checkpoint_data, completed_prompts_set, checkpoint_lock) -> List[Dict[str, Any]]:
+    def _run_pool(self, config, checkpoint_data, completed_prompts_set, checkpoint_lock, resume: bool = False) -> List[Dict[str, Any]]:
         """Process all batches in a worker pool, checkpointing after each result."""
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
+
+        # Workers may skip by index only on a FRESH run, where batch_data
+        # carries original dataset indices. On --resume, self.batches was
+        # rebuilt from content-filtered entries re-indexed against the
+        # *current* file; checkpoint indices describe the interrupted run,
+        # so a never-completed prompt whose new index happens to collide
+        # would be silently skipped inside the worker — reintroducing the
+        # exact index-drift bug the content scan exists to fix (#95322).
+        # Resume batches are already content-filtered, so hand workers an
+        # empty index set there. ``completed_prompts_set`` keeps acting as
+        # the parent-side accumulator persisted to the checkpoint.
+        worker_completed_indices = set() if resume else set(completed_prompts_set)
+
+        # Resumed runs must not renumber shards from 0 (#95322): workers
+        # derive their output filename from the batch number and open it in
+        # append mode, and per-shard batch_stats are keyed by that same
+        # number — new shards numbered 0..k would append their rows into
+        # the previous run's batch_*.jsonl files and overwrite its stats.
+        # Continue past the highest existing shard number instead.
+        shard_num_offset = 0
+        if resume:
+            existing_shard_nums = []
+            if self.output_dir.exists():
+                for f in self.output_dir.glob("batch_*.jsonl"):
+                    suffix = f.stem[len("batch_"):]
+                    if suffix.isdigit():
+                        existing_shard_nums.append(int(suffix))
+            shard_num_offset = max(existing_shard_nums, default=-1) + 1
 
         with Pool(processes=self.num_workers) as pool:
             # output_dir as str for pickling
             tasks = [
-                (batch_num, batch_data, str(self.output_dir), completed_prompts_set, config)
+                (
+                    shard_num_offset + batch_num,
+                    batch_data,
+                    str(self.output_dir),
+                    worker_completed_indices,
+                    config,
+                )
                 for batch_num, batch_data in enumerate(self.batches)
             ]
             print(f"✅ Created {len(tasks)} batch tasks")
@@ -813,7 +843,7 @@ class BatchRunner:
 
         # Checkpoint writes happen in the parent process; keep a lock for safety.
         checkpoint_lock = Lock()
-        results = self._run_pool(config, checkpoint_data, completed_prompts_set, checkpoint_lock)
+        results = self._run_pool(config, checkpoint_data, completed_prompts_set, checkpoint_lock, resume=resume)
         total_tool_stats = {}
         total_reasoning_stats = dict.fromkeys(_REASONING_KEYS, 0)
         for batch_result in results:

@@ -213,6 +213,22 @@ def collect_runtime_generations(root: Path) -> list[Path]:
 
 
 
+def _pinned_minor(version: str | None) -> tuple[int, int] | None:
+    """The (major, minor) the PM runtime's venv must be built with.
+
+    ``pm/lock.json`` pins e.g. ``3.14.7+2026090x``; the staged-uv shortcut in
+    :func:`runtime_python` may only hand ``sys.executable`` to the venv builder
+    when the running interpreter is that same (major, minor).
+    """
+    if not version:
+        return None
+    head = version.split("+")[0].split(".")
+    try:
+        return int(head[0]), int(head[1])
+    except (IndexError, ValueError):
+        return None
+
+
 def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path:
     """Resolve PM without selecting, repairing, or importing the app environment."""
     if is_runtime():
@@ -236,15 +252,23 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
         from pm.store import current_target
 
         # Setup has already verified/extracted uv, but there are no PM facts
-        # yet. Use it to acquire PM's TLS support BEFORE downloading Python.
+        # yet. Use it to acquire PM's TLS support BEFORE downloading Python,
+        # but only when the running interpreter can host the PM runtime: a
+        # historical-updater takeover reaches this branch on the old app venv
+        # Python (3.11/3.12), whose `uv sync` would trip requires-python on
+        # every retry and the update would never complete.
         package = get_package("uv")
-        version = Lockfile(lockfile_path()).version("uv")
+        lockfile = Lockfile(lockfile_path())
+        version = lockfile.version("uv")
         target = current_target()
         staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
-        if staged is not None and staged.is_file():
+        pinned = _pinned_minor(lockfile.version("python"))
+        if staged is not None and staged.is_file() and pinned == tuple(sys.version_info[:2]):
             tools = staged, Path(sys.executable)
         else:
-            # Non-shell bootstrap callers (CI) already have a host interpreter.
+            # Provision the pinned toolchain: `ensure` records uv and its
+            # python dependency, so this works for clean stores and for
+            # callers (takeover venv, CI hosts) that cannot host the runtime.
             tools = _toolchain(explicit=True)
     if tools is None:
         raise InstallError("pm-runtime", "pinned uv and Python are unavailable")

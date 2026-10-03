@@ -257,11 +257,61 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
     return alive
 
 
+def _reconcile_terminal_live_manifests(rows) -> None:
+    """Repair cache-only 'running' labels from terminal ledger rows, without re-execution.
+
+    Runs after the ledger transaction, also on later startup/sweeps if a process
+    died between committing the outcome and updating the transcript sidecar.
+    It cannot promote a row into an execution or change a previously settled
+    child; the sidecar is never the source of ownership truth.
+    """
+    from tools.delegation_live_log import reconcile_terminal_manifest
+
+    for delegation_id, state, result_json, task_json in rows:
+        try:
+            task = json.loads(task_json or "{}")
+            result = json.loads(result_json or "{}")
+            indexes = task.get("task_indexes")
+            if not isinstance(indexes, list):
+                indexes = list(range(len(task.get("goals") or []))) or [0]
+            statuses = {i: state for i in indexes if type(i) is int and i >= 0}
+            for entry in result.get("results") or []:
+                if not isinstance(entry, dict):
+                    continue
+                i, outcome = entry.get("task_index"), entry.get("status")
+                if type(i) is int and i in statuses and isinstance(outcome, str) and outcome:
+                    statuses[i] = outcome
+            manifest_id = delegation_id.split("-", 1)[0]
+            if manifest_id != delegation_id:
+                # Independent async units of one fan-out have suffixed ledger IDs
+                # but share the call's ONE live-transcript directory. Bind the
+                # target to the original transcript path, never merely strip a
+                # suffix from an untrusted row and write to the guessed parent.
+                from tools.delegation_live_log import live_transcript_root
+                refs = task.get("task_transcripts") or {}
+                if not isinstance(refs, dict) or not any(
+                    refs.get(str(i)) == str(live_transcript_root() / manifest_id / f"task-{i}.log")
+                    for i in statuses
+                ):
+                    continue
+            reconcile_terminal_manifest(manifest_id, statuses)
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.debug("Delegation %s: ignored malformed live-manifest projection: %s", delegation_id, exc)
+
+
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
     alive = _owner_liveness()
     if alive is None:
+        # A broken process probe must never authorize retirement of a running
+        # owner. Cache-only projection of rows already terminal is independent
+        # of that probe, however, and remains safe to do at startup/sweep.
+        with _DB_LOCK, _transaction() as conn:
+            terminal_rows = conn.execute("""SELECT delegation_id,state,result_json,task_json
+                   FROM async_delegations WHERE state NOT IN ('running','finalizing')
+                     AND dispatched_at > ?""", (time.time() - _DURABLE_RETENTION_SECONDS,)).fetchall()
+        _reconcile_terminal_live_manifests(terminal_rows)
         return 0
     now, recovered = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
@@ -304,6 +354,10 @@ def recover_abandoned_delegations() -> int:
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
             recovered += 1
+        terminal_rows = conn.execute("""SELECT delegation_id,state,result_json,task_json
+               FROM async_delegations WHERE state NOT IN ('running','finalizing')
+                 AND dispatched_at > ?""", (now - _DURABLE_RETENTION_SECONDS,)).fetchall()
+    _reconcile_terminal_live_manifests(terminal_rows)
     return recovered
 
 

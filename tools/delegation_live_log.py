@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import shutil
 import threading
 import time
@@ -284,6 +286,19 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                 "status": "running"} for i, t in enumerate(task_list)]})
 
 
+def _atomic_manifest_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Replace one cache projection without exposing truncated JSON to readers."""
+    staged = path.with_name(f".manifest.staged.{uuid.uuid4().hex}")
+    try:
+        with staged.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: List[Dict[str, Any]],
                              home: Optional[Path] = None) -> None:
@@ -300,8 +315,60 @@ def update_manifest_statuses(delegation_id: Optional[str],
                 task["status"] = r.get("status", task.get("status"))
                 if r.get("exit_reason"):
                     task["exit_reason"] = r["exit_reason"]
-        manifest["completed"] = time.strftime(_TIME_FMT)
-        _dump_json(mp, manifest)
+        if all(t.get("status") not in ("running", "queued", "stalling", "finalizing")
+               for t in manifest.get("tasks", []) if isinstance(t, dict)):
+            manifest["completed"] = time.strftime(_TIME_FMT)
+        else:
+            manifest.pop("completed", None)
+        _atomic_manifest_json(mp, manifest)
+
+
+def reconcile_terminal_manifest(delegation_id: str, statuses: Dict[int, str]) -> bool:
+    """Project settled ledger results onto a stale live transcript manifest.
+
+    The ledger is authoritative. Only indexes owned by its settled row are
+    changed; unrelated siblings are never overwritten. Repeated sweeps also
+    correct a late sidecar-only writer that changed a settled index again.
+    A missing or malformed cache file is harmless, and the replacement is
+    atomic so a Desktop reader never sees half-written JSON. This does not
+    restart a child, revoke a lease, or change the ledger.
+    """
+    if not re.fullmatch(r"deleg_[0-9a-f]{8}(?:-\d+)?", delegation_id or ""):
+        return False
+    if not statuses:
+        return False
+    path = _manifest_path(delegation_id)
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8-sig"))
+        if manifest.get("delegation_id") != delegation_id or not isinstance(manifest.get("tasks"), list):
+            return False
+        changed = False
+        for task in manifest["tasks"]:
+            if not isinstance(task, dict):
+                continue
+            index = task.get("index")
+            status = statuses.get(index) if type(index) is int else None
+            if isinstance(status, str) and status not in ("running", "finalizing", ""):
+                if task.get("status") != status:
+                    task["status"] = status
+                    changed = True
+        all_terminal = all(
+            isinstance(task, dict) and task.get("status") not in ("running", "queued", "stalling", "finalizing")
+            for task in manifest["tasks"]
+        )
+        if all_terminal and "completed" not in manifest:
+            manifest["completed"] = time.strftime(_TIME_FMT)
+            changed = True
+        elif not all_terminal and "completed" in manifest:
+            manifest.pop("completed")
+            changed = True
+        if not changed:
+            return False
+        _atomic_manifest_json(path, manifest)
+        return True
+    except (OSError, ValueError, TypeError) as exc:
+        logger.debug("Live transcript recovery projection failed (%s): %s", delegation_id, exc)
+        return False
 
 
 def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS, root: Optional[Path] = None) -> int:

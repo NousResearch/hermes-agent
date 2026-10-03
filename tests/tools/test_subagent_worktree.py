@@ -86,13 +86,58 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertTrue(info["base_commit"])
         # Worktree carries the committed file
         self.assertTrue((Path(info["path"]) / "README.md").exists())
-        # .gitignore gained the .worktrees/ entry
-        self.assertIn(
-            ".worktrees/", (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+        # #103302: the parent's TRACKED .gitignore is never written — the ignore
+        # rule goes into the untracked, local-only info/exclude instead.
+        self.assertFalse((repo / ".gitignore").exists())
+        self.assertEqual(
+            _git(["check-ignore", "-q", ".worktrees/"], repo, check=False).returncode, 0
         )
         # A write in the worktree does not touch the parent checkout
         (Path(info["path"]) / "child.txt").write_text("x", encoding="utf-8")
         self.assertFalse((repo / "child.txt").exists())
+
+    def test_create_leaves_parent_checkout_clean(self):
+        """#103302: isolation must not dirty the checkout it exists to protect.
+
+        The old code appended ``.worktrees/`` to the repo's TRACKED ``.gitignore``,
+        so the parent's ``git status`` came back dirty after every delegation —
+        the line rides along in an unrelated ``git commit -a`` and conflicts on
+        rebase. Assert the contract the module docstring already claims.
+        """
+        repo = _make_repo(self.tmp)
+        tracked_before = _git(["ls-files"], repo).stdout
+        info = sw.create_subagent_worktree(str(repo), "clean-parent")
+        self.assertIsNotNone(info)
+
+        status = _git(["status", "--porcelain"], repo).stdout.strip()
+        self.assertEqual(status, "", f"parent checkout dirtied by isolation: {status!r}")
+        self.assertEqual(_git(["ls-files"], repo).stdout, tracked_before)
+
+    def test_create_respects_an_existing_gitignore_entry(self):
+        """A repo that already ignores ``.worktrees/`` gets no second rule.
+
+        The exclude write is gated on ``git check-ignore``, so a repo tracking the
+        entry itself (this one included) is left entirely alone — and the parent's
+        ``.gitignore`` keeps exactly the bytes it had.
+        """
+        repo = _make_repo(self.tmp)
+        (repo / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
+        _git(["add", ".gitignore"], repo)
+        _git(["commit", "-q", "-m", "ignore worktrees"], repo)
+
+        info = sw.create_subagent_worktree(str(repo), "already-ignored")
+        self.assertIsNotNone(info)
+
+        self.assertEqual((repo / ".gitignore").read_text(encoding="utf-8"), ".worktrees/\n")
+        self.assertEqual(_git(["status", "--porcelain"], repo).stdout.strip(), "")
+        common = Path(
+            _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).stdout.strip()
+        )
+        exclude = common / "info" / "exclude"
+        exclude_lines = (
+            exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        )
+        self.assertNotIn(".worktrees/", exclude_lines)
 
     def test_create_unborn_head_returns_none(self):
         repo = self.tmp / "empty"

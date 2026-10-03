@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -36,6 +35,7 @@ from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
 )
+from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint
@@ -269,7 +269,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
             job["status"] = "running"
             job["error"] = None
         try:
-            threading.Thread(target=_run, daemon=True, name=name).start()
+            spawn_context_thread(_run, name=name).start()
         except Exception:
             _RUNNING.pop(job["job_id"], None)
             if on_exit is not None:
@@ -500,6 +500,8 @@ def local_models_status():
     import pm
 
     current = pm.installed_package(binaries.BACKEND_PACKAGES[runtime_backend]) if runtime_backend else None
+    # The pane must list models from the old per-profile layout even while the runtime is off.
+    _quiet(bootstrap.adopt_legacy_models, [], warn="legacy model adoption failed: %r")
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
     # Resident models from the live router ({} when down): Loaded pills + eject. A failed read is never
@@ -523,16 +525,18 @@ def local_models_status():
 
 # ── hardware: what this machine can do ───────────────────────
 def _nvidia_smi_facts() -> dict:
-    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts)."""
-    smi_exe = hardware._nvidia_smi_path()
-    if not smi_exe:
+    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts).
+
+    Reads the shared cached query: one nvidia-smi spawn per poll window, hidden on Windows,
+    instead of a second bare one per request (#101895, #120262)."""
+    query = hardware._cached_nvidia_gpu_query()
+    if query is None:
         return {}
-    smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
-    if smi.returncode != 0 or not smi.stdout.strip():
-        return {}
-    name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    return dict(
+        gpu_name=query["gpu_name"],
+        gpu_util_percent=query["gpu_util_percent"],
+        vram_used_bytes=query["used_bytes"],
+    )
 
 
 @router.get("/api/local-models/hardware")
@@ -621,7 +625,8 @@ def local_models_catalog():
     budget = hardware.probe_budget(planning=True)
     # The reason key ships with the row so the Recommended badge's tooltip is the branch that actually
     # fired, not a re-derivation that can drift.
-    recommended, recommended_reason = catalog.recommended_entry(budget, _eligible_entries()) or (None, None)
+    recommended, recommended_reason = catalog.recommended_entry(
+        budget, _eligible_entries(), backend=_runtime_section().get("backend", "auto")) or (None, None)
     recommended_id = recommended.id if recommended is not None else None
     # Completeness-checked staging (split parts all present) — same answer the picker and router see, so a
     # mid-download model never reads as downloaded.
@@ -738,8 +743,8 @@ async def local_models_delete(model_id: str):
         path.unlink(missing_ok=True)
     # Growth state dies with the model: a re-download starts back at its zero-spill window, not a stale grown one.
     _quiet(lambda: growth.clear_window_override(model_id), None, debug="window-override clear skipped")
-    threading.Thread(target=_refresh_runtime, args=("post-delete runtime refresh skipped",), daemon=True,
-                     name="lr-post-delete").start()
+    spawn_context_thread(_refresh_runtime, args=("post-delete runtime refresh skipped",),
+                         name="lr-post-delete").start()
     return {"ok": True}
 
 
@@ -754,7 +759,8 @@ def _quickstart_target(body: QuickstartBody, budget):
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
     else:
-        picked = catalog.recommended_entry(budget, _eligible_entries())
+        picked = catalog.recommended_entry(
+            budget, _eligible_entries(), backend=_runtime_section().get("backend", "auto"))
         if picked is None:
             raise HTTPException(
                 status_code=409,
@@ -767,6 +773,17 @@ def _quickstart_target(body: QuickstartBody, budget):
             return candidate, choice.variant
     raise HTTPException(status_code=409, detail=(
         "no catalog model fits this machine — open Local Models to browse for a smaller build"))
+
+
+def _repriced_quickstart(job: Dict[str, Any], body: QuickstartBody, variant):
+    """Re-pick once the engine is installed, before any bytes are committed: a Vulkan/HIP GPU's
+    type and size come from that engine's own device probe, so the preflight price was a guess."""
+    entry, picked = _quickstart_target(body, hardware.probe_budget(planning=True))
+    if picked.model_id != variant.model_id:
+        with _JOBS_LOCK:
+            job.update(target=entry.display_name, model_id=entry.id)
+    plan = _download_plan(entry, picked)
+    return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
 
 
 @router.post("/api/local-models/quickstart")
@@ -787,9 +804,11 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
         raise HTTPException(status_code=409, detail="Setup is already running")
     job = _job("quickstart", entry.display_name, model_id=entry.id)
     def _run():
+        nonlocal entry, variant, download_plan
         if need_runtime and binaries.installed_engine(backend) is None:
             _install_engine_job(job, backend)
-        if need_download:
+            entry, variant, download_plan = _repriced_quickstart(job, body, variant)
+        if download_plan:
             # Each phase has its own complete download plan. Resume within a
             # phase retains counters until PM reports the durable bytes.
             if job["phase"] != "downloading":

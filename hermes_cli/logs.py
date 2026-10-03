@@ -1,7 +1,24 @@
 """``hermes logs`` — view and filter Hermes log files.
 
-``hermes logs [name] [-n N] [-f] [--level L] [--session S] [--component C] [--since 1h]``;
-``hermes logs list`` shows the available files.
+Supports tailing, following, session filtering, level filtering,
+component filtering, and relative time ranges.  All log files live
+under ``~/.hermes/logs/``.
+
+Usage examples::
+
+    hermes logs                    # last 50 lines of agent.log
+    hermes logs -f                 # follow agent.log in real time
+    hermes logs errors             # last 50 lines of errors.log
+    hermes logs gateway -n 100    # last 100 lines of gateway.log
+    hermes logs gui -f            # follow gui.log (dashboard/pty/ws)
+    hermes logs desktop -f        # follow desktop.log (Electron app boot/backend)
+    hermes logs update            # last 50 lines of update.log (hermes update mirror)
+    hermes logs handoff           # last 50 lines of desktop-update-handoff.log
+    hermes logs --level WARNING    # only WARNING+ lines
+    hermes logs --session abc123   # filter by session ID substring
+    hermes logs --component tools  # only tool-related lines
+    hermes logs --since 1h         # lines from the last hour
+    hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
 import re
@@ -20,13 +37,26 @@ LOG_FILES = {
     "gateway": "gateway.log",
     "gui": "gui.log",
     "desktop": "desktop.log",
+    # Full stdout/stderr mirror of the last `hermes update` runs (written by
+    # hermes_cli.main's _UpdateOutputStream; append-only across runs). When a
+    # Desktop-driven update fails at the Electron rebuild the ONLY artifacts
+    # holding the root cause are this file and the hand-off log below, so
+    # `hermes logs list` (a directory scan) showing them without readable
+    # keys was an inconsistency of its own.
+    "update": "update.log",
+    # Desktop-driven update hand-off (scripts/desktop-update/windows.ps1 +
+    # posix.sh): stage log including the `desktop --force-build --build-only`
+    # retry stderr.
+    "handoff": "desktop-update-handoff.log",
     # Every stdio MCP subprocess's stderr (tools/mcp_tool.py redirects it
     # here, with per-server session markers) — the "MCP output channel".
     "mcp": "mcp-stderr.log",
 }
 
-# "2026-04-05 22:35:00[,123]" at the start of a line.
-_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
+# "2026-04-05 22:35:00[,123]" at the start of a line; update.log /
+# desktop-update-handoff.log stamp with the shell's ISO-8601 "T" shape
+# ("2026-09-29T21:36:18+08:00", "=== hermes update started 2026-09-29T21:36:18 ===").
+_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
 _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
 # Logger name: the token before ":" after the level and optional "[session]" tag,
 # e.g. "INFO gateway.run:" or "INFO [sess_abc] tools.terminal_tool:".
@@ -44,11 +74,11 @@ def _parse_since(since_str: str) -> Optional[datetime]:
 
 
 def _parse_line_timestamp(line: str) -> Optional[datetime]:
-    m = _TS_RE.match(line)
+    m = _TS_RE.search(line)
     if not m:
         return None
     try:
-        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+        return datetime.strptime(m.group(1).replace("T", " "), "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
 
@@ -76,7 +106,8 @@ def _matches_filters(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> bool:
-    """Whether a line passes all active filters (lines without a timestamp/level pass those)."""
+    """Whether one line passes all active filters (a line without a timestamp/level passes those);
+    ``_LineFilter`` decides for unstamped continuation lines."""
     if since is not None:
         ts = _parse_line_timestamp(line)
         if ts is not None and ts < since:
@@ -90,6 +121,24 @@ def _matches_filters(
     return component_prefixes is None or _line_matches_component(line, component_prefixes)
 
 
+class _LineFilter:
+    """Stateful ``_matches_filters`` over consecutive lines of one file. A line with no stamp continues
+    the record above it (traceback frames, multi-line messages), so it takes that record's verdict."""
+
+    def __init__(self, **filters):
+        self._filters = filters
+        self._carry: Optional[bool] = None
+
+    def __call__(self, line: str) -> bool:
+        if _parse_line_timestamp(line) is not None:
+            self._carry = _matches_filters(line, **self._filters)
+        elif self._carry is None:
+            # Before the first stamp: this record's time and level are unknown.
+            timed = self._filters.get("since") is not None or self._filters.get("min_level") is not None
+            return not timed and _matches_filters(line, **self._filters)
+        return self._carry
+
+
 def tail_log(
     log_name: str = "agent",
     *,
@@ -100,7 +149,26 @@ def tail_log(
     since: Optional[str] = None,
     component: Optional[str] = None,
 ) -> None:
-    """Print the filtered tail of a log, optionally following in real time."""
+    """Read and display log lines, optionally following in real time.
+
+    Parameters
+    ----------
+    log_name
+        Which log to read: ``"agent"``, ``"errors"``, ``"gateway"``, ``"gui"``,
+        ``"desktop"``, ``"update"``, ``"handoff"``.
+    num_lines
+        Number of recent lines to show (before follow starts).
+    follow
+        If True, keep watching for new lines (Ctrl+C to stop).
+    level
+        Minimum log level to show (e.g. ``"WARNING"``).
+    session
+        Session ID substring to filter on.
+    since
+        Relative time string (e.g. ``"1h"``, ``"30m"``).
+    component
+        Component name to filter by (e.g. ``"gateway"``, ``"tools"``).
+    """
     filename = LOG_FILES.get(log_name)
     if filename is None:
         print(f"Unknown log: {log_name!r}. Available: {', '.join(sorted(LOG_FILES))}")
@@ -170,7 +238,8 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
         return _read_last_n_lines(path, num_lines)
     # Over-read so enough lines survive filtering.
     raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
-    return [l for l in raw_lines if _matches_filters(l, **filters)][-num_lines:]
+    keep = _LineFilter(**filters)
+    return [l for l in raw_lines if keep(l)][-num_lines:]
 
 
 def _read_all_lines(path: Path) -> list:
@@ -211,6 +280,7 @@ def _read_last_n_lines(path: Path, n: int) -> list:
 
 def _follow_log(path: Path, **filters) -> None:
     """Poll a log file for new content and print matching lines."""
+    keep = _LineFilter(**filters)
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         # Seek to end
         f.seek(0, 2)
@@ -218,7 +288,7 @@ def _follow_log(path: Path, **filters) -> None:
             line = f.readline()
             if not line:
                 time.sleep(0.3)
-            elif _matches_filters(line, **filters):
+            elif keep(line):
                 print(line, end="")
                 sys.stdout.flush()
 

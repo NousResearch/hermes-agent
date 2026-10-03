@@ -75,7 +75,7 @@ def github(tmp_path, monkeypatch):
         thread.join()
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("posix")
 def test_pr_completion_requires_current_required_evidence(github):
     with connect() as conn:
         for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
@@ -109,7 +109,7 @@ def test_pr_completion_requires_current_required_evidence(github):
         assert len(github["requests"]) == before
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("posix")
 def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
     with connect() as conn:
         for conclusion in ("success", "failure"):
@@ -175,113 +175,127 @@ def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
     assert "credentials" in (kb.get_task(conn, tid).last_failure_error or "")
 
 
-# --- refusal classification: the operation and structured response, not "any 40x" ---
+@pytest.mark.platforms("posix")
+def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_path, monkeypatch):
+    """An assignee profile with no GH_TOKEN/GH_CONFIG_DIR of its own must not inherit the
+    launch user's ~/.config/gh (HOME/XDG_CONFIG_HOME stay the launch process's): gh is pinned
+    to a profile-owned config dir, its 'not logged in' exit is classified `auth` naming the profile."""
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("GH_TOKEN", "launch-token")
+    monkeypatch.setenv("GH_CONFIG_DIR", "/nonexistent/launch/gh")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "launch-xdg"))
 
-def _receipt_for(tmp_path, monkeypatch, gh_script):
-    """Complete one contract card through a scripted gh; return the last receipt."""
+    env_dump = tmp_path / "gh_env.json"
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    # Real gh: GH_CONFIG_DIR wins; a config dir without hosts.yml means "not logged in" (exit 4).
+    gh.write_text(f"#!{sys.executable}\nimport json, os, pathlib, sys\n"
+                  f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)), encoding='utf-8')\n"
+                  "if 'GH_CONFIG_DIR' in os.environ and not os.path.exists(os.environ['GH_CONFIG_DIR']):\n"
+                  "    sys.exit(4)\n"
+                  "print(json.dumps({'data': {'repository': None}}))\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="as-b", completion_contract="acme/repo", assignee="b")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == "auth"
+    assert "'b'" in receipt["detail"] and "no login" in receipt["detail"]
+    captured = json.loads(env_dump.read_text(encoding="utf-8-sig"))
+    assert captured["GH_CONFIG_DIR"] == str(assignee_home / "gh")
+    assert "GH_TOKEN" not in captured and "GITHUB_TOKEN" not in captured
+
+
+@pytest.mark.parametrize("assignee", ["ghost", "worker"])
+def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch, assignee):
+    """A card assigned to a profile that no longer exists must not run gh as the completing
+    process's ambient login: classification `auth` naming the profile, gh never invoked."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))  # any gh spawn would fail as infra
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="unresolved", completion_contract="acme/repo", assignee=assignee)
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == "auth"
+    assert repr(assignee) in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("phase,status,error_type,exit_code,expected", [
+    ("repository", None, "NOT_FOUND", 1, "auth"),
+    ("repository", None, "NOT_FOUND", 0, "auth"),
+    ("repository", None, "FORBIDDEN", 0, "auth"),
+    ("repository", None, "INTERNAL", 1, "infra"),
+    ("repository", "401", None, 1, "auth"),
+    ("repository", "500", None, 1, "infra"),
+    ("policy", "401", None, 1, "policy"),
+    ("policy", "403", None, 1, "policy"),
+    ("policy", "404", None, 1, "policy"),
+    ("policy", "500", None, 1, "infra"),
+    ("policy", None, None, 1, "infra"),
+    ("policy", "rate limit", None, 1, "retry"),
+    ("evidence", "403", None, 1, "auth"),
+])
+def test_refusals_are_classified_at_the_failed_operation(
+        tmp_path, monkeypatch, phase, status, error_type, exit_code, expected):
+    """Exercise real gh subprocesses and SQLite completion, not classifier mocks."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     shim = tmp_path / "bin"
-    shim.mkdir(exist_ok=True)
+    shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\n" + gh_script)
+    pr = {"headRefOid": "a" * 40, "baseRefName": "main", "state": "OPEN",
+          "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
+              {"context": "required", "app": {"databaseId": 1}}]}}}
+    script = f'''import json, sys
+phase, status, error_type, exit_code = {phase!r}, {status!r}, {error_type!r}, {exit_code!r}
+endpoint = sys.argv[2]
+failing = ((phase == "repository" and endpoint == "graphql") or
+           (phase == "policy" and "/rules/branches/" in endpoint) or
+           (phase == "evidence" and "/check-runs" in endpoint))
+if failing:
+    sys.stderr.write("PRIVATE_DIAGNOSTIC " + ("HTTP " + status if status else "GraphQL refusal"))
+    if error_type:
+        print(json.dumps({{"data": {{"repository": None}}, "errors": [
+            {{"type": error_type, "path": ["repository"], "message": "PRIVATE_DIAGNOSTIC"}}]}}))
+    sys.exit(exit_code)
+if endpoint == "graphql":
+    print(json.dumps({{"data": {{"repository": {{"pullRequest": {pr!r}}}}}}}))
+else:
+    print(json.dumps([[]]))
+'''
+    gh.write_text(f"#!{sys.executable}\n" + script, encoding="utf-8")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     kb.init_db()
     with connect() as conn:
         tid = kb.create_task(conn, title="classify", completion_contract="acme/repo")
         assert not kb.complete_task(conn, tid, result="done",
-                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
         task = kb.get_task(conn, tid)
-        assert task is not None and task.status != "done"
-        rows = conn.execute(
-            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchall()
-        assert rows
-        return json.loads(rows[-1][0])
-
-
-@pytest.mark.platforms("posix")
-def test_graphql_not_found_on_nonzero_exit_is_auth_not_infra(tmp_path, monkeypatch):
-    """gh prints the GraphQL error (no 'HTTP 40x') and exits nonzero: a visibility
-    refusal must classify `auth` naming the repo, never retryable `infra`."""
-    receipt = _receipt_for(tmp_path, monkeypatch,
-        "import json,sys\n"
-        "sys.stderr.write('GraphQL: Could not resolve to a Repository with the name acme/repo.\\n')\n"
-        "print(json.dumps({'data':{'repository':None},"
-        "'errors':[{'type':'NOT_FOUND','path':['repository'],"
-        "'message':'Could not resolve to a Repository with the name acme/repo.'}]}))\n"
-        "sys.exit(1)\n")
-    assert receipt["classification"] == "auth"
-    assert "acme/repo" in receipt["detail"]
-
-
-@pytest.mark.platforms("posix")
-def test_graphql_errors_on_zero_exit_is_not_success_evidence(tmp_path, monkeypatch):
-    """A zero-exit body with a structured errors array is not usable evidence;
-    it must never pass acceptance (and reports the refusal, not silence)."""
-    receipt = _receipt_for(tmp_path, monkeypatch,
-        "import json\n"
-        "print(json.dumps({'data':{'repository':None},"
-        "'errors':[{'type':'NOT_FOUND','path':['repository'],"
-        "'message':'Could not resolve to a Repository.'}]}))\n")
+        assert task.status != "done"
+        assert "PRIVATE_DIAGNOSTIC" not in task.last_failure_error
     assert receipt["ok"] is False
-    assert receipt["classification"] == "auth"
-
-
-@pytest.mark.platforms("posix")
-def test_rules_403_after_successful_repository_read_is_policy_not_auth(tmp_path, monkeypatch):
-    """Visibility proven, then the branch-policy read is refused: the diagnosis is
-    a fail-closed `policy` gap, never 'fix the assignee's credentials' (#122009)."""
-    receipt = _receipt_for(tmp_path, monkeypatch,
-        "import json,sys\n"
-        "if sys.argv[2] == 'graphql':\n"
-        "    print(json.dumps({'data':{'repository':{'pullRequest':{"
-        "'headRefOid':'a'*40,'baseRefName':'main','state':'OPEN',"
-        "'baseRef':{'branchProtectionRule':None}}}}}))\n"
-        "elif '/rules/branches/' in sys.argv[2]:\n"
-        "    sys.stderr.write('gh: HTTP 403: Resource not accessible by integration\\n')\n"
-        "    sys.exit(1)\n")
-    assert receipt["classification"] == "policy"
-    assert "not evidence" in receipt["detail"].lower() or "NOT evidence" in receipt["detail"]
-    assert "credentials" not in receipt["detail"]
-
-
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("status", ["401", "404"])
-def test_rules_401_404_after_successful_repository_read_are_policy_not_auth(tmp_path, monkeypatch, status):
-    """Capability failures on the rules endpoint stay policy failures even when gh
-    reports an expired-token or missing-endpoint status."""
-    receipt = _receipt_for(tmp_path, monkeypatch,
-        "import json,sys\n"
-        "if sys.argv[2] == 'graphql':\n"
-        "    print(json.dumps({'data':{'repository':{'pullRequest':{"
-        "'headRefOid':'a'*40,'baseRefName':'main','state':'OPEN',"
-        "'baseRef':{'branchProtectionRule':None}}}}}))\n"
-        "elif '/rules/branches/' in sys.argv[2]:\n"
-        f"    sys.stderr.write('gh: HTTP {status}: policy endpoint unavailable\\\\n')\n"
-        "    sys.exit(1)\n")
-    assert receipt["classification"] == "policy"
-    assert "credentials" not in receipt["detail"]
-
-
-@pytest.mark.platforms("posix")
-def test_rate_limit_403_is_retry_not_auth(tmp_path, monkeypatch):
-    receipt = _receipt_for(tmp_path, monkeypatch,
-        "import json,sys\n"
-        "if sys.argv[2] == 'graphql':\n"
-        "    print(json.dumps({'data':{'repository':{'pullRequest':{"
-        "'headRefOid':'a'*40,'baseRefName':'main','state':'OPEN',"
-        "'baseRef':{'branchProtectionRule':None}}}}}))\n"
-        "else:\n"
-        "    sys.stderr.write('gh: HTTP 403: API rate limit exceeded\\n')\n"
-        "    sys.exit(1)\n")
-    assert receipt["classification"] == "retry"
-    assert "rate limit" in receipt["detail"].lower()
-
-
-@pytest.mark.platforms("posix")
-def test_http_500_on_repository_read_stays_infra(tmp_path, monkeypatch):
-    receipt = _receipt_for(tmp_path, monkeypatch,
-        "import sys\n"
-        "sys.stderr.write('gh: HTTP 500: Internal Server Error\\n')\n"
-        "sys.exit(1)\n")
-    assert receipt["classification"] == "infra"
+    assert receipt["classification"] == expected
+    assert "PRIVATE_DIAGNOSTIC" not in json.dumps(receipt)
+    if expected == "policy":
+        assert "NOT evidence" in receipt["detail"]
+        assert "credentials" not in receipt["detail"]
+    if expected == "auth":
+        assert "acme/repo" in receipt["detail"]
+    if expected == "retry":
+        assert "wait" in receipt["detail"]

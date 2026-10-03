@@ -180,12 +180,15 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
             skip_bundles: bool = False, skip_tests: bool = False,
-            published: tuple[str, str | None] = (SEED, None)) -> dict:
+            published: tuple[str, str | None] = (SEED, None),
+            run_wait: float = 0, sleep=time.sleep) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
     None before the first publication. ``skip_bundles`` and ``skip_tests`` are
     written into the claim, which is the one record every later job reads.
+    ``run_wait`` is how many seconds to keep looking for the dispatched run;
+    GitHub lists it a moment after the dispatch returns.
     """
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
@@ -267,17 +270,31 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
             "--raw-field", f"tag={tag}",
         ])
-        found = execute([
-            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-            "--branch", tag, "--json", "databaseId,url,headBranch,status",
-        ])
+        run_url = _await_run(execute, repository, tag, wait=run_wait, sleep=sleep)
     except Exception as exc:
         raise ReleaseRefused(f"release {tag} never started: {exc}") from exc
-    run_url = _dispatched_run(found, tag)
-    return {"version": version, "tag": tag, "commit": commit, "url": url,
+    return {"version": version, "tag": tag, "commit": commit, "url": url, "repository": repository,
             "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
             "run_url": run_url, "autopublish": autopublish,
             "skip_bundles": skip_bundles, "skip_tests": skip_tests}
+
+
+RUN_POLL_SECONDS = 2
+RUN_WAIT_SECONDS = 30
+
+
+def _await_run(execute, repository: str, tag: str, *, wait: float, sleep) -> str:
+    """The dispatched run's URL, polling up to ``wait`` seconds. Empty if it never lists."""
+    polls = int(wait // RUN_POLL_SECONDS)
+    for poll in range(polls + 1):
+        run_url = _dispatched_run(execute([
+            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
+            "--branch", tag, "--json", "databaseId,url,headBranch,status",
+        ]), tag)
+        if run_url or poll == polls:
+            return run_url
+        sleep(RUN_POLL_SECONDS)
+    return ""
 
 
 def _dispatched_run(raw: str, tag: str) -> str:
@@ -359,25 +376,40 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     return {"requested": tag, "version": version, "repository": repository}
 
 
-def abandon(version: str, *, repo: Path, remote: str, repository: str, delete, inspect=None) -> dict:
+def _in_progress_runs(inspect, repository: str, tag: str) -> list[dict]:
+    """Release runs of ``tag`` that have not completed, as ``gh run list`` rows."""
+    rows = json.loads(inspect([
+        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
+        "--branch", tag, "--json", "databaseId,url,status", "--limit", "100",
+    ]) or "[]")
+    return [row for row in rows if row["status"] != "completed"]
+
+
+def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, inspect=None) -> dict:
     """Clear the outstanding attempt of ``version``. The attempt ref stays; the marker is the record.
 
-    The draft goes first: a cleared attempt with a live draft could still be
-    published by hand, while a draftless outstanding attempt is just abandoned
-    again. This reads every outstanding attempt, not the one-attempt view, so
-    it still clears one when a concurrent cut left two.
+    Its in-progress runs are cancelled and its draft deleted before the marker
+    exists: a live run can autopublish the draft, a cleared attempt with a live
+    draft could still be published by hand, and once the marker is written
+    there is no outstanding attempt left to retry the cleanup against. This
+    reads every outstanding attempt, not the one-attempt view, so it still
+    clears one when a concurrent cut left two.
     """
     _refresh_claims(repo, remote)
     matching = [found for found in _outstanding_attempts(repo, remote) if found[0] == version]
     if len(matching) != 1:
         raise ReleaseRefused(f"stable {version} has no outstanding attempt to abandon")
     _version, attempt, tag = matching[0]
+    cancelled: list[str] = []
     if inspect is not None:
         draft = _release_view(tag, repository, inspect)
+        if draft is not None and draft.get("isDraft") is not True:
+            raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
+        for run in _in_progress_runs(inspect, repository, tag):
+            execute(["gh", "run", "cancel", str(run["databaseId"]), "--repo", repository, "--force"])
+            cancelled.append(run["url"])
         if draft is not None:
-            if draft.get("isDraft") is not True:
-                raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
-            delete(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
+            execute(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
     marker = marker_ref(version, attempt)
     message = json.dumps({"schema": 1, "version": version, "attempt": attempt, "attemptRef": tag},
                          sort_keys=True, separators=(",", ":"))
@@ -386,32 +418,37 @@ def abandon(version: str, *, repo: Path, remote: str, repository: str, delete, i
         _git(repo, "push", remote, f"refs/tags/{marker}")
     except subprocess.CalledProcessError as error:
         raise _claim_collision(repo, remote, marker, error) from error
-    return {"version": version, "tag": tag, "marker": marker, "repository": repository}
+    return {"version": version, "tag": tag, "marker": marker, "repository": repository,
+            "cancelled": cancelled}
 
 
-def next_steps(result: dict) -> str:
-    """Say what started, what the operator waits for, and the next action."""
-    version = result["version"]
+def next_steps(result: dict, *, bold: bool = False) -> str:
+    """Say what was attempted, where its CI runs, and the one command that publishes it.
+
+    ``bold`` wraps the skipped-tests warning in ANSI bold; the caller decides
+    from the terminal, so piped output stays plain.
+    """
+    version, tag = result["version"], result["tag"]
+    actions_url = f"https://github.com/{result['repository']}/actions/workflows/{WORKFLOW}"
     lines = [
-        f"Claimed {result['tag']} for v{version}. The release workflow started on {result['tag']}.",
-        f"Workflow: {result['run_url']}" if result.get("run_url") else "Workflow: the run is not listed yet. Open the Actions tab for this claim.",
-        f"Draft release: {result['url']}",
-        "The draft exists now. Edit its notes while the workflow runs; the edits carry through to publication.",
-        "Wait for that workflow to finish. It builds and tests this commit.",
+        f"Attempting release {tag} for v{version}.",
+        "Release CI: " + (result.get("run_url")
+                          or f"the run is not listed yet. Find {tag} at {actions_url}"),
     ]
     if result["skip_bundles"]:
         lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
                      "ship; the desktop, Termux and Store channels stay on the previous release.")
     if result["skip_tests"]:
-        lines.append("Tests are skipped. No CI, E2E, native smoke or upgrade acceptance job runs. "
-                     "The build is published untested.")
+        warning = "Tests are skipped, since you passed --skip-tests"
+        lines.append(f"\033[1m{warning}\033[0m" if bold else warning)
+    lines.append(f"Draft release: {result['url']}")
     if result["autopublish"]:
-        lines.append("Autopublish is on. A green workflow publishes the release. You do not run publish.")
+        lines.append("Edit the notes in the draft release. Autopublish is on: "
+                     f"when Release CI is green, v{version} publishes itself.")
     else:
-        lines.append("Autopublish is off. The release stays a draft after the workflow is green.")
-        lines.append("When it is green, publish the release to push this build live:")
+        lines.append("Edit the notes in the draft release. "
+                     f"When Release CI is green, to publish v{version}, run:")
         lines.append(f"    python scripts/release.py publish --version {version} --remote origin")
-    lines.append(f"After publication the release is at {result['final_url']}.")
     return "\n".join(lines)
 
 
@@ -437,9 +474,9 @@ def cmd_release(args) -> None:
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
         skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
-        published=published_stable_identity(repository),
+        published=published_stable_identity(repository), run_wait=RUN_WAIT_SECONDS,
     )
-    print(next_steps(result))
+    print(next_steps(result, bold=sys.stdout.isatty() and "NO_COLOR" not in os.environ))
 
 
 def _command_repository(args) -> tuple[Path, str, str]:
@@ -484,6 +521,7 @@ def abandon_steps(result: dict) -> str:
     _version, attempt = parse_attempt_ref(tag)
     return "\n".join([
         f"Cleared {tag}. The marker {result['marker']} records it.",
+        *(f"Cancelled {url}" for url in result.get("cancelled", [])),
         f"v{version} is not spent. The next cut is rc.{attempt + 1}-v{version}.",
     ])
 
@@ -506,6 +544,6 @@ def cmd_publish(args) -> None:
 def cmd_abandon(args) -> None:
     repo, remote, repository = _command_repository(args)
     result = abandon(args.version, repo=repo, remote=remote, repository=repository,
-                     delete=lambda command: _execute(repo, command),
+                     execute=lambda command: _execute(repo, command),
                      inspect=lambda command: _inspect(repo, command))
     print(abandon_steps(result))

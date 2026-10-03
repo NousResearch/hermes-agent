@@ -22,24 +22,29 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
-import { resolveStoredSession } from '@/app/session/hooks/use-session-actions/utils'
+import { probeStoredSession, resolveStoredSession } from '@/app/session/hooks/use-session-actions/utils'
 import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { ReasoningMenuPanel } from '@/app/shell/reasoning-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceOwnerLabels,
+  workspaceOwnerTitle,
+  workspaceSessionRenameable
+} from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { transcribeAudio } from '@/hermes'
+import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
-import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
+import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
+import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
@@ -49,16 +54,19 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
+  $botChatScopes,
   $sessionStates,
   $sessionTileDelegateRevision,
   $sessionTiles,
   closeSessionTile,
+  discardSessionTile,
   patchSessionTile,
   type SessionTile,
   sessionTileDelegate
@@ -131,7 +139,10 @@ export function tileBackendIdentityChanged(
 
 export function unbindTilesForBackendIdentityChange<
   T extends { error?: string; ownerRoute?: { connectionId?: string }; runtimeId?: string }
->(tiles: readonly T[], activeConnection: { connectionId?: string | null; mode?: string | null } | null | undefined): T[] {
+>(
+  tiles: readonly T[],
+  activeConnection: { connectionId?: string | null; mode?: string | null } | null | undefined
+): T[] {
   let changed = false
 
   const next = tiles.map(tile => {
@@ -215,17 +226,18 @@ function buildTileView(storedSessionId: string): SessionView {
 // tiles have no pin/delete affordance, and transcription needs no per-tile state.
 const noop = () => undefined
 
-const tileTranscribeAudio = async (audio: Blob) => {
+const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
   // Client-direct first (profile's own STT provider, no gateway audio hop);
   // relay when the provider is not client-callable. Same ladder as the main
-  // composer's transcribeVoiceAudio.
-  const direct = await transcribeAudioClientDirect(audio)
+  // composer's transcribeVoiceAudio. `owner` is the recording's owner — the
+  // tile's (connection, profile), resolved when its mic opened.
+  const direct = await transcribeAudioClientDirect(audio, owner)
 
   if (direct !== null) {
     return direct
   }
 
-  return (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
+  return (await transcribeAudio(await blobToDataUrl(audio), audio.type, owner)).transcript
 }
 
 function TileChat({
@@ -395,6 +407,7 @@ function TileChat({
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
           onAttachPastedText={composer.attachPastedText}
+          onBranchInNewChat={actions.branchInNewChat}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}
@@ -526,6 +539,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         const durableSession = await resolveStoredSession(storedSessionId, ownerRoute).catch(() => undefined)
         const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
         const identityChanged = tileBackendIdentityChanged(ownerRoute?.connectionId, $connection.get())
+
         const error = sessionTileResumeFailure(
           message,
           Boolean(durableSession),
@@ -584,16 +598,23 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 // Tile -> pane contribution sync (call once from the app root).
 // ---------------------------------------------------------------------------
 
-/** Resolve a tile's stored row: the recents list first, then the project
- *  tree. A session opened as a tab from a project group is often older than
- *  the paginated recents page, so it has no `$sessions` row at all until new
- *  activity lands it there — resolving through the tree keeps its tab titled
- *  and tinted instead of a grey "Session" placeholder. */
+/** Resolve a tile's stored row: every loaded sidebar slice first, then the
+ *  project tree. A session opened as a tab from a project group is often older
+ *  than the paginated recents page, so it has no `$sessions` row at all until
+ *  new activity lands it there — resolving through the tree keeps its tab
+ *  titled and tinted instead of a grey "Session" placeholder.
+ *
+ *  The slice scan is `ownerLookupSessionRows`, not `$sessions`: the sidebar
+ *  fetch splits its rows three ways, and a telegram/discord/cron conversation
+ *  is listed ONLY in `$messagingSessions` / `$cronSessions` — recents excludes
+ *  those sources outright. Searching recents alone made every such tab read
+ *  "New session" forever, since the row it needed was one atom over and no
+ *  amount of activity would ever move it into recents. */
 export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
   const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
 
   return (
-    $sessions.get().find(match) ??
+    ownerLookupSessionRows().find(match) ??
     $projectTree
       .get()
       .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
@@ -605,9 +626,15 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
  *  A restored background tab has no runtimeId and does not mount its pane, so
  *  the resolution effect above never runs; when its row is outside the recents
  *  page and project tree, `tileTitle()` reads "New session" until first click.
- *  `resolveStoredSession` upserts the row into `$sessions`, which the tab strip
- *  already watches — nothing is persisted. Runs once the gateway can answer. */
-export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession): () => void {
+ *  The probe upserts a found row into `$sessions`, which the tab strip already
+ *  watches. A tile whose id every profile answered 404 for is retired
+ *  (#125678): left alone it is re-probed on every launch and never heals. */
+export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): () => void {
+  // Only tiles restored from a previous run can be retired: a draft opened in
+  // this run before the gateway answers has no durable row yet either.
+  const restored = new Set($sessionTiles.get().flatMap(tile => (tile.runtimeId ? [] : [tile.storedSessionId])))
+  let stopped = false
+
   const run = () => {
     if ($gatewayState.get() !== 'open') {
       return
@@ -615,17 +642,56 @@ export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession):
 
     off()
 
-    for (const tile of $sessionTiles.get()) {
-      if (!tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId)) {
-        void lookup(tile.storedSessionId, tile.ownerRoute).catch(() => undefined)
-      }
+    // Absence is only authoritative in calm conditions — the same inputs as
+    // `goneSessionVerdict`, plus any scope change while the probes are out
+    // (a profile A→B→A lands the 404s on a backend that never owned the id).
+    let calm = !$gatewaySwitching.get() && !$gatewaySwapTarget.get()
+
+    const unsettle = () => {
+      calm = false
     }
+
+    const scopes = [$connection, $activeGatewayProfile, $profiles, $gatewayState, $gatewaySwitching, $gatewaySwapTarget]
+    const offScopes = scopes.map(scope => scope.listen(unsettle))
+
+    const probes = $sessionTiles
+      .get()
+      .filter(tile => !tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId))
+      .map(tile =>
+        lookup(tile.storedSessionId, tile.ownerRoute)
+          .then(result => {
+            const draft = takeSessionDraft(tile.storedSessionId)
+            const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === tile.storedSessionId)
+
+            if (
+              result.status === 'gone' &&
+              calm &&
+              !stopped &&
+              restored.has(tile.storedSessionId) &&
+              current &&
+              !current.runtimeId &&
+              !tileStoredRow(tile.storedSessionId) &&
+              !tileBackendIdentityChanged(tile.ownerRoute?.connectionId, $connection.get()) &&
+              !draft.text.trim() &&
+              draft.attachments.length === 0
+            ) {
+              // Not `closeSessionTile`: a dead id must not sit on the reopen stack.
+              discardSessionTile(tile.storedSessionId)
+            }
+          })
+          .catch(() => undefined)
+      )
+
+    void Promise.all(probes).finally(() => offScopes.forEach(offScope => offScope()))
   }
 
   const off = $gatewayState.listen(run)
   run()
 
-  return off
+  return () => {
+    stopped = true
+    off()
+  }
 }
 
 /** Drop persisted tile bindings that belong to a different backend than the
@@ -658,6 +724,16 @@ function tileTitle(storedSessionId: string): string {
   const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
 
   return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
+}
+
+/** The tile's workspace scope — the same fields `workspaceOwnerTitle` reads,
+ *  so the rename gate agrees with the caption's notion of a bot tab. */
+function tileWorkspaceScope(storedSessionId: string): Parameters<typeof workspaceSessionRenameable>[0] {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  return tile
+    ? { workspaceMode: tile.workspaceMode, workspaceTabTitle: tile.workspaceTabTitle }
+    : ($botChatScopes.get()[storedSessionId] ?? {})
 }
 
 /** The tab's CAPTION: a bot chat's owner name over the canonical stored title
@@ -751,16 +827,26 @@ export function stackSessionTilesIntoMain(): void {
  *  updates in other sessions) — for a context menu that's almost never open.
  *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
  *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
-  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+function useTileMenuRow(storedSessionId: string): {
+  pinId: string
+  profile?: string
+  renameable: boolean
+  title: string
+} {
+  const cache = useRef<{
+    key: string
+    value: { pinId: string; profile?: string; renameable: boolean; title: string }
+  } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)
     const offTree = $projectTree.listen(onChange)
+    const offTiles = $sessionTiles.listen(onChange)
 
     return () => {
       offSessions()
       offTree()
+      offTiles()
     }
   }, [])
 
@@ -769,10 +855,11 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
     const pinId = stored ? sessionPinId(stored) : storedSessionId
     const title = tileTitle(storedSessionId)
     const profile = stored?.profile
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+    const renameable = workspaceSessionRenameable(tileWorkspaceScope(storedSessionId))
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${renameable}`
 
     if (cache.current?.key !== key) {
-      cache.current = { key, value: { pinId, profile, title } }
+      cache.current = { key, value: { pinId, profile, renameable, title } }
     }
 
     return cache.current.value
@@ -800,7 +887,7 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, renameable, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
@@ -815,6 +902,7 @@ export function SessionTabMenu({
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
         profile={profile}
+        renameable={renameable}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}
@@ -864,9 +952,14 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
-  // its title through the tree, which loads after the tiles register. (The tab's
-  // status dot subscribes to color/state itself, so it needs no `also` entry.)
-  also: [$sessions, $projectTree, $workspaceOwnerLabels],
+  // its title through the tree, which loads after the tiles register.
+  // $cronSessions/$messagingSessions: `tileStoredRow` reads every sidebar
+  // slice, so the strip must re-sync when the slice that owns a gateway
+  // conversation lands — it arrives on its own fetch, after the tiles register,
+  // and without it the tab stays stuck on its "New session" placeholder.
+  // (The tab's status dot subscribes to color/state itself, so it needs no
+  // `also` entry.)
+  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

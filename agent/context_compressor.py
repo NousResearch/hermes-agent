@@ -25,12 +25,12 @@ from agent.auxiliary_client import (
     CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
-    _is_connection_error,
     _message_field,
     aux_interrupt_protection,
     call_llm,
     extract_content_or_reasoning,
 )
+from agent.auxiliary_predicates import _is_connection_error
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error

@@ -9,6 +9,7 @@ import logging
 from contextlib import suppress
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time as _time
@@ -268,6 +269,28 @@ def _finish_dashboard_update_cleanup(
     stop_for_relaunch()
 
 
+def _divert_broken_stdout() -> None:
+    """Re-route stdout/stderr to devnull once the update's own stdout reader is gone (#132088).
+
+    ``hermes update`` can run inside a terminal hosted by the serve backend it stops during
+    the success teardown (an agent session in the desktop app). When that backend dies, every
+    remaining write raises EPIPE, aborting the fleet matrix, reconciliation and receipt
+    finalize that follow — and the exit code stops reflecting the update. With both streams
+    on devnull the teardown runs to completion and the process exits with its real status.
+    """
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    for stream in (sys.stdout, sys.stderr):
+        with suppress(Exception):
+            os.dup2(devnull_fd, stream.fileno())
+    with suppress(Exception):
+        sys.stdout = os.fdopen(devnull_fd, "w", encoding="utf-8", errors="replace")
+    with suppress(Exception):
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
+
+
 def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
     """Refresh managed dashboards or stop stale manual ones after an update; returns the PIDs it
     stopped and could not bring back, so the receipt records them ``failed`` (#109290).
@@ -280,11 +303,25 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     from hermes_cli.update_cmd import _m, _record_update_step
     from hermes_constants import get_hermes_home
 
+    # The backend stopped below may host this update's own stdout reader (#132088). Make the
+    # phase SIGPIPE-immune — a wrapper can exec us with the default disposition even though
+    # CPython starts with SIGPIPE ignored — so nothing here dies on the dead pipe itself.
+    if sys.platform != "win32":
+        with suppress(ValueError, OSError):
+            signal.signal(signal.SIGPIPE, signal.SIG_IGN)
     try:
         stop_result = _m()._kill_stale_dashboard_processes(
             restart_managed=True, already_restarted_units=already_restarted_units,
             scope_home=str(get_hermes_home()),
         )
+    except BrokenPipeError:
+        # The stop landed and took this update's own stdout reader with it: the remaining
+        # writes would abort the fleet matrix, reconciliation and receipt finalize that
+        # follow (#132088). Divert both streams so they complete, record the step as done,
+        # and let the survivor probe — not a dead pipe — decide whether anything is down.
+        _divert_broken_stdout()
+        _record_update_step("dashboard_cleanup", True, "stopped backend hosted this update's stdout")
+        return set()
     except Exception as exc:
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort
         # the fleet matrix, reconciliation and the inner receipt finalize that follow it. A

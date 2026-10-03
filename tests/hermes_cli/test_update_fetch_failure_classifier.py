@@ -112,7 +112,6 @@ def test_update_network_git_calls_never_prompt_for_credentials():
     Live incident (Sep 2026): a GitHub-side 401 made `hermes update` sit on
     ``Username for 'https://github.com':`` instead of failing with a diagnosis.
     """
-    import os
     import subprocess
 
     kw = update_cmd._no_prompt_git_kwargs()
@@ -120,7 +119,9 @@ def test_update_network_git_calls_never_prompt_for_credentials():
     assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0"
     # Only the prompt is disabled — credential helpers / askpass stay
     # configured so a private-fork origin still authenticates.
-    assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")
+    env = kw["env"]
+    injected = [env[f"GIT_CONFIG_KEY_{i}"] for i in range(int(env.get("GIT_CONFIG_COUNT", "0") or 0))]
+    assert not [k for k in injected if k.lower().startswith("credential") or k.lower() == "core.askpass"], injected
 
 
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
@@ -153,5 +154,5 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         assert env["GIT_TERMINAL_PROMPT"] == "0", args
         assert env["GCM_INTERACTIVE"] == "Never", args
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
-        assert env["GIT_CONFIG_COUNT"] == "1", args
+        assert env["GIT_CONFIG_KEY_0"] == "credential.helper", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args

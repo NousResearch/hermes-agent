@@ -31,6 +31,62 @@ def _contents(db, session_id=SESSION_ID):
 
 
 class TestIdentityFlush:
+    def test_interrupted_internal_notification_replays_once(self):
+        """Turn-start persistence and interrupted finalization share one DB row."""
+        from agent.turn_context import _stage_turn_user_message
+        from agent.turn_finalizer import finalize_turn
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                notice = "[SYSTEM: Background process completed]"
+                user_msg, _ = _stage_turn_user_message(
+                    agent, notice, notice, 100.0, "wake-1",
+                    "internal_notification", None,
+                )
+                messages = [user_msg]
+                agent._persist_user_message_idx = 0
+
+                # The turn-start crash boundary writes the notification first.
+                agent._flush_messages_to_session_db(messages, [])
+                assert user_msg.get("_db_persisted") is True
+
+                # An interrupt still runs the normal final persistence safety net.
+                with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+                    finalize_turn(
+                        agent,
+                        final_response=None,
+                        api_call_count=0,
+                        interrupted=True,
+                        failed=False,
+                        messages=messages,
+                        conversation_history=[],
+                        effective_task_id="task-1",
+                        turn_id="turn-1",
+                        user_message=notice,
+                        original_user_message=notice,
+                        _should_review_memory=False,
+                        _turn_exit_reason="interrupted_by_user",
+                    )
+
+                replayed = db.get_messages_as_conversation(SESSION_ID)
+                matching = [
+                    message for message in replayed
+                    if message.get("display_kind") == "internal_notification"
+                    and message.get("content") == notice
+                ]
+                assert len(matching) == 1
+                assert matching[0].get("_db_persisted") is True
+                assert db._conn.execute(
+                    "SELECT COUNT(*) FROM messages "
+                    "WHERE session_id = ? AND display_kind = ? AND content = ?",
+                    (SESSION_ID, "internal_notification", notice),
+                ).fetchone()[0] == 1
+            finally:
+                db.close()
+
     def test_summary_flush_hides_pure_handoff_but_not_composite_live_ask(self):
         from agent.context_compressor import (
             COMPRESSED_SUMMARY_METADATA_KEY,

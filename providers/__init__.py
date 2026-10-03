@@ -212,6 +212,11 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
+def discovery_in_progress() -> bool:
+    """True while plugin discovery or a home-layer scan is importing plugins (the registry is partial)."""
+    return _discovering
+
+
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name); the bound home's
     ``$HERMES_HOME`` plugins shadow process-wide profiles of the same name."""

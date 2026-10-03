@@ -101,6 +101,268 @@ def test_migrate_config_restores_backup_when_version_does_not_advance(
     assert backups, "backup file must exist"
 
 
+# ── step_migrate_config: bounded .env backups ───────────────────────
+
+
+def _env_backups(directory: Path) -> list[Path]:
+    return sorted(directory.glob(".env.bak-*"), key=lambda p: p.name, reverse=True)
+
+
+def test_successful_migration_prunes_stale_env_backups(tmp_path, monkeypatch):
+    """A successful migration leaves at most ENV_BACKUP_KEEP plaintext
+    ``.env.bak-*`` siblings instead of one per migration (#124381)."""
+    import hermes_cli.config as cfg
+    import hermes_cli.config_migrations as mig
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("_config_version: 20\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=old\n", encoding="utf-8")
+
+    floor = getattr(mig, "SUPPORT_FLOOR_VERSION", 12)
+    # First check: needs migration; post-check: version advanced.
+    versions = iter([(max(20, floor), 34), (34, 34)])
+    monkeypatch.setattr(cfg, "check_config_version", lambda: next(versions))
+    monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(cfg, "get_env_path", lambda: env_path)
+    monkeypatch.setattr(cfg, "migrate_config", lambda **kw: None)
+
+    # Stale plaintext copies from earlier migrations.
+    for i in range(post_update.ENV_BACKUP_KEEP + 4):
+        (tmp_path / f".env.bak-20250101T00000{i}Z").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    result = step_migrate_config()
+
+    assert result["ok"] is True
+    # The migration's own copy survives (it is the newest), the rest are pruned.
+    survivors = _env_backups(tmp_path)
+    assert len(survivors) == post_update.ENV_BACKUP_KEEP
+    # The bound's path contract: every survivor is one of the migration's
+    # own stamp-shaped copies, still sitting in the home root — never a
+    # hand-named sibling relocated or renamed.
+    assert all(post_update._ENV_BAK_STAMP_RE.fullmatch(p.name) for p in survivors)
+    assert all(p.parent == tmp_path for p in survivors)
+
+
+def test_failed_migration_prunes_stale_env_backups(tmp_path, monkeypatch):
+    """The rollback path prunes too — restore has already run when it does,
+    so no backup inside the rollback window is dropped."""
+    import hermes_cli.config as cfg
+    import hermes_cli.config_migrations as mig
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("_config_version: 20\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=old\n", encoding="utf-8")
+
+    floor = getattr(mig, "SUPPORT_FLOOR_VERSION", 12)
+    # First check: needs migration; post-check: never advanced.
+    versions = iter([(max(20, floor), 34), (max(20, floor), 34)])
+    monkeypatch.setattr(cfg, "check_config_version", lambda: next(versions))
+    monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(cfg, "get_env_path", lambda: env_path)
+
+    def fake_migrate(**kw):
+        config_path.write_text("_config_version: 20\nbroken: true\n", encoding="utf-8")
+
+    monkeypatch.setattr(cfg, "migrate_config", lambda **kw: fake_migrate(**kw))
+
+    for i in range(post_update.ENV_BACKUP_KEEP + 4):
+        (tmp_path / f".env.bak-20250101T00000{i}Z").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    with pytest.raises(RuntimeError, match="did not advance"):
+        step_migrate_config()
+
+    assert config_path.read_text(encoding="utf-8") == "_config_version: 20\n"
+    assert len(_env_backups(tmp_path)) == post_update.ENV_BACKUP_KEEP
+
+
+def test_prune_restores_never_delete_the_rollback_copy(tmp_path, monkeypatch):
+    """The copy a rollback restores from is never pruned by that rollback:
+    pruning runs strictly after the restore completed, and the newest copy is
+    always kept."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    keep = post_update.ENV_BACKUP_KEEP
+    newest = tmp_path / ".env.bak-20250101T999999Z"
+    newest.write_text("SECRET=rollback-source\n", encoding="utf-8")
+
+    # Fill beyond the keep bound; the rollback source is the newest of all.
+    for i in range(keep + 5):
+        (tmp_path / f".env.bak-20250101T00000{i}Z").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    post_update._prune_stale_env_backups(env_path)
+
+    assert newest.is_file()
+    assert newest.read_text(encoding="utf-8") == "SECRET=rollback-source\n"
+    assert len(_env_backups(tmp_path)) == keep
+
+
+def test_prune_env_backups_never_touches_other_files(tmp_path, monkeypatch):
+    """Only the migration's own ``.env.bak-<stamp>`` siblings are pruned — a
+    hand-named copy and other state stay where the user put them."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("_config_version: 34\n", encoding="utf-8")
+    (tmp_path / "config.yaml.bak-20250101T000000Z").write_text(
+        "config\n", encoding="utf-8"
+    )
+    # Hand-named, not the migration's stamp form: the user's own copy.
+    (tmp_path / ".env.bak-before-migration").write_text(
+        "SECRET=kept-by-hand\n", encoding="utf-8"
+    )
+    for i in range(post_update.ENV_BACKUP_KEEP + 2):
+        (tmp_path / f".env.bak-20250101T00000{i}Z").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    post_update._prune_stale_env_backups(env_path)
+
+    assert (tmp_path / "config.yaml").is_file()
+    assert (tmp_path / "config.yaml.bak-20250101T000000Z").is_file()
+    assert (tmp_path / ".env.bak-before-migration").read_text(
+        encoding="utf-8"
+    ) == "SECRET=kept-by-hand\n"
+    # The hand-named copy is not one of the migration's bounded siblings, so
+    # the stamp family is what gets capped.
+    stamp_copies = sorted(
+        p for p in tmp_path.glob(".env.bak-*") if p.name != ".env.bak-before-migration"
+    )
+    assert len(stamp_copies) == post_update.ENV_BACKUP_KEEP
+
+
+def test_prune_counts_same_second_indexed_stamp_siblings(tmp_path, monkeypatch):
+    """``_backup_path`` adds ``.<index>`` when a stamp repeats within the same
+    second; those extra copies count toward the bound too (they are the
+    migration's own, not hand-named)."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    names = [".env.bak-20250101T120000Z"] + [
+        f".env.bak-20250101T120000Z.{i}" for i in range(1, 6)
+    ]
+    for name in names:
+        (tmp_path / name).write_text("SECRET=ancient\n", encoding="utf-8")
+
+    post_update._prune_stale_env_backups(env_path, keep=2)
+
+    survivors = sorted(p.name for p in tmp_path.glob(".env.bak-*"))
+    # The bare stamp was written first, so it is the OLDEST of the six —
+    # reverse name order used to rank ``.5``...``.1`` ahead of the bare
+    # stamp; as (stamp, index) the bare stamp is the oldest of its group.
+    assert survivors == [
+        ".env.bak-20250101T120000Z.4",
+        ".env.bak-20250101T120000Z.5",
+    ]
+    assert env_path.read_text(encoding="utf-8") == "SECRET=current\n"
+
+
+def test_prune_orders_collision_indexes_numerically(tmp_path, monkeypatch):
+    """Collision indexes are numbers, not text (review round 3).
+
+    ``_backup_path`` can create ``.1`` through ``.999`` when a stamp
+    repeats within the same second. Text order ranks ``.10`` and ``.11``
+    BEHIND ``.9`` — with keep=2 that deletes the two freshest copies
+    while keeping older ones, breaking the newest-N contract.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    # Indexes 1..11, all under one stamp, written oldest-first.
+    for i in list(range(1, 12)):
+        (tmp_path / f".env.bak-20250101T120000Z.{i}").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    post_update._prune_stale_env_backups(env_path, keep=2)
+
+    survivors = sorted(p.name for p in tmp_path.glob(".env.bak-*"))
+    assert survivors == [
+        ".env.bak-20250101T120000Z.10",
+        ".env.bak-20250101T120000Z.11",
+    ]
+
+
+def test_up_to_date_boot_prunes_stale_env_backups(tmp_path, monkeypatch):
+    """The bound applies on the up-to-date path too (review round 3).
+
+    A home that already accumulated plaintext copies is only helped if
+    the bound runs when nothing migrates: behind the
+    ``current_ver >= latest_ver`` early return, every boot skipped the
+    prune until some later schema migration tripped it.
+    """
+    import hermes_cli.config as cfg
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("_config_version: 34\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+
+    monkeypatch.setattr(cfg, "check_config_version", lambda: (34, 34))
+    monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(cfg, "get_env_path", lambda: env_path)
+    monkeypatch.setattr(cfg, "migrate_config", lambda **kw: None)
+
+    for i in range(post_update.ENV_BACKUP_KEEP + 4):
+        (tmp_path / f".env.bak-20250101T00000{i}Z").write_text(
+            "SECRET=ancient\n", encoding="utf-8"
+        )
+
+    result = step_migrate_config()
+
+    assert result == {"ok": True, "skipped": "up-to-date"}
+    # Nothing migrated, yet the stale copies were still bounded.
+    assert len(_env_backups(tmp_path)) == post_update.ENV_BACKUP_KEEP
+
+
+def test_prune_continues_after_an_undeletable_copy(tmp_path, monkeypatch):
+    """One un-deletable copy must not abort the remaining deletions.
+
+    A copy that cannot be unlinked (live handle, AV scan, read-only
+    attribute, network home) is ordinary. The loop walks the expired
+    copies newest-of-expired first; a failure on the FIRST attempted
+    unlink is the discriminating case — under a single ``try`` around the
+    loop it aborts before deleting anything, and the plaintext backups
+    would accumulate one per migration again. Every other expired copy
+    must still be pruned.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    keep = post_update.ENV_BACKUP_KEEP
+    names = [f".env.bak-20250101T00000{i}Z" for i in range(keep + 4)]
+    for name in names:
+        (tmp_path / name).write_text("SECRET=ancient\n", encoding="utf-8")
+
+    # ``stale[keep:]`` is reverse-stamped, so ``names[keep]`` is the first
+    # copy the prune loop attempts.
+    stuck = tmp_path / names[keep]
+
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self == stuck:
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    post_update._prune_stale_env_backups(env_path)
+
+    survivors = _env_backups(tmp_path)
+    # The bound still holds: the three newest copies and the one
+    # un-deletable copy survive; every other expired copy was pruned.
+    assert len(survivors) == keep + 1
+    assert stuck.is_file()
+    for name in names[:keep]:
+        assert not (tmp_path / name).exists(), name
+    for name in names[keep:]:
+        assert (tmp_path / name).is_file(), name
+
+
 # ── step_state_db_guard ──────────────────────────────────────────────
 
 

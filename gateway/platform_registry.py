@@ -108,6 +108,20 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # ---- standalone media routing (declared by the platform, not by core) ----------------
+    # True: MEDIA sends for this platform route through ``standalone_sender_fn`` instead of the
+    # generic text-only path. Replaces the per-platform ``_PLUGIN_STANDALONE_MEDIA`` allowlist in
+    # ``tools/send_message_tool.py``, which core had to edit for every media-capable plugin (#121864).
+    standalone_media: bool = False
+    # ``standalone_media`` only: the sender takes a caption alongside the file, so one file plus
+    # short text rides as a single captioned media message (WhatsApp/Slack behaviour).
+    standalone_captionable: bool = False
+    # ``standalone_media`` only: payload sent in place of the media on NON-final chunks, so the
+    # attachment rides exactly one chunk. None = send nothing there (WeCom/WhatsApp/Yuanbao),
+    # [] = send an empty media list, True = let the sender decide (SimpleX-style native path).
+    standalone_media_sentinel: Optional[list] | bool = None
+    # ``standalone_media`` only: forward ``force_document`` to the sender (WhatsApp).
+    standalone_pass_force_document: bool = False
 
 
 class PlatformRegistry:

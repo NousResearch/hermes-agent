@@ -6937,6 +6937,7 @@ def register(ctx) -> None:
         # Out-of-process cron delivery; without it deliver=slack cron jobs fail with
         # "No live adapter" when cron runs apart from the gateway.
         standalone_sender_fn=_standalone_send,
+        standalone_media=True, standalone_captionable=True,
         # Slack allows 40,000 chars; leave margin.
         max_message_length=39000,
         emoji="💼",

@@ -7482,6 +7482,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="DISCORD_HOME_CHANNEL",
         # Out-of-process cron delivery via REST, else ``deliver=discord`` jobs fail with "No live adapter".
         standalone_sender_fn=_standalone_send,
+        standalone_media=True, standalone_captionable=True,
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,

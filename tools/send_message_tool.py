@@ -620,23 +620,48 @@ def _platform_max_length(platform):
 
 # Plugin platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
 # registry ``standalone_sender_fn`` (Discord: forums/threads/multipart; Slack: files_upload_v2;
-# WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
-# caption-capable, media_files sentinel for non-final chunks, forward force_document)
+# WhatsApp: Baileys /send-media). Seed defaults for in-tree platforms, kept as the fallback when a
+# platform is not in the registry (bare ``hermes send`` without plugin discovery).
+# platform -> (error label, run discover_plugins first, caption-capable, media_files sentinel for
+# non-final chunks, forward force_document). A plugin declares the same five facts itself as
+# ``PlatformEntry.standalone_media*`` (#121864) instead of mailing us a core edit.
 _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "feishu": ("Feishu", True, False, None, False),
                             "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
 
 
+def _standalone_media_route(platform_name):
+    """``(label, discover, captionable, empty_media, pass_force)`` for *platform_name*, or None.
+
+    The registry is consulted FIRST so a plugin's own declaration wins over the in-tree seed dict;
+    the dict stays as the backward-compatible default (and for the bare send path, where plugins
+    have not been discovered and the entry may not exist yet).
+    """
+    seeded = _PLUGIN_STANDALONE_MEDIA.get(platform_name)
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+    except Exception:
+        entry = None
+    if entry is None or not getattr(entry, "standalone_media", False):
+        return seeded
+    # A plugin declared itself media-capable: derive the full tuple from its fields. ``discover``
+    # stays False for an entry that already resolves — the plugin is loaded by definition.
+    return (entry.label or platform_name, False, bool(entry.standalone_captionable),
+            entry.standalone_media_sentinel, bool(entry.standalone_pass_force_document))
+
+
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document, mentions=None):
+                                  max_len, force_document, mentions=None, route=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
-    label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
+    label, discover, captionable, empty_media, pass_force = route or _PLUGIN_STANDALONE_MEDIA[platform_name]
     sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
     if err:
         return err
     extra = {"force_document": force_document} if pass_force else {}
     first_only = {"mentions": mentions} if mentions else {}
+    assert sender is not None  # ``err`` was None, and the resolver returns one or the other
     if captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
@@ -644,11 +669,22 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
                                 caption=caption, **extra, **first_only)
 
+    media_chunk_seen = False
+
     def send_one(chunk, is_last):
+        # Chunk selection comes from the route, not from a platform name. A DECLARED sentinel
+        # travels with its own media: the file rides the chunk whose payload is the media list —
+        # exactly one chunk — which is what lets Slack/Discord put text ABOVE the attachment
+        # instead of always hanging it off the last chunk. Seed rows keep their historical
+        # "media on the final chunk" shape (their sentinel is never their own media list).
+        nonlocal media_chunk_seen
+        carries_media = (is_last if route is None
+                         else (not media_chunk_seen and empty_media != media_files))
+        media_chunk_seen = media_chunk_seen or carries_media
         kwargs = {**extra, **first_only}
         first_only.clear()
         return sender(pconfig, chat_id, chunk, thread_id=thread_id,
-                      media_files=media_files if is_last else empty_media, **kwargs)
+                      media_files=media_files if carries_media else empty_media, **kwargs)
     return await _send_chunks(chunks, send_one)
 
 
@@ -702,11 +738,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
-    if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
-            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
+    # Plugin-declared standalone media routing (#121864). Computed before the caption/sentinel
+    # decision: a declared sentinel ([] / None) selects the media-carrying chunk, and it must not
+    # turn a plain text send into a standalone one — MEDIA is still what triggers the route.
+    standalone_route = _standalone_media_route(platform_name)
+    has_media_route = media_files and standalone_route is not None
+    if platform_name == "discord" or (platform_name == "whatsapp" and mentions) or has_media_route:
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
-                                             mentions=mentions)
+                                             mentions=mentions, route=standalone_route)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route

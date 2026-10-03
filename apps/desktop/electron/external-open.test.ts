@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
+import { type ExternalOpenDeps, isSchemeAllowed, openExternalUrl, reportPreOpenStatFailure } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -88,6 +88,57 @@ test('resolves invalid for a URL the route does not open, with no notify', async
 
   assert.equal(calls.opened.length, 0)
   assert.equal(calls.notified.length, 0)
+})
+
+test('#129813: resolves invalid for a custom scheme without an allowlist', async () => {
+  const { deps, calls } = makeDeps()
+
+  for (const url of ['obsidian://vault/note', 'linear://issue', 'vscode://file/x.js', 'things:///add?id=1']) {
+    const result = await openExternalUrl(url, deps)
+    assert.equal(result.ok, false)
+    assert.equal(result.reason, 'invalid')
+  }
+
+  assert.equal(calls.opened.length, 0)
+  assert.equal(calls.fileOpened.length, 0)
+  assert.equal(calls.localOpened.length, 0)
+  assert.equal(calls.notified.length, 0)
+})
+
+test('#129813: opens a custom scheme when the user allowlists it', async () => {
+  const { deps, calls } = makeDeps({ allowedLinkSchemes: ['obsidian', 'linear'] })
+
+  const result = await openExternalUrl('obsidian://vault/my-note', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls.opened, ['obsidian://vault/my-note'])
+  assert.equal(calls.notified.length, 0)
+})
+
+test('#129813: allowlist is additive — allowlisted and web schemes both open, others stay blocked', async () => {
+  const { deps, calls } = makeDeps({ allowedLinkSchemes: ['obsidian'] })
+
+  // Allowlisted custom scheme opens.
+  assert.deepEqual(await openExternalUrl('obsidian://vault/a', deps), { ok: true })
+  // Built-in web scheme still opens (additive, not a replace).
+  assert.deepEqual(await openExternalUrl('https://example.com', deps), { ok: true })
+  // A scheme NOT in the allowlist stays blocked.
+  assert.deepEqual(await openExternalUrl('linear://issue/1', deps), { ok: false, reason: 'invalid' })
+  // Dangerous scheme never opens even with another entry allowlisted.
+  assert.deepEqual(await openExternalUrl('javascript:alert(1)', deps), { ok: false, reason: 'invalid' })
+
+  assert.deepEqual(calls.opened, ['obsidian://vault/a', 'https://example.com/'])
+  assert.equal(calls.notified.length, 0)
+})
+
+test('#129813: scheme comparison is case-insensitive and tolerates a trailing colon', () => {
+  assert.equal(isSchemeAllowed('OBSIDIAN:', ['obsidian']), true)
+  assert.equal(isSchemeAllowed('obsidian:', ['Obsidian']), true)
+  assert.equal(isSchemeAllowed('linear:', ['linear:']), true)
+  assert.equal(isSchemeAllowed('https:', ['obsidian']), true) // built-in always on
+  assert.equal(isSchemeAllowed('ftp:', ['obsidian']), false)
+  assert.equal(isSchemeAllowed('', ['obsidian']), false)
+  assert.equal(isSchemeAllowed('obsidian:', []), false)
 })
 
 test('dispatches file:// URLs to openFile', async () => {

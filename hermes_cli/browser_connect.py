@@ -233,7 +233,82 @@ def _classify_default(value: str, channels, table, match) -> str | None:
     return next((browser for frag, browser in table if match(value, frag)), None)
 
 
+_WINDOWS_CHANNEL_PATH_FRAGMENTS = (
+    "chrome beta", "chrome dev", "chrome sxs", "edge beta", "edge dev", "edge canary", "edge sxs",
+    "brave-browser-beta", "brave-browser-nightly", "brave-origin-beta", "brave-origin-dev", "brave-origin-nightly",
+)
+
+
+def _windows_assoc_query_exe(scheme: str) -> str | None:
+    """Return the shell-associated executable for a URL scheme."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        assoc = ctypes.windll.shlwapi.AssocQueryStringW
+        assoc.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+        assoc.restype = ctypes.HRESULT
+        size = wintypes.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if assoc(0, 2, scheme, None, buf, ctypes.byref(size)) == 0:
+            return buf.value or None
+        if size.value <= 1024:
+            return None
+        buf = ctypes.create_unicode_buffer(size.value)
+        return (buf.value or None) if assoc(0, 2, scheme, None, buf, ctypes.byref(size)) == 0 else None
+    except Exception:
+        return None
+
+
+def _windows_command_exe(command: str) -> str | None:
+    command = (command or "").strip()
+    if not command:
+        return None
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        return command[1:end] if end > 1 else None
+    return command.split(None, 1)[0] or None
+
+
+def _windows_classes_https_exe() -> str | None:
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        return None
+    for hive, path in ((winreg.HKEY_CURRENT_USER, r"Software\Classes\https\shell\open\command"), (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Classes\https\shell\open\command")):
+        try:
+            key = winreg.OpenKey(hive, path)
+            try:
+                value, _ = winreg.QueryValueEx(key, "")
+            finally:
+                winreg.CloseKey(key)
+            exe = _windows_command_exe(str(value or ""))
+            if exe:
+                return exe
+        except Exception:
+            continue
+    return None
+
+
+def _windows_effective_https_exe() -> str | None:
+    return _windows_assoc_query_exe("https") or _windows_classes_https_exe()
+
+
+def _classify_windows_exe(path: str) -> str | None:
+    norm = (path or "").replace("/", "\\").lower()
+    if any(fragment in norm for fragment in _WINDOWS_CHANNEL_PATH_FRAGMENTS):
+        return UNSUPPORTED_CHANNEL
+    name = ntpath.basename(norm)
+    if name == "chromium.exe" or "\\chromium\\" in norm:
+        return "chromium"
+    if name == "brave-origin.exe" or "brave-origin" in norm:
+        return "brave-origin"
+    return {"brave.exe": "brave", "msedge.exe": "edge", "chrome.exe": "chrome"}.get(name)
+
+
 def _detect_default_windows() -> str | None:
+    exe = _windows_effective_https_exe()
+    if exe:
+        return _classify_windows_exe(exe)
     try:
         import winreg  # type: ignore
 

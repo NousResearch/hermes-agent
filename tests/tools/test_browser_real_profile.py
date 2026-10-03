@@ -1137,3 +1137,29 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err
+
+
+class TestWindowsEffectiveHandler:
+    def test_classifies_effective_handler_before_stale_userchoice(self, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "_windows_effective_https_exe", lambda: r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        assert bc._detect_default_windows() == "chrome"
+
+    def test_unknown_effective_handler_fails_closed(self, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "_windows_effective_https_exe", lambda: r"C:\Program Files\Mozilla Firefox\firefox.exe")
+        assert bc._detect_default_windows() is None
+
+    def test_channel_handler_is_unsupported(self, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "_windows_effective_https_exe", lambda: r"C:\Program Files\Google\Chrome Beta\Application\chrome.exe")
+        assert bc._detect_default_windows() == bc.UNSUPPORTED_CHANNEL
+
+    def test_brave_origin_path_wins_over_brave_basename(self):
+        import hermes_cli.browser_connect as bc
+        assert bc._classify_windows_exe(r"C:\Program Files\BraveSoftware\Brave-Origin\Application\brave.exe") == "brave-origin"
+
+    def test_command_parser_accepts_quoted_and_unquoted_paths(self):
+        import hermes_cli.browser_connect as bc
+        assert bc._windows_command_exe(r'"C:\Program Files\Google\Chrome\Application\chrome.exe" -- "%1"').endswith("chrome.exe")
+        assert bc._windows_command_exe(r"C:\Chrome\chrome.exe -- %1").endswith("chrome.exe")

@@ -58,11 +58,21 @@ def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
     return renames
 
 
-def unrename_tool_args(params_schema: Any, args: Any) -> Any:
+# Tool-argument walkers stop descending at this depth: model/MCP-emitted arguments are
+# attacker-controlled and arbitrarily deep nesting must degrade instead of exhausting the
+# stack. Real-world arguments are shallow; 64 leaves a wide margin under any recursion limit.
+MAX_TOOL_ARG_DEPTH = 64
+
+
+def unrename_tool_args(params_schema: Any, args: Any, _depth: int = 0) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
-    ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
+    ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through.
+    Past :data:`MAX_TOOL_ARG_DEPTH` the subtree passes through unrenamed instead of
+    overflowing the stack."""
     props = params_schema.get("properties") if isinstance(params_schema, dict) else None
     if not isinstance(props, dict) or not isinstance(args, dict):
+        return args
+    if _depth >= MAX_TOOL_ARG_DEPTH:
         return args
     reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
     out = {}
@@ -70,9 +80,9 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
         orig = reverse.get(key, key)
         sub = props.get(orig) if isinstance(props.get(orig), dict) else {}
         if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value)
+            value = unrename_tool_args(sub, value, _depth + 1)
         elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item) if isinstance(item, dict) else item
+            value = [unrename_tool_args(sub["items"], item, _depth + 1) if isinstance(item, dict) else item
                      for item in value]
         out[orig] = value
     return out

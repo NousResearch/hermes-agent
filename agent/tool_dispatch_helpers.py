@@ -83,22 +83,25 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
 
     found: list[str] = []
 
-    def _walk(value: Any, path: str) -> None:
+    # Iterative on purpose: argument depth is attacker-controlled, and an explicit
+    # stack cannot overflow the way the recursive walk could.
+    stack: list[tuple[Any, str]] = [(args, "$")]
+    while stack:
+        value, path = stack.pop()
         if isinstance(value, str):
             if _COMPRESSION_MARKER_ARTIFACT_RE.search(value):
                 found.append(path)
-            return
+            continue
         if isinstance(value, dict):
-            for key, child in value.items():
+            for key, child in reversed(list(value.items())):
                 key_text = str(key)
                 child_path = f"{path}.{key_text}" if key_text.isidentifier() else f"{path}[{key_text!r}]"
-                _walk(child, child_path)
-            return
+                stack.append((child, child_path))
+            continue
         if isinstance(value, (list, tuple)):
-            for index, child in enumerate(value):
-                _walk(child, f"{path}[{index}]")
+            for index in range(len(value) - 1, -1, -1):
+                stack.append((value[index], f"{path}[{index}]"))
 
-    _walk(args, "$")
     return found
 
 

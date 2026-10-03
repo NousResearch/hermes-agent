@@ -247,3 +247,54 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── nesting-depth budget (issue #132016) ───────────────────────────────────
+
+
+def _deep_args(depth: int, leaf: str = "hi") -> dict:
+    value = leaf
+    for _ in range(depth):
+        value = {"x": value}
+    return value
+
+
+def _deep_schema(depth: int, leaf: dict | None = None) -> dict:
+    node = leaf or {"type": "string"}
+    for _ in range(depth):
+        node = {"type": "object", "properties": {"x": node}}
+    return node
+
+
+class TestDeepNestingBudget:
+    def test_coerce_tool_args_survives_1000_level_arguments(self):
+        from tools.registry import registry
+        registry.register(
+            "probe_deep_args", "probe",
+            {"name": "probe_deep_args", "description": "d",
+             "parameters": {"type": "object", "properties": {"x": _deep_schema(999)}}},
+            lambda **kwargs: None, override=True,
+        )
+        args = coerce_tool_args("probe_deep_args", _deep_args(999))
+        assert isinstance(args, dict) and "x" in args
+
+    def test_coercion_still_works_at_moderate_depth(self):
+        from tools.registry import registry
+        schema = _deep_schema(30, leaf={"type": "object"})
+        registry.register(
+            "probe_moderate_args", "probe",
+            {"name": "probe_moderate_args", "description": "d",
+             "parameters": {"type": "object", "properties": {"x": schema}}},
+            lambda **kwargs: None, override=True,
+        )
+        args = coerce_tool_args("probe_moderate_args", _deep_args(30, '{"k": "v"}'))
+        leaf = args
+        for _ in range(30):
+            leaf = leaf["x"]
+        assert leaf == {"k": "v"}
+
+    def test_unrename_tool_args_survives_1000_level_arguments(self):
+        from tools.schema_sanitizer import unrename_tool_args
+        params = {"type": "object", "properties": {"x": _deep_schema(999)}}
+        args = _deep_args(999)
+        assert unrename_tool_args(params, args) == args

@@ -110,9 +110,13 @@ class ModelCapabilities:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
-    "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding", "stepfun": "stepfun",
-    "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
+    # models.dev renamed the Kimi coding-plan providers (2026-09): "kimi-for-coding" ->
+    # "kimi-code-plan-global", plus a CN variant "kimi-code-plan-cn". The old ids no longer
+    # exist, so every kimi-* context lookup missed the catalog and fell back to the generic
+    # 256K default instead of the real 1M window.
+    "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
+    "moonshot": "kimi-code-plan-global", "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
@@ -175,6 +179,14 @@ def _configured_catalog_provider(
     return alias or None
 
 
+# models.dev provider ids that no longer exist but remain documented in user configs as
+# ``catalog_provider`` values; each maps to the renamed catalog entry so the lookup keeps
+# resolving instead of warning-and-dropping (#121739).
+_LEGACY_CATALOG_PROVIDER_IDS: Dict[str, str] = {
+    "kimi-for-coding": "kimi-code-plan-global",
+}
+
+
 def _models_dev_id(
     provider: str, *, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
@@ -185,6 +197,8 @@ def _models_dev_id(
     if mdev_id is None:
         alias = _configured_catalog_provider(key, config=config)
         mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
+        if mdev_id in _LEGACY_CATALOG_PROVIDER_IDS:
+            mdev_id = _LEGACY_CATALOG_PROVIDER_IDS[mdev_id]
         if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
                 and mdev_id not in fetch_models_dev(allow_network=False):
             # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.

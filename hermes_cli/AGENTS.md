@@ -164,10 +164,23 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   left alone, never restarted (#93349).
 - **Verify**: gateways stamp `code_sha`/`code_version` into `gateway_state.json` on every
   runtime-status write (`gateway/status.py`); the updater compares each live gateway against the
-  fresh checkout and prints a fleet version matrix. A provably-stale gateway fails the update
-  (exit 1) — automation must never treat a mixed-version fleet as healthy.
-- **Report**: every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/`
-  (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
+  fresh checkout and prints a fleet version matrix. After the commit point (the tree moved) nothing
+  fails `hermes update` (exit 0 unless the code was rolled back): a provably-stale or stopped
+  gateway, a failed build/launcher/config migration/bytecode sweep/channel adoption/Windows resume
+  each print `⚠`, land in the receipt as `outcome: "success"` with `followups: [{step, reason}]`,
+  and keep their own obligation armed (`source-completion-pending` for the tail, the fleet-restart
+  obligation for gateways) so the next launch or `hermes update` — including "Already up to date" —
+  retries them. The owed-fleet-restart CLI startup warning is what keeps a mixed-version fleet from
+  ever looking healthy. Exit 2 (refused/concurrent) and exit 1 (nothing committed / rolled back)
+  keep their meaning.
+- **Report**: every run writes a machine-readable receipt to the ROOT home's
+  `logs/update_receipts/` (never a sticky profile's; `update.log` likewise) — `latest.json` pointer;
+  steps, skips WITH reasons, restart outcome, plan, fleet snapshot, `followups`. The receipt is on
+  disk as `outcome: "running"` from the start and refreshed at each stage boundary; the next
+  update marks a `running` record whose processes are gone `interrupted` and says so. Readers
+  (`hermes logs update`, debug bundle, dashboard status, pm receipts) use the root home too.
+  A dependency-sync failure in the completion bootstrap is a `dependencies` follow-up (A6), and
+  Ctrl-C after the commit point finalizes `interrupted` (exit 130), never `failed`.
   Before a source swap, the parent captures plan/snapshots/receipt and its Windows pause token.
   `update_completion.py` runs new-code PM preparation with site initialization disabled, then
   selected-Python builds, maintenance, scans/restarts and verification. Git/current/ZIP share
@@ -231,7 +244,7 @@ target; table-driven `_PREFLIGHT_CHECKS`; manifest `<default>/gateway_migration.
 a re-run resumes from it; a named profile's `gateway install|start|run` refuse without `--force` via
 `gateway.py::_named_profile_refused_under_multiplexer`, dashboard twin
 `web_server_gateway.py::multiplexed_profile_refusal`);
-`update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
+`update_cmd_fleet_verify._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
 path only; `gateway_migrate_guards.py` holds the auto-path-only refusals (table `_AUTO_MIGRATION_GUARDS`:
 other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices for the explicit command,
 blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#109954). Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;

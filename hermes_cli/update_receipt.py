@@ -33,6 +33,7 @@ import copy
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -142,6 +143,9 @@ class UpdateReceipt:
     def fact(self, key: str, value: Any) -> None:
         self.data[key] = value
 
+    def followup(self, step: str, reason: str) -> None:
+        self.data.setdefault("followups", []).append({"step": step, "reason": reason, "at": _utc_now_iso()})
+
     def gateway_restart_result(
         self, *, restarted_services: list | None = None, relaunched_profiles: list | None = None,
         externally_supervised_profiles: list | None = None, killed_pids: list | None = None,
@@ -184,6 +188,8 @@ class UpdateReceipt:
         self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:
+        if outcome == "success" and self.data.get("user_action"):
+            outcome = "partial"  # committed, but the user still has to act (record_user_action)
         self.data["outcome"] = outcome
         self.data["finished_at"] = _utc_now_iso()
         self.data["post_update"] = _code_identity(refresh=True)
@@ -192,14 +198,78 @@ class UpdateReceipt:
 def _receipt_dir() -> Path:
     # ``hermes_constants`` (stdlib-only), never ``hermes_cli.config``: the receipt must be
     # writable from the refused/failed paths where config loading itself may be what broke
-    # (#112465, #112558).
-    from hermes_constants import get_hermes_home
+    # (#112465, #112558). The ROOT home, never a sticky profile's: an update mutates the
+    # checkout every profile shares, and the Desktop and the hand-off scripts read the root.
+    from hermes_constants import get_default_hermes_root
 
-    return get_hermes_home() / "logs" / "update_receipts"
+    return get_default_hermes_root() / "logs" / "update_receipts"
+
+
+def _run_file(directory: Path, data: dict[str, Any]) -> Path:
+    """One archive file per run, named at begin so the running and terminal records coincide."""
+    stamp = re.sub(r"[^0-9]", "", str(data.get("started_at") or ""))[:14] or time.strftime("%Y%m%d%H%M%S")
+    return directory / f"update_{stamp[:8]}_{stamp[8:]}_{data.get('pid') or os.getpid()}_{data.get('update_id')}.json"
+
+
+def _persist_running(data: dict[str, Any]) -> None:
+    """Write the open run to disk: a killed update still leaves its own record. Never raises."""
+    with suppress(Exception):
+        from hermes_cli.runtime_state import _atomic_bytes
+
+        directory = _receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = (json.dumps({**data, "writer_pid": os.getpid()}, indent=2, default=str) + "\n").encode("utf-8")
+        _atomic_bytes(_run_file(directory, data), payload)
+        _atomic_bytes(directory / "latest.json", payload)
+
+
+def _owner_alive(record: dict[str, Any]) -> bool:
+    from hermes_cli.process_identity import _pid_alive_matches
+
+    for key in ("pid", "writer_pid"):
+        pid = record.get(key)
+        if isinstance(pid, int) and pid > 0 and pid != os.getpid():
+            create_time = record.get("pid_create_time") if key == "pid" else None
+            if _pid_alive_matches(pid, create_time) is not False:
+                return True
+    return False
+
+
+def reconcile_interrupted_runs() -> list[dict[str, Any]]:
+    """Mark ``running`` records whose processes are gone as ``interrupted``; returns them.
+
+    The start-of-run reclaimer for the durable running receipt: the next update says plainly
+    that the previous one was killed and at which stage, instead of reporting its outcome as
+    whatever ran before it. Never raises.
+    """
+    interrupted: list[dict[str, Any]] = []
+    with suppress(Exception):
+        from hermes_cli.runtime_state import _atomic_bytes
+
+        directory = _receipt_dir()
+        latest = read_latest_receipt() or {}
+        for path in sorted(directory.glob("update_*.json"), key=lambda p: p.stat().st_mtime)[-_RECEIPT_KEEP:]:
+            with suppress(Exception):
+                record = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(record, dict) or record.get("outcome") != "running" or _owner_alive(record):
+                    continue
+                stages = record.get("stages") or []
+                last = stages[-1].get("name") if stages and isinstance(stages[-1], dict) else None
+                record.update(outcome="interrupted", interrupted_detected_at=_utc_now_iso(),
+                              stop_reason=f"process exited during the update (last stage: {last or 'start'})")
+                payload = (json.dumps(record, indent=2, default=str) + "\n").encode("utf-8")
+                _atomic_bytes(path, payload)
+                if latest.get("update_id") == record.get("update_id"):
+                    _atomic_bytes(directory / "latest.json", payload)
+                interrupted.append(record)
+    for record in interrupted:
+        print(f"⚠ The previous update ({record.get('started_at')}) was interrupted before it finished "
+              f"({record.get('stop_reason')}); this update completes the work it still owed.")
+    return interrupted
 
 
 def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | None = None) -> None:
-    """Start recording a new update receipt.
+    """Start recording a new update receipt, durably ``running`` until it finalizes.
 
     Nested updates are safe: the previous receipt (if any) is preserved
     behind the ContextVar token and comes back when this one finalizes —
@@ -213,10 +283,82 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
         receipt.data.update(update_id=receipt.correlation_id, outcome="running", finished_at=None)
         # A handoff receipt from an older interpreter may predate the field.
         receipt.data["correlation_id"] = receipt.data.get("correlation_id") or _launcher_correlation_id()
+        with suppress(Exception):
+            from hermes_cli.process_identity import _process_create_time
+
+            receipt.data.setdefault("pid_create_time", _process_create_time(receipt.data["pid"]))
+        if not previous:
+            reconcile_interrupted_runs()
+            # The running record is about to replace latest.json: snapshot the previous record's
+            # manual serve rows (raw, no side effects) for finalize's carry-forward.
+            with suppress(Exception):
+                prior = read_latest_receipt() or {}
+                rows = list((prior.get("plan") or {}).get("runtimes") or [])
+                rows += list(prior.get("pending_manual_serves") or [])
+                rows += list(prior.get("carried_manual_serves") or [])  # a run killed before finalize
+                receipt.data["carried_manual_serves"] = [
+                    row for row in rows if isinstance(row, dict) and row.get("supervisor") == "manual-serve"]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         return
     receipt.current_token = _current.set(receipt)
+    _persist_running(receipt.data)
+
+
+def persist_running_receipt() -> None:
+    """Re-assert the open run on disk (the completion child calls this after resuming it)."""
+    current = _current.get()
+    if current is not None and current.data.get("outcome") == "running":
+        _persist_running(current.data)
+
+
+#: Follow-up steps whose failure leaves the source-update tail owed (``source-completion-pending``).
+TAIL_FOLLOWUPS = frozenset({"dependencies", "launchers", "build", "maintenance", "config_migration", "completion"})
+
+
+def record_followup(step: str, reason: str, *, retry: str = "the next launch or `hermes update` retries it") -> None:
+    """A post-commit step failed: print ⚠, keep the run a success, and say what is still owed.
+
+    The code already committed, so the update does not fail; the step's own obligation (the
+    source tail, the fleet restart, the launch-time bytecode sweep) stays armed and the next
+    launch or ``hermes update`` retries it. Never raises.
+    """
+    reason = " ".join(str(reason).split())[:500] or "failed"
+    print(f"  ⚠ Update follow-up '{step}' did not finish: {reason} ({retry})", flush=True)
+    current = _current.get()
+    if current is None:
+        return
+    _record("followup", f"update followup {step}", step, reason)
+    current = _current.get()
+    if current is not None:
+        _persist_running(current.data)
+
+
+def record_user_action(step: str, reason: str) -> None:
+    """The code committed, but something only the user can do is still owed. Never raises.
+
+    Unlike a follow-up nothing retries it (a stash whose restore conflicted stays parked until the
+    user re-applies it), so the run can never be a plain success: it finalizes ``partial`` and
+    ``hermes update`` exits 1, as #122557 established for an unrestored autostash.
+    """
+    _record("fact", f"update user action {step}", "user_action", {"step": step, "reason": " ".join(str(reason).split())[:500]})
+
+
+def amend_terminal_followup(update_id: str, step: str, reason: str) -> None:
+    """A follow-up that failed after the run's receipt was finalized lands on that receipt. Never raises."""
+    with suppress(Exception):
+        from hermes_cli.runtime_state import _atomic_bytes
+
+        directory = _receipt_dir()
+        for path in directory.glob(f"update_*_{update_id}.json"):
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
+            if record.get("update_id") != update_id:
+                continue
+            record.setdefault("followups", []).append({"step": step, "reason": reason, "at": _utc_now_iso()})
+            payload = (json.dumps(record, indent=2, default=str) + "\n").encode("utf-8")
+            _atomic_bytes(path, payload)
+            if (read_latest_receipt() or {}).get("update_id") == update_id:
+                _atomic_bytes(directory / "latest.json", payload)
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
@@ -254,6 +396,8 @@ def record_skip(name: str, reason: str) -> None:
 def record_stage(name: str, outcome: str, **facts: str) -> None:
     """Mark the END of a pipeline stage (``success``/``failed``/``skipped``) with a timestamp."""
     _record("stage", f"update stage {name}", name, outcome, **facts)
+    # Each stage boundary refreshes the durable running record (a kill names its last stage).
+    persist_running_receipt()
 
 
 def record_fact(key: str, value: Any) -> None:
@@ -299,7 +443,11 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         # receipt's still-pending rows forward so the startup warning survives (see
         # update_serve_obligations).
         from hermes_cli.update_serve_obligations import retain_receipt_manual_serves
-        pending = retain_receipt_manual_serves(read_latest_receipt() or {})
+        if "carried_manual_serves" in receipt.data:
+            prior = {"pending_manual_serves": receipt.data.pop("carried_manual_serves") or []}
+        else:  # a receipt begun before the running record existed
+            prior = read_latest_receipt() or {}
+        pending = retain_receipt_manual_serves(prior)
         if pending:
             receipt.data["pending_manual_serves"] = pending
         # EMBED the pm sync sections (the settled receipts contract): the
@@ -335,10 +483,8 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         # latest.json pointer (no torn readers).
         from hermes_cli.runtime_state import _atomic_bytes
 
-        path = directory / (
-            f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_"
-            f"{receipt.correlation_id}.json"
-        )
+        # The run's own file (named at begin): the durable running record becomes terminal.
+        path = _run_file(directory, receipt.data)
         payload = (json.dumps(receipt.data, indent=2, default=str) + "\n").encode("utf-8")
         _atomic_bytes(path, payload)
         with suppress(Exception):  # stable pointer for the dashboard/desktop
@@ -423,7 +569,8 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     ``hermes update`` has many early ``sys.exit`` paths (preflight refusals, venv-holder refusal,
     fetch failure) predating the inner finalize calls; finalizing here means refused/failed runs —
     where a receipt matters most — leave a record. Exit 0/None → ``success``, exit 2 → ``refused``
-    (preflight convention), else → ``failed``.
+    (preflight convention), else → ``failed`` (``partial`` when the run committed and only owes a
+    user action, see ``record_user_action``).
 
     No-op when no receipt is open (the inner paths already finalized — exactly-once via the popped
     per-context receipt) or when recording was never started. See #91283.
@@ -431,7 +578,8 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     current = _current.get()
     if current is None:
         return None
-    outcome = "success" if exit_code in (0, None) else "refused" if exit_code == 2 else "failed"
+    outcome = ("success" if exit_code in (0, None) else "refused" if exit_code == 2
+               else "partial" if current.data.get("user_action") else "failed")
     if exit_code is not None:
         with suppress(Exception):
             clone = copy.copy(current)
@@ -439,6 +587,36 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
             clone.data["exit_code"] = int(exit_code)
             _current.set(clone)
     return finalize_update_receipt(outcome, stop_reason=stop_reason)
+
+
+def finalize_interrupted_update_receipt(stop_reason: str, *, exit_code: int = 130) -> Optional[Path]:
+    """Close a run the operator interrupted AFTER the commit point as ``interrupted``. Never raises.
+
+    Not ``failed``: the code already moved, so "still on the previous version" would be false; the
+    armed obligations finish the rest. The run's own on-disk record is preferred when it is further
+    along (the completion child persisted stages this process never saw).
+    """
+    print("⚠ Interrupted after the code was updated: the new code is in place; its remaining steps are owed "
+          "and the next launch or `hermes update` finishes them.", flush=True)
+    current = _current.get()
+    if current is None:
+        return None
+    with suppress(Exception):
+        clone = copy.copy(current)
+        clone.data = copy.deepcopy(current.data)
+        on_disk: dict = {}
+        with suppress(Exception):
+            path = _run_file(_receipt_dir(), current.data)
+            on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
+        if on_disk.get("update_id") == current.data.get("update_id"):
+            if on_disk.get("finished_at"):  # the completion child already closed the run
+                _current.reset(current.current_token)
+                return path
+            on_disk.pop("writer_pid", None)
+            clone.data = on_disk
+        clone.data["exit_code"] = int(exit_code)
+        _current.set(clone)
+    return finalize_update_receipt("interrupted", stop_reason=stop_reason)
 
 
 def _prune_old_receipts(directory: Path) -> None:
@@ -459,7 +637,7 @@ def settle_latest_receipt_fleet(fleet: list[dict[str, Any]], *, discharges) -> b
     matrix as the receipt's post-restart ``fleet`` (and un-flagging ``gateway_restart``) is what
     lets the stale-runtime readers see the recovery. ``discharges(settled_receipt)`` decides on
     the in-memory copy; ``latest.json`` is rewritten only when it answers True, so a catch-up
-    that still exits 1 leaves the receipt byte-identical. Only the ``latest.json`` pointer is
+    that still owes the restart leaves the receipt byte-identical. Only the ``latest.json`` pointer is
     rewritten; the archived per-run file keeps the original outcome. Never raises.
     """
     try:
@@ -784,12 +962,11 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
             print("  ⚠ Stale gateways keep serving pre-update code until restarted.")
         if "down" in states:
             print("  ⚠ Down gateways stopped serving messaging entirely.")
-        # ``✓ Update complete!`` was already printed before the restart phase (the exit code
-        # must land before a systemd restart can kill this process), so this verdict has to
-        # supersede it explicitly — otherwise the output says success while the exit code is 1.
+        # The code is committed (the update exits 0), but the fleet is not on it yet: say what
+        # is still owed after ``✓ Update complete!``; every CLI start repeats it until restarted.
         print()
         print(
-            f"✗ Update not complete: {stale_or_down} gateway(s) still running the old code (or stopped).")
+            f"⚠ Gateway restart still owed: {stale_or_down} gateway(s) still running the old code (or stopped).")
         print("  Run `hermes gateway restart` (or `hermes -p <profile> gateway restart` for a named")
         print("  profile), then `hermes gateway status` to confirm.")
     return stale_or_down > 0

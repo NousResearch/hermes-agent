@@ -52,10 +52,28 @@ def test_successful_source_completion_writes_checkout_identity(tmp_path, monkeyp
 
 def test_failed_source_completion_does_not_publish_identity(tmp_path, monkeypatch):
     root = _repo(tmp_path)
-    _completion_dependencies(monkeypatch, lambda **_kwargs: False)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
 
-    assert not complete_source_checkout(root, desktop=False, assume_yes=True)
+    def broken_build(root, *, desktop):
+        raise RuntimeError("web UI build: npm exited 1")
+
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", broken_build)
+    owed: list = []
+    assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
+    # The tail is owed, so the checkout identity is not published.
+    assert [step for step, _ in owed] == ["build"]
     assert not (root / "install-stamp.json").exists()
+
+
+def test_unsafe_sqlite_withholds_success_but_not_the_finished_tail(tmp_path, monkeypatch):
+    # Was: an unsafe SQLite verdict also withheld the stamp, so the tail stayed owed forever
+    # (re-running it cannot fix the interpreter, codemap §8 V1). The install still reports failure.
+    root = _repo(tmp_path)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: False)
+    owed: list = []
+    assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
+    assert owed == []
+    assert (root / "install-stamp.json").is_file()
 
 
 def _sandboxed_marker(tmp_path, monkeypatch):

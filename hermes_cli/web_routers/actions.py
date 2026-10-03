@@ -357,7 +357,12 @@ async def get_action_status(name: str, lines: int = 200):
     durable_update_action_id = None
     update_receipt_summary = None
     if name == "hermes-update":
-        durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_dir / "update.log", 2000))
+        # ``hermes update`` mirrors to the ROOT home's update.log (main_dashboard), never this
+        # dashboard's profile home: read it where it is written.
+        from hermes_constants import get_default_hermes_root
+
+        durable_update_action_id = _durable_completed_update_action_id(
+            _tail_lines(get_default_hermes_root() / "logs" / "update.log", 2000))
         if durable_update_action_id:
             marker = f"=== hermes-update completed {durable_update_action_id} ==="
             if marker not in tail:

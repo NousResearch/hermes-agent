@@ -1455,14 +1455,18 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert check_data["update_command"] == data["update_command"]
 
     def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
-
+        # The dashboard runs under a profile home; ``hermes update`` mirrors to the ROOT home's
+        # update.log (main_dashboard), so the durable completion marker is read there.
+        root = tmp_path / "root"
+        (root / "logs").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
         action_id = "c" * 32
         (tmp_path / "hermes-update.log").write_text(
             "=== hermes-update started 2026-08-17 11:19:34 ===\n"
             "pulling updates...\n",
             encoding="utf-8",
         )
-        (tmp_path / "update.log").write_text(
+        (root / "logs" / "update.log").write_text(
             "=== hermes update started 2026-08-17T11:19:35 ===\n"
             "✓ Update complete!\n"
             f"=== hermes-update completed {action_id} ===\n",

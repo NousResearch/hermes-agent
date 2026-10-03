@@ -70,6 +70,28 @@ def test_merge_refuses_non_dict_json_and_preserves_row(db: SessionDB) -> None:
     assert _raw_config(db, "s2") == '"5"'
 
 
+@pytest.mark.parametrize("raw", ['{"_delegate_from": "abc"', '"5"', '[1, 2]'])
+@pytest.mark.parametrize("coverage", ["covered_ids", "watermark"])
+def test_compaction_commits_without_rewriting_invalid_config(db, raw, coverage):
+    _session_with_raw_config(db, "compact", raw)
+    db.append_message("compact", "user", "old")
+    watermark = db.get_active_message_watermark("compact")
+    kwargs = {coverage: [watermark] if coverage == "covered_ids" else watermark}
+
+    assert db.archive_and_compact(
+        "compact", [{"role": "assistant", "content": "summary"}],
+        model_config_patch={"_proactive_pruned": True}, **kwargs,
+    ) == 1
+    assert _raw_config(db, "compact") == raw
+    assert [m["content"] for m in db.get_messages("compact")] == ["summary"]
+    assert db.get_session("compact")["message_count"] == 1
+    rows = db._execute_write(lambda conn: conn.execute(
+        "SELECT active, compacted FROM messages WHERE session_id = ? AND content = ?",
+        ("compact", "old"),
+    ).fetchall())
+    assert [(r["active"], r["compacted"]) for r in rows] == [(0, 1)]
+
+
 @pytest.mark.parametrize("raw", ["", None, "{}"])
 def test_empty_config_still_merges_normally(db: SessionDB, raw: Optional[str]) -> None:
     """'' / NULL / '{}' remain the legal empty-config shapes: patch applies."""

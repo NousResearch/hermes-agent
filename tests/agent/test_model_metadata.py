@@ -2052,3 +2052,18 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+def test_malformed_ipv6_base_url_fails_closed_in_provider_inference():
+    """#87219: the module-local ``_parse_base_url`` held the same crash the ``utils`` helper
+    was fixed for — ``urlparse("http://[::1")`` raises ValueError — and
+    ``_infer_provider_from_url`` calls it unguarded, so a malformed bracket from a
+    config-supplied ``base_url`` escaped context-length resolution instead of degrading
+    to "unknown provider"."""
+    from agent import model_metadata as mm
+
+    malformed = "http://[::1"
+
+    assert mm._parse_base_url(malformed) is None
+    assert mm._infer_provider_from_url(malformed) is None
+    assert mm._endpoint_host_key(malformed) is None

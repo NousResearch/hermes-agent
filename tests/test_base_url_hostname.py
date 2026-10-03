@@ -43,6 +43,15 @@ def test_port_is_ignored():
     assert base_url_hostname("https://api.openai.com:443/v1") == "api.openai.com"
 
 
+def test_malformed_ipv6_url_fails_closed():
+    # urlparse("http://[::1") raises ValueError("Invalid IPv6 URL"). base_url_hostname
+    # is a hostname classifier; the documented no-host sentinel is "". Issue #87219.
+    malformed = "http://[::1"
+
+    assert base_url_hostname(malformed) == ""
+    assert base_url_host_matches(malformed, "api.openai.com") is False
+
+
 
 
 # ─── base_url_host_matches ────────────────────────────────────────────────

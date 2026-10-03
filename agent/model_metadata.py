@@ -86,11 +86,19 @@ _endpoint_blackhole_cache: Dict[str, float] = {}  # host:port -> monotonic ts
 
 
 def _parse_base_url(base_url: str, scheme: str = "http"):
-    """``urlparse`` of the normalized URL (``scheme`` prepended when absent); None when empty."""
+    """``urlparse`` of the normalized URL (``scheme`` prepended when absent); None when empty or malformed.
+
+    ``urlparse`` rejects an unmatched IPv6 bracket (``"http://[::1"`` raises ``ValueError``);
+    a caller that resolves provider/limits from a config-supplied ``base_url`` must degrade to
+    "unknown" rather than propagate, matching ``utils._parse_base_url``.
+    """
     normalized = _normalize_base_url(base_url)
     if not normalized:
         return None
-    return urlparse(normalized if "://" in normalized else f"{scheme}://{normalized}")
+    try:
+        return urlparse(normalized if "://" in normalized else f"{scheme}://{normalized}")
+    except ValueError:
+        return None
 
 
 def _endpoint_host_key(base_url: str) -> Optional[str]:

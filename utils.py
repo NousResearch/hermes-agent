@@ -666,9 +666,20 @@ def normalize_proxy_env_vars() -> None:
 
 
 def _parse_base_url(base_url: str):
-    """``urlparse`` that tolerates a bare ``host[:port][/path]`` (no scheme)."""
+    """``urlparse`` that tolerates a bare ``host[:port][/path]`` (no scheme).
+
+    Returns ``None`` for empty input or input that ``urlparse`` rejects (e.g. an
+    unmatched IPv6 bracket like ``"http://[::1"`` raises ``ValueError``). Callers
+    must tolerate ``None`` — every consumer in this module already does, and a
+    hostname classifier cannot misclassify a malformed URL into a known host.
+    """
     raw = (base_url or "").strip()
-    return urlparse(raw if "://" in raw else f"//{raw}") if raw else None
+    if not raw:
+        return None
+    try:
+        return urlparse(raw if "://" in raw else f"//{raw}")
+    except ValueError:
+        return None
 
 
 def _hostname_of(parsed) -> str:

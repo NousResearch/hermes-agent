@@ -1745,6 +1745,24 @@ def test_voice_toggle_returns_configured_record_key(monkeypatch):
     assert status_resp["result"]["record_key"] == "ctrl+o"
 
 
+@pytest.mark.parametrize("auto_tts", [True, False])
+def test_voice_toggle_on_follows_auto_tts_like_the_cli(monkeypatch, auto_tts):
+    """``/voice on`` turns speech output on exactly when ``voice.auto_tts`` is set,
+    matching the CLI's ``_enable_voice_mode`` (and warms the engine when it does)."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"auto_tts": auto_tts}})
+    leases = []
+    monkeypatch.setattr(server, "_tts_lease_async", lambda lease, active: leases.append((lease, active)))
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+
+    on_resp = _dispatch_sync(
+        {"id": "voice-on", "method": "voice.toggle", "params": {"action": "on"}}
+    )
+
+    assert on_resp["result"]["enabled"] is True
+    assert on_resp["result"]["tts"] is auto_tts
+    assert (os.environ["HERMES_VOICE_TTS"] == "1") is auto_tts
+    assert (("tui:voice-tts", True) in leases) is auto_tts
 
 
 def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):

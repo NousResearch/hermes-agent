@@ -2934,11 +2934,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return result
         # Delete obsolete commands FIRST: an upsert pushing the live total over 100 fails with
         # 30032 (breaks ALL slash commands), so an app at the cap must shrink before creating.
+        # A delete can 404 (10063) when the command vanished between fetch and delete
+        # (e.g. a parallel sync or another gateway instance already removed it); that is
+        # convergence, not an error, so treat it as already-deleted and keep going.
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
         for key in obsolete_keys:
             current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
-            summary["deleted"] += 1
+            try:
+                await mutate(http.delete_global_command, app_id, current.id)
+                summary["deleted"] += 1
+            except discord.errors.NotFound as e:
+                if getattr(e, "code", None) != 10063:  # unknown application command
+                    raise
+                logger.info(
+                    "[%s] Discord global command %s (%s) already gone; skipping delete",
+                    self.name, current.name, current.id,
+                )
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:

@@ -1242,6 +1242,7 @@ export interface GroupsCapabilitiesResult {
   features: string[]
   methods: string[]
   max_log_limit: number
+  room_identity?: GatewayRoomIdentity | null
 }
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
@@ -1279,6 +1280,13 @@ export interface RoomLinkEndpoint {
   url?: string | null
   transport_security?: string | null
   reason?: string | null
+}
+/** How this installation shows up in other installations' Group Chats. */
+export interface GatewayRoomIdentity {
+  install_id: string
+  name?: string | null
+  operator_name?: string | null
+  always_on: boolean
 }
 export interface GroupsListParams {
   profile?: string | null
@@ -1393,6 +1401,7 @@ export interface GroupsSendResult {
   client_event_id?: string | null
   accepted?: boolean
   driver_started?: boolean
+  protected?: boolean | null
 }
 export interface GroupsRenameParams {
   profile?: string | null
@@ -1695,6 +1704,12 @@ export interface GroupsCustodyStatusResult {
   role: string
   custodians: CustodyCustodianStatus[]
   at_risk_after_seq: number
+  protected_seq: number
+  automatic: boolean
+  voters: string[]
+  voter_sets: string[][]
+  mode: string
+  waiting_for_copies?: CustodyWaiting | null
   configuration_seq: number
   configuration: CustodyConfiguration
   watermark?: CustodyWatermark | null
@@ -1710,8 +1725,11 @@ export interface CustodyCustodianStatus {
   allowed?: boolean | null
   designated?: boolean | null
   opted_out: boolean
+  voter: boolean
+  always_on: boolean
   watermark?: CustodyWatermark | null
   acknowledged_at?: number | null
+  last_seen?: number | null
   divergent: boolean
 }
 export interface CustodyWatermark {
@@ -1719,10 +1737,17 @@ export interface CustodyWatermark {
   seq: number
   event_hash: string
 }
+/** A task held back until a majority of voters stores its ``task.admitted``. */
+export interface CustodyWaiting {
+  task_id: string
+  seq: number
+}
 export interface CustodyConfiguration {
   configuration_seq: number
   custodians: CustodyCustodian[]
   owner_name?: string | null
+  automatic?: boolean
+  voters?: string[]
 }
 /** One entry of a ``custody.configured`` event. */
 export interface CustodyCustodian {
@@ -1731,6 +1756,8 @@ export interface CustodyCustodian {
   endpoint?: string | null
   role: string
   successor: boolean
+  always_on: boolean
+  voter: boolean
   name?: string | null
   operator_name?: string | null
 }
@@ -1783,6 +1810,17 @@ export interface GroupsCustodyAllowResult {
   install_id: string
   allowed: boolean
   confirmed: boolean
+}
+export interface GroupsCustodyAutomaticParams {
+  profile?: string | null
+  room_id: string
+  enabled: boolean
+}
+export interface GroupsCustodyAutomaticResult {
+  room_id: string
+  automatic: boolean
+  configuration_seq: number
+  pending: boolean
 }
 export interface BotRelayRosterSyncParams {
   profile?: string | null
@@ -5046,6 +5084,8 @@ export interface RpcMethods {
   'groups.custody.add': { params: GroupsCustodyAddParams; result: GroupsCustodyChangeResult }
   /** On a member installation: allow (or not) the room owner to continue the group here. */
   'groups.custody.allow': { params: GroupsCustodyAllowParams; result: GroupsCustodyAllowResult }
+  /** On the host: the room owner (or the operator) lets the group move by itself, or asks first. */
+  'groups.custody.automatic': { params: GroupsCustodyAutomaticParams; result: GroupsCustodyAutomaticResult }
   /** The room owner designates (or not) one custodian to continue the group; its operator must allow it. */
   'groups.custody.designate': { params: GroupsCustodyDesignateParams; result: GroupsCustodyDesignateResult }
   /** Stop keeping a copy on one custodian-only installation. */
@@ -5482,6 +5522,7 @@ export const RPC_METHODS = [
   'groups.create',
   'groups.custody.add',
   'groups.custody.allow',
+  'groups.custody.automatic',
   'groups.custody.designate',
   'groups.custody.remove',
   'groups.custody.status',

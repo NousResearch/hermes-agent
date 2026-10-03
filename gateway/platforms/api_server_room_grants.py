@@ -238,12 +238,13 @@ async def _handle_room_member_capabilities(
         enrollment = current_target_enrollment(
             _grant_db(self), room_id=claims["room_id"],
             authority_gateway_id=claims["authority_gateway_id"], authority_epoch=claims["authority_epoch"])
-    from gateway.hosted_room_custody import local_consent, local_names
+    from gateway.hosted_room_custody import local_always_on, local_consent, local_names
     from gateway.hosted_room_identity import local_public_key
     # The home pins this key at custody enrollment; the reply is authenticated by the pinned grant.
     name, operator_name = local_names()
     room_identity = {"install_id": installation_id, "public_key": local_public_key(), "name": name,
-                     "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"])}
+                     "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"]),
+                     "always_on": local_always_on()}
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
         "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),

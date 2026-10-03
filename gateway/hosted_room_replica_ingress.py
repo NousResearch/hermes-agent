@@ -30,11 +30,14 @@ def ingest_granted_page(
     ``custody`` is the authority's protection report sent beside the page;
     ``_verify_transition`` lets the copy follow a verified change of host (``ingest_page``).
 
-    The acknowledgment tells the host this installation's consent to continue the group, and
-    returns a fresh copy-only grant once the one this push used nears its horizon
+    The acknowledgment tells the host this installation's consent to continue the group, whether
+    it is always on, and, when the report carried a lease request from the authority this copy
+    follows, the lease layer's answer (``lease_grant``). Every push stored from that authority
+    reaches the lease layer, lease request or not: hearing the host at all is contact. Once the
+    copy-only grant such a push used nears its horizon, it also returns a fresh one
     (``renewed_grant``, ``renewed_copy_grant``).
     """
-    from gateway.hosted_room_custody import local_consent
+    from gateway import hosted_room_custody as custody_records
     authority = page.get("authority") if isinstance(page, dict) else None
     authorize = authorize_granted_room(
         token=token, secret=secret, target_install_id=target_install_id, target_profile=target_profile,
@@ -42,10 +45,15 @@ def ingest_granted_page(
     result = replicas.ingest_page(
         db_path, room_id=room_id, room_name=room_name, members=members, page=page, _authorize=authorize,
         custody_report=custody, _verify_transition=_verify_transition)
-    reply = {"allowed": local_consent(db_path, room_id)}
-    renewed = renewed_copy_grant(db_path, token=token, secret=secret)
-    if renewed is not None:
-        reply["renewed_grant"] = renewed
+    reply = {"allowed": custody_records.local_consent(db_path, room_id), "always_on": custody_records.local_always_on()}
+    request = custody.get("lease_request") if isinstance(custody, dict) else None
+    if result["copy_authority"] == authority:
+        grant = custody_records.lease_grant(room_id, authority["epoch"], authority["gateway_id"], request)
+        if grant is not None:
+            reply["lease_grant"] = grant
+        renewed = renewed_copy_grant(db_path, token=token, secret=secret)
+        if renewed is not None:
+            reply["renewed_grant"] = renewed
     return {**result, "custody": reply}
 
 

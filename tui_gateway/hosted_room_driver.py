@@ -110,7 +110,8 @@ class HostedRoomRuntime:
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
         indeterminate_defer_seconds: float = 60.0, max_concurrent_rooms: int = 4,
         unavailable_retry_min_seconds: float = 1.0, unavailable_retry_max_seconds: float = 30.0,
-        process_generation: str | None = None, defer_not_admitted_members: bool = False) -> None:
+        process_generation: str | None = None, defer_not_admitted_members: bool = False,
+        dispatch_ready: Callable[[HostedRoomBinding, Mapping[str, Any]], bool] | None = None) -> None:
         positive = dict(
             lease_ttl_seconds=lease_ttl_seconds, poll_interval_seconds=poll_interval_seconds,
             active_poll_interval_seconds=active_poll_interval_seconds,
@@ -137,6 +138,8 @@ class HostedRoomRuntime:
         # Off: a turn the member never received goes back to the queue (FIFO, bounded backoff).
         # On: a member turn is deferred with its proof instead, so the room's next turn can run.
         self.defer_not_admitted_members = defer_not_admitted_members
+        # Whether the next queued task may run now (the room's copies may still have to store it).
+        self.dispatch_ready = dispatch_ready
         for name, value in positive.items():
             setattr(self, name, float(value))
         self.max_concurrent_rooms = max_concurrent_rooms
@@ -556,6 +559,8 @@ class HostedRoomRuntime:
             if self._stop.is_set() or (
                     retry is not None and self.clock() < retry["next_attempt_at"]):
                 return
+            if self.dispatch_ready is not None and not self.dispatch_ready(binding, task):
+                return  # stays queued; the next pass looks again
             lease = self._renew_lease_if_needed(lease)
             attempt = state.start_task(
                 self.db_path, task["identity"], lease,

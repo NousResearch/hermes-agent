@@ -1345,6 +1345,18 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # How this installation is named to the other computers of a Group Chat, and the name of the
+  # person who runs it (shown as the owner of the groups it hosts). Display labels only, never
+  # identities. Default: the computer's host name, and no owner name.
+  # display_name: "Home server"
+  # owner_name: "Dana"
+
+# Group Chat custody. Every member computer keeps a copy of a group's history; an always-on
+# computer the owner chose can also vote on moving the group by itself when its host is lost.
+# group_chat:
+#   # Whether this computer is always on. Default: detected; a computer with a battery is not.
+#   always_on: true
+
 # =============================================================================
 # Toolsets
 # =============================================================================

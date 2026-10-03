@@ -28,6 +28,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         from gateway.hosted_room_replication import HostedRoomReplicationPublisher
         # Copies history to the room's custodians; idle until such a route exists.
         self.replication = HostedRoomReplicationPublisher(self.db_path)
+        # A task held back until its admission is copied runs as soon as a custodian acknowledges it.
+        self.replication.on_acknowledged = lambda room_id: self.runtime.wakeup()
 
     def start(self):
         super().start()
@@ -68,7 +70,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         # A peer turn its gateway never received is deferred with that proof, so the room's
         # next turn runs; Retry (HostedControls) requeues it. Peer grants renew in the room's cycle.
         return {'defer_not_admitted_members': True, 'maintain_leased_room': self._maintain_peer_grants,
-                'maintain_service': self._maintain_peer_lifecycle}
+                'maintain_service': self._maintain_peer_lifecycle, 'dispatch_ready': self._dispatch_ready}
+
+    def _dispatch_ready(self, binding, task):
+        # In majority mode a task runs only once a majority of voters stored its task.admitted.
+        from gateway.hosted_room_custody import dispatch_ready
+        return dispatch_ready(self.db_path, binding.room_id, task['identity'].task_id, task['execution_generation'])
 
     def _maintain_peer_grants(self, binding, lease):
         from gateway.session_group_peer_routes import maintain_peer_grants

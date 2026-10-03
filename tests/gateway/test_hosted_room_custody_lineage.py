@@ -201,8 +201,9 @@ def test_a_new_copy_follows_two_moves_verified_in_page_order(two_moves):
     net, moved = two_moves
     home, second, third, fresh = (net[name] for name in ("home", "second", "third", "fresh"))
     # The second move's previous-host check passed on third: second hosted the configuration it held.
+    # Each previous host stays a successor, so the group can move back to it.
     assert [(c["install_id"], c["role"], c["successor"]) for c in moved["custodians"]] == sorted(
-        [(home.install_id, "custodian", False), (second.install_id, "custodian", False),
+        [(home.install_id, "custodian", True), (second.install_id, "custodian", True),
          (third.install_id, "authority", False)])
     kinds = [event["kind"] for event in page(third)["page"]["events"]]
     first, second_move = (index for index, kind in enumerate(kinds) if kind == "authority.transition")

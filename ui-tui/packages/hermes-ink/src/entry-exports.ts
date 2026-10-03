@@ -37,6 +37,8 @@ export {
   terminalForegroundHex
 } from './ink/terminal.js'
 export type { MouseTrackingMode } from './ink/termio/dec.js'
+export { useTerminalNotification } from './ink/useTerminalNotification.js'
+export type { TerminalNotification } from './ink/useTerminalNotification.js'
 export { wrapAnsi } from './ink/wrapAnsi.js'
 
 // NOTE: Do not re-export from 'ink-text-input' here.

@@ -1434,12 +1434,15 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     from agent.codex_responses_adapter import classify_responses_route
-    from agent.native_compaction import native_compaction_context_management
+    from agent.native_compaction import native_compaction_context_management, native_compaction_eligible
     is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
-    # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
-    # only) — None on every other route/model, leaving the request unchanged.
-    context_management = native_compaction_context_management(agent, is_codex_backend=is_codex_backend,
-        is_xai_responses=is_xai_responses, is_github_responses=is_github_responses)
+    # Native server-side compaction. The context_management field is gpt-5.6 on
+    # direct OpenAI / ChatGPT Codex only — None on every other route, including xAI,
+    # which uses POST /v1/responses/compact instead. Replay eligibility is wider.
+    route = dict(is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
+                 is_github_responses=is_github_responses)
+    context_management = native_compaction_context_management(agent, **route)
+    eligible = native_compaction_eligible(agent, **route)
     # xAI's /responses endpoint 400s on ``pattern``/``format`` schema keywords and on
     # ``enum`` values containing ``/`` — strip them (#27197). Deep-copy first: the
     # sanitizers mutate in place and tools_for_api aliases agent.tools (#27907).
@@ -1463,7 +1466,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
+        context_management=context_management, native_compaction_eligible=eligible,
+        text_verbosity=getattr(agent, "text_verbosity", None))
 
 
 
@@ -1738,27 +1742,32 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 )
 
                 if has_replayable_native_compaction_checkpoint(agent, [msg]):
-                    note_checkpoint = getattr(
-                        agent.context_compressor, "note_native_compaction_checkpoint", None
-                    )
-                    if callable(note_checkpoint):
-                        note_checkpoint()
-                        # The response priced the pre-checkpoint input, not the next
-                        # compacted request. A matching durable prefix is now stale.
-                        from agent.usage_anchor import set_usage_anchor
-
-                        set_usage_anchor(agent, None)
-                    # The next request drops every item before this checkpoint, so a repeat
-                    # read must serve content again, not an "unchanged" stub (#32106).
-                    # Without a task id the reset would clear every task's caches.
-                    if task_id := getattr(agent, "_current_task_id", None):
-                        from agent.conversation_compression import _reset_read_dedup_caches
-
-                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+                    apply_native_compaction_checkpoint_side_effects(agent)
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
     return msg
+
+
+def apply_native_compaction_checkpoint_side_effects(agent) -> None:
+    """Shared bookkeeping after a native compaction checkpoint is captured.
+
+    Used by the OpenAI capture path and the explicit xAI ``/responses/compact``
+    route. The response priced the pre-checkpoint input, not the next compacted
+    request, so the usage anchor is cleared. The next request drops every item
+    before the checkpoint, so a repeat read must serve content again (#32106).
+    """
+    note_checkpoint = getattr(getattr(agent, "context_compressor", None), "note_native_compaction_checkpoint", None)
+    if callable(note_checkpoint):
+        note_checkpoint()
+        from agent.usage_anchor import set_usage_anchor
+
+        set_usage_anchor(agent, None)
+    # Without a task id the reset would clear every task's caches.
+    if task_id := getattr(agent, "_current_task_id", None):
+        from agent.conversation_compression import _reset_read_dedup_caches
+
+        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
 
 
 def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:

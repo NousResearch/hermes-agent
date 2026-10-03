@@ -4066,6 +4066,112 @@ def _route_codex_compaction(
             commit_fence.finish_commit()
 
 
+def _xai_compaction_client(agent: Any) -> Any:
+    """OpenAI client the main codex_responses loop uses, or None."""
+    client = getattr(agent, "client", None)
+    if client is not None and getattr(getattr(client, "responses", None), "compact", None) is not None:
+        return client
+    factory = getattr(agent, "_create_request_openai_client", None)
+    if not callable(factory):
+        return None
+    try:
+        return factory(reason="xai_responses_compact")
+    except Exception:
+        logger.debug("xAI native compaction: request client unavailable", exc_info=True)
+        return None
+
+
+def _xai_compaction_item(response: Any) -> Any:
+    """The compaction output item, or None when the response has none."""
+    output = getattr(response, "output", None)
+    if output is None and isinstance(response, dict):
+        output = response.get("output")
+    for item in output or []:
+        item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+        if item_type == "compaction":
+            return item
+    return None
+
+
+def _compress_context_via_xai_responses(
+    agent: Any, messages: list, system_message: str,
+) -> Optional[Tuple[list, str]]:
+    """Checkpoint via ``POST /v1/responses/compact``. None falls through to local compression.
+
+    The durable transcript is not truncated: the newest assistant message gains the
+    stamped compaction item, and later requests prune the wire around it.
+    """
+    assistant_index = next(
+        (i for i in range(len(messages) - 1, -1, -1)
+         if isinstance(messages[i], dict) and messages[i].get("role") == "assistant"),
+        None,
+    )
+    if assistant_index is None:
+        logger.debug("xAI native compaction: no assistant message to attach a checkpoint to")
+        return None
+    from agent.codex_responses_adapter import _capture_encrypted_item, _native_responses_replay_items, _wire_model_identity
+    from agent.fast_mode import effective_request_overrides
+
+    head = messages[: assistant_index + 1]
+    items = _native_responses_replay_items(agent, head)
+    if not items:
+        logger.debug("xAI native compaction: replay conversion produced no compact input")
+        return None
+    client = _xai_compaction_client(agent)
+    compact = getattr(getattr(client, "responses", None), "compact", None)
+    if not callable(compact):
+        logger.debug("xAI native compaction: no responses.compact client")
+        return None
+    wire_model = _wire_model_identity(effective_request_overrides(agent).get("model", getattr(agent, "model", None)))
+    if not wire_model:
+        logger.debug("xAI native compaction: no wire model")
+        return None
+    try:
+        response = compact(
+            model=wire_model, input=items, instructions=_existing_system_prompt(agent, system_message),
+            timeout=agent._resolved_api_call_timeout(),
+        )
+    except Exception as exc:
+        logger.warning("xAI native compaction failed (%s); falling back to local compression", type(exc).__name__)
+        return None
+    item = _xai_compaction_item(response)
+    stamped = _capture_encrypted_item(item, "compaction", "xai_responses", wire_model) if item is not None else None
+    if not stamped:
+        logger.warning("xAI native compaction returned no compaction item; falling back to local compression")
+        return None
+    carrier = messages[assistant_index]
+    existing = carrier.get("codex_reasoning_items")
+    carrier["codex_reasoning_items"] = [*(existing if isinstance(existing, list) else []), stamped]
+    from agent.chat_completion_helpers import apply_native_compaction_checkpoint_side_effects
+
+    apply_native_compaction_checkpoint_side_effects(agent)
+    return messages, _existing_system_prompt(agent, system_message)
+
+
+def _route_xai_responses_compaction(
+    agent: Any, messages: list, system_message: str, *, commit_fence: Optional[CompressionCommitFence],
+    attempt: _Attempt,
+) -> Optional[Tuple[list, str]]:
+    """Run the xAI compact under the commit-fence bracket. None falls through.
+
+    A fence already cancelled before admission returns the unchanged transcript
+    (the local summariser must not run either). A compact that fails inside an
+    admitted fence returns None so the caller falls through to local compression.
+    """
+    if commit_fence is not None and not commit_fence.begin_commit(getattr(agent, "_hard_interrupt_requested", None)):
+        attempt.restore_compressor(agent.context_compressor)
+        return messages, _existing_system_prompt(agent, system_message)
+    admitted = commit_fence is not None
+    try:
+        routed = _compress_context_via_xai_responses(agent, messages, system_message)
+    finally:
+        if admitted:
+            commit_fence.finish_commit()
+    if routed is None and admitted and commit_fence.is_cancelled:
+        return messages, _existing_system_prompt(agent, system_message)
+    return routed
+
+
 def _announce_compression_start(
     agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool
 ) -> _CompactionLifecycle:
@@ -4136,6 +4242,21 @@ def compress_context(
             agent, messages, system_message, commit_fence=commit_fence, attempt=attempt, approx_tokens=approx_tokens,
             task_id=task_id, force=force,
         )
+
+    # Direct xAI (grok-4.7) checkpoints via POST /v1/responses/compact. Same early
+    # placement as the Codex route: a successful checkpoint returns the same message
+    # list, and the breaker gates must not treat that as a structural no-op.
+    if getattr(agent, "api_mode", None) == "codex_responses" and not checkpoint_required:
+        from agent.codex_responses_adapter import classify_responses_route
+        from agent.native_compaction import native_compaction_eligible
+
+        route = classify_responses_route(agent)
+        if route.is_xai_responses and native_compaction_eligible(agent, **route._asdict()):
+            routed = _route_xai_responses_compaction(
+                agent, messages, system_message, commit_fence=commit_fence, attempt=attempt,
+            )
+            if routed is not None:
+                return routed
 
     # All automatic entrypoints honor compressor cooldown/breaker state; hygiene's
     # fresh AIAgent loads the persisted streak via bind_session_state() first.

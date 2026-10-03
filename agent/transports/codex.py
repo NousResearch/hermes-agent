@@ -635,13 +635,18 @@ class ResponsesApiTransport(ProviderTransport):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input, _wire_model_identity
 
         self._last_issuer_model = _wire_model_identity(kwargs.get("model"))
+        # Absent means "derive from context_management" so OpenAI callers stay unchanged.
+        # An explicit flag lets xAI replay a checkpoint without sending that field.
+        eligible = kwargs.get("native_compaction_eligible")
+        if eligible is None:
+            eligible = _native_compaction_active(kwargs.get("context_management"))
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             current_issuer_model=self._last_issuer_model,
-            native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
+            native_compaction_eligible=bool(eligible),
         )
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:
@@ -659,7 +664,7 @@ class ResponsesApiTransport(ProviderTransport):
         Codex header; cache-scope fallback), cache_scope_id (rotation-stable scope for the
         cache key / xAI conv header), max_tokens, timeout, request_overrides, provider, base_url,
         is_github_responses, is_codex_backend, is_xai_responses, github_reasoning_extra,
-        context_management, replay_encrypted_reasoning.
+        context_management, native_compaction_eligible, replay_encrypted_reasoning.
 
         params: instructions: str — system prompt (extracted from messages[0] if not given)
         reasoning_config: dict | None — {effort, enabled} session_id: str | None — transcript/session id;
@@ -695,9 +700,14 @@ class ResponsesApiTransport(ProviderTransport):
         # multi-item rejection happens on resource-level hosts too.
         if replay_encrypted_reasoning and _is_azure_responses(params):
             payload_messages = _newest_reasoning_only(payload_messages)
-        # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
+        # The wire field goes out only when the OpenAI gate produced a payload. Replay
+        # eligibility is separate: xAI checkpoints prune without context_management.
+        # Absent means "derive from context_management" (OpenAI callers unchanged).
         context_management = params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)
+        native_compaction_eligible = params.get("native_compaction_eligible")
+        if native_compaction_eligible is None:
+            native_compaction_eligible = native_compaction_active
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
         response_tools, self._last_wire_aliases = _alias_wire_tools(
@@ -717,6 +727,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
+                native_compaction_eligible=native_compaction_eligible,
             ),
             "store": False,
         }

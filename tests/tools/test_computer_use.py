@@ -1594,7 +1594,7 @@ class TestClickButtonPassthrough:
         """The Surface 5 regression guard: the middle button must NOT
         silently become a left click."""
         backend = self._backend_with_active_target()
-        res = backend.click(element=5, button="middle")
+        res = backend.click(x=10, y=20, button="middle")
         assert res.ok
         name, args = backend._session.call_tool.call_args.args
         assert name == "click"

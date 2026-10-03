@@ -30,7 +30,7 @@ class _StubCapture(_CaptureMixin):
         return [{"app_name": "Finder", "pid": 607, "window_id": 382, "title": "", "z_index": 1,
                  "off_screen": False}]
 
-    def _set_active_target(self, target: Dict[str, Any]) -> None:
+    def _set_active_target(self, target: Dict[str, Any], *, preserve_snapshot: bool = False) -> None:
         self._active_pid, self._active_window_id = target["pid"], target["window_id"]
 
 

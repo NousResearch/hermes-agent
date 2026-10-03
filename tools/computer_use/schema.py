@@ -76,8 +76,9 @@ _PROPERTIES: Dict[str, Any] = {
     "element": {
         "type": "integer",
         "description": (
-            "The 1-based SOM index returned by the last `capture(mode='som')` call. Strongly "
-            "preferred over raw coordinates."
+            "The exact element index returned by the last capture (0 is valid). Strongly "
+            "preferred over raw coordinates. For type, binds typing to that captured element; "
+            "missing/stale tokens or unsupported targeting are refused. Omit to type into the focused control."
         ),
     },
     "coordinate": {

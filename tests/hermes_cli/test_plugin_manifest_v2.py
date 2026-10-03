@@ -492,6 +492,65 @@ class TestLoadIsolation:
         finally:
             del sys._deadline_gate, sys._deadline_done
 
+    def test_abandoned_loader_capacity_is_scoped_to_profile_and_plugin(self, tmp_path, monkeypatch):
+        """One timed-out profile/plugin must not consume another profile's loader capacity."""
+        import sys
+        import threading
+        from hermes_cli import plugins_loader
+
+        home_a, home_b = tmp_path / "home-a", tmp_path / "home-b"
+        for home in (home_a, home_b):
+            (home / "plugins").mkdir(parents=True)
+        (home_a / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["a_shared", "z_healthy"], "load_timeout_seconds": 0.2}}
+        ), encoding="utf-8")
+        (home_b / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["a_shared"], "load_timeout_seconds": 0.2}}
+        ), encoding="utf-8")
+        bundled = tmp_path / "empty-bundled"
+        bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        monkeypatch.setattr(plugins_loader, "_MAX_ABANDONED_LOADERS", 1)
+
+        gate, done, started = threading.Event(), threading.Event(), []
+        setattr(sys, "_profile_load_gate", gate)
+        setattr(sys, "_profile_load_done", done)
+        setattr(sys, "_profile_load_started", started)
+        _write_plugin(home_a / "plugins", "a_shared", register_body=(
+            "import sys; sys._profile_load_started.append(1); "
+            "sys._profile_load_gate.wait(); sys._profile_load_done.set()"))
+        _write_plugin(home_a / "plugins", "z_healthy",
+                      register_body="import sys; sys._same_profile_loaded = True")
+        _write_plugin(home_b / "plugins", "a_shared",
+                      register_body="import sys; sys._healthy_profile_loaded = True")
+        try:
+            manager_a = PluginManager(scope_key=str(home_a))
+            manager_a.discover_and_load()
+            assert "timed out" in (manager_a._plugins["a_shared"].error or "")
+            assert manager_a._plugins["z_healthy"].enabled
+            assert getattr(sys, "_same_profile_loaded") is True
+
+            retry_a = PluginManager(scope_key=str(home_a))
+            retry_a.discover_and_load()
+            assert "this plugin and profile" in (retry_a._plugins["a_shared"].error or "")
+            assert len(started) == 1
+
+            manager_b = PluginManager(scope_key=str(home_b))
+            manager_b.discover_and_load()
+            assert manager_b._plugins["a_shared"].enabled
+            assert getattr(sys, "_healthy_profile_loaded") is True
+        finally:
+            gate.set()
+            assert done.wait(5)
+            for attr in (
+                "_profile_load_gate", "_profile_load_done", "_profile_load_started",
+                "_same_profile_loaded", "_healthy_profile_loaded",
+            ):
+                if hasattr(sys, attr):
+                    delattr(sys, attr)
+
     def test_load_timeout_zero_runs_register_inline(self, hermes_home):
         """``plugins.load_timeout_seconds: 0`` disables the deadline: register() runs on the calling thread."""
         import sys

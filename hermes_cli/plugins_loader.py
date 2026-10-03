@@ -39,12 +39,12 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 
 # Per-plugin deadline on import + register(): ``plugins.load_timeout_seconds`` (default 10s, 0 disables,
 # clamped to the max). A plugin that never returns is skipped with a named reason and loading moves on
-# (#108139). Python cannot kill a thread, so the worker is abandoned as a daemon; the cap bounds how many
-# abandoned loaders one process may accumulate (#98382) — past it, further loads are refused, not run inline.
+# (#108139). Python cannot kill a thread, so the worker is abandoned as a daemon. Loading remains bounded
+# per (profile, plugin) owner (#98382); one broken owner cannot consume another profile's loader capacity.
 _LOAD_TIMEOUT_SECS = 10.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
-_ABANDONED_LOADERS: List[threading.Thread] = []
+_LOAD_WORKERS_BY_OWNER: Dict[tuple[str, str], List[threading.Thread]] = {}
 _ABANDONED_LOADERS_LOCK = threading.Lock()
 _IN_PLUGIN_LOAD = threading.local()  # ``.active`` on a loader worker thread
 
@@ -83,18 +83,39 @@ def _resolve_plugin_load_timeout() -> float:
     return timeout
 
 
-def _reserve_abandoned_loader_slot() -> None:
-    """Drop finished abandoned loaders; refuse the load once the live cap is reached. Refusing beats
-    loading inline: at the cap the process already holds several hung loaders, so an inline load is the
-    exact startup hang this deadline exists to prevent."""
+def _start_load_worker(owner: tuple[str, str], worker: threading.Thread) -> None:
+    """Claim one of ``owner``'s bounded worker slots and start the load."""
     with _ABANDONED_LOADERS_LOCK:
-        _ABANDONED_LOADERS[:] = [t for t in _ABANDONED_LOADERS if t.is_alive()]
-        if len(_ABANDONED_LOADERS) < _MAX_ABANDONED_LOADERS:
-            return
-    raise PluginLoadTimeout(
-        f"not loaded: {_MAX_ABANDONED_LOADERS} abandoned plugin loader thread(s) are still running "
-        f"(plugins.load_timeout_seconds); restart Hermes to retry"
-    )
+        for stale_owner, stale_workers in list(_LOAD_WORKERS_BY_OWNER.items()):
+            live = [candidate for candidate in stale_workers if candidate.is_alive()]
+            if live:
+                _LOAD_WORKERS_BY_OWNER[stale_owner] = live
+            else:
+                del _LOAD_WORKERS_BY_OWNER[stale_owner]
+        owned_workers = _LOAD_WORKERS_BY_OWNER.setdefault(owner, [])
+        if len(owned_workers) >= _MAX_ABANDONED_LOADERS:
+            raise PluginLoadTimeout(
+                f"not loaded: {_MAX_ABANDONED_LOADERS} loader thread(s) for this plugin and profile "
+                "are still running (plugins.load_timeout_seconds); restart Hermes to retry"
+            )
+        owned_workers.append(worker)
+        try:
+            worker.start()
+        except BaseException:
+            owned_workers.remove(worker)
+            if not owned_workers:
+                del _LOAD_WORKERS_BY_OWNER[owner]
+            raise
+
+
+def _release_load_worker(owner: tuple[str, str], worker: threading.Thread) -> None:
+    """Release one completed worker without disturbing its owner's other slots."""
+    with _ABANDONED_LOADERS_LOCK:
+        owned_workers = _LOAD_WORKERS_BY_OWNER.get(owner)
+        if owned_workers is not None and worker in owned_workers:
+            owned_workers.remove(worker)
+            if not owned_workers:
+                del _LOAD_WORKERS_BY_OWNER[owner]
 
 
 def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[], Any]) -> Any:
@@ -108,7 +129,6 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     timeout = _resolve_plugin_load_timeout()
     if timeout <= 0:
         return fn()
-    _reserve_abandoned_loader_slot()
     outcome: List[Any] = []
     failure: List[BaseException] = []
 
@@ -122,13 +142,13 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     worker = threading.Thread(
         target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,
     )
-    worker.start()
+    owner = (ctx._manager.scope_key, plugin_key)
+    _start_load_worker(owner, worker)
     worker.join(timeout)
     if worker.is_alive():
         ctx._abandon_load()
-        with _ABANDONED_LOADERS_LOCK:
-            _ABANDONED_LOADERS.append(worker)
         raise PluginLoadTimeout(f"load timed out after {timeout:g}s (import + register() never returned)")
+    _release_load_worker(owner, worker)
     if failure:
         raise failure[0]
     return outcome[0]

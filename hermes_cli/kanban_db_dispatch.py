@@ -1418,6 +1418,13 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                if event_payload_extra:
+                    # The caller's cause fields (``budget_used``/``budget_max`` for an
+                    # iteration-budget exhaustion, ``pid``/``sigkill`` for a reap) must reach BOTH
+                    # artifacts written below: ``detail`` is the run row's metadata and the body of
+                    # the event payload. Dropping them recorded a ``timed_out`` event whose only
+                    # cause was free-text ``error``, so no notifier could name what stopped it.
+                    detail.update(event_payload_extra)
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )

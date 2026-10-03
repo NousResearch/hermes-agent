@@ -1134,7 +1134,7 @@ def _parse_codex_final_response(
 ) -> Tuple[List[str], List[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
     from agent.codex_responses_adapter import (
-        _extract_responses_message_text, _leaked_tool_call_text, _normalize_codex_response,
+        _extract_responses_message_text, _leaked_tool_call_text, _lower_or_none, _normalize_codex_response,
     )
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
@@ -1153,7 +1153,7 @@ def _parse_codex_final_response(
     message, finish_reason = _normalize_codex_response(
         normalized_final, issuer_kind=issuer_kind, issuer_model=issuer_model,
     )
-    status = str(normalized_final.status or "").strip().lower()
+    status = _lower_or_none(normalized_final.status)
     reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
     # The main loop's leaked-tool-call recovery clears the text so its continuation can re-elicit a
     # real call; aux has no continuation, so a completed answer quoting such text keeps it.
@@ -1162,7 +1162,7 @@ def _parse_codex_final_response(
         answer = "\n".join(filter(None, (
             _extract_responses_message_text(item) for item in output
             if _field(item, "type") == "message"
-            and str(_field(item, "phase", "") or "").strip().lower() not in {"commentary", "analysis"}
+            and _lower_or_none(_field(item, "phase")) not in {"commentary", "analysis"}
         ))).strip()
         if answer and _leaked_tool_call_text(answer):
             message.content, finish_reason = answer, "stop"
@@ -1644,7 +1644,7 @@ class _CodexCompletionsAdapter:
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=str(resp_kwargs.get("model") or model), on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=guard.on_event
                     )
             finally:
                 guard.release_stream(event_stream)

@@ -18,13 +18,9 @@ def _message(text, *, phase: str | None = "final_answer", status="completed"):
 def _adapter_response(final, *, streamed, base_url=""):
     class FakeStream:
         def __iter__(self):
-            if getattr(final, "output_text", ""):
-                yield SimpleNamespace(type="response.output_text.delta", delta=final.output_text)
             for item in final.output or []:
                 yield SimpleNamespace(type="response.output_item.done", item=item)
-            # Cancellation is a response status, not a Responses SSE event type.
-            terminal = "failed" if final.status == "cancelled" else final.status
-            yield SimpleNamespace(type=f"response.{terminal}", response=final)
+            yield SimpleNamespace(type=f"response.{final.status}", response=final)
 
         def close(self):
             pass

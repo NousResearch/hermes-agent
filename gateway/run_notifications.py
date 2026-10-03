@@ -80,6 +80,56 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
 
+# Platforms where a pinned async-delegation completion may re-point the channel route,
+# so a pin must be a verified session OF that channel before switch_session runs.
+# Discord-only by decision (2026-09-18); widen per platform once each is proven.
+_ROUTE_GUARD_PLATFORMS = ("discord",)
+# Session-row sources that can never own a chat route.
+_NON_ROUTE_SOURCES = ("subagent",)
+
+
+def _route_guard_platform(session_entry: SessionEntry) -> str:
+    """Route-guard platform this session serves, lowercased; "" when unguarded/unknown."""
+    platform = getattr(session_entry, "platform", None)
+    name = getattr(platform, "value", platform)
+    if not name:
+        # gateway/session.py build_session_key layout is <ns>:<platform>:<chat_type>[...] with
+        # ns = "agent:main" (default) or "agent:<profile>" — always two tokens, so the platform
+        # is token 2 ("agent:dev:discord:thread:..."). Fall back to it when the entry has no
+        # platform object (legacy/hand-built entries).
+        parts = str(getattr(session_entry, "session_key", "") or "").split(":")
+        name = parts[2] if len(parts) > 2 and parts[0] == "agent" else ""
+    name = str(name or "").strip().lower()
+    return name if name in _ROUTE_GUARD_PLATFORMS else ""
+
+
+def _pin_route_rejection(pinned_row: Dict[str, Any], session_entry: SessionEntry) -> str:
+    """Reason a pinned completion row cannot own *session_entry*'s route, else "".
+
+    A delegate child (or any session that never carried this channel's key) must never
+    become the route: switch_session would end the chat's real session and re-stamp the
+    child row as the channel's (2026-09-17 dev Discord hijack).
+    """
+    source = str(pinned_row.get("source") or "").strip().lower()
+    if source in _NON_ROUTE_SOURCES:
+        return f"pinned row source={source!r} is not a routable session"
+    raw_config = pinned_row.get("model_config")
+    if isinstance(raw_config, str):
+        try:
+            raw_config = json.loads(raw_config)
+        except Exception:
+            raw_config = {}
+    if isinstance(raw_config, dict) and raw_config.get("_delegate_from"):
+        return f"pinned row is a delegate child of {raw_config['_delegate_from']}"
+    parent = str(pinned_row.get("parent_session_id") or "")
+    if parent and parent == str(getattr(session_entry, "session_id", "") or ""):
+        return f"pinned row was spawned by the route's own session {parent}"
+    row_key = pinned_row.get("session_key")
+    if row_key is not None and str(row_key) != str(getattr(session_entry, "session_key", "") or ""):
+        return f"pinned row session_key {row_key!r} is not this route"
+    return ""
+
+
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
     "drop": ("drop_completion_delivery", "Could not drop durable completion claim"),
@@ -315,6 +365,20 @@ class GatewayNotificationsMixin:
                 return None
         if target_session_id == session_entry.session_id:
             return session_entry
+        if not follows_compression:
+            guard_platform = _route_guard_platform(session_entry)
+            rejection = _pin_route_rejection(pinned_row, session_entry) if guard_platform else ""
+            if rejection:
+                # Deliver into the chat's CURRENT session instead of re-pointing its route
+                # onto a session that is not this channel's (the ended-child branch's
+                # disposition). Guarded platforms only; 2026-09-17 dev Discord hijack.
+                logger.warning(
+                    "Async-delegation completion pinned to %s rejected for %s route %s (%s); "
+                    "delivering to the chat's current session %s instead (#57498 route guard).",
+                    target_session_id, guard_platform, session_entry.session_key, rejection,
+                    session_entry.session_id,
+                )
+                return session_entry
         prior_session_id = session_entry.session_id
         if not self._is_session_run_current(session_entry.session_key, run_generation):
             logger.warning(

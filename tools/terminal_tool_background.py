@@ -68,6 +68,20 @@ _ROUTING_FIELDS = (
 )
 
 
+# Platforms whose channel route can be re-pointed by a pinned async-delegation
+# completion, i.e. where a delegate child must never register a gateway completion
+# watcher (the pin would be the CHILD's session id and the route would follow it).
+# Discord-only by decision (2026-09-18): every other platform keeps today's behavior
+# until it is proven the same way.
+_ROUTE_GUARD_PLATFORMS = ("discord",)
+
+
+def is_route_guard_platform(platform: Any) -> bool:
+    """True when *platform* (Platform member or plain name) is a route-guard surface."""
+    name = getattr(platform, "value", platform)
+    return str(name or "").strip().lower() in _ROUTE_GUARD_PLATFORMS
+
+
 def _looks_like_homebrew_ci_poller(command: str) -> bool:
     has_gh = "gh pr view" in command or "gh pr checks" in command
     has_jq = " jq " in command or "| jq" in command or "$(jq" in command
@@ -194,14 +208,27 @@ def spawn_background_process(
             logger.warning("background proc %s: %s", proc_session.id, conflict_note)
             result_data["watch_patterns_ignored"] = conflict_note
         if notify_on_complete:
-            proc_session.notify_on_complete = True
-            result_data["notify_on_complete"] = True
-            if completion_output_chars:
-                proc_session.completion_output_chars = int(completion_output_chars)
-            if proc_session.watcher_platform:
-                _register_completion_watcher(process_registry, proc_session, session_key)
             from agent.delegation_context import is_delegated_child_context
-            if is_delegated_child_context():
+            child_context = is_delegated_child_context()
+            if child_context and is_route_guard_platform(proc_session.watcher_platform):
+                # A delegate child's completion can never own a chat route: the watcher pin
+                # would be the CHILD's session id and the channel route would follow it
+                # (2026-09-17 dev Discord hijack). Decide BEFORE registering the watcher and
+                # drop it on the process record, not only in the model-facing JSON.
+                notify_on_complete = False
+                logger.info(
+                    "background proc %s: delegate child on route-guard platform %r; "
+                    "completion watcher NOT registered",
+                    proc_session.id, proc_session.watcher_platform,
+                )
+            else:
+                proc_session.notify_on_complete = True
+                result_data["notify_on_complete"] = True
+                if completion_output_chars:
+                    proc_session.completion_output_chars = int(completion_output_chars)
+                if proc_session.watcher_platform:
+                    _register_completion_watcher(process_registry, proc_session, session_key)
+            if child_context:
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
             elif heartbeat_seconds:

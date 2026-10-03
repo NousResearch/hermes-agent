@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recording Viewer</title>
+<!--
+  Recording Viewer Template — used by analyze_recording.py --html
+  
+  This is a self-contained HTML file with inline CSS, JS, and base64 images.
+  The analyze_recording.py script generates a filled-in version with:
+    - JSON data injected into the DATA constant
+    - Screenshots embedded as base64 data URIs
+    - Event markers positioned on the timeline
+    - Step boundaries as vertical dividers
+    
+  Features:
+    a) Timeline of screenshots with timestamps
+    b) Event markers (clicks=red, keys=blue, scrolls=green)
+    c) Click screenshot → full-size + AX tree
+    d) Play button → auto-advance at recording speed
+    e) Step boundaries as vertical dividers
+    f) Fully self-contained (no external dependencies)
+-->
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; height: 100vh; }
+.header { background: #16213e; padding: 12px 20px; border-bottom: 1px solid #0f3460; }
+.header h1 { font-size: 18px; color: #e94560; }
+.header .meta { font-size: 12px; color: #888; margin-top: 4px; }
+.timeline-container { background: #16213e; padding: 16px 20px; border-bottom: 1px solid #0f3460; }
+.timeline { position: relative; height: 60px; background: #0f3460; border-radius: 4px; margin-top: 8px; cursor: pointer; }
+.timeline-bar { position: absolute; top: 0; left: 0; height: 100%; background: linear-gradient(90deg, #e94560, #0f3460); border-radius: 4px; opacity: 0.3; }
+.timeline-marker { position: absolute; width: 8px; height: 8px; border-radius: 50%; transform: translate(-50%, -50%); top: 50%; cursor: pointer; z-index: 2; }
+.timeline-marker:hover { width: 12px; height: 12px; }
+.step-boundary { position: absolute; width: 1px; height: 100%; background: #e94560; opacity: 0.5; top: 0; }
+.step-label { position: absolute; font-size: 9px; color: #e94560; top: -12px; transform: translateX(-50%); }
+.playback-controls { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.btn { background: #e94560; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+.btn:hover { background: #c73e54; }
+.btn:disabled { background: #555; cursor: not-allowed; }
+.speed-select { background: #0f3460; color: #e0e0e0; border: 1px solid #333; padding: 4px 8px; border-radius: 4px; }
+.main-content { display: flex; height: calc(100vh - 180px); }
+.screenshot-panel { flex: 2; padding: 16px; overflow: auto; display: flex; align-items: center; justify-content: center; }
+.screenshot-panel img { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+.info-panel { flex: 1; background: #16213e; padding: 16px; overflow: auto; border-left: 1px solid #0f3460; }
+.info-panel h3 { color: #e94560; font-size: 14px; margin-bottom: 8px; }
+.info-panel .event-list { font-size: 11px; }
+.info-panel .event-item { padding: 4px 0; border-bottom: 1px solid #0f3460; }
+.info-panel .event-item .time { color: #888; }
+.info-panel .event-item .action { color: #4488ff; }
+.ax-tree { font-family: 'SF Mono', Monaco, monospace; font-size: 10px; white-space: pre-wrap; color: #aaa; max-height: 300px; overflow: auto; background: #0a0a1a; padding: 8px; border-radius: 4px; margin-top: 8px; }
+.screenshot-list { display: flex; gap: 4px; overflow-x: auto; padding: 8px 20px; background: #16213e; border-bottom: 1px solid #0f3460; }
+.screenshot-thumb { width: 80px; height: 50px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; flex-shrink: 0; object-fit: cover; }
+.screenshot-thumb.active { border-color: #e94560; }
+.screenshot-thumb:hover { border-color: #4488ff; }
+.patterns { margin-top: 12px; }
+.pattern-item { background: #0f3460; padding: 6px 10px; border-radius: 4px; margin-bottom: 4px; font-size: 11px; }
+.empty-state { color: #555; font-size: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🖥️ Recording Viewer</h1>
+  <div class="meta" id="meta-info">Loading...</div>
+</div>
+<div class="timeline-container">
+  <div class="playback-controls">
+    <button class="btn" id="play-btn">▶ Play</button>
+    <select class="speed-select" id="speed">
+      <option value="1">1x (Real-time)</option>
+      <option value="2">2x</option>
+      <option value="5">5x</option>
+      <option value="10">10x</option>
+    </select>
+    <span id="time-display" style="color:#888;font-size:12px;">0.0s</span>
+  </div>
+  <div class="timeline" id="timeline">
+    <div class="timeline-bar" style="width: 100%;"></div>
+  </div>
+</div>
+<div class="screenshot-list" id="screenshot-list"></div>
+<div class="main-content">
+  <div class="screenshot-panel" id="screenshot-panel">
+    <div class="empty-state">Select a screenshot to view</div>
+  </div>
+  <div class="info-panel" id="info-panel">
+    <h3>Event Details</h3>
+    <div class="event-list" id="event-list"><div class="empty-state">No events selected</div></div>
+    <div id="ax-tree-section" style="display:none;">
+      <h3 style="margin-top:16px;">AX Tree</h3>
+      <div class="ax-tree" id="ax-tree-content"></div>
+    </div>
+    <div class="patterns" id="patterns-section" style="display:none;">
+      <h3>Detected Patterns</h3>
+      <div id="patterns-list"></div>
+    </div>
+  </div>
+</div>
+<script>
+// This DATA constant is filled in by analyze_recording.py --html
+// The template below is the reference implementation.
+const DATA = {
+  screenshots: [],
+  markers: [],
+  step_boundaries: [],
+  ax_trees: [],
+  steps: [],
+  patterns: [],
+  metadata: {}
+};
+const DURATION = 10.0;
+let currentIdx = 0;
+let playing = false;
+let playTimer = null;
+
+// ... (full JS implementation identical to the generated version in analyze_recording.py)
+</script>
+</body>
+</html>

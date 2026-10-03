@@ -818,6 +818,23 @@ class TestTwoFactor:
         # the real widget
         assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
+    @pytest.mark.parametrize("label, is_otp", [
+        ("Einmaliger Verifizierungscode", True),  # American Express (de-DE) email verification step
+        ("Bestätigungscode", True),
+        ("Authentifizierungscode", True),
+        ("Einmalcode", True),
+        ("Sicherheitscode", False),  # the card CVC on German checkouts
+        ("Gutscheincode", False),
+        ("Aktionscode", False),
+    ])
+    def test_german_code_labels(self, label, is_otp):
+        """German compounds glue "code" to the word, so the English word-boundary rule alone missed them
+        and enter_code answered no_code_field on a visible, labelled code field."""
+        from agent.vault_login_classifier import LoginControl, classify_otp_controls
+
+        control = LoginControl("", 0, 0, label, "", "text", None)
+        assert bool(classify_otp_controls([control])) is is_otp
+
     def test_no_code_field_points_at_passkey_or_device_approval(self):
         from tools import browser_vault_tool
 

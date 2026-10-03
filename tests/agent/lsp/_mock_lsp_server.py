@@ -16,8 +16,9 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
 - ``"crash"`` — exit immediately after responding to ``initialize``
   (simulates a crashing server).
 - ``"oom_abort"`` — prints a V8-style out-of-memory trace to stderr and
-  aborts (SIGABRT) before answering ``initialize`` — models a Node
-  language-server whose heap ceiling is too small for the workspace.
+  aborts (SIGABRT; SIGKILL on macOS, see below) before answering
+  ``initialize`` — models a Node language-server whose heap ceiling is too
+  small for the workspace.
 - ``"slow"`` — same as ``clean`` but sleeps 1s before responding to
   ``initialize`` (lets us test timeout behaviour).
 - ``"slow_tree"`` — like ``slow``, with a child that ignores SIGTERM and
@@ -106,6 +107,11 @@ def main():
             "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n"
         )
         sys.stderr.flush()
+        if sys.platform == "darwin":
+            # A core-dumping signal (SIGABRT, SIGSEGV, ...) is an EXC_CRASH on macOS: ReportCrash
+            # files a report and pops "Python quit unexpectedly" on the developer's desktop on
+            # every run. The client only sees a negative returncode, which SIGKILL also gives.
+            os.kill(os.getpid(), signal.SIGKILL)
         os.abort()
 
     if script == "large_stderr":

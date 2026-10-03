@@ -36,6 +36,13 @@ class EditProposal:
     paths: tuple[str, ...] = ()
 
 
+@dataclass
+class EditApprovalState:
+    """Transient edit-permission state for one ACP session."""
+
+    timed_out: bool = False
+
+
 EditApprovalRequester = Callable[[EditProposal], bool]
 
 _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar("ACP_EDIT_APPROVAL_REQUESTER", default=None)
@@ -212,8 +219,10 @@ def make_acp_edit_approval_requester(
     request_permission_fn: Callable, loop: asyncio.AbstractEventLoop, session_id: str,
     timeout: float | None = None, auto_approve_getter: Callable[[], tuple[str, str | None]] | None = None,
     send_update: Callable[[object], None] | None = None,
+    state: EditApprovalState | None = None,
 ) -> EditApprovalRequester:
     """Return a sync requester that bridges edit proposals to ACP permissions."""
+    state = state or EditApprovalState()
 
     def _requester(proposal: EditProposal) -> bool:
         from acp.schema import PermissionOption
@@ -228,12 +237,18 @@ def make_acp_edit_approval_requester(
             except Exception:
                 logger.debug("ACP edit auto-approval policy check failed", exc_info=True)
 
-        response, _timed_out = await_permission(
+        if state.timed_out:
+            return False
+
+        response, timed_out = await_permission(
             request_permission_fn, loop, session_id, tool_call=build_acp_edit_tool_call(proposal),
             options=[PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
                      PermissionOption(option_id="deny", kind="reject_once", name="Deny")],
             timeout=resolve_permission_timeout(timeout), what="Edit approval request", send_update=send_update,
         )
+        if timed_out is True:
+            state.timed_out = True
+            return False
         outcome = getattr(response, "outcome", None)
         return getattr(outcome, "outcome", None) == "selected" and getattr(outcome, "option_id", None) == "allow_once"
 

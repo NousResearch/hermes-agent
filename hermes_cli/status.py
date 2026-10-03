@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 import time
 import importlib.util
@@ -166,6 +167,9 @@ def _render_terminal(ctx):
         for label, var, default, empty_is_unset in _TERMINAL_ENV_ROWS[terminal_env]:
             value = (os.getenv(var, "") or default) if empty_is_unset else os.getenv(var, default)
             print(f"  {label:<13} {value}")
+    elif terminal_env == "bubblewrap":
+        _kv("Profile:", os.getenv("TERMINAL_BUBBLEWRAP_PROFILE") or terminal_cfg.get("bubblewrap_profile") or "network")
+        _kv("bwrap:", shutil.which("bwrap") or "(not found)")
     elif terminal_env == "vercel_sandbox":
         persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
         persist_enabled = (bool(terminal_cfg.get("container_persistent", True)) if persist is None

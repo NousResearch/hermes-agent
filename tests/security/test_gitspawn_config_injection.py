@@ -220,9 +220,13 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     worktree_ops._prune_orphaned_branches(str(repo))
     worktree_ops._cleanup_failed_worktree_add(str(repo), tmp_path / "wt3", "safe3")
     assert _fired(marker) == []
+    kw._ensure_git_worktree(repo, tmp_path / "wt4", "safe4")
+    record = worktree_gc.TreeRecord("wt4", str(tmp_path / "wt4"), "safe4", 9.0, None, "reap", "")
+    assert worktree_gc.reclaim_worktrees(str(repo), records=[record]) == ["removed wt4"]  # attended reclaim
+    assert _fired(marker) == []
     branches = subprocess.run(["git", "-C", str(repo), "branch", "--format=%(refname:short)"],
                               capture_output=True, text=True, env=_CLEAN_GIT_ENV).stdout.split()
-    assert not {"safe2", "pr-1", "safe3"} & set(branches)  # the deletions ran
+    assert not {"safe2", "pr-1", "safe3", "safe4"} & set(branches)  # the deletions ran
 
     for key, value in {"remote.origin.url": "ssh://git@example.invalid/x.git",
                        "core.sshCommand": f"touch '{marker.as_posix()}.ssh'; false"}.items():

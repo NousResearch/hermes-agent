@@ -927,6 +927,7 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
     *kept_branches* must survive the orphaned-branch pass. Branch deletion is gated on
     ``worktree remove`` succeeding so a failed removal never orphans reachable commits.
     """
+    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
     preserved_stale: list = []
     kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
@@ -960,7 +961,12 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
             # allows; drop them so the plain (non --force) remove still succeeds.
             for rel in _include_symlink_paths(str(entry), repo_root):
                 (entry / rel).unlink()
-            remove_result = _git(["worktree", "remove", str(entry)], repo_root, timeout=15)
+            # Without --force, remove reads the tree's index, which runs core.fsmonitor.
+            remove_env = noninteractive_repo_git_env(str(entry))
+            if remove_env is None:
+                continue
+            remove_result = _git(["worktree", "remove", str(entry)], repo_root, timeout=15,
+                                 stdin=subprocess.DEVNULL, env=remove_env)
             if remove_result.returncode != 0:
                 logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
                 continue

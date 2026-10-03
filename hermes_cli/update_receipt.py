@@ -188,6 +188,8 @@ class UpdateReceipt:
         self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:
+        if outcome == "success" and self.data.get("user_action"):
+            outcome = "partial"  # committed, but the user still has to act (record_user_action)
         self.data["outcome"] = outcome
         self.data["finished_at"] = _utc_now_iso()
         self.data["post_update"] = _code_identity(refresh=True)
@@ -330,6 +332,16 @@ def record_followup(step: str, reason: str, *, retry: str = "the next launch or 
     current = _current.get()
     if current is not None:
         _persist_running(current.data)
+
+
+def record_user_action(step: str, reason: str) -> None:
+    """The code committed, but something only the user can do is still owed. Never raises.
+
+    Unlike a follow-up nothing retries it (a stash whose restore conflicted stays parked until the
+    user re-applies it), so the run can never be a plain success: it finalizes ``partial`` and
+    ``hermes update`` exits 1, as #122557 established for an unrestored autostash.
+    """
+    _record("fact", f"update user action {step}", "user_action", {"step": step, "reason": " ".join(str(reason).split())[:500]})
 
 
 def amend_terminal_followup(update_id: str, step: str, reason: str) -> None:
@@ -557,7 +569,8 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     ``hermes update`` has many early ``sys.exit`` paths (preflight refusals, venv-holder refusal,
     fetch failure) predating the inner finalize calls; finalizing here means refused/failed runs —
     where a receipt matters most — leave a record. Exit 0/None → ``success``, exit 2 → ``refused``
-    (preflight convention), else → ``failed``.
+    (preflight convention), else → ``failed`` (``partial`` when the run committed and only owes a
+    user action, see ``record_user_action``).
 
     No-op when no receipt is open (the inner paths already finalized — exactly-once via the popped
     per-context receipt) or when recording was never started. See #91283.
@@ -565,7 +578,8 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     current = _current.get()
     if current is None:
         return None
-    outcome = "success" if exit_code in (0, None) else "refused" if exit_code == 2 else "failed"
+    outcome = ("success" if exit_code in (0, None) else "refused" if exit_code == 2
+               else "partial" if current.data.get("user_action") else "failed")
     if exit_code is not None:
         with suppress(Exception):
             clone = copy.copy(current)

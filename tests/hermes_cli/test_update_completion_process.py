@@ -162,6 +162,7 @@ def transition(tmp_path):
         "    r = _current.get()\n"
         "    if r is not None: r.data.setdefault('followups', []).append({'step': step, 'reason': reason})\n"
         "def amend_terminal_followup(*args): pass\n"
+        "def record_user_action(*args): pass\n"
         "def _receipt_dir():\n"
         "    return pathlib.Path(os.environ['HERMES_HOME']) / 'logs/update_receipts'\n"
         "def finalize_pending_update_receipt(code, reason):\n"

@@ -1073,7 +1073,9 @@ def _run_post_update_maintenance(
 
     with _best_effort('Post-update notices failed: %s'):
         _print_post_update_notices_and_self_heals()
-    if not update_complete:
+    # A non-✓ completion message (parked local changes) withholds success on its own; only a
+    # ✓ message that still came back False is the SQLite verdict.
+    if not update_complete and (completion_message or "✓").startswith("✓"):
         record_followup("sqlite_runtime", "the selected Python links an unsafe SQLite runtime",
                         retry="run the installer again")
     return update_complete

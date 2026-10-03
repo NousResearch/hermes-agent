@@ -37,6 +37,21 @@ def test_open_receipt_is_durably_running_and_finalizes_in_place(tmp_path, monkey
     assert list((tmp_path / "logs/update_receipts").glob(f"update_*_{final['update_id']}.json")) == run_files
 
 
+@pytest.mark.parametrize("finish", [lambda: update_receipt.finalize_update_receipt("success"),
+                                    lambda: update_receipt.finalize_pending_update_receipt(1, "local changes parked")])
+def test_parked_local_changes_never_finalize_as_success(tmp_path, monkeypatch, finish):
+    # A follow-up is retried by the next launch; a stash whose restore conflicted is not, so the
+    # committed run must stay partial (#122557) on both the verify path and the boundary net.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    update_receipt.begin_update_receipt()
+    update_receipt.record_user_action("local_changes", "⚠ hermes update stashed 1 local modification(s)\n  Stash ref: abc")
+    finish()
+    final = _latest(tmp_path)
+    assert final["outcome"] == "partial"
+    assert final["user_action"] == {"step": "local_changes",
+                                    "reason": "⚠ hermes update stashed 1 local modification(s) Stash ref: abc"}
+
+
 def test_dead_running_record_is_reported_interrupted_by_the_next_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     dead = subprocess.Popen(["true"])

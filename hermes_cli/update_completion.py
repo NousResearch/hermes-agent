@@ -158,6 +158,26 @@ def _running_record(request: dict) -> dict | None:
     return None
 
 
+def _owed_user_action(request: dict) -> str | None:
+    """The unsettled-autostash notice (#122557) when this run parked the user's local changes.
+
+    ``_complete_source_update`` hands it over as the completion message, and a completion message
+    that is not a ``✓`` line is never a success (``_print_verified_update_completion``).
+    """
+    message = request.get("completion_message") or ""
+    return message if message and not message.startswith("✓") else None
+
+
+def _record_owed_user_action(request: dict) -> bool:
+    """Land the parked local changes on the receipt; True when nothing is owed to the user."""
+    from hermes_cli.update_receipt import record_user_action
+
+    notice = _owed_user_action(request)
+    if notice:
+        record_user_action("local_changes", notice)
+    return notice is None
+
+
 def _settle_after_commit(request: dict, result_path: Path, step: str, reason: str) -> int:
     """The tree already moved, so a failure here is owed work, never a failed update (C3, A6).
 
@@ -180,6 +200,8 @@ def _settle_after_commit(request: dict, result_path: Path, step: str, reason: st
         update_receipt.record_stage("deps" if step == "dependencies" else "build", "failed")
         update_receipt.record_followup(step, reason, retry="dependencies not installed yet — the next launch retries"
                                        if step == "dependencies" else "the next launch or `hermes update` retries it")
+        if not _record_owed_user_action(request):
+            print(_owed_user_action(request))  # the completion child that would print it never ran
         update_receipt.finalize_pending_update_receipt(0, f"{step} owed after the code was updated")
         receipt = _read_terminal_receipt(request)
     code = 0 if receipt is not None and receipt.get("outcome") == "success" else 1
@@ -229,12 +251,14 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     return code
 
 
-def _complete_selected(request: dict) -> None:
-    """Everything after the commit point. Nothing here fails the update (contract C3).
+def _complete_selected(request: dict) -> bool:
+    """Everything after the commit point. No step failure fails the update (contract C3).
 
     Each step is independent; a failed one prints ``⚠``, lands on the receipt as a follow-up
     and keeps its own obligation armed (``source-completion-pending`` for the tail, the fleet
     restart obligation for gateways), so the next launch or ``hermes update`` retries it.
+    Returns False only when the user's local changes were left parked in the stash: nothing
+    retries that, so the run is ``partial`` and exits 1 (#122557), never "Update complete".
     """
     from hermes_cli import main, update_cmd, update_cmd_config
     from hermes_cli.source_completion import complete_source_checkout
@@ -243,6 +267,7 @@ def _complete_selected(request: dict) -> None:
 
     root = Path(request["source"])
     main.PROJECT_ROOT = root
+    complete = _record_owed_user_action(request)
     update_cmd_config._LAST_SIBLING_SNAPSHOTS = request["sibling_snapshots"]
     plan_data = request["plan"]
     plan = None if plan_data is None else UpdatePlan(**{
@@ -269,14 +294,15 @@ def _complete_selected(request: dict) -> None:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)
     # systemctl's KillMode=mixed fallback can kill this whole cgroup. Publish the
-    # gateway watcher's status BEFORE that operation: the code is committed, so it is 0.
+    # gateway watcher's status BEFORE that operation: the code is committed, so it is 0 unless
+    # the user's own changes are still parked.
     if request["gateway_mode"]:
-        update_cmd._write_gateway_update_exit_code(True)
+        update_cmd._write_gateway_update_exit_code(complete)
     if request.get("no_gateway_restart", False):
         record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
         record_stage("restart", "skipped")
         print("→ Gateway restart deferred (--no-gateway-restart); restart gateways separately.")
-        return
+        return complete
     skip = update_cmd._fleet_restart_skip_reason(plan)
     if skip and update_cmd._pending_fleet_restart_needed():
         # A host already stamped "restarted" for this SHA whose fleet is still off the checkout
@@ -287,12 +313,13 @@ def _complete_selected(request: dict) -> None:
         record_skip("gateway_restart", skip)
         record_stage("restart", "skipped")
         print(f"  ✓ Gateway restart skipped: {skip}.")
-        return
+        return complete
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
     update_cmd._verify_fleet_after_update(
         restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=True)
+    return complete
 
 
 class _ForwardedOutput:
@@ -317,7 +344,8 @@ def _finish(request: dict, result_path: Path) -> int:
     update_receipt.record_stage("deps", "success")  # only a completed PM preparation reaches --prepared
     code, reason = 0, "source update completion"
     try:
-        _complete_selected(request)
+        if not _complete_selected(request):
+            code, reason = 1, "local changes left in the stash; re-apply them by hand"
     except KeyboardInterrupt:
         # An operator interrupt is not a step failure, and the code already moved: the run is
         # ``interrupted`` (never "failed"), and the armed obligations finish the tail.

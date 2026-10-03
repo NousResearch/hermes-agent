@@ -752,6 +752,53 @@ def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = No
             conn.close()
 
 
+@contextlib.contextmanager
+def connect_readonly_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+    """Open an existing board without schema initialization or migrations."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = connect_tracked(
+        uri,
+        tracking_path=path,
+        connect_fn=sqlite3.connect,
+        uri=True,
+        isolation_level=None,
+        timeout=_resolve_busy_timeout_ms() / 1000.0,
+    )
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute(f"PRAGMA busy_timeout={_resolve_busy_timeout_ms()}")
+        yield conn
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+@contextlib.contextmanager
+def connect_existing_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+    """Open an existing board writable without initialization or migration."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    uri = path.resolve().as_uri() + "?mode=rw"
+    conn = connect_tracked(
+        uri, tracking_path=path, connect_fn=sqlite3.connect, uri=True,
+        isolation_level=None, timeout=_resolve_busy_timeout_ms() / 1000.0,
+    )
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
+        conn.execute(f"PRAGMA busy_timeout={_resolve_busy_timeout_ms()}")
+        yield conn
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
 def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> Path:
     """Create the schema if it doesn't exist; return the path used. Unlike
     :func:`connect`'s cached first-time auto-init, this always re-runs the

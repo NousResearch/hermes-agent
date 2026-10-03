@@ -258,6 +258,13 @@ _SPECS = [
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
+    _cmd("reconcile-runs", [
+        _arg("--dry-run", action="store_true", help="Report eligible rows without changing them"),
+        _arg("--reason", required=True, help="Operator reason recorded in each reconciliation event"),
+        _arg("--claim-host", required=True,
+             help="Explicitly attest the claim-lock hostname eligible for local PID checks"),
+        _json_flag(help="Emit the reconciliation report as JSON"),
+    ], help="Close dead, detached run-ledger rows belonging to done or archived tasks"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),

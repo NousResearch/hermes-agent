@@ -78,7 +78,15 @@ def _native_vision_result(
         meta["fallback_warning"] = lp_fallback_warning
     if annotate and result.get("data", {}).get("annotations"):
         meta["annotations"] = result["data"]["annotations"]
-    native_result["text_summary"] = f"{native_result.get('text_summary', '')} Screenshot path: {screenshot_path}".strip()
+    path_line = f"Screenshot path: {screenshot_path}"
+    # text_summary is only the non-multimodal fallback. Native-vision models
+    # read content[].text, so the path has to be there or MEDIA: delivery
+    # cannot happen (the schema promises a screenshot_path).
+    for part in native_result.get("content") or []:
+        if isinstance(part, dict) and part.get("type") == "text":
+            part["text"] = f"{part.get('text', '').rstrip()}\n\n{path_line}"
+            break
+    native_result["text_summary"] = f"{native_result.get('text_summary', '')} {path_line}".strip()
     return native_result
 
 

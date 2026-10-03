@@ -436,7 +436,8 @@ class ComputeHost:
             else:
                 ack = self._control_ack(server, frame, session)
                 if "error" in ack:
-                    self._reply("control.error", sid, request_id, message=ack["error"], code=ack.get("code"))
+                    self._reply("control.error", sid, request_id, message=ack["error"],
+                                **({"code": c} if (c := ack.get("code")) else {}))
                 else:
                     self._reply("control.ack", sid, request_id, route_name=route_name, **ack)
 

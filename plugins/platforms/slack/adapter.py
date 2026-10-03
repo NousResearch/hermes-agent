@@ -4348,9 +4348,10 @@ class SlackAdapter(BasePlatformAdapter):
         thread_root_media_types: List[str] = []
         if not is_thread_reply:
             return channel_context, thread_root_media_urls, thread_root_media_types
+        chat_type = "dm" if is_dm else "group"
         has_active_thread_session = self._has_active_session_for_thread(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
-            chat_type="dm" if is_dm else "group")
+            chat_type=chat_type)
 
         async def _fetch(**kw) -> None:
             nonlocal channel_context
@@ -4361,7 +4362,8 @@ class SlackAdapter(BasePlatformAdapter):
                 channel_context = thread_context
 
         watermark_args = dict(
-            channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id)
+            channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
+            chat_type=chat_type)
         if not has_active_thread_session:
             await _fetch()
             (
@@ -6193,38 +6195,44 @@ class SlackAdapter(BasePlatformAdapter):
             lambda e: e.split(":")[2] if e.count(":") >= 2 else "")
 
     def _thread_watermark_io(
-        self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any
+        self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any,
+        chat_type: str,
     ) -> Any:
         """``session_store.<method>(session_key, watermark_key, *args)`` or None when the store
-        lacks ``method`` or the thread has no session key. Exceptions propagate."""
+        lacks ``method`` or the thread has no session key. Exceptions propagate. ``chat_type`` is
+        required: IM and MPIM threads key as ``dm``, so a ``group`` key names no session."""
         session_store = getattr(self, "_session_store", None)
         if not session_store or not hasattr(session_store, method):
             return None
         session_key = self._build_thread_session_key(
-            channel_id, thread_ts, user_id, team_id=team_id)
+            channel_id, thread_ts, user_id, team_id=team_id, chat_type=chat_type)
         if not session_key:
             return None
         meta_key = f"slack_thread_watermark:{channel_id}:{thread_ts}"
         return getattr(session_store, method)(session_key, meta_key, *args)
 
     def _get_thread_watermark(
-        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,
+        chat_type: str) -> str:
         """Return the last Slack thread ts this session consumed (persisted)."""
         try:
             return str(self._thread_watermark_io(
-                "get_session_metadata", channel_id, thread_ts, user_id, team_id, "") or "")
+                "get_session_metadata", channel_id, thread_ts, user_id, team_id, "",
+                chat_type=chat_type) or "")
         except Exception:
             return ""
 
     def _set_thread_watermark(
-        self, channel_id: str, thread_ts: str, user_id: str, watermark_ts: str, team_id: str = ""
+        self, channel_id: str, thread_ts: str, user_id: str, watermark_ts: str, team_id: str = "",
+        *, chat_type: str,
     ) -> None:
         """Persist the latest thread ts seen (session metadata, survives restarts)."""
         if not watermark_ts:
             return
         try:
             self._thread_watermark_io(
-                "set_session_metadata", channel_id, thread_ts, user_id, team_id, watermark_ts)
+                "set_session_metadata", channel_id, thread_ts, user_id, team_id, watermark_ts,
+                chat_type=chat_type)
         except Exception:
             logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)
 

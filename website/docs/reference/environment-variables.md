@@ -267,6 +267,15 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 
 For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
 
+## Daytona Backend
+
+Store `DAYTONA_API_KEY` in `~/.hermes/.env`. Configure all non-secret Daytona
+settings under `terminal:` in `config.yaml`, or with `hermes config set terminal.<key> <value>`.
+See [Daytona configuration](../user-guide/configuration.md#daytona-backend)
+for snapshot, lifecycle, network, volume, and CWD-upload settings.
+Hermes mirrors these settings to `TERMINAL_DAYTONA_*` internally; they do not
+need entries in `.env`.
+
 ## SSH Backend
 
 | Variable | Description |

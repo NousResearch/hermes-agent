@@ -207,7 +207,125 @@ def _setup_backend_daytona(config: dict) -> None:
     if not _existing_secret_keeps("DAYTONA_API_KEY", "Daytona API key", "  Update API key?"):
         _prompt_secret_env("    Daytona API key", "DAYTONA_API_KEY",
                            confirm_msg="    Updated" if had_key else "    Configured")
-    config["terminal"].setdefault("daytona_image", _SANDBOX_IMAGE)
+    # --- Create mode: image vs snapshot ---
+    print()
+    current_mode = _setup.cfg_get(config, "terminal", "daytona_create_mode", default="image")
+    mode_choices = [
+        "Image — create sandbox from a Docker image (default)",
+        "Snapshot — create sandbox from an existing Daytona snapshot",
+    ]
+    mode_default = 0 if current_mode == "image" else 1
+    mode_idx = _setup.prompt_choice("Sandbox create mode:", mode_choices, mode_default)
+    create_mode = "image" if mode_idx == 0 else "snapshot"
+    config["terminal"]["daytona_create_mode"] = create_mode
+
+    if create_mode == "image":
+        # Sandbox image (only relevant in image mode)
+        current_image = _setup.cfg_get(config, "terminal", "daytona_image", default=_SANDBOX_IMAGE)
+        image = _setup.prompt("  Sandbox image", current_image)
+        config["terminal"]["daytona_image"] = image
+    else:
+        # Snapshot name/ID (only relevant in snapshot mode)
+        current_snapshot = _setup.cfg_get(config, "terminal", "daytona_snapshot", default="")
+        snapshot = _setup.prompt("  Snapshot name or ID", current_snapshot or "my-snapshot")
+        config["terminal"]["daytona_snapshot"] = snapshot
+        # Image is still used as fallback; offer to set it but don't nag
+        current_image = _setup.cfg_get(config, "terminal", "daytona_image", default=_SANDBOX_IMAGE)
+        if _setup.prompt_yes_no("  Set fallback image for snapshot mode?", False):
+            image = _setup.prompt("    Fallback image", current_image)
+            config["terminal"]["daytona_image"] = image
+
+    # --- Language ---
+    print()
+    from tools.environments.daytona import get_supported_daytona_languages
+    supported_languages = get_supported_daytona_languages()
+    current_lang = str(_setup.cfg_get(config, "terminal", "daytona_language", default="") or "").lower()
+    language_choices = ["Default (SDK/image default)"] + [
+        f"{lang} — Daytona SDK supported" for lang in supported_languages
+    ]
+    language_default = 0
+    if current_lang in supported_languages:
+        language_default = supported_languages.index(current_lang) + 1
+    elif current_lang:
+        _setup.print_warning(
+            f"  Existing Daytona language {current_lang!r} is not supported by the installed SDK; clearing it."
+        )
+    lang_idx = _setup.prompt_choice("  Sandbox language:", language_choices, language_default)
+    lang = "" if lang_idx == 0 else supported_languages[lang_idx - 1]
+    config["terminal"]["daytona_language"] = lang
+
+    # --- Profile-scoped naming ---
+    print()
+    current_prefix = _setup.cfg_get(config, "terminal", "daytona_name_prefix", default="hermes")
+    prefix = _setup.prompt("  Sandbox name prefix", current_prefix)
+    config["terminal"]["daytona_name_prefix"] = prefix
+
+    current_scope = _setup.cfg_get(config, "terminal", "daytona_name_scope", default="task")
+    scope_choices = [
+        "task — {prefix}-{task_id} (default, one sandbox per task)",
+        "profile — {prefix}-{profile_id}-{task_id} (isolate by profile)",
+        "global — {prefix} (shared sandbox across all tasks)",
+    ]
+    scope_map = {0: "task", 1: "profile", 2: "global"}
+    scope_default = {"task": 0, "profile": 1, "global": 2}.get(current_scope, 0)
+    scope_idx = _setup.prompt_choice("  Name scope:", scope_choices, scope_default)
+    name_scope = scope_map.get(scope_idx, "task")
+    config["terminal"]["daytona_name_scope"] = name_scope
+
+    # --- Lifecycle intervals ---
+    print()
+    _setup.print_info("Lifecycle intervals (0 = disabled):")
+
+    current_stop = _setup.cfg_get(config, "terminal", "daytona_auto_stop_interval", default=0)
+    stop_str = _setup.prompt("  Auto-stop interval (minutes)", str(current_stop))
+    try:
+        config["terminal"]["daytona_auto_stop_interval"] = int(stop_str)
+    except ValueError:
+        pass
+
+    current_archive = _setup.cfg_get(config, "terminal", "daytona_auto_archive_interval", default=0)
+    archive_str = _setup.prompt("  Auto-archive interval (minutes)", str(current_archive))
+    try:
+        config["terminal"]["daytona_auto_archive_interval"] = int(archive_str)
+    except ValueError:
+        pass
+
+    current_delete = _setup.cfg_get(config, "terminal", "daytona_auto_delete_interval", default=0)
+    delete_str = _setup.prompt("  Auto-delete interval (minutes)", str(current_delete))
+    try:
+        config["terminal"]["daytona_auto_delete_interval"] = int(delete_str)
+    except ValueError:
+        pass
+
+    # --- Ephemeral ---
+    current_ephemeral = _setup.cfg_get(config, "terminal", "daytona_ephemeral", default=False)
+    ephemeral = _setup.prompt_yes_no("  Ephemeral mode? (short-lived sandboxes)", current_ephemeral)
+    config["terminal"]["daytona_ephemeral"] = ephemeral
+
+    # --- Network ---
+    print()
+    current_block = _setup.cfg_get(config, "terminal", "daytona_network_block_all", default=False)
+    block_all = _setup.prompt_yes_no("  Block all network access?", current_block)
+    config["terminal"]["daytona_network_block_all"] = block_all
+
+    current_allow = _setup.cfg_get(config, "terminal", "daytona_network_allow_list", default="")
+    if block_all:
+        allow_str = _setup.prompt("  Network allow list (comma-separated CIDR ranges, or empty)", current_allow)
+    else:
+        allow_str = ""
+    config["terminal"]["daytona_network_allow_list"] = allow_str
+
+    if create_mode == "image":
+        for key, label, default in (
+            ("container_cpu", "  CPU cores", 1),
+            ("container_memory", "  Memory in MB", 5120),
+            ("container_disk", "  Disk in MB (Daytona maximum: 10240)", 10240),
+        ):
+            try:
+                config["terminal"][key] = int(_setup.prompt(
+                    label, str(config["terminal"].get(key, default))))
+            except ValueError:
+                pass
 
 
 def _setup_backend_vercel(config: dict) -> None:

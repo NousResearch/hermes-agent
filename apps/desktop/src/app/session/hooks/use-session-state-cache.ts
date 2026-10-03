@@ -7,6 +7,7 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { registerSessionYoloSliceWriter } from '@/lib/yolo-session'
 import { adoptPendingRuntimeTabs, rekeyPreviewTabsSession } from '@/store/preview'
 import {
   $activeSessionId,
@@ -454,6 +455,16 @@ export function useSessionStateCache({
   useEffect(() => {
     sessionStateCache.prune()
   }, [activeSessionId, parkedTileStoredIds, selectedStoredSessionId, sessionStateCache, sessionTiles])
+
+  // YOLO toggles (slash, ⌘K, status bar) write the session's slice through
+  // here so the confirmed flag survives the next view re-sync.
+  useEffect(
+    () =>
+      registerSessionYoloSliceWriter((sessionId, yolo) => {
+        updateSessionState(sessionId, state => (state.yolo === yolo ? state : { ...state, yolo }))
+      }),
+    [updateSessionState]
+  )
 
   const getRuntimeIdForStoredSession = useCallback(
     (storedSessionId: string): string | null => {

@@ -565,6 +565,7 @@ class GroupsPeerInviteParams(ProfileParams):
     # How long the room's gateway may keep renewing the grant (canonical surface); defaults to
     # ``ttl_seconds``, so nothing is renewed unless the operator chooses a longer horizon.
     status_ttl_seconds: float | None = None
+    # The installation keeps the room's history as a custodian unless this is ``false``.
     replication: bool | None = None
     work_records: bool | None = None
     passive_only: bool | None = None
@@ -580,7 +581,8 @@ class GroupsPeerInviteResult(Result):
 
 
 method("groups.peer.invite", params=GroupsPeerInviteParams, result=GroupsPeerInviteResult,
-       doc="Mint one target-issued room/profile grant for a prospective room home.")
+       doc="Mint one target-issued room/profile grant for a prospective room home; the installation keeps "
+           "the room's history unless replication is false.")
 
 
 class GroupsPeerRevokeParams(ProfileParams):

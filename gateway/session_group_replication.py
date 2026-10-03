@@ -1,7 +1,7 @@
 """Canonical controls for passive Group Chat copies and their retirement.
 
-A participant gateway opts in when its operator mints a member grant with ``replication: true``
-(``groups.peer.invite``). The room's home then copies the room's history to it
+Every participant gateway keeps a copy unless its operator mints the member grant with
+``replication: false`` (``groups.peer.invite``). The room's home copies the room's history to it
 (``gateway/hosted_room_replication.py``); the participant's operator reads that copy with
 ``groups.replica_state``. A copy is installation-wide evidence, stored beside the grants that
 admit it, and never confers authority to run or recover work.

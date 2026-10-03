@@ -182,15 +182,15 @@ async def _handle_room_member_invitation(
 def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) -> dict[str, Any]:
     """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``.
 
-    ``replication: true`` opts this gateway in to keeping a passive copy of the room's history,
-    ``work_records: true`` adds its task evidence, and ``passive_only`` limits the grant to that
-    copy (no dispatch, Stop or approval).
+    The grant keeps this gateway a custodian of the room's history unless ``replication: false``
+    opts out; ``work_records: true`` adds its task evidence, and ``passive_only`` limits the grant
+    to that copy (no dispatch, Stop or approval).
     """
     from gateway import hosted_rooms
     from gateway.hosted_room_passive_protocol import passive_capabilities
     from gateway.hosted_room_peer import decode_room_grant, invitation_permissions, issue_room_grant
     permissions = invitation_permissions(
-        body.get("replication", False), body.get("work_records", False),
+        body.get("replication", True), body.get("work_records", False),
         passive_only=body.get("passive_only", False))
     target_install_id = hosted_rooms.local_authority_gateway_id()
     ttl = float(body.get("ttl_seconds", 3600))

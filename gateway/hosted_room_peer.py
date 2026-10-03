@@ -421,22 +421,24 @@ _MEMBER_PERMISSIONS = ("approve", "dispatch", "status", "stop")
 
 
 def invitation_permissions(
-    replication: Any = False, work_records: Any = False, *, passive_only: Any = False,
+    replication: Any = True, work_records: Any = False, *, passive_only: Any = False,
 ) -> tuple[str, ...]:
-    """Permissions for one invitation; the same opt-in rules on JSON-RPC and HTTP.
+    """Permissions for one invitation; the same rules on JSON-RPC and HTTP.
 
-    A copy is never implied: only an explicit ``replication: true`` adds ``replicate``, and task
-    evidence (``work_records``) comes only on top of that copy. A ``passive_only`` grant can be
-    observed and copied to, but never runs, stops or approves work.
+    Joining a Group Chat makes this installation one of its custodians: it keeps the room's whole
+    history (``replicate``) unless its operator opts out with ``replication: false``, which also
+    gives up its vote in succession. Task evidence (``work_records``) is an explicit addition on
+    top of that copy. A ``passive_only`` grant can be observed and copied to, but never runs,
+    stops or approves work.
     """
     if type(replication) is not bool:
         raise HostedRoomGrantError("replication must be a boolean")
     if type(passive_only) is not bool:
         raise HostedRoomGrantError("passive_only must be a boolean")
     if type(work_records) is not bool or (work_records and not replication):
-        raise HostedRoomGrantError("work_records requires an explicit replication opt-in")
+        raise HostedRoomGrantError("work_records requires the history copy")
     if passive_only and not replication:
-        raise HostedRoomGrantError("passive_only requires explicit replication")
+        raise HostedRoomGrantError("passive_only requires the history copy")
     passive = ("replicate", *(("work_records",) if work_records else ())) if replication else ()
     return ("status", *passive) if passive_only else (*_MEMBER_PERMISSIONS, *passive)
 

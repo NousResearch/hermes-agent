@@ -62,20 +62,23 @@ def permissions(grant):
 
 
 @pytest.mark.asyncio
-async def test_the_canonical_invitation_adds_a_copy_only_when_asked(gateway):
+async def test_the_canonical_invitation_keeps_a_copy_unless_the_operator_opts_out(gateway):
     ordinary = await call(gateway.owner, 'groups.peer.invite', **IDENTITY)
-    assert permissions(ordinary['grant']) == ['approve', 'dispatch', 'status', 'stop']
+    assert permissions(ordinary['grant']) == ['approve', 'dispatch', 'replicate', 'status', 'stop']
+    opted_out = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=False)
+    assert permissions(opted_out['grant']) == ['approve', 'dispatch', 'status', 'stop']
     copying = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=True)
     assert permissions(copying['grant']) == ['approve', 'dispatch', 'replicate', 'status', 'stop']
-    evidence = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=True, work_records=True)
+    evidence = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, work_records=True)
     assert permissions(evidence['grant']) == ['approve', 'dispatch', 'replicate', 'status', 'stop', 'work_records']
-    passive = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=True, passive_only=True)
+    passive = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, passive_only=True)
     assert permissions(passive['grant']) == ['replicate', 'status']
     passive = await call(gateway.owner, 'groups.peer.invite', **IDENTITY, replication=True, work_records=True,
                          passive_only=True)
     assert permissions(passive['grant']) == ['replicate', 'status', 'work_records']
-    for flags in ({'replication': 'yes'}, {'passive_only': True}, {'replication': True, 'passive_only': 1},
-                  {'work_records': True}, {'replication': True, 'work_records': 'yes'}):
+    for flags in ({'replication': 'yes'}, {'replication': False, 'passive_only': True},
+                  {'replication': True, 'passive_only': 1}, {'replication': False, 'work_records': True},
+                  {'replication': True, 'work_records': 'yes'}):
         assert await call(gateway.owner, 'groups.peer.invite', **IDENTITY, **flags) == 'invalid_params', flags
     member_only = AuthorityConnection(gateway.authority, object(), {'user_id': 'owner'})
     assert await call(member_only, 'groups.peer.invite', **IDENTITY, replication=True) == 'permission_denied'

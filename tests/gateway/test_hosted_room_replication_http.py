@@ -72,9 +72,9 @@ async def test_an_opted_in_invitation_copies_history_into_the_participant_store(
 
 
 @pytest.mark.asyncio
-async def test_an_ordinary_invitation_cannot_be_used_to_copy(api):
+async def test_an_opted_out_invitation_cannot_be_used_to_copy(api):
     async with TestClient(TestServer(api.app)) as http:
-        invitation = await invite(http)
+        invitation = await invite(http, replication=False)
         with pytest.raises(PeerRunsHTTPError) as error:
             await replicate(http, invitation["grant"], api.source)
         assert error.value.status_code == 401
@@ -120,9 +120,9 @@ async def test_a_near_limit_unicode_page_fits_because_it_travels_as_utf8(api):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flags", [
-    {"passive_only": True}, {"replication": "true"}, {"replication": 1, "passive_only": True},
+    {"replication": False, "passive_only": True}, {"replication": "true"}, {"replication": 1, "passive_only": True},
     {"replication": True, "passive_only": None}])
-async def test_opt_in_flags_must_be_explicit_booleans(api, flags):
+async def test_copy_flags_must_be_explicit_booleans(api, flags):
     async with TestClient(TestServer(api.app)) as http:
         response = await http.post("/v1/room-members/invitations", json={
             "room_id": "room", "home_install_id": HOME, "authority_gateway_id": HOME,

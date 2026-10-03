@@ -1,9 +1,10 @@
-"""Passive copies of a canonical Group Chat's history on opted-in participant gateways.
+"""Copies of a canonical Group Chat's history on its member installations, its custodians.
 
-A participant opts in by minting its member grant with ``replicate`` (``groups.peer.invite``
-with ``replication: true``), and with ``work_records`` for task evidence too. Once the home
-registers that grant, this publisher sends the room's log there, one bounded page at a time,
-and each frozen task-evidence record once the history it is anchored to has been acknowledged.
+A member installation's grant carries ``replicate`` unless its operator opted out
+(``groups.peer.invite`` with ``replication: false``), and ``work_records`` when task evidence was
+added. Once the home registers that grant, this publisher sends the room's log there, one bounded
+page at a time, and each frozen task-evidence record once the history it is anchored to has been
+acknowledged.
 Coverage is an acknowledgement, not failover: nothing here moves authority, replays work or
 answers for a lost home. When the room owner prepared a retirement for a participant, its copy
 waits for the participant's confirmation, stops once Disband closes that obligation, and the

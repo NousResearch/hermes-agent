@@ -97,15 +97,15 @@ def _restore_identity_columns(row: Any, msg: MutableMapping[str, Any]) -> None:
 
 
 def _stable_tool_key(row: Any) -> Optional[Tuple[Any, ...]]:
-    """Display-dedupe key of a tool-bearing row built from its stable call id(s) instead of the payload a prune
-    rewrites (#117750: a pruned carried-forward copy must collapse with its durable original). ``None`` when the
-    row has no complete id set, so the caller keeps the full content key and distinct id-less calls never merge."""
-    role = row["role"]
-    if role == "tool" and row["tool_call_id"]:
-        return (role, None, row["timestamp"], row["tool_call_id"], row["tool_calls"], row["tool_name"])
-    calls = _json_or(row["tool_calls"] or "[]", [], "Failed to deserialize tool_calls, falling back to []") \
-        if role == "assistant" else ()
+    """Display-dedupe key of a tool-calling assistant row built from its stable call ids instead of the arguments a
+    prune rewrites (#117750: a pruned carried-forward copy must collapse with its durable original). ``None`` for
+    every other row and for an incomplete id set, so the caller keeps the full content key: a tool RESULT row keeps
+    its payload in the key, because folding the archived full output into its pruned stub would drop the original
+    from compacted history and transcript exports, and distinct id-less calls never merge."""
+    if row["role"] != "assistant":
+        return None
+    calls = _json_or(row["tool_calls"] or "[]", [], "Failed to deserialize tool_calls, falling back to []")
     call_ids = tuple(coalesce_tool_call_id(tc) for tc in calls or ())
     if call_ids and all(call_ids):
-        return (role, None, row["timestamp"], row["tool_call_id"], call_ids, row["tool_name"])
+        return ("assistant", None, row["timestamp"], row["tool_call_id"], call_ids, row["tool_name"])
     return None

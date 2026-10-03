@@ -49,6 +49,7 @@ from hermes_cli.doctor_tools import (
     _check_terminal_backend,
     _check_tool_availability,
 )
+from hermes_cli.doctor_runtime import _check_local_runtime
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
     _check_directory_structure,
@@ -123,6 +124,7 @@ DOCTOR_CHECKS = (
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
     ('Memory Provider', _check_memory_provider), ('NeMo Relay Plugins', _check_relay_plugins),
+    ('Local Models Runtime', _check_local_runtime),
     (None, _check_profiles),
 )
 

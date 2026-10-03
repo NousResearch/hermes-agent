@@ -31,9 +31,9 @@ _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
 def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:
-    expanded = _config._expand_env_vars(raw)
+    expanded = _config._expand_env_vars(_config._canonicalize_config(raw))
     merged = managed_scope.apply_managed_overlay(expanded if isinstance(expanded, dict) else {})
-    return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
+    return _config._canonicalize_config(merged if isinstance(merged, dict) else {})
 
 
 def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> Dict[str, Any]:

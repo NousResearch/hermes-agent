@@ -4222,8 +4222,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _normalize_changed_message(self, event: dict) -> Optional[dict]:
         """Turn a ``message_changed`` envelope into a plain message event.
-        None if malformed or the original was already routed to the agent. The edit's own ts rides
-        along as ``_slack_changed_event_ts`` for dedup."""
+        None if malformed, a Slack-side metadata update, or the original was already routed to the
+        agent. The edit's own ts rides along as ``_slack_changed_event_ts`` for dedup."""
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
@@ -4231,7 +4231,13 @@ class SlackAdapter(BasePlatformAdapter):
         if original_message_ts and original_message_ts in self._processed_message_ts:
             return None
         edited = updated_message.get("edited")
-        edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
+        if not (isinstance(edited, dict) and edited.get("ts")):
+            # Slack also fires ``message_changed`` without ``edited`` for its own metadata updates
+            # (a thread root's reply_count/latest_reply, link unfurls): never the user speaking.
+            # The in-memory ts map is empty after a gateway restart, so it cannot be the only
+            # guard stopping a metadata update from re-routing the root as a new turn (#131688).
+            return None
+        edited_ts = str(edited.get("ts") or "")
         outer_event_ts = str(event.get("ts") or "")
         changed_event_ts = (
             str(event.get("event_ts") or edited_ts or "")

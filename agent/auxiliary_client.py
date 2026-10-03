@@ -1513,9 +1513,10 @@ class _CodexCompletionsAdapter:
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
+        issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
         input_items = _chat_messages_to_responses_input(
             replay_messages, is_github_responses=is_copilot,
-            current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
+            current_issuer_kind=issuer_kind,
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
@@ -1559,6 +1560,8 @@ class _CodexCompletionsAdapter:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
             resp_kwargs["_wire_aliases"] = wire_aliases
+        # Response normalization is route-sensitive too (popped in ``create()``, never sent).
+        resp_kwargs["_issuer_kind"] = issuer_kind
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1602,13 +1605,7 @@ class _CodexCompletionsAdapter:
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
-        # Response normalization is route-sensitive (Codex/xAI/GitHub). Reuse the same
-        # canonical classifier as request replay so reasoning-only and xAI salvage semantics
-        # do not silently fall back to the unknown-issuer behavior.
-        from agent.codex_responses_adapter import _classify_responses_issuer, classify_responses_route
-        host = str(getattr(self._client, "base_url", "") or "")
-        route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
-        issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
+        issuer_kind = resp_kwargs.pop("_issuer_kind", None)
         issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
@@ -1657,10 +1654,7 @@ class _CodexCompletionsAdapter:
             tool_calls=tool_calls_raw or None,
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
-        return SimpleNamespace(
-            choices=[choice], model=model, usage=usage, status=getattr(final, "status", None),
-            incomplete_details=getattr(final, "incomplete_details", None), error=getattr(final, "error", None),
-        )
+        return SimpleNamespace(choices=[choice], model=model, usage=usage)
 
 
 class _ChatShim:

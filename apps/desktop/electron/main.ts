@@ -13963,7 +13963,12 @@ function spawnBrowserWindow(tabId) {
   })
 
   minimizeToTray.registerWindow(win)
-  win.on('closed', () => notifyBrowserPopoutClosed(tabId))
+  win.on('closed', () => {
+    notifyBrowserPopoutClosed(tabId)
+    // Deferred: browserWindows' own self-delete 'closed' listener is attached
+    // after this factory returns, so the size is only accurate next tick.
+    setImmediate(quitIfNoSurfaceLeft)
+  })
 
   loadWindowUrl(
     win,
@@ -19639,21 +19644,24 @@ function registerChatWindow(window: BrowserWindow) {
   })
   window.once('closed', () => {
     chatWindows.delete(window)
-
-    // See shouldQuitOnLastChatClosed (#130810).
-    // Popped-out Browser windows (browserWindows registry) are user-visible
-    // surfaces too, so they keep the app alive.
-    if (
-      shouldQuitOnLastChatClosed({
-        platform: process.platform,
-        isQuittingForHandoff,
-        remainingChatWindows: chatWindows.size + browserWindows.size,
-        quitInProgress
-      })
-    ) {
-      app.quit()
-    }
+    quitIfNoSurfaceLeft()
   })
+}
+
+// Last-surface fallback (#130810), run when a chat window OR a popped-out
+// Browser window closes: popped-out Browser windows are user-visible surfaces
+// too, so they keep the app alive — and closing the last one must quit.
+function quitIfNoSurfaceLeft() {
+  if (
+    shouldQuitOnLastChatClosed({
+      platform: process.platform,
+      isQuittingForHandoff,
+      remainingChatWindows: chatWindows.size + browserWindows.size,
+      quitInProgress
+    })
+  ) {
+    app.quit()
+  }
 }
 
 app.on('before-quit', event => {

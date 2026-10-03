@@ -31,11 +31,14 @@ const ERROR_TITLE_RE =
 export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()
 
-  if (!trimmed || /^https?:\/\//i.test(trimmed)) {
-    return trimmed
+  // Gemma 4 intermittently doubles the scheme (`httpshttps://…`, #25744).
+  const collapsed = trimmed.replace(/^(https?)(https?:\/\/)/i, '$2')
+
+  if (!collapsed || /^https?:\/\//i.test(collapsed)) {
+    return collapsed
   }
 
-  return DOMAIN_RE.test(trimmed) ? `https://${trimmed}` : trimmed
+  return DOMAIN_RE.test(collapsed) ? `https://${collapsed}` : collapsed
 }
 
 function parseUrl(value: string): null | URL {

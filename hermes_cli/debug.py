@@ -322,7 +322,7 @@ def _capture_log_snapshot(
             all_text = all_text.split("\n", 1)[1] if "\n" in all_text else ""
         tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
         full_text, capped = _truncate_complete_lines(all_text, max_bytes)
-        truncated = bool(start_offset or capped or size > max_bytes)
+        truncated = capped or size > max_bytes
         if truncated:
             full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
         return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)

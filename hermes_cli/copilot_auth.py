@@ -54,6 +54,13 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _copilot_env_value(name: str) -> str:
+    """Read Copilot account state from the active profile's secret scope."""
+    from agent.secret_scope import get_secret_str
+
+    return get_secret_str(name).strip()
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use → (token, source); ("", "") if none.
 
@@ -61,7 +68,7 @@ def resolve_copilot_token() -> tuple[str, str]:
     """
     any_env_var_set = False
     for env_var in COPILOT_ENV_VARS:
-        val = os.getenv(env_var, "").strip()
+        val = _copilot_env_value(env_var)
         if not val:
             continue
         any_env_var_set = True
@@ -104,30 +111,33 @@ def _gh_cli_candidates() -> list[str]:
 # miss made one settings page a 4×5s stall past Desktop's 15s IPC budget. Short TTL keeps a
 # fresh ``gh auth login`` discoverable.
 _GH_CLI_TOKEN_CACHE_TTL_SECONDS = 300.0
-_gh_cli_token_cache: tuple[float, Optional[str]] | None = None
+_gh_cli_token_cache: dict[tuple[str, str], tuple[float, Optional[str]]] = {}
 
 
 def _invalidate_gh_cli_token_cache() -> None:
     """Reset the ``gh auth token`` probe cache (used by tests and re-auth flows)."""
-    global _gh_cli_token_cache
-    _gh_cli_token_cache = None
+    _gh_cli_token_cache.clear()
 
 
 def _try_gh_cli_token() -> Optional[str]:
     """Token from ``gh auth token`` when available; the result (incl. a miss) is cached per TTL."""
-    global _gh_cli_token_cache
+    from hermes_constants import hermes_home_key
+
+    hostname = _copilot_env_value("COPILOT_GH_HOST")
+    cache_key = (hermes_home_key(), hostname)
     now = time.monotonic()
-    cache = _gh_cli_token_cache
+    cache = _gh_cli_token_cache.get(cache_key)
     if cache is not None and now - cache[0] < _GH_CLI_TOKEN_CACHE_TTL_SECONDS:
         return cache[1]
-    token = _probe_gh_cli_token()
-    _gh_cli_token_cache = (now, token)
+    token = _probe_gh_cli_token(hostname=hostname)
+    _gh_cli_token_cache[cache_key] = (now, token)
     return token
 
 
-def _probe_gh_cli_token() -> Optional[str]:
+def _probe_gh_cli_token(*, hostname: Optional[str] = None) -> Optional[str]:
     """Uncached ``gh auth token`` subprocess probe (see ``_try_gh_cli_token``)."""
-    hostname = os.getenv("COPILOT_GH_HOST", "").strip()
+    if hostname is None:
+        hostname = _copilot_env_value("COPILOT_GH_HOST")
     # gh must not short-circuit on GITHUB_TOKEN / GH_TOKEN, nor prompt from a backend process.
     clean_env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
     clean_env.setdefault("GH_PROMPT_DISABLED", "1")
@@ -213,7 +223,8 @@ def copilot_device_code_login(
     return None
 
 
-# In-process cache: raw_token_fingerprint -> (api_token, expires_at_epoch, base_url).
+# In-process cache: profile-qualified raw-token fingerprint ->
+# (api_token, expires_at_epoch, base_url).
 _jwt_cache: dict[str, tuple[str, float, Optional[str]]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 # Exchange endpoint and headers (matching VS Code / Copilot CLI)
@@ -254,8 +265,11 @@ _EXCHANGE_PERMANENT_HTTP_STATUSES = frozenset({401, 403, 404})
 
 
 def _token_fingerprint(raw_token: str) -> str:
-    """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
-    return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+    """Short profile-qualified fingerprint for Copilot exchange state."""
+    from hermes_constants import hermes_home_key
+
+    material = f"{hermes_home_key()}\0{raw_token}".encode()
+    return hashlib.sha256(material).hexdigest()[:16]
 
 
 def _read_jwt_store(path: Path) -> Optional[dict]:

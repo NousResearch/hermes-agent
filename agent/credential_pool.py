@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
@@ -2681,16 +2681,17 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     })
 
 
-# Warn once per token per process when Copilot exchange degrades to raw token (#114740).
-_COPILOT_RAW_DEGRADATION_WARNED: Set[str] = set()
+# Warn once per token and profile when Copilot exchange degrades to raw token (#114740).
+_COPILOT_RAW_DEGRADATION_WARNED: Set[Tuple[str, str]] = set()
 
 
 def _warn_copilot_raw_degradation_once(token: str) -> None:
-    """WARN once per token per process when Copilot exchange degrades to raw token (#114740)."""
+    """WARN once per token and profile when Copilot exchange degrades to raw token (#114740)."""
     fingerprint = fingerprint_secret_value(token) or "unknown"
-    if fingerprint in _COPILOT_RAW_DEGRADATION_WARNED:
+    cache_key = (hermes_home_key(), fingerprint)
+    if cache_key in _COPILOT_RAW_DEGRADATION_WARNED:
         return
-    _COPILOT_RAW_DEGRADATION_WARNED.add(fingerprint)
+    _COPILOT_RAW_DEGRADATION_WARNED.add(cache_key)
     logger.warning(
         "Copilot token exchange degraded to RAW token (exchange "
         "unavailable); enterprise-only models may 400 with "

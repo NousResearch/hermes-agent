@@ -13,6 +13,7 @@ import copy
 import difflib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -1620,6 +1621,15 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
     if raw is None or isinstance(raw, bool):
         return default
     if isinstance(raw, (int, float)):
+        # YAML spells infinity as ``.inf`` and not-a-number as ``.nan``; bare
+        # int() raises OverflowError / ValueError on them. Route ±inf to the
+        # same "no limit" meaning as the string spellings (and the n <= 0 arm
+        # below), and fall back to default for NaN — don't crash the agent
+        # over a bad config.
+        if isinstance(raw, float) and not math.isfinite(raw):
+            if math.isinf(raw):
+                return TURN_LIMIT_UNLIMITED
+            return default
         n = int(raw)
     elif isinstance(raw, str):
         s = raw.strip().lower()

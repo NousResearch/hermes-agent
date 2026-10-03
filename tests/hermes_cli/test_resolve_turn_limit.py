@@ -31,6 +31,28 @@ class TestNumericValues:
         assert resolve_turn_limit(-5) == TURN_LIMIT_UNLIMITED
 
 
+class TestNonFiniteFloats:
+    """YAML spells infinity as ``.inf`` and not-a-number as ``.nan`` — both
+    arrive here as non-finite floats, which crashed the numeric branch
+    (OverflowError / ValueError from bare ``int()``) instead of resolving
+    like their string spellings already do."""
+
+    def test_positive_inf_float_is_unlimited(self):
+        assert resolve_turn_limit(float("inf")) == TURN_LIMIT_UNLIMITED
+
+    def test_negative_inf_float_is_unlimited(self):
+        # Consistent with -5 / 0 / -1: non-positive → unlimited.
+        assert resolve_turn_limit(float("-inf")) == TURN_LIMIT_UNLIMITED
+
+    def test_nan_float_returns_default(self):
+        assert resolve_turn_limit(float("nan")) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit(float("nan"), default=500) == 500
+
+    def test_inf_string_still_unlimited(self):
+        # Behavior guard: the string spelling never crashed.
+        assert resolve_turn_limit("inf") == TURN_LIMIT_UNLIMITED
+
+
 
 class TestUnlimitedSpellings:
     @pytest.mark.parametrize("spelling", [

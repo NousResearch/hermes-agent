@@ -477,7 +477,9 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
-| `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
+| `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on the `HermesCLI.process_command()` path and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). CLI quick-alias and unique-prefix redispatch fires once at the final canonical dispatch. TUI/Desktop commands delegated to a `slash.exec` worker use the CLI path; their direct `command.dispatch`, dedicated RPC, and local-action paths do not. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are excluded. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
+| `post_command` | Observer | After a recognized `HermesCLI.process_command()` handler completes (interactive CLI and TUI/Desktop `slash.exec` worker fallbacks only). Fires once at the final canonical dispatch, including when invalid `/quit`/`/exit` arguments keep dispatch alive; omitted when a successful quit emits `on_quit` instead. Direct `command.dispatch`, dedicated RPC, local-action, and gateway paths do not fire it. Return ignored. | `surface` (`"cli"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` (`"cli"`) | `args_raw` may contain user content or secrets typed after the command. No CLI, prompt, agent, or session-DB object is exposed. |
+| `on_quit` | Observer | After a recognized `/quit` or `/exit` handler accepts its arguments and immediately before `HermesCLI.process_command()` returns `False`. Fires exactly once instead of `post_command`; this observes the return boundary, even when a `slash.exec` worker caller ignores the exit signal. Direct `command.dispatch`, dedicated RPC, local-action, and gateway paths do not fire it. Return ignored. | `surface` (`"cli"`), `command` (`"quit"`), `alias_used`, `args_raw`, `session_key`, `platform` (`"cli"`) | `args_raw` may contain user content or secrets typed after the command. No CLI, prompt, agent, or session-DB object is exposed. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
@@ -489,6 +491,32 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
+
+### Command lifecycle hooks
+
+These are dispatch-path observers, not a generic app-wide slash-command
+lifecycle. `pre_command` spans `HermesCLI.process_command()` and the gateway's
+cold command path. `post_command` and `on_quit` exist only on the
+`HermesCLI.process_command()` path. That path is used by the interactive CLI and
+by the persistent `slash.exec` worker that handles some TUI/Desktop fallback
+commands; those worker events still report `surface="cli"` and
+`platform="cli"`. TUI/Desktop `command.dispatch`, dedicated RPC, and local
+action paths bypass all three CLI fire sites, while gateway dispatch fires only
+`pre_command`. Register them like any other plugin hook:
+
+```python
+def register(ctx):
+    ctx.register_hook("pre_command", observe_before)
+    ctx.register_hook("post_command", observe_after)
+    ctx.register_hook("on_quit", flush_before_cli_exit)
+```
+
+All three receive the same metadata envelope shown in the catalog. They do not
+receive a `HermesCLI` instance, the agent, conversation history, or prompt/cache
+objects. Return values are ignored, callback failures are isolated, and command
+results are unchanged. Quick-command aliases and unique-prefix expansion are
+resolved recursively before the recognized dispatch leaf, so each lifecycle
+boundary fires once without persistent anti-reentry state.
 
 ---
 

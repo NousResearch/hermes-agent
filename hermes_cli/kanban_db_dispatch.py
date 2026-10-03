@@ -2491,8 +2491,80 @@ def _rotate_worker_log(
 
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``python -m hermes_cli.main`` is only safe when ``hermes_cli`` is
+    importable WITHOUT the repo on ``sys.path``. On a git checkout booted by
+    a bare runtime python (the Windows desktop app), the module resolves
+    only through the repo dir, so a worker spawned with ``cwd=<workspace>``
+    crashes with ModuleNotFoundError. Probe this interpreter first; on
+    failure fall back to a sibling venv interpreter verified the same way.
+    """
+    if _python_imports_hermes_cli(sys.executable):
+        return [sys.executable, "-m", "hermes_cli.main"]
+    import importlib.util
+    module_file = getattr(
+        importlib.util.find_spec("hermes_cli") if importlib.util else None,
+        "origin",
+        None,
+    )
+    if module_file:
+        venv_python = _find_venv_python_for_hermes_cli(module_file)
+        if venv_python:
+            return [venv_python, "-m", "hermes_cli.main"]
     return [sys.executable, "-m", "hermes_cli.main"]
+
+
+def _python_imports_hermes_cli(python: str) -> bool:
+    """True when ``python`` imports ``hermes_cli`` WITHOUT the repo on sys.path.
+
+    Probes with cwd set to the user home so a git-checkout import that relies
+    on the repo dir being on ``sys.path`` (bare runtime python in the Windows
+    desktop app) fails the probe. A pip-installed interpreter passes.
+    """
+    try:
+        probe = subprocess.run(
+            [python, "-c", "import hermes_cli"],
+            capture_output=True,
+            cwd=os.path.expanduser("~"),
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
+def _find_venv_python_for_hermes_cli(module_file: str) -> Optional[str]:
+    """Find a venv interpreter that imports ``hermes_cli`` cwd-independently.
+
+    Walks up from the module file looking for
+    ``<dir>/{,.}venv/Scripts/python.exe`` (Windows) or
+    ``<dir>/{,.}venv/bin/python`` (POSIX) — the layout of a git checkout's
+    own virtualenv — and returns the first candidate that passes
+    :func:`_python_imports_hermes_cli`. Returns ``None`` when nothing
+    verifiable exists.
+    """
+    package_root = os.path.dirname(os.path.abspath(module_file))
+    candidates: list[str] = []
+    directory = os.path.dirname(package_root)
+    for _ in range(4):
+        for rel in (
+            ("venv", "Scripts", "python.exe"),
+            ("venv", "bin", "python"),
+            (".venv", "Scripts", "python.exe"),
+            (".venv", "bin", "python"),
+        ):
+            candidate = os.path.join(directory, *rel)
+            if os.path.isfile(candidate):
+                candidates.append(candidate)
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    for candidate in candidates:
+        if _python_imports_hermes_cli(candidate):
+            return candidate
+    return None
 
 
 def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:

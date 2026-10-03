@@ -44,18 +44,33 @@ class SpotifyClient:
         return str(self._runtime.get("base_url") or "").rstrip("/")
 
     def request(
-        self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None, json_body: Optional[Dict[str, Any]] = None,
+        self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None, raw_body: Optional[str | bytes] = None,
+        content_type: str = "application/json",
         allow_retry_on_401: bool = True, empty_response: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        response = httpx.request(
-            method, f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {self._runtime['access_token']}", "Content-Type": "application/json"},
-            params=_strip_none(params), json=_strip_none(json_body) if json_body is not None else None, timeout=30.0,
-        )
+        if raw_body is not None and json_body is not None:
+            raise SpotifyError("Spotify request cannot include both json_body and raw_body.")
+        request_kwargs: Dict[str, Any] = {
+            "headers": {
+                "Authorization": f"Bearer {self._runtime['access_token']}",
+                "Content-Type": content_type,
+            },
+            "params": _strip_none(params),
+            "timeout": 30.0,
+        }
+        if raw_body is not None:
+            request_kwargs["content"] = raw_body
+        else:
+            request_kwargs["json"] = _strip_none(json_body) if json_body is not None else None
+        response = httpx.request(method, f"{self.base_url}{path}", **request_kwargs)
         if response.status_code == 401 and allow_retry_on_401:
             # One forced token refresh, then retry exactly once.
             self._runtime = self._resolve_runtime(force_refresh=True, refresh_if_expiring=True)
-            return self.request(method, path, params=params, json_body=json_body, allow_retry_on_401=False)
+            return self.request(
+                method, path, params=params, json_body=json_body, raw_body=raw_body,
+                content_type=content_type, allow_retry_on_401=False, empty_response=empty_response,
+            )
         if response.status_code >= 400:
             detail = response.text.strip()
             message = _friendly_spotify_error_message(

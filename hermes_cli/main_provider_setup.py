@@ -937,6 +937,16 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],
              bool(active) and key == active)
 
+    # Put the active provider/group first so the picker opens on the current
+    # route while retaining a zero default index for the prompt.
+    if default_idx:
+        ordered.insert(0, ordered.pop(default_idx))
+        default_idx = 0
+    if ordered and ordered[0][2] and active in ordered[0][2]:
+        members = list(ordered[0][2])
+        members.insert(0, members.pop(members.index(active)))
+        ordered[0] = (ordered[0][0], ordered[0][1], members)
+
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
         ordered.append(("remove-custom", "Remove a saved custom provider", []))

@@ -1,0 +1,60 @@
+{
+  "AUDITED_AT": "2026-08-31T15:18:27.666957+07:00",
+  "TARGETS": [
+    {
+      "target": "codex",
+      "status": "ALREADY_CONFIGURED",
+      "command_path": "C:\\Users\\Vu Tuan\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.EXE",
+      "rule_path": "C:\\Users\\Vu Tuan\\.codex\\AGENTS.md",
+      "config_path": "C:\\Users\\Vu Tuan\\.codex\\config.toml",
+      "actual_rule_locations": [
+        "C:\\Users\\Vu Tuan\\.codex\\AGENTS.md"
+      ],
+      "reason": null
+    },
+    {
+      "target": "claude",
+      "status": "NOT_INSTALLED",
+      "command_path": null,
+      "rule_path": "C:\\Users\\Vu Tuan\\.claude\\CLAUDE.md",
+      "config_path": "C:\\Users\\Vu Tuan\\.claude",
+      "actual_rule_locations": [
+        "C:\\Users\\Vu Tuan\\.claude\\CLAUDE.md"
+      ],
+      "reason": "Executable not found on PATH."
+    },
+    {
+      "target": "cursor",
+      "status": "UNSUPPORTED",
+      "command_path": "C:\\Users\\Vu Tuan\\AppData\\Local\\Programs\\cursor\\resources\\app\\bin\\cursor.CMD",
+      "rule_path": null,
+      "config_path": "C:\\Users\\Vu Tuan\\.cursor\\cli-config.json",
+      "actual_rule_locations": [
+        ".cursorrules",
+        ".cursor/rules/*.mdc"
+      ],
+      "reason": "Only project-local .cursorrules or .cursor/rules/*.mdc are proven; no deterministic per-user rule file is used here."
+    },
+    {
+      "target": "gemini",
+      "status": "NOT_INSTALLED",
+      "command_path": null,
+      "rule_path": null,
+      "config_path": null,
+      "actual_rule_locations": [],
+      "reason": "No stable local rule location was proven in this machine state."
+    },
+    {
+      "target": "hermes",
+      "status": "REQUIRES_RESTART",
+      "command_path": "C:\\Users\\Vu Tuan\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\hermes.EXE",
+      "rule_path": "C:\\Users\\Vu Tuan\\AppData\\Local\\hermes\\worktrees\\agent-os-rollout-v1-clean\\AGENTS.md",
+      "config_path": "C:\\Users\\Vu Tuan\\.hermes\\config.yaml",
+      "actual_rule_locations": [
+        "C:\\Users\\Vu Tuan\\AppData\\Local\\hermes\\worktrees\\agent-os-rollout-v1-clean\\SOUL.md",
+        "C:\\Users\\Vu Tuan\\AppData\\Local\\hermes\\worktrees\\agent-os-rollout-v1-clean\\AGENTS.md"
+      ],
+      "reason": "Runtime activation must be deferred until active Hermes work is quiescent."
+    }
+  ]
+}

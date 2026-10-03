@@ -1,0 +1,34 @@
+{
+  "VERIFIED_AT": "2026-08-31T15:18:27.666957+07:00",
+  "APPLY_RESULT": {
+    "target": "codex",
+    "status": "ALREADY_CONFIGURED",
+    "rule_path": "C:\\Users\\Vu Tuan\\.codex\\AGENTS.md",
+    "rule_version": "AGENT-OS-V1-20260831-7F3C72A1",
+    "rule_loaded": true,
+    "existing_user_content_preserved": true,
+    "idempotent_second_apply": true,
+    "applied": true
+  },
+  "READBACK": {
+    "exists": true,
+    "managed_block_present": true,
+    "rule_loaded": true,
+    "rule_version": "AGENT-OS-V1-20260831-7F3C72A1"
+  },
+  "FINAL": {
+    "agent_os_rule_version": "AGENT-OS-V1-20260831-7F3C72A1",
+    "prior_work_reuse": true,
+    "no_full_rediscovery_on_proven_work": true,
+    "first_unproven_boundary_resume": true,
+    "one_writer_semantics": true,
+    "no_meaningful_ceremony_for_tiny_task": true,
+    "next_action": "IMPLEMENT_TINY"
+  },
+  "COMMAND_EXECUTION_COMPLETED": 1,
+  "USED_UPDATE_PLAN": false,
+  "AGENT_MESSAGE_COUNT": 1,
+  "COMMANDS": [
+    "\"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -Command \"python \\\"C:/Users/Vu Tuan/AppData/Local/hermes/worktrees/agent-os-rollout-v1-clean/scripts/prior_work_first.py\\\" check --repo-root \\\".\\\" --packet \\\"C:\\\\Users\\\\Vu Tuan\\\\AppData\\\\Local\\\\hermes\\\\worktrees\\\\agent-os-rollout-v1-clean\\\\.pytest-tmp-agent-os\\\\codex-canary\\\\repo\\\\.task-state\\\\prior-work-first\\\\demo-capability\\\\active.packet.json\\\" --machine-evidence \\\"C:\\\\Users\\\\Vu Tuan\\\\AppData\\\\Local\\\\hermes\\\\worktrees\\\\agent-os-rollout-v1-clean\\\\.pytest-tmp-agent-os\\\\codex-canary\\\\repo\\\\machine_evidence.json\\\"\""
+  ]
+}

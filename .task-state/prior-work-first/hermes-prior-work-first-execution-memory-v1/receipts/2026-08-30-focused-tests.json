@@ -1,0 +1,22 @@
+{
+  "PROGRAM_ID": "HERMES-PRIOR-WORK-FIRST-EXECUTION-MEMORY-V1",
+  "CAPABILITY_ID": "HERMES-PRIOR-WORK-FIRST-EXECUTION-MEMORY-V1",
+  "STATUS": "PASS",
+  "VERIFIED_AT": "2026-08-30T11:44:39.9882021+07:00",
+  "WORKTREE": "C:/Users/Vu Tuan/AppData/Local/hermes/worktrees/prior-work-first-execution-memory-v1",
+  "BRANCH": "feat/prior-work-first-execution-memory-v1",
+  "ACCEPTED_HEAD": "3a336b8ab1757f75cb796f73d35b5200c45353c5",
+  "ACCEPTED_TREE": "54ff3dbefda912a65226541c38ee7d5c2d50d89e",
+  "ACCEPTED_PARENT": "7974025bbe700a1161dbada167c3c47612113ae2",
+  "TEST_COMMANDS": [
+    {
+      "command": "python -m pytest tests/agent/test_prior_work_first.py --basetemp .pytest-tmp",
+      "result": "PASS",
+      "details": "10 passed in 1.81s"
+    }
+  ],
+  "NOTES": [
+    "The default Windows pytest temp root under AppData/Local/Temp was access denied in this environment.",
+    "Focused verification used a workspace-local basetemp and did not require Hermes runtime restart or reload."
+  ]
+}

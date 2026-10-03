@@ -1,0 +1,17 @@
+{
+  "PROGRAM_ID": "HERMES-AGENT-OS-ROLLOUT-V1",
+  "CAPABILITY_ID": "HERMES-AGENT-OS-ROLLOUT-V1",
+  "STATUS": "PASS",
+  "VERIFIED_AT": "2026-08-31T15:18:27.666957+07:00",
+  "WORKTREE": "C:\\Users\\Vu Tuan\\AppData\\Local\\hermes\\worktrees\\agent-os-rollout-v1-clean",
+  "BRANCH": "feat/agent-os-rollout-v1-clean",
+  "HEAD": "75a99cc7f9a36a12aa00c8c844ebb1f9363bace8",
+  "TREE": "ce0cc19cef73052c26c4940e682578fdbe02667c",
+  "TEST_COMMANDS": [
+    {
+      "command": "python -m pytest tests/agent/test_prior_work_first.py tests/agent/test_continuous_completion.py tests/agent/test_agent_os_install.py --basetemp .pytest-tmp-agent-os",
+      "result": "PASS",
+      "details": "19 passed in 2.51s"
+    }
+  ]
+}

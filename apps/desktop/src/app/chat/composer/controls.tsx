@@ -19,6 +19,8 @@ import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
+import { WorkhorseModelPill } from './workhorse-model-pill'
+import { WorkhorseReasoningPill } from './workhorse-reasoning-pill'
 
 // Re-exported: `context-menu.tsx` and other row neighbours have always reached
 // for these here, and the row is where they read as belonging.
@@ -119,6 +121,8 @@ export function ComposerControls({
         <>
           {hideModelPill ? null : (
             <>
+              <WorkhorseModelPill compact={compactModelPill} disabled={disabled} />
+              {compactModelPill ? null : <WorkhorseReasoningPill disabled={disabled} />}
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
               {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
             </>

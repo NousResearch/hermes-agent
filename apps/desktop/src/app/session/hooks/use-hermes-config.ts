@@ -30,7 +30,18 @@ import {
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
 const DEFAULT_VOICE_SECONDS = 120
-const FAST_TIERS = new Set(['fast', 'priority', 'on', 'ultrafast'])
+const FAST_TIERS = new Set(['fast', 'priority', 'on'])
+
+/** `agent.service_tier` is whatever the user wrote (`flex`, `scale`, `auto`, …);
+ *  the composer only speaks the three exact tiers `session.create` accepts.
+ *  Unset stays unset (the profile default rides). */
+function composerServiceTier(value: unknown): string {
+  const tier = String(value ?? '')
+    .trim()
+    .toLowerCase()
+
+  return !tier ? '' : tier === 'ultrafast' ? 'ultrafast' : FAST_TIERS.has(tier) ? 'priority' : 'normal'
+}
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
@@ -101,7 +112,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         ])
 
         const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
-        const tier = String(config.agent?.service_tier || '').trim()
+        const tier = composerServiceTier(config.agent?.service_tier)
 
         // Publish the profile default regardless of whether the composer is
         // reseeded below: picker rows and preset application resolve "the
@@ -124,7 +135,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           }
 
           setCurrentReasoningEffort(reasoning)
-          setCurrentFastMode(FAST_TIERS.has(tier.toLowerCase()))
+          setCurrentFastMode(tier === 'priority' || tier === 'ultrafast')
           setCurrentServiceTier(tier)
         }
 

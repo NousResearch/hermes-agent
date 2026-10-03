@@ -394,17 +394,17 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
   const rawSrc = typeof props.src === 'string' ? props.src : ''
   const kind = rawSrc ? mediaKind(rawSrc) : 'file'
 
-  if (kind === 'video' || kind === 'audio') {
-    return <MediaAttachment path={rawSrc} />
+  // Assistant-authored remote media is untrusted content. Rendering it as an
+  // <img>, <video>, or <audio> causes the renderer to fetch the URL merely by
+  // displaying a reply, which lets prompt-injected text exfiltrate data without
+  // a click. Keep the explicit-open affordance while retaining automatic
+  // previews for local and tool-produced media.
+  if (/^https?:\/\//i.test(rawSrc)) {
+    return <PrettyLink fallbackLabel={String(props.alt || 'Open media')} href={normalizeExternalUrl(rawSrc)} />
   }
 
-  // Assistant-authored remote images are untrusted content. Rendering them as
-  // an <img> causes the renderer to fetch the URL merely by displaying a
-  // reply, which lets prompt-injected text exfiltrate data without a click.
-  // Keep the explicit-open affordance while retaining automatic previews for
-  // local and tool-produced media.
-  if (/^https?:\/\//i.test(rawSrc)) {
-    return <PrettyLink fallbackLabel={String(props.alt || 'Open image')} href={normalizeExternalUrl(rawSrc)} />
+  if (kind === 'video' || kind === 'audio') {
+    return <MediaAttachment path={rawSrc} />
   }
 
   return <MarkdownImageContent {...props} />

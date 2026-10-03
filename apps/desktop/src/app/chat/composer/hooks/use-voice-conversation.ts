@@ -26,8 +26,35 @@ import { useMicRecorder } from './use-mic-recorder'
 
 export type ConversationStatus = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'
 
+/**
+ * Where `spoken` ends inside `text`. Normally `text` simply extends `spoken`.
+ * When hydration rewrites the turn — the live bubbles folded into one durable
+ * row — the words are the same but the whitespace between bubbles is not, so
+ * a character count taken from the live text points at the wrong place (it
+ * skips words, or re-reads them). Match on non-whitespace characters instead.
+ */
+export function speechResumeOffset(spoken: string, text: string): number {
+  if (text.startsWith(spoken)) {
+    return spoken.length
+  }
+
+  let remaining = spoken.replace(/\s+/g, '').length
+  let index = 0
+
+  while (index < text.length && remaining > 0) {
+    if (!/\s/.test(text[index] ?? '')) {
+      remaining -= 1
+    }
+
+    index += 1
+  }
+
+  return index
+}
+
 interface PendingVoiceResponse {
   id: string
+  turnKey?: string
   pending: boolean
   text: string
 }
@@ -114,7 +141,8 @@ export function useVoiceConversation({
   // transcribe, submit, or move status.
   const conversationRef = useRef<Conversation | null>(null)
   const responseIdRef = useRef<string | null>(null)
-  const spokenSourceLengthRef = useRef(0)
+  const responseTurnKeyRef = useRef<string | null>(null)
+  const spokenSourceRef = useRef('')
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
@@ -214,7 +242,8 @@ export function useVoiceConversation({
     bargeEchoTextRef.current = ''
     speechSessionRef.current = null
     responseIdRef.current = null
-    spokenSourceLengthRef.current = 0
+    responseTurnKeyRef.current = null
+    spokenSourceRef.current = ''
   }
 
   const handleTurn = useCallback(
@@ -438,7 +467,8 @@ export function useVoiceConversation({
         // utterance callback transcribes and submits when they go quiet.
         speechSessionRef.current = null
         responseIdRef.current = null
-        spokenSourceLengthRef.current = 0
+        responseTurnKeyRef.current = null
+        spokenSourceRef.current = ''
         setStatus('listening')
 
         return
@@ -668,20 +698,23 @@ export function useVoiceConversation({
 
   /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
-    (responseId: string) => {
+    (responseId: string, responseTurnKey: string) => {
       const session = speechSessionRef.current
 
-      if (!session || responseIdRef.current !== responseId) {
+      if (!session || responseIdRef.current !== responseId || responseTurnKeyRef.current !== responseTurnKey) {
         return
       }
 
       const response = pendingResponse()
 
-      if (response && response.id === responseId) {
-        if (response.text.length > spokenSourceLengthRef.current) {
-          session.append(response.text.slice(spokenSourceLengthRef.current))
-          spokenSourceLengthRef.current = response.text.length
+      if (response && (response.turnKey ?? response.id) === responseTurnKey) {
+        const resumeAt = speechResumeOffset(spokenSourceRef.current, response.text)
+
+        if (response.text.length > resumeAt) {
+          session.append(response.text.slice(resumeAt))
         }
+
+        spokenSourceRef.current = response.text
 
         if (!response.pending) {
           // A sealed interim is a committed boundary even while its tool runs.
@@ -848,7 +881,7 @@ export function useVoiceConversation({
    * — no wait for the full reply, no per-sentence gaps.
    */
   const openLiveSpeech = useCallback(
-    (responseId: string) => {
+    (responseId: string, responseTurnKey: string) => {
       if (responseIdRef.current === responseId) {
         return
       }
@@ -856,7 +889,8 @@ export function useVoiceConversation({
       const sequenceBeforeStart = $voicePlayback.get().sequence
 
       responseIdRef.current = responseId
-      spokenSourceLengthRef.current = 0
+      responseTurnKeyRef.current = responseTurnKey
+      spokenSourceRef.current = ''
       setStatus('speaking')
 
       // VAD barge-in: the user talking over the reply cuts playback, drops
@@ -915,8 +949,8 @@ export function useVoiceConversation({
 
         // Timer-driven feed: reply text flows into the session at delta rate
         // regardless of React render cadence.
-        const feedTimer = window.setInterval(() => feedSpeechSession(responseId), 150)
-        feedSpeechSession(responseId)
+        const feedTimer = window.setInterval(() => feedSpeechSession(responseId, responseTurnKey), 150)
+        feedSpeechSession(responseId, responseTurnKey)
 
         const outcome = await session.done
         window.clearInterval(feedTimer)
@@ -1087,7 +1121,7 @@ export function useVoiceConversation({
       }
 
       if (response) {
-        openLiveSpeech(response.id)
+        openLiveSpeech(response.id, response.turnKey ?? response.id)
 
         return
       }

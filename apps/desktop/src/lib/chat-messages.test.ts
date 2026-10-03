@@ -1507,6 +1507,35 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
   })
 
+  it('reads a folded tool turn with the same breaks as its live bubbles', () => {
+    const live = [
+      user('u1', 'what time is it, and what is this machine called?'),
+      assistant('a1', 'Let me check the clock.', { interim: true }),
+      assistant('a2', 'Now the host name.', { interim: true }),
+      assistant('a3', 'All done.')
+    ]
+
+    const folded = [
+      user('u1', 'what time is it, and what is this machine called?'),
+      {
+        id: 'durable-1',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'Let me check the clock.' },
+          toolCallPart('call_date'),
+          { type: 'text', text: 'Now the host name.' },
+          toolCallPart('call_hostname'),
+          { type: 'text', text: 'All done.' }
+        ]
+      } as ChatMessage
+    ]
+
+    expect(collectUnspokenTurnSpeech(folded, null)?.text).toBe(collectUnspokenTurnSpeech(live, null)?.text)
+    expect(collectUnspokenTurnSpeech(folded, null)?.text).toBe(
+      'Let me check the clock.\n\nNow the host name.\n\nAll done.'
+    )
+  })
+
   it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
     const messages = [
       user('u1', 'old question'),

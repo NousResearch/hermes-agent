@@ -3,12 +3,14 @@ import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
+import { chatMessageSpeechText, chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   adoptSpokenReplySession,
   assistantTurnKey,
   markAssistantIdSpoken,
+  markTurnSpokenThrough,
+  nextUnspokenTurnPiece,
   resolveSpokenReply
 } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
@@ -126,28 +128,37 @@ export function useComposerVoice({
     }
   }, [capturing, surfaceId])
 
-  /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
+  /**
+   * Auto-speak selector: the current turn's next unspoken bubble — narration
+   * and answer in order, each once. Earlier turns are never read, so a backlog
+   * collapses to the newest. See `nextUnspokenTurnPiece`.
+   */
   const pendingResponse = () => {
     const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-    const spoken = resolveSpokenReply(sessionId, messages)
+    const piece = nextUnspokenTurnPiece(sessionId, messages, chatMessageSpeechText)
 
-    if (!last || last.id === spoken?.id) {
-      return null
-    }
-
-    const text = chatMessageText(last).trim()
-
-    if (!text) {
+    if (!piece) {
       return null
     }
 
     return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      text,
-      turnKey: assistantTurnKey(sessionId, messages, last.id)
+      id: piece.id,
+      pending: piece.pending,
+      text: piece.text,
+      through: piece.through,
+      // One claim per piece: the turn alone would refuse its second bubble.
+      turnKey: `${assistantTurnKey(sessionId, messages, piece.id)}@${piece.start}`
     }
+  }
+
+  const markAutoSpokenReply = (reply?: { id: string; through?: string }) => {
+    if (reply?.through === undefined) {
+      consumePendingResponse()
+
+      return
+    }
+
+    markTurnSpokenThrough(sessionId, $messages.get(), reply.id, reply.through)
   }
 
   /**
@@ -158,7 +169,9 @@ export function useComposerVoice({
   const pendingTurnResponse = () => {
     const messages = $messages.get()
 
-    return collectUnspokenTurnSpeech(messages, resolveSpokenReply(sessionId, messages)?.id ?? null)
+    const response = collectUnspokenTurnSpeech(messages, resolveSpokenReply(sessionId, messages)?.id ?? null)
+
+    return response ? { ...response, turnKey: assistantTurnKey(sessionId, messages, response.id) } : null
   }
 
   const consumePendingResponse = () => {
@@ -439,7 +452,7 @@ export function useComposerVoice({
   useAutoSpeakReplies({
     conversationActive: voiceConversationActive,
     failureLabel: t.assistant.thread.readAloudFailed,
-    markSpoken: consumePendingResponse,
+    markSpoken: markAutoSpokenReply,
     pendingReply: pendingResponse,
     sessionId
   })

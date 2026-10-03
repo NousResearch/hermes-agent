@@ -1,13 +1,13 @@
 name: connectivity
 repo: https://github.com/trookish/hermes-connectivity
-sha: 9431bab28dc595d69592eb917382552fc9614a1a
-description: Diagnose why another device cannot reach this Hermes — Tailscale tailnet state and peer devices, every Hermes listener with its bind address, auth mode and copy-ready loopback / LAN / tailnet URLs plus a live probe for each, firewall profile state, netcheck, per-device ping, and daemon or logon-startup status, in one Desktop pane.
+sha: eacff18a31970bda33508d602cfc75e7033fdaff
+description: Diagnose and fix why another device cannot reach this Hermes — Tailscale tailnet state and peer devices, every Hermes listener with its bind address, auth mode and copy-ready loopback / LAN / tailnet URLs plus a live probe for each, then a user-initiated action for whatever is not live (start a stopped surface, connect the tailnet, start the daemons, create logon launchers, add the inbound firewall rule — Administrator work hands over the exact command) and a configuration editor for the surfaces it tracks.
 maintainer: trookish
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/trookish/hermes-connectivity#readme
-version: "1.0.0"
+version: "1.1.0"
 platforms: [windows]
 capabilities:
   provides_tools: []

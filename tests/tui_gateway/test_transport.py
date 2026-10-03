@@ -13,7 +13,11 @@ def test_serialize_frame_escapes_line_separator_codepoints():
 
 
 def test_serialize_frame_escapes_line_separators_in_error_fallback():
-    frame = serialize_frame({"id": "x", "message": object()}, "test", logging.getLogger(__name__))
+    class _Sep:
+        pass
+
+    _Sep.__name__ = "Weird\u2028Type"
+    frame = serialize_frame({"id": "x", "message": _Sep()}, "test", logging.getLogger(__name__))
 
     assert "\u2028" not in frame
     assert "\u2029" not in frame

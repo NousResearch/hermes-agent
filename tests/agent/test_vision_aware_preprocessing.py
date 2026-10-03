@@ -179,3 +179,46 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+
+# ─── agent.image_input_mode: native ──────────────────────────────────────────
+
+
+class TestNativeImageInputModeReachesTheWire:
+    """``native`` attaches pixels on inbound routing alone (vision.md: "even when the catalog
+    says the model is text-only"); the send layer must not undo that on a capability miss
+    (#83666)."""
+
+    _CONFIG = (
+        "model:\n  provider: openrouter\n  default: acme/uncatalogued-vlm\n"
+        "agent:\n  image_input_mode: native\n"
+    )
+
+    def _native_agent(self):
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text(self._CONFIG)
+        agent = _make_agent()
+        agent.provider = "openrouter"
+        agent.model = "acme/uncatalogued-vlm"
+        return agent
+
+    def test_user_image_parts_survive_the_send_layer(self):
+        agent = self._native_agent()
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch.object(agent, "_describe_image_for_anthropic_fallback", return_value="[described]"):
+            out = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        assert out[0]["content"] == IMG_PARTS_USER_MSG["content"]
+
+    def test_native_vision_analyze_result_keeps_its_pixels(self):
+        import tools.vision_tools as vt
+
+        agent = self._native_agent()
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert vt._should_use_native_vision_fast_path() is True
+            result = vt._build_native_vision_tool_result(
+                "/tmp/x.png", "what is it", "data:image/png;base64,AAAA", 3)
+            content = agent._tool_result_content_for_active_model("vision_analyze", result)
+        # The text part tells the model the image is in its context; the image must be too.
+        assert isinstance(content, list)
+        assert any(part.get("type") == "image_url" for part in content)
+

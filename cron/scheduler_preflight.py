@@ -307,10 +307,12 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     skill_names = _job_skill_names(job)
     if not skill_names:
         return None
+    from agent.skill_utils import normalize_skill_lookup_name
     from tools.skills_tool import skill_view
     for skill_name in skill_names:
         try:
-            payload = json.loads(skill_view(skill_name))
+            # Same lookup name the run uses (_build_job_prompt), or path-stored skills go unchecked.
+            payload = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
         except Exception:
             continue  # unreadable/missing skill → existing skip handling
         if not isinstance(payload, dict) or not payload.get("success"):

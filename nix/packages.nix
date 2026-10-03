@@ -43,11 +43,12 @@
           lib.removePrefix "refs/tags/" rawRef
         else if lastModifiedDate != null then
           let
-            date = builtins.substring 0 10 lastModifiedDate;
-            year = builtins.substring 0 4 date;
-            month = builtins.substring 5 2 date;
-            day = builtins.substring 8 2 date;
-          in "${year}.${toString (builtins.fromJSON month)}.${toString (builtins.fromJSON day)}"
+            # lastModifiedDate is zero-padded as %Y%m%d%H%M%S, not ISO-8601.
+            # Keep the fields as strings so values such as "01" remain valid.
+            year = builtins.substring 0 4 lastModifiedDate;
+            month = builtins.substring 4 2 lastModifiedDate;
+            day = builtins.substring 6 2 lastModifiedDate;
+          in "${year}.${month}.${day}"
         else
           "0.0.0";
       minimal = pkgs.callPackage ./hermes-agent.nix {

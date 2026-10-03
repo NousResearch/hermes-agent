@@ -190,8 +190,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "description": (
         "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
-        "routes to the target window without stealing the user's cursor or focus (works even on "
-        "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
+        "routes to the target window without stealing the user's cursor or focus. Background "
+        "delivery does not imply minimized-window support: on Windows a minimized target returns "
+        "`code='window_minimized'`; restore or foreground it, then capture again before retrying. "
+        "When a result's `verdict` says to escalate you climb — "
         "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "

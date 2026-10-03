@@ -68,7 +68,7 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
+  const { deps, event, payload, sessionId, isActiveEvent, occurredAt, staleStreamFrame = () => false } = ctx
 
   const {
     appendAssistantDelta,
@@ -168,7 +168,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.delta') {
-    if (sessionId) {
+    if (sessionId && !staleStreamFrame()) {
       appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
     }
 
@@ -176,11 +176,21 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.interim') {
-    // The agent emitted interim assistant commentary (text alongside tool
-    // calls, or the attempted final answer before a verify-on-stop nudge).
-    // Finalize it as its own sealed bubble so message.complete doesn't wipe
-    // it — the text was already streamed via message.delta and is visible.
     if (sessionId) {
+      const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+      // A terminal frame owns the turn boundary. Drop both queued and direct
+      // stragglers rather than flushing them into a local-only duplicate.
+      if (staleStreamFrame() || !state?.turnLive || state.interrupted) {
+        dropQueuedDeltas(sessionId)
+
+        return true
+      }
+
+      // The agent emitted interim assistant commentary (text alongside tool
+      // calls, or the attempted final answer before a verify-on-stop nudge).
+      // Finalize it as its own sealed bubble so message.complete doesn't wipe
+      // it — the text was already streamed via message.delta and is visible.
       flushQueuedDeltas(sessionId)
       const text = coerceGatewayText(payload?.text)
 

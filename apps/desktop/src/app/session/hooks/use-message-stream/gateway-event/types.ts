@@ -76,6 +76,8 @@ export interface GatewayEventContext {
   fromActiveSource: () => boolean
   /** Coalesced trailing refreshHermesConfig (one per session.info burst). */
   scheduleConfigRefresh: () => void
+  /** Drop late stream frames sequenced before a terminal completion. */
+  staleStreamFrame?: () => boolean
 }
 
 /** A family handler consumes matching event types and reports whether it did. */

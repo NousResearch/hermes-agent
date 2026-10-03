@@ -78,13 +78,15 @@ def build_models_payload(
     capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
     refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, max_models: int | None = None, non_blocking_catalogs: bool = False,
+    interactive_probe: bool | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
     desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
     in process caches (normal picker opens, while a background worker warms cold endpoints).
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
-    cannot stall the response (GUI picker opens)."""
+    cannot stall the response (GUI picker opens). ``interactive_probe`` pins the endpoint-probe
+    budget independently of picker visibility; None derives it from ``for_picker``/``refresh``."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -94,7 +96,7 @@ def build_models_payload(
         max_models=max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, interactive_probe=interactive_probe,
     )
 
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
@@ -228,12 +230,23 @@ def build_model_options_payload(
 
     A normal open (``refresh=False``) is a READ path: provider catalogs come from the disk cache
     only and stale/missing ones warm in the background, so a degraded provider (hanging endpoint,
-    failed auth probe) delays neither the other providers' rows nor the response (#114215)."""
+    failed auth probe) delays neither the other providers' rows nor the response (#114215).
+
+    This IS a picker payload, so it declares picker semantics (``for_picker``): a provider whose
+    pool holds recoverable material in 429 cooldown stays listed and selectable. Without the flag
+    the ``hermes auth add`` shape — a self-contained ``manual:*`` pool row with no
+    ``auth.json.providers`` registration — vanished from the Desktop picker and degraded to a
+    "needs configuration" skeleton in the TUI, which reads as deleted credentials rather than
+    temporary throttling.
+
+    Picker visibility is decoupled from the probe budget: a normal open keeps the standard 5s
+    endpoint budget (``interactive_probe=False``) exactly as before — only the interactive CLI
+    picker uses the short budget."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, for_picker=True, interactive_probe=False,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )

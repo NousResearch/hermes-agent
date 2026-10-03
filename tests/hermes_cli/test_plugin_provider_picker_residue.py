@@ -8,6 +8,7 @@ Desktop ``explicit_only`` picker hid out-of-tree ACP rows.
 
 import os
 import stat
+import sys
 
 import pytest
 
@@ -40,6 +41,11 @@ def _fake_binary(tmp_path, monkeypatch, name: str) -> None:
     exe = tmp_path / name
     exe.write_text("#!/bin/sh\nexit 0\n")
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    if sys.platform == "win32":
+        # Windows resolves executables through PATHEXT, so the extensionless POSIX script above
+        # is not launchable there (shutil.which finds nothing and the sign-in evidence is empty).
+        # Mirror it as a .cmd on this host only; the behavioural assertions stay untouched.
+        (tmp_path / f"{name}.cmd").write_text("@exit /b 0\r\n")
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
 
 

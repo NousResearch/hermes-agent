@@ -25,6 +25,12 @@ logger = logging.getLogger("hermes_cli.model_switch")
 # where the cap only cut the bottom "Free tier" block and the Portal's appended recommendations.
 _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "nous", "openrouter"})
 
+# ``CANONICAL_PROVIDERS`` rows that are NOT built-in endpoints: ``custom`` is the user's own
+# endpoint slot (``models_catalog_static`` labels it "Custom endpoint — not a named provider") and
+# ``moa`` is a virtual routing mode built by ``_moa_provider_row``. A ``providers.<these>`` block
+# therefore DOES define an endpoint and must keep section 3's custom-endpoint handling.
+_NON_ENDPOINT_PROVIDER_IDS: frozenset[str] = frozenset({"custom", "moa"})
+
 
 def _save_discovered_models_to_config(
     api_url: str, model_ids: list[str], *, api_mode: Optional[str] = None,
@@ -259,8 +265,14 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
         list(executor.map(_fetch_one, stale_slugs))
 
 
-def _any_env(env_vars, read_env=os.environ.get) -> bool:
-    return any(read_env(ev) for ev in env_vars)
+def _any_env(env_vars, read_env=None, *, provider: str = "") -> bool:
+    from hermes_cli.auth import has_usable_secret, is_source_suppressed
+    from hermes_cli.model_switch import _scoped_key_env
+
+    read_env = read_env or _scoped_key_env
+    return any(
+        not is_source_suppressed(provider, f"env:{ev}") and has_usable_secret(read_env(ev))
+        for ev in env_vars)
 
 
 def _skip(seen: set, excluded: set, *keys: str) -> bool:
@@ -307,23 +319,148 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
 
 
 def _auth_store_has_provider(*keys: str) -> bool:
-    """True when ``auth.json`` has a ``providers`` entry under any of *keys*."""
+    """Only credential-bearing auth state counts; endpoint metadata is not a login."""
     try:
         from hermes_cli.auth import _load_auth_store
         store = _load_auth_store()
         providers_store = store.get("providers", {})
-        return bool(store and any(k in providers_store for k in keys))
+        return any(k in providers_store and _registered_provider_is_authenticated(providers_store, k)
+                   for k in keys)
     except Exception as exc:
         logger.debug("Auth store check failed for %s: %s", keys[0] if keys else "", exc)
         return False
 
 
-def _raw_pool_usable(hermes_id: str) -> bool:
-    """Section-1 pool check: only consult the pool when auth.json lists a raw entry."""
+def _registered_provider_is_authenticated(providers_store: dict, key: str) -> bool:
+    """Whether an ``auth.json.providers.<key>`` registration is backed by a real login.
+
+    Once the credential pool holds rows it is authoritative — a DEAD husk there must not be
+    masked by a stale token in provider state ("pool rows exist" never means "the rows are
+    valid"). A provider whose pool has not been seeded at all still authenticates from the
+    credential material in its own state block, while a metadata-only block
+    (``detected_endpoint`` / ``base_url`` / ``auth_mode``) never does.
+    """
+    if _pool_has_rows(key):
+        return _pool_has_auth_material(key)
+    return _provider_state_has_credentials(providers_store.get(key))
+
+
+# ``auth.json.providers.<id>`` keys that carry a credential. Region/endpoint metadata keys
+# (``detected_endpoint``, ``base_url``, ``auth_mode``, ``models``, ...) deliberately do not count:
+# they describe where a provider lives, not that the user logged in.
+_PROVIDER_STATE_CREDENTIAL_KEYS: tuple[str, ...] = (
+    "access_token", "api_key", "token", "refresh_token", "id_token", "agent_key",
+)
+
+
+def _provider_state_has_credentials(state: Any) -> bool:
+    """True when a provider's own auth-store state carries credential material.
+
+    Values must clear the placeholder gate — the same ``none``/``placeholder``/shape-only
+    blocklist every other credential read uses. The default minimum-length gate does not
+    apply here: this state is written by real login flows, not pasted into ``.env``, so a
+    short but genuine token still counts.
+    """
+    if not isinstance(state, dict):
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except Exception:
+        return False
+    return any(has_usable_secret(state.get(key), min_length=1)
+               for key in _PROVIDER_STATE_CREDENTIAL_KEYS)
+
+
+def _pool_has_rows(slug: str) -> bool:
+    """Row presence only: the pool has state for *slug* (rows may still be DEAD/empty)."""
+    try:
+        from agent.credential_pool import load_pool
+        return load_pool(slug).has_credentials()
+    except Exception as exc:
+        logger.debug("Credential pool row check failed for %s: %s", slug, exc)
+        return False
+
+
+def _oauth_access_token_known_expired(entry: Any) -> bool:
+    """True only when the entry itself records a definite past expiry.
+
+    Unknown expiry is not expiry — a token must not be condemned on absence of data.
+    The proactive-refresh window is not expiry either: a short-lived token that has not
+    reached its recorded expiry still authenticates. Codex/xAI singleton rows store expiry
+    in their JWT rather than ``expires_at_ms``; reuse their runtime readers with zero skew.
+    No network refresh is attempted here.
+    """
+    if entry.provider == "openai-codex":
+        from hermes_cli.auth_codex import _codex_access_token_is_expiring
+        if _codex_access_token_is_expiring(entry.access_token, 0):
+            return True
+    elif entry.provider == "xai-oauth":
+        from hermes_cli.auth_xai import _xai_access_token_is_expiring
+        if _xai_access_token_is_expiring(entry.access_token, 0):
+            return True
+    expires = getattr(entry, "expires_at_ms", None)
+    if not expires:
+        return False
+    try:
+        return int(expires) <= int(time.time() * 1000)
+    except (TypeError, ValueError):
+        return False
+
+
+def _pool_entry_has_auth_material(entry: Any) -> bool:
+    """Whether a pool row still carries usable authentication material.
+
+    Row *presence* is not authentication: a DEAD row never recovers without a fresh login, and an
+    OAuth row with neither an access token nor refresh material cannot be used and cannot be
+    recovered. An expired access token that still has refresh material IS recoverable, one known
+    to be expired with no refresh material is not, and a multi-credential pool stays
+    authenticated while any live row remains.
+    """
+    from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_DEAD
+    if entry.last_status == STATUS_DEAD:
+        return False
+    if entry.auth_type == AUTH_TYPE_OAUTH:
+        # Refresh material recovers even a definitely-expired access token.
+        if str(entry.refresh_token or "").strip():
+            return True
+        if not str(entry.access_token or "").strip():
+            return False
+        # Known-expired with no way to refresh: no usable or recoverable login.
+        return not _oauth_access_token_known_expired(entry)
+    # ``runtime_api_key`` is empty for borrowed metadata-only references — an unhydrated husk.
+    return bool(str(entry.runtime_api_key or "").strip())
+
+
+def _pool_has_auth_material(slug: str) -> bool:
+    """True when *slug*'s pool holds at least one row with usable auth material.
+
+    Deliberately neither ``has_credentials()`` (row presence — counts DEAD husks) nor
+    ``has_available()`` ("requestable right now" — hides a credential in 429 cooldown). The
+    picker needs the middle state: recoverable material is selectable, an unrecoverable husk
+    must not be advertised as authenticated.
+    """
+    try:
+        from agent.credential_pool import load_pool
+        return any(_pool_entry_has_auth_material(entry) for entry in load_pool(slug).entries())
+    except Exception as exc:
+        logger.debug("Credential pool material check failed for %s: %s", slug, exc)
+        return False
+
+
+def _raw_pool_usable(hermes_id: str, *, for_picker: bool = False) -> bool:
+    """Section-1 pool check: only consult the pool when auth.json lists a raw entry.
+
+    The picker verdict is recoverable material, not "requestable right now": a provider whose
+    whole pool is in cooldown stays selectable (limits are per-model for many providers, so a
+    sibling model may still work), while DEAD/empty husks and known-expired tokens without
+    refresh material stay hidden. Non-picker callers keep the availability verdict.
+    """
     try:
         from hermes_cli.auth import _load_auth_store
         store = _load_auth_store()
         if store and store.get("credential_pool", {}).get(hermes_id):
+            if for_picker:
+                return _pool_has_auth_material(hermes_id)
             return _credential_pool_is_usable(hermes_id, raw_pool_present=True)
     except Exception:
         pass
@@ -352,11 +489,11 @@ def _overlay_has_env_creds(pid: str, hermes_slug: str, overlay, read_env) -> boo
         except Exception as exc:
             logger.debug("Vertex credential check failed: %s", exc)
     elif overlay.extra_env_vars:
-        has_creds = _any_env(overlay.extra_env_vars, read_env)
+        has_creds = _any_env(overlay.extra_env_vars, read_env, provider=hermes_slug)
     if not has_creds and overlay.auth_type == "api_key":
         for key in (pid, hermes_slug):
             pcfg = PROVIDER_REGISTRY.get(key)
-            if pcfg and pcfg.api_key_env_vars and _any_env(pcfg.api_key_env_vars, read_env):
+            if pcfg and pcfg.api_key_env_vars and _any_env(pcfg.api_key_env_vars, read_env, provider=hermes_slug):
                 return True
     if not has_creds and hermes_slug == "azure-foundry":
         has_creds = _azure_entra_configured(read_env)
@@ -569,6 +706,165 @@ def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[Any, str, str]:
     return inline_api_key, key_env, inline_api_key or (f"env:{key_env}" if key_env else "")
 
 
+def _provider_entry_key_value(provider: str, key_env: str) -> str:
+    """A ``providers:`` entry's ``key_env`` value, honouring suppression, usable-secret and scope.
+
+    A removed key that a long-lived process still holds in its environment must not authenticate:
+    the source suppression a removal writes is the deletion record, exactly as ``_any_env`` treats
+    it for the built-in rows. The suppression record is keyed by the canonical provider id, so an
+    alias-named block (``providers.glm`` -> ``zai``) must resolve it the same way. Returns ""
+    when suppressed, empty, or not a usable secret.
+    """
+    if not key_env:
+        return ""
+    try:
+        from hermes_cli.auth import has_usable_secret, is_source_suppressed
+        if is_source_suppressed(_normalize_provider_id(provider), f"env:{key_env}"):
+            return ""
+        from hermes_cli.model_switch import _scoped_key_env
+        value = _scoped_key_env(key_env)
+        return value if has_usable_secret(value) else ""
+    except Exception:
+        return ""
+
+
+def _normalize_provider_id(name: str) -> str:
+    """Canonical provider id for a config/user-supplied name (alias- and case-folded)."""
+    try:
+        from hermes_cli.providers import normalize_provider
+        return normalize_provider(str(name or ""))
+    except Exception:
+        return str(name or "").strip().lower()
+
+
+def _is_builtin_provider_identity(canon: str) -> bool:
+    """True when a *normalized* ``providers:`` key names a built-in provider — registry id, Hermes
+    overlay, models.dev mapping or canonical slug. Such a block *overrides* that provider (endpoint,
+    models, timeouts); it does not define a new one. The non-endpoint pseudo ids are excluded."""
+    if not canon or canon in _NON_ENDPOINT_PROVIDER_IDS:
+        return False
+    try:
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.models import CANONICAL_PROVIDERS
+        from hermes_cli.providers import HERMES_OVERLAYS
+        if canon in PROVIDER_REGISTRY or canon in HERMES_OVERLAYS or canon in PROVIDER_TO_MODELS_DEV:
+            return True
+        return any(cp.slug == canon for cp in CANONICAL_PROVIDERS)
+    except Exception:
+        return False
+
+
+def _is_local_endpoint_url(api_url: str) -> bool:
+    """True for loopback / RFC1918 / link-local / mDNS hosts: a local runtime (LM Studio on its own
+    port, a keyless local proxy) is legitimately keyless even under a built-in provider name."""
+    import ipaddress
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(str(api_url or "")).hostname or "").strip().lower().rstrip(".")
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return bool(ip.is_loopback or ip.is_private or ip.is_link_local)
+    except ValueError:
+        return False
+
+
+def _is_local_runtime_provider(canon: str) -> bool:
+    """True when the provider's own canonical endpoint is local (loopback/private).
+
+    Local runtimes authenticate by reachability, not by key: LM Studio's registry default is
+    ``http://127.0.0.1:1234/v1`` and auth.py substitutes a no-auth placeholder for it, so a
+    ``providers.lmstudio`` block that points the slug at another host (a LAN box, a container
+    alias) is a legitimate keyless endpoint, not the residue of a removed credential.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pcfg = PROVIDER_REGISTRY.get(canon)
+        if pcfg is None:
+            return False
+        return _is_local_endpoint_url(getattr(pcfg, "inference_base_url", "") or "")
+    except Exception:
+        return False
+
+
+def _header_secret_usable(name: str, value: Any) -> bool:
+    """Whether one header value is usable credential material.
+
+    Values must clear the same ``has_usable_secret`` gate as every other credential read, so
+    ``none``/``placeholder``/empty strings never authenticate. ``Authorization`` additionally
+    follows HTTP auth semantics: the scheme word is not the credential — a ``Bearer`` scheme
+    (case- and whitespace-insensitive) must be followed by a token that is itself a usable
+    secret, so ``Bearer none`` / ``Bearer placeholder`` / a bare ``Bearer`` do not count. This
+    is not a protocol parser: other schemes and scheme-less values are judged on the whole
+    value, exactly as before.
+    """
+    if not isinstance(value, str):
+        return False
+    cleaned = value.strip()
+    if not cleaned:
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except Exception:
+        return False
+    if name.strip().lower() == "authorization":
+        parts = cleaned.split(None, 1)
+        if parts and parts[0].lower() == "bearer":
+            return len(parts) == 2 and has_usable_secret(parts[1])
+    return has_usable_secret(cleaned)
+
+
+def _extra_headers_carry_auth(headers: Any) -> bool:
+    """True when ``extra_headers`` carries credential material for the endpoint itself.
+
+    Mirrors how the rest of the codebase treats caller-supplied headers: an ``Authorization``
+    entry means the caller already handles auth (``models_validate``/``models_local``/
+    ``model_setup_flows_custom`` all skip injecting their own), and ``X-Api-Key`` is the other
+    header the runtime authenticates with (Anthropic-style endpoints). The value must be a
+    usable secret (see ``_header_secret_usable``), so ``none``/``placeholder``/empty strings
+    and scheme-only ``Bearer`` wrappers do not authenticate. Other headers (``User-Agent``,
+    routing hints, …) never do — this is not ``bool(extra_headers)``.
+    """
+    if not isinstance(headers, dict):
+        return False
+    for name, value in headers.items():
+        if str(name).strip().lower() in ("authorization", "x-api-key") \
+                and _header_secret_usable(str(name), value):
+            return True
+    return False
+
+
+def _section3_entry_admitted(ep_name: str, api_url: str, provider_key: str,
+                             headers: Any = None) -> bool:
+    """Whether one ``providers:`` entry may stand as its own §3 picker row.
+
+    ``provider_key`` is the entry's resolved live credential material (inline key or
+    suppression-aware ``key_env`` value), "" when the entry holds none; ``headers`` is the
+    entry's ``extra_headers`` — a usable ``Authorization``/``X-Api-Key`` value there is
+    credential material too (see ``_extra_headers_carry_auth``), so an explicit endpoint
+    override that authenticates header-only is a real configuration, not removal residue.
+
+    Two rejections. An entry with neither endpoint nor live credential carries nothing (a bare
+    model/timeout override). And a *built-in* provider's override with no live credential is the
+    residue of a removed key: sections 1/2/2b already decided that row from the authoritative
+    sources, so the leftover ``base_url``/``key_env`` must not resurrect it as a "custom endpoint".
+    Genuinely custom names, local endpoints and local-runtime providers keep the existing behaviour.
+    """
+    if not api_url and not provider_key:
+        return False
+    canon = _normalize_provider_id(ep_name)
+    if not _is_builtin_provider_identity(canon):
+        return True
+    return bool(provider_key or _extra_headers_carry_auth(headers)
+                or _is_local_endpoint_url(api_url) or _is_local_runtime_provider(canon))
+
+
 def _discover_flag(entry: dict):
     """``discover_models`` (default True); ``"false"/"no"/"0"`` strings mean False."""
     discover = entry.get("discover_models", True)
@@ -597,15 +893,17 @@ def _group_display_name(display_name: str) -> str:
 def _discover_endpoint_models(
     api_key: Any, api_url: str, native_catalog_provider: str, has_explicit_models: bool, *,
     headers: dict | None, api_mode: str | None, probe_live: bool, discovery_allowed: bool,
-    for_picker: bool) -> tuple[list | None, bool]:
+    interactive_probe: bool) -> tuple[list | None, bool]:
     """Return ``(models, native_catalog_empty)`` for a custom endpoint row.
 
     ``probe_live`` runs the native-aware picker fetch; otherwise, when discovery is allowed, a
     warm same-fingerprint cache entry still serves the full catalog with no round-trip.
     ``has_explicit_models`` gates the *probe* (a network-cost guard for keyless endpoints that
     declare a catalog), never the cache read — applying it to the read re-pins the endpoint to
-    its declared subset. Returns ``(None, False)`` when nothing usable was found."""
-    timeout = 1.5 if for_picker else 5.0
+    its declared subset. ``interactive_probe`` uses the short picker budget so a slow endpoint
+    cannot hold up an interactive open; an explicit refresh keeps the longer one. Returns
+    ``(None, False)`` when nothing usable was found."""
+    timeout = 1.5 if interactive_probe else 5.0
     if probe_live:
         try:
             live_models = _fetch_picker_live_models(
@@ -655,7 +953,7 @@ def _collect_authed_provider_slugs(
         seen.update(k.lower() for k in keys)
 
     for hermes_id, _mdev_id, _pconfig, env_vars in _iter_builtin_candidates(models_dev_data, excluded_set, seen):
-        if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id):
+        if _any_env(env_vars, _scoped_key_env, provider=hermes_id) or _raw_pool_usable(hermes_id):
             _emit(hermes_id, hermes_id)
 
     mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
@@ -673,7 +971,7 @@ def _collect_authed_provider_slugs(
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
-            cp_config and cp_config.api_key_env_vars and _any_env(cp_config.api_key_env_vars, _scoped_key_env))
+            cp_config and cp_config.api_key_env_vars and _any_env(cp_config.api_key_env_vars, _scoped_key_env, provider=cp.slug))
         if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug):
             _emit(cp.slug, cp.slug)
 
@@ -701,6 +999,10 @@ class _PickerBuild:
     curated: dict
     # GUI read path: catalogs are read from cache only; stale/missing ones warm in the background.
     non_blocking_catalogs: bool = False
+    # Explicit probe-budget pin (None = derive from for_picker/refresh). Picker *visibility* and
+    # probe *budget* are separate concerns: the options payload declares picker semantics yet a
+    # normal open keeps the standard budget, so it pins this to False.
+    interactive_probe_override: bool | None = None
     results: list = field(default_factory=list)
     seen_slugs: set = field(default_factory=set)  # lowercase-normalized to catch case variants
     # Effective base URLs of every built-in row: section 4 hides ``custom_providers`` duplicates.
@@ -718,6 +1020,19 @@ class _PickerBuild:
 
     def can_probe_custom(self, *, row_is_current: bool) -> bool:
         return bool(self.probe_custom_providers or (self.probe_current_custom_provider and row_is_current))
+
+    @property
+    def interactive_probe(self) -> bool:
+        """Short probe budget for an interactive open, long one otherwise.
+
+        Default derivation: interactive callers (``for_picker``) get the short budget except on
+        an explicit refresh — ``refresh=True`` exists precisely so a slow or previously-missed
+        catalog gets a real second chance. An explicit override wins (e.g. the options payload
+        carries the picker visibility contract but keeps the standard budget on a normal open).
+        """
+        if self.interactive_probe_override is not None:
+            return bool(self.interactive_probe_override)
+        return bool(self.for_picker and not self.refresh)
 
     def record_builtin_endpoint(self, slug: str) -> None:
         """Prefer the live env override (e.g. DASHSCOPE_BASE_URL) over the static inference_base_url
@@ -789,7 +1104,7 @@ class _PickerBuild:
         discovered, native_catalog_empty = _discover_endpoint_models(
             api_key, api_url, native_provider, has_explicit_models,
             headers=headers, api_mode=api_mode, probe_live=probe_live,
-            discovery_allowed=discovery_allowed, for_picker=self.for_picker)
+            discovery_allowed=discovery_allowed, interactive_probe=self.interactive_probe)
         return discovered, native_catalog_empty, probe_live
 
 
@@ -823,7 +1138,8 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
         # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
         # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
-        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
+        if not (_any_env(env_vars, _scoped_key_env, provider=hermes_id)
+                or _raw_pool_usable(hermes_id, for_picker=b.for_picker)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated, non_blocking=b.non_blocking_catalogs)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -864,16 +1180,14 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
         # Full auto-seeding pool check catches external stores (Codex CLI ~/.codex/auth.json)
         # not yet in auth.json.
         try:
-            if _credential_pool_is_usable(hermes_slug):
+            if b.for_picker:
+                # Picker verdict is recoverable material: a pool entirely in cooldown stays
+                # selectable (limits are per-model for many providers, so another model may
+                # work), while a DEAD husk or a known-expired token without refresh material
+                # must never be advertised as authenticated.
+                has_creds = has_creds or _pool_has_auth_material(hermes_slug)
+            elif _credential_pool_is_usable(hermes_slug):
                 has_creds = True
-            elif b.for_picker:
-                # Show providers whose pool is entirely in cooldown: limits are per-model for
-                # many providers, so another model may work.
-                try:
-                    from agent.credential_pool import load_pool
-                    has_creds = load_pool(hermes_slug).has_credentials()
-                except Exception:
-                    pass
         except Exception as exc:
             logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
     if not has_creds and hermes_slug == "anthropic":
@@ -942,7 +1256,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
         if cp_config and cp_config.api_key_env_vars:
-            lit = {ev for ev in cp_config.api_key_env_vars if os.environ.get(ev)}
+            lit = {ev for ev in cp_config.api_key_env_vars if _any_env([ev], provider=cp.slug)}
             has_creds = bool(lit)
             # A regional "-cn" twin lit only by key vars shared with its non-CN sibling is a
             # phantom row: hide it unless it is the current provider, and only when it has a
@@ -951,8 +1265,15 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
-        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
+        has_creds = has_creds or _auth_store_has_provider(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        if b.for_picker:
+            # Same picker contract as section 2: the pool verdict is recoverable material —
+            # a cooled-down pool keeps the row selectable, while DEAD/empty husks and
+            # known-expired tokens without refresh material stay hidden.
+            has_creds = has_creds or _pool_has_auth_material(cp.slug)
+        else:
+            has_creds = has_creds or _pool_usable(cp.slug)
         if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
             # Subprocess-backed providers own their auth; the binary resolving is the credential
             # evidence for listing (same gate as the copilot-acp overlay row and hermes auth status).
@@ -977,7 +1298,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
     one row (two Palantir Claude entries -> one "Palantir Claude" row); a different
     key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs."""
-    from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
+    from hermes_cli.model_switch import _extra_headers_from_config
     from hermes_cli.config import coerce_provider_id, is_provider_enabled
     ep_groups: dict[tuple, dict] = {}
     for ep_name, ep_cfg in user_providers.items():
@@ -986,7 +1307,15 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
         api_url = _entry_base_url(ep_cfg, ("base_url", "api", "url"))
         inline_api_key, key_env, cred_identity = _entry_credentials(ep_cfg, "key_env", "api_key_env")
+        # Suppression/scope-aware: a removed key still inheriting into an old process env is not a
+        # credential (see _provider_entry_key_value), so it cannot authenticate the row or its probe.
+        provider_key = inline_api_key or _provider_entry_key_value(ep_name, key_env)
         headers = _extra_headers_from_config(ep_cfg)
+        # A built-in model/timeout override is not a standalone endpoint: if the credential-backed
+        # row was omitted above, its leftover metadata must not resurrect the provider. Header-only
+        # auth (Authorization/X-Api-Key in extra_headers) is live credential material.
+        if not _section3_entry_admitted(ep_name, api_url, provider_key, headers):
+            continue
         group_key = (_norm_url(api_url), cred_identity, _entry_api_mode(ep_cfg), tuple(sorted(headers.items())))
 
         if group_key not in ep_groups:
@@ -995,7 +1324,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             ep_groups[group_key] = {
                 "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
-                "api_key": inline_api_key or _scoped_key_env(key_env),
+                "api_key": provider_key,
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
                 "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
         grp = ep_groups[group_key]
@@ -1049,7 +1378,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         discovered, native_catalog_empty = _discover_endpoint_models(
             "", api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or b.probe_current_custom_provider), discovery_allowed=True,
-            for_picker=b.for_picker)
+            interactive_probe=b.interactive_probe)
         if discovered is not None:
             models = discovered
     except Exception:
@@ -1189,7 +1518,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False) -> List[dict]:
+    non_blocking_catalogs: bool = False, interactive_probe: bool | None = None) -> List[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1201,7 +1530,9 @@ def list_authenticated_providers(
     true, GUI false); ``probe_current_custom_provider`` probes only the selected custom endpoint.
     ``non_blocking_catalogs`` is the GUI read path (``model.options``): provider catalogs come from
     the disk cache only and stale/missing ones warm in the background, so a degraded provider
-    never stalls the picker (#114215)."""
+    never stalls the picker (#114215). ``interactive_probe`` pins the endpoint-probe budget
+    (short vs standard) independently of picker visibility; None derives it from
+    ``for_picker``/``refresh``."""
 
     from agent.models_dev import fetch_models_dev
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
@@ -1234,7 +1565,7 @@ def list_authenticated_providers(
         max_models=max_models, for_picker=for_picker, force_fresh_nous_tier=force_fresh_nous_tier,
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, interactive_probe_override=interactive_probe,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
                                      non_blocking=non_blocking_catalogs))
 

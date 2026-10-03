@@ -54,15 +54,29 @@ def _creation_time(pid: int) -> str:
 
 
 def _protected_pid() -> int:
-    """A live pid whose StartTime Windows PowerShell cannot read (SYSTEM / protected)."""
-    out = subprocess.run(
+    """A live pid that grants only limited query rights (a SYSTEM/protected service): what
+    Get-Process .StartTime needs is denied, what CIM/GetProcessTimes need is granted."""
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    k32.OpenProcess.restype = ctypes.c_void_p
+    names = ('csrss.exe', 'smss.exe', 'wininit.exe', 'services.exe', 'lsass.exe', 'MsMpEng.exe')
+    rows = subprocess.run(
         ['powershell', '-NoProfile', '-Command',
-         "foreach ($n in 'csrss','wininit','services','smss','lsass') { foreach ($p in @(Get-Process -Name $n "
-         "-ErrorAction SilentlyContinue)) { try { $null = $p.StartTime } catch { $p.Id; exit 0 } } }"],
-        capture_output=True, text=True, timeout=60,
-    ).stdout.split()
-    assert out, 'no process with an unreadable StartTime on this host'
-    return int(out[0])
+         'Get-CimInstance Win32_Process | ForEach-Object { \'{0} {1}\' -f $_.ProcessId, $_.Name }'],
+        capture_output=True, text=True, timeout=60, check=True,
+    ).stdout.splitlines()
+    for row in rows:
+        pid, _, name = row.strip().partition(' ')
+        if name not in names:
+            continue
+        full = k32.OpenProcess(0x0400, False, int(pid))         # PROCESS_QUERY_INFORMATION
+        limited = k32.OpenProcess(0x1000, False, int(pid))      # ..._LIMITED_INFORMATION
+        for handle in (full, limited):
+            if handle:
+                k32.CloseHandle(ctypes.c_void_p(handle))
+        if limited and not full:
+            return int(pid)
+    pytest.fail('no process here grants only limited query rights: ' + ', '.join(rows[:40]))
 
 
 def _dead_pid() -> int:

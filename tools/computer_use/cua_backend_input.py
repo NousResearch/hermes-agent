@@ -101,13 +101,41 @@ class _InputMixin:
         button_norm = (button or "left").lower()
         if button_norm not in {"left", "right", "middle"}:
             return _refuse("click", f"unknown button {button!r} — expected left, right, middle.")
-        tool, args["button"] = ("double_click" if click_count == 2 else "click"), button_norm
+        # `count` is pixel-path-only in the driver schema ("Click count (pixel path only)."):
+        # an element-addressed click takes the AX action path, which performs a single action and
+        # ignores `count`, silently degrading a double-click to one activation. Element addressing
+        # therefore keeps using `double_click`, whose AX path does AXOpen when the element
+        # advertises it and otherwise falls back to a pixel double-click at the element's center.
+        pixel_addressed = element is None and x is not None and y is not None
+        if click_count == 2 and pixel_addressed and self._session.supports_input_property("click", "count"):
+            tool, args["count"] = "click", 2
+            if self._session.supports_input_property("click", "button"):
+                args["button"] = button_norm
+            elif button_norm != "left":
+                return _refuse("click", "The connected cua-driver cannot preserve the requested double-click "
+                               f"button {button_norm!r}.", code="double_click_unsupported")
+            if modifiers:
+                if not self._session.supports_input_property("click", "modifier"):
+                    return _refuse("click", "The connected cua-driver cannot preserve modifiers on this double-click.",
+                                   code="double_click_unsupported")
+                args["modifier"] = modifiers
+        elif click_count == 2:
+            tool = "double_click"
+            if button_norm != "left" or modifiers:
+                return _refuse("click", "The connected cua-driver only supports an unmodified left double-click; "
+                               "use a driver with canonical click count support.", code="double_click_unsupported")
+            if element is None and x is not None and y is not None:
+                return _refuse("click", "The connected cua-driver's legacy double_click uses screen-relative "
+                               "coordinates, but computer_use coordinates are relative to the captured window.",
+                               code="double_click_coordinate_origin_unsupported")
+        else:
+            tool, args["button"] = "click", button_norm
+            if modifiers:
+                args["modifier"] = modifiers
         refusal = self._pointer_args(tool, args, (
             ("element_index click", {"element_index": element} if element is not None else None),
             ("coordinate click", {"x": x, "y": y} if x is not None and y is not None else None),
         ), "click requires element= or x/y.")
-        if modifiers:
-            args["modifier"] = modifiers
         return refusal if refusal is not None else self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
@@ -115,15 +143,44 @@ class _InputMixin:
              button: str = "left", modifiers: Optional[List[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
+        element_drag = from_element is not None and to_element is not None
+        if refusal is None and element_drag and not (
+            self._session.supports_input_property("drag", "from_element")
+            and self._session.supports_input_property("drag", "to_element")
+        ):
+            return _refuse("drag", "The connected cua-driver does not support element-addressed drag; "
+                           "use verified from_coordinate/to_coordinate values.", code="element_drag_unsupported")
         if refusal is None:
             refusal = self._pointer_args("drag", args, (
                 ("element-based drag", {"from_element": from_element, "to_element": to_element}
-                 if from_element is not None and to_element is not None else None),
+                 if element_drag else None),
                 ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
                                      "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
                  if from_xy is not None and to_xy is not None else None),
             ), "drag requires from_element/to_element or from_coordinate/to_coordinate.")
-        return refusal if refusal is not None else self._run_input_action("drag", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
+        button_norm = (button or "left").lower()
+        if button_norm not in {"left", "right", "middle"}:
+            return _refuse("drag", f"unknown button {button!r} — expected left, right, middle.", code="bad_drag_button")
+        # The option fields describe pixel gestures, not an element/AX contract. Their presence alongside
+        # element fields does not prove that the element path honors them. Do not silently switch addressing.
+        if element_drag and (button_norm != "left" or modifiers):
+            return _refuse("drag", "Nondefault drag buttons and modifiers require verified "
+                           "from_coordinate/to_coordinate values, not element addressing.", code="drag_options_unsupported")
+        # Keep the legacy default payload; check each requested option independently against tools/list before
+        # _run_input_action can focus the target or dispatch any input. Version/capability tokens are not enough.
+        if button_norm != "left":
+            if not self._session.supports_input_property("drag", "button"):
+                return _refuse("drag", "The connected cua-driver does not support the requested drag button.",
+                               code="drag_button_unsupported")
+            args["button"] = button_norm
+        if modifiers:
+            if not self._session.supports_input_property("drag", "modifier"):
+                return _refuse("drag", "The connected cua-driver does not support drag modifiers.",
+                               code="drag_modifiers_unsupported")
+            args["modifier"] = modifiers
+        return self._run_input_action("drag", args, delivery_mode, bring_to_front)
 
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
                x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None,

@@ -755,13 +755,18 @@ class BaseEnvironment(ABC):
 
     _SUDO_PROBE_TIMEOUT_S = 3
 
-    def _sudo_nopasswd_works(self) -> bool:
+    def _sudo_nopasswd_works(self, probe_target: str | None = None) -> bool:
         """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
-        Fails closed: any error or a timed-out probe means "assume a password is needed"."""
+        With *probe_target* (``[-u USER] -- CMD ARGS`` in raw shell spellings, from the sudo
+        rewriter) the probe asks ``sudo -n -l <target>`` instead, so scoped sudoers rules
+        (``ALL=(user) NOPASSWD: cmd``) that never cover ``true`` still resolve to "no password
+        needed" for the exact invocation. Fails closed: any error, or a timed-out or negative
+        probe means "assume a password is needed"."""
         if not self._sudo_nopasswd_probe_supported:
             return False
+        probe = "sudo -n true" if probe_target is None else f"sudo -n -l {probe_target}"
         try:
-            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            proc = self._run_bash(probe, timeout=self._SUDO_PROBE_TIMEOUT_S)
             return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
         except Exception:
             return False

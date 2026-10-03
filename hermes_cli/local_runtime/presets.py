@@ -10,7 +10,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
+    RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, host_memory_warning, launch_args, plan_launch,
+    ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, PhysicsRefusal, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -32,6 +33,7 @@ class PresetEntry:
     spilled: bool
     refusal: str | None = None
     keys: dict[str, str] | None = None
+    warning: str | None = None    # launches, but spills most of host memory
 
 
 def _args_to_keys(args: list[str]) -> dict[str, str]:
@@ -139,7 +141,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
             keys["spec-draft-n-max"] = "3"
     return PresetEntry(model_id=model_id, window=decision.window,
-                       spilled=decision.spilled, keys=keys)
+                       spilled=decision.spilled, keys=keys,
+                       warning=host_memory_warning(decision, budget))
 
 
 def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int | None:

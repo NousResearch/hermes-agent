@@ -221,6 +221,21 @@ def test_catalog_never_hides_unaffordable_models(client, monkeypatch):
         assert row["fit_detail"] or row["fit_summary"]
 
 
+@pytest.mark.parametrize("ram_gib, warned", [(30.6, True), (64, False)])
+def test_catalog_warns_when_a_spill_claims_most_of_host_memory(client, monkeypatch, ram_gib, warned):
+    """#102865: explicitly picking a model whose spill takes most of host RAM said only
+    'runs slower'; the row must say it can make the machine swap before anything downloads."""
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    laptop = HardwareBudget(usable_vram_bytes=6 << 30, total_device_bytes=8 << 30,
+                            ram_available_bytes=int(ram_gib * (1 << 30)))
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget", lambda **kw: laptop)
+    row = next(m for m in client.get("/api/local-models/catalog").json()["models"]
+               if m["id"] == "qwen3.6-35b-a3b")
+    assert row["fits"] and row["spilled"]
+    assert ("system memory" in (row.get("fit_detail") or "")) is warned
+
+
 # ── downloads ────────────────────────────────────────────────
 
 

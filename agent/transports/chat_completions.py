@@ -13,7 +13,6 @@ from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort,
 )
-from agent.message_metadata import MESSAGE_UID
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -36,7 +35,7 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks", MESSAGE_UID,
+    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -325,6 +324,125 @@ def _pareto_score(raw: Any) -> float | None:
     return score if score is not None and 0.0 <= score <= 1.0 else None
 
 
+_EXPLICIT_OLLAMA_LOCAL = frozenset({"ollama", "ollama-local"})
+_OLLAMA_CLOUD_PROVIDERS = frozenset({"ollama-cloud"})
+
+
+def _provider_slug(params: dict[str, Any]) -> str:
+    """Best-effort provider id from kwargs or a registered profile (empty if unknown)."""
+    name = str(params.get("provider_name") or params.get("provider") or "").strip().lower()
+    if name:
+        return name
+    profile = params.get("provider_profile")
+    if profile is None:
+        return ""
+    for attr in ("name", "id", "provider"):
+        value = getattr(profile, attr, None)
+        if value:
+            return str(value).strip().lower()
+    return ""
+
+
+def _is_ollama_cloud_host(base_url: Any) -> bool:
+    try:
+        host = (urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "ollama.com" or host.endswith(".ollama.com")
+
+
+def _is_ollama_local_endpoint(params: dict[str, Any]) -> bool:
+    """True only when the target is clearly local Ollama. Ambiguous → False (keep wire tools)."""
+    provider = _provider_slug(params)
+    base_url = params.get("base_url")
+    if provider in _OLLAMA_CLOUD_PROVIDERS or _is_ollama_cloud_host(base_url):
+        return False
+    if provider in _EXPLICIT_OLLAMA_LOCAL or provider == "custom:ollama" or provider.endswith("-ollama"):
+        return True
+    if not base_url:
+        return False
+    try:
+        from agent.model_metadata import is_local_endpoint
+        if not is_local_endpoint(str(base_url)):
+            return False
+    except Exception:
+        return False
+    try:
+        return urlparse(str(base_url).strip()).port == 11434
+    except Exception:
+        return False
+
+
+def _inject_text_tool_bridge(messages: list, tools: list[dict[str, Any]], tool_choice: Any = None) -> list:
+    """Append ACP tool-bridge text to the first system/developer message (or prepend a system turn)."""
+    from agent.acp_openai_bridge import render_tool_bridge_sections
+
+    sections = render_tool_bridge_sections(tools, tool_choice)
+    if not sections:
+        return messages
+    bridge = "\n\n".join(sections)
+    out = list(messages)
+    for i, msg in enumerate(out):
+        if not isinstance(msg, dict) or msg.get("role") not in {"system", "developer"}:
+            continue
+        copied = dict(msg)
+        content = copied.get("content")
+        if isinstance(content, str):
+            copied["content"] = f"{content}\n\n{bridge}" if content.strip() else bridge
+        elif isinstance(content, list):
+            copied["content"] = [*content, {"type": "text", "text": bridge}]
+        elif content is None:
+            copied["content"] = bridge
+        else:
+            copied["content"] = f"{content}\n\n{bridge}"
+        out[i] = copied
+        return out
+    return [{"role": "system", "content": bridge}, *out]
+
+
+def _maybe_ollama_text_tools(
+    messages: list, tools: list[dict[str, Any]] | None, params: dict[str, Any],
+) -> tuple[list, list[dict[str, Any]] | None, bool]:
+    """For local Ollama, drop structured ``tools`` and carry schemas in prompt text instead."""
+    if not tools or not _is_ollama_local_endpoint(params):
+        return messages, tools, False
+    tool_choice = params.get("tool_choice")
+    overrides = params.get("request_overrides")
+    if tool_choice is None and isinstance(overrides, dict):
+        tool_choice = overrides.get("tool_choice")
+    return _inject_text_tool_bridge(messages, tools, tool_choice), None, True
+
+
+def _drop_wire_tools(api_kwargs: dict[str, Any]) -> dict[str, Any]:
+    api_kwargs.pop("tools", None)
+    api_kwargs.pop("tool_choice", None)
+    extra = api_kwargs.get("extra_body")
+    if isinstance(extra, dict):
+        extra.pop("tools", None)
+        extra.pop("tool_choice", None)
+    return api_kwargs
+
+
+def _promote_text_tool_calls(content: Any) -> tuple[list[ToolCall] | None, Any]:
+    """Promote well-formed ``<tool_call>`` XML in assistant content into structured ToolCalls."""
+    if not isinstance(content, str) or not content.strip() or "<tool_call>" not in content:
+        return None, content
+    from agent.acp_openai_bridge import extract_tool_calls_from_text
+
+    calls, cleaned = extract_tool_calls_from_text(content, allow_bare_json=False)
+    if not calls:
+        return None, content
+    promoted = [
+        ToolCall(
+            id=getattr(call, "id", None),
+            name=call.function.name,
+            arguments=call.function.arguments if isinstance(call.function.arguments, str) else "{}",
+        )
+        for call in calls
+    ]
+    return promoted, cleaned or None
+
+
 def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     """GPT-5/Codex models take a ``developer`` role instead of ``system``."""
     if (
@@ -480,8 +598,10 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         _profile = params.get("provider_profile")
         sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        sanitized, tools, ollama_text_tools = _maybe_ollama_text_tools(sanitized, tools, params)
         if _profile:
-            return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
+            api_kwargs = self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
+            return _drop_wire_tools(api_kwargs) if ollama_text_tools else api_kwargs
 
         sanitized = _swap_developer_role(sanitized, params.get("model_lower", (model or "").lower()))
         api_kwargs = _base_kwargs(model, sanitized, tools, params)
@@ -551,10 +671,11 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["extra_body"] = extra_body
         if params.get("request_overrides"):
             api_kwargs.update(params["request_overrides"])
-        return _finish_kwargs(
+        api_kwargs = _finish_kwargs(
             api_kwargs, sanitized, params,
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")) or _is_openai_api_base_url(base_url),
         )
+        return _drop_wire_tools(api_kwargs) if ollama_text_tools else api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
         """Build API kwargs from a ProviderProfile — every quirk comes from the profile object."""
@@ -569,7 +690,7 @@ class ChatCompletionsTransport(ProviderTransport):
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
-            session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+            session_id=params.get("session_id"),
         )
         api_kwargs.update(top_level_from_profile)
 
@@ -635,6 +756,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # OpenAI structured refusal (``message.refusal`` set, ``content`` empty); without
         # promotion the loop retries a deterministic refusal as an empty response.
         content = getattr(msg, "content", None)
+        # Ollama /v1 and some plain-text emitters leave native <tool_call> XML in content
+        # instead of structured tool_calls. Promote only when structured calls are absent.
+        if not tool_calls:
+            promoted, content = _promote_text_tool_calls(content)
+            if promoted:
+                tool_calls = promoted
+                finish_reason = "tool_calls"
         refusal = _attr_or_model_extra(msg, "refusal")
         if isinstance(refusal, str) and refusal.strip():
             provider_data["refusal"] = refusal
@@ -663,13 +791,10 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
-        call = ToolCall(
+        return ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,
             provider_data=None if extra is None else {"extra_content": _dump_extra_content(extra)},
         )
-        if getattr(tc_function, "args_repaired", False) is True:
-            call.args_repaired = True  # stream assembly fixed the JSON; read by tool-call quality metrics
-        return call
 
     def validate_response(self, response: Any) -> bool:
         """Check that response has valid choices and is not a router failure shim."""
@@ -692,3 +817,11 @@ class ChatCompletionsTransport(ProviderTransport):
 from agent.transports import register_transport  # noqa: E402
 
 register_transport("chat_completions", ChatCompletionsTransport)
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Dict  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

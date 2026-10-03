@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
@@ -160,6 +161,7 @@ export function useVoiceLiveConversation({
     consumePendingResponse,
     seedHistory
   })
+  const sessionBindingRef = useRef<null | typeof latest.current>(null)
 
   latest.current = {
     activeToolLabel,
@@ -216,6 +218,7 @@ export function useVoiceLiveConversation({
     userUtteranceRef.current = ''
     const session = sessionRef.current
     sessionRef.current = null
+    sessionBindingRef.current = null
     setDelegation(null)
     spokenResponseIdRef.current = null
     spokenLengthRef.current = 0
@@ -233,9 +236,14 @@ export function useVoiceLiveConversation({
 
     startingRef.current = true
     const epoch = ++startEpochRef.current
+    // Capture the route-sensitive callbacks and owner before the first await.
+    // A profile switch while wake.pause/WebRTC setup settles must not re-home
+    // this billed session or the Hermes delegation it later emits.
+    const binding = { ...latest.current }
+    const owner = resolveOwnerNow(ownerRef.current)
 
     try {
-      await latest.current.beforeMicOpen?.()
+      await binding.beforeMicOpen?.()
     } catch {
       // A wake-pause failure must not block an explicit start.
     }
@@ -269,7 +277,7 @@ export function useVoiceLiveConversation({
 
             if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
               void end()
-              latest.current.onStopWord?.()
+              binding.onStopWord?.()
             }
           }, UTTERANCE_SETTLE_MS)
         },
@@ -279,6 +287,7 @@ export function useVoiceLiveConversation({
           }
 
           sessionRef.current = null
+          sessionBindingRef.current = null
           setDelegation(null)
           setStatus('idle')
 
@@ -288,7 +297,7 @@ export function useVoiceLiveConversation({
               message: liveEndedMessage(reason, usageSeconds, voiceCopy),
               title: voiceCopy.liveEnded
             })
-            latest.current.onFatalError?.()
+            binding.onFatalError?.()
           }
         },
         onDelegation: (delegationId, context) => {
@@ -301,7 +310,7 @@ export function useVoiceLiveConversation({
           // A spoken stop command ends the conversation instead of becoming a turn.
           if (prompt && isVoiceStopCommand(prompt)) {
             void end()
-            latest.current.onStopWord?.()
+            binding.onStopWord?.()
 
             return
           }
@@ -309,7 +318,7 @@ export function useVoiceLiveConversation({
           // A newer request supersedes an in-flight turn: stop it so the answer
           // the voice speaks is for what the user asked last.
           if (busyRef.current) {
-            void latest.current.onInterrupt?.()
+            void binding.onInterrupt?.()
           }
 
           setDelegation(delegationId)
@@ -318,9 +327,9 @@ export function useVoiceLiveConversation({
           lastToolLabelRef.current = null
           turnObservedRef.current = false
           submittedAtRef.current = Date.now()
-          latest.current.consumePendingResponse()
+          binding.consumePendingResponse()
           refreshStatus()
-          void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
+          void Promise.resolve(binding.onSubmit(prompt, voiceContext)).catch(error => {
             notifyError(error, voiceCopy.liveDelegationFailed)
             session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
             setDelegation(null)
@@ -336,16 +345,17 @@ export function useVoiceLiveConversation({
           refreshStatus()
         }
       },
-      ownerRef.current
+      owner
     )
 
     sessionRef.current = session
+    sessionBindingRef.current = binding
     startingRef.current = false
     setMuted(false)
     setStatus('thinking')
 
     try {
-      await session.start(latest.current.seedHistory())
+      await session.start(binding.seedHistory())
 
       if (sessionRef.current !== session || startEpochRef.current !== epoch) {
         session.close()
@@ -357,6 +367,7 @@ export function useVoiceLiveConversation({
     } catch (error) {
       if (sessionRef.current === session) {
         sessionRef.current = null
+        sessionBindingRef.current = null
       }
 
       session.close()
@@ -370,7 +381,7 @@ export function useVoiceLiveConversation({
       // 'Missing local SDP offer', API errors) — those keep their own message.
       notifyError(error instanceof DOMException ? micError(error, voiceCopy) : error, voiceCopy.couldNotStartSession)
       setStatus('idle')
-      latest.current.onFatalError?.()
+      binding.onFatalError?.()
     }
   }, [end, refreshStatus, setDelegation, voiceCopy])
 
@@ -381,8 +392,9 @@ export function useVoiceLiveConversation({
   useEffect(() => {
     const session = sessionRef.current
     const delegationId = delegationRef.current
+    const binding = sessionBindingRef.current
 
-    if (!session || !delegationId) {
+    if (!session || !delegationId || !binding) {
       return undefined
     }
 
@@ -395,14 +407,14 @@ export function useVoiceLiveConversation({
         turnObservedRef.current = true
       }
 
-      const tool = latest.current.activeToolLabel?.() ?? null
+      const tool = binding.activeToolLabel?.() ?? null
 
       if (tool && tool !== lastToolLabelRef.current) {
         lastToolLabelRef.current = tool
         session.think(delegationId, `Hermes is working: ${tool}. Not done yet.`)
       }
 
-      const response = latest.current.pendingResponse()
+      const response = binding.pendingResponse()
 
       if (response) {
         turnObservedRef.current = true
@@ -432,7 +444,7 @@ export function useVoiceLiveConversation({
           spokenLengthRef.current = spoken.length
         }
 
-        latest.current.consumePendingResponse()
+        binding.consumePendingResponse()
         setDelegation(null)
         refreshStatus()
 

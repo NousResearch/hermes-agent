@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
@@ -73,7 +74,7 @@ export function useComposerVoice({
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
-  const { $messages } = useComposerScope()
+  const { $messages, connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
 
   // Wake the voice loop once when a pending reply first becomes speakable,
   // without re-rendering the composer for every streamed token. The live
@@ -101,6 +102,8 @@ export function useComposerVoice({
   const busyRef = useRef(busy)
   busyRef.current = busy
   const ownsWakeIndicatorRef = useRef(false)
+  const conversationOwnerRef = useRef<ResolvedOwner | null>(null)
+  const readAloudOwnerRef = useRef<ResolvedOwner | null>(null)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
 
@@ -273,10 +276,13 @@ export function useComposerVoice({
       }
     }
 
+    // Resolve once, before either engine opens a microphone or provider
+    // session. Every tail operation keeps this route until teardown.
+    conversationOwnerRef.current = resolveOwnerNow({ connectionId: ownerConnectionId, profile: ownerProfile })
     setLiveEngineActive(live)
     setVoiceConversationActive(true)
     recordFeatureUse('voice_conversation')
-  }, [t])
+  }, [ownerConnectionId, ownerProfile, t])
 
   useEffect(() => {
     if (!voiceConversationActive) {
@@ -379,6 +385,24 @@ export function useComposerVoice({
     }
   }, [pauseWakeForVoice, resumeWakeIfPaused, voiceConversationActive])
 
+  // A workspace switch cannot turn A's open mic/session into B's. End A; both
+  // conversation engines retain the captured owner for any teardown still in
+  // flight, so the close cannot release or submit through B.
+  useEffect(() => {
+    const owner = conversationOwnerRef.current
+
+    if (!voiceConversationActive || !owner) {
+      return
+    }
+
+    const current = resolveOwnerNow({ connectionId: ownerConnectionId, profile: ownerProfile })
+
+    if (owner.connectionId !== current.connectionId || owner.profile !== current.profile) {
+      setVoiceConversationActive(false)
+      void conversation.end()
+    }
+  }, [conversation, ownerConnectionId, ownerProfile, voiceConversationActive])
+
   // 'Say "stop" to end the voice chat.' notice when the conversation starts.
   // Phrase comes from voice.stop_phrases (first entry) so a custom phrase
   // renders correctly; a null phrase (stop_phrases: []) shows no notice.
@@ -406,20 +430,50 @@ export function useComposerVoice({
   // first spoken reply doesn't start with dead air); ending it releases the
   // lease, and the backend unloads resident local models once no surface holds
   // one. Fire-and-forget — the toggle never waits on or fails from this.
+  // eslint-disable-next-line no-restricted-syntax -- releases the conversation lease owner, not a store mirror.
   useEffect(() => {
-    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive)
+    const owner = conversationOwnerRef.current
+
+    if (!owner) {
+      return
+    }
+
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive, owner)
+
+    if (!voiceConversationActive) {
+      conversationOwnerRef.current = null
+    }
   }, [liveEngineActive, voiceConversationActive])
 
-  useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
+  useEffect(
+    () => () => {
+      const owner = conversationOwnerRef.current
+
+      if (owner) {
+        void syncTtsLease(CONVERSATION_LEASE, false, owner)
+      }
+    },
+    []
+  )
 
   // "Read replies aloud" is the same signal, held for as long as the toggle is
   // on (it mirrors voice.auto_tts, so this also warms at startup when the
   // preference is already set).
   const autoSpeakReplies = useStore($autoSpeakReplies)
 
+  // eslint-disable-next-line no-restricted-syntax -- owner bookkeeping for the read-aloud lease, not a store mirror.
   useEffect(() => {
-    void syncTtsLease(READ_ALOUD_LEASE, autoSpeakReplies)
-  }, [autoSpeakReplies])
+    if (autoSpeakReplies) {
+      const owner =
+        readAloudOwnerRef.current ?? resolveOwnerNow({ connectionId: ownerConnectionId, profile: ownerProfile })
+      readAloudOwnerRef.current = owner
+      void syncTtsLease(READ_ALOUD_LEASE, true, owner)
+    } else if (readAloudOwnerRef.current) {
+      const owner = readAloudOwnerRef.current
+      readAloudOwnerRef.current = null
+      void syncTtsLease(READ_ALOUD_LEASE, false, owner)
+    }
+  }, [autoSpeakReplies, ownerConnectionId, ownerProfile])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

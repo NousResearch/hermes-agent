@@ -319,10 +319,10 @@ describe('useVoiceConversation playback rearm', () => {
     await beginReply(hook)
 
     await waitFor(() =>
-      expect(mocks.playSpeechText).toHaveBeenCalledWith('Fallback reply', {
-        source: 'voice-conversation',
-        syncOnly: true
-      })
+      expect(mocks.playSpeechText).toHaveBeenCalledWith(
+        'Fallback reply',
+        expect.objectContaining({ source: 'voice-conversation', syncOnly: true })
+      )
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     // status flips to 'listening' only after start() resolves — poll for it.
@@ -336,20 +336,20 @@ describe('useVoiceConversation playback rearm', () => {
     await beginReply(hook)
 
     await waitFor(() =>
-      expect(mocks.playSpeechText).toHaveBeenCalledWith('The first sentence is ready.', {
-        source: 'voice-conversation',
-        syncOnly: true
-      })
+      expect(mocks.playSpeechText).toHaveBeenCalledWith(
+        'The first sentence is ready.',
+        expect.objectContaining({ source: 'voice-conversation', syncOnly: true })
+      )
     )
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
 
     finishResponse()
 
     await waitFor(() =>
-      expect(mocks.playSpeechText).toHaveBeenCalledWith('The second sentence is ready.', {
-        source: 'voice-conversation',
-        syncOnly: true
-      })
+      expect(mocks.playSpeechText).toHaveBeenCalledWith(
+        'The second sentence is ready.',
+        expect.objectContaining({ source: 'voice-conversation', syncOnly: true })
+      )
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     // status flips to 'listening' only after start() resolves — poll for it.
@@ -430,10 +430,10 @@ describe('useVoiceConversation playback rearm', () => {
     })
 
     await waitFor(() =>
-      expect(mocks.playSpeechText).toHaveBeenCalledWith('I will check the file for you now.', {
-        source: 'voice-conversation',
-        syncOnly: true
-      })
+      expect(mocks.playSpeechText).toHaveBeenCalledWith(
+        'I will check the file for you now.',
+        expect.objectContaining({ source: 'voice-conversation', syncOnly: true })
+      )
     )
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })

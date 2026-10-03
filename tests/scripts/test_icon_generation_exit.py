@@ -123,7 +123,11 @@ def test_icon_portrait_sits_on_the_plain_tile_inside_the_outer_silhouette(monkey
     assert tuple(float(clip.attrib[key]) for key in ("x", "y", "width", "height", "rx")) == geometry
     group = result[-1]
     portrait = group[-1]
-    assert len(group) == 1, "extend the existing contour, not a duplicate strip"
+    portraits = [child for child in group if child.tag == f"{{{ns['svg']}}}svg"]
+    assert portraits == [portrait], "extend the existing contour, not a duplicate strip"
+    # The commit badge rides inside the same clip, so its anti-aliased edge can
+    # never add alpha outside the plate (visible at targetsize-16..30).
+    assert [child.tag for child in group[:-1]] == [f"{{{ns['svg']}}}g"]
     assert portrait.get("preserveAspectRatio") == "xMidYMax meet"
     assert tuple(float(portrait.attrib[key]) for key in ("x", "y", "width", "height")) == module.GIRL_BOXES[name]
     clip_path = result.find("svg:defs/svg:clipPath", ns)

@@ -1,0 +1,102 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: obsideo
+description: >-
+  Encrypted, verifiable file storage for agent artifacts and the hermes backup
+  archive: encrypted on this machine before upload, replicated to three
+  providers, possession proofs the client checks itself.
+source: https://github.com/Regan-Milne/obsideo-mcp
+
+# npm package, so transport.command IS the install (no `install:` block).
+# Pinned to an exact version rather than floating: a catalog entry should not
+# change what it runs when the publisher pushes a release.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "obsideo-mcp@0.7.2"
+  # Attribution only. The server sends this label with the signup so Obsideo can
+  # tell catalog installs from other MCP clients; it is not a credential and it
+  # changes nothing about what the server does.
+  env:
+    OBSIDEO_SOURCE: hermes-catalog
+
+# No credentials to collect. The server provisions its own account on first
+# use (see post_install) and stores the credentials locally under ~/.obsideo.
+auth:
+  type: none
+
+# `rm` is pruned from the default for the same reason n8n's mutating calls
+# are: a casual install should not come with an irreversible delete. `put`
+# stays because it is the point of the server; it can overwrite an existing
+# key, which its tool annotation declares. Users see the full list in the
+# install-time checklist and can opt into `rm`.
+tools:
+  default_enabled:
+    - put
+    - get
+    - ls
+    - verify
+    - usage
+    - plan
+    - upgrade
+    - portal
+    - trial
+    - signup_start
+    - signup_verify
+    - backup_keys
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - obsideo
+    - offsite backup
+    - verified storage
+  hosts:
+    - obsideo.io
+
+post_install: |
+  Read this before installing, because this server differs from most of the
+  catalog in one way worth knowing about.
+
+  ZERO SETUP, BY PROVISIONING AN ACCOUNT FOR YOU. There is no API key to paste.
+  The first storage call creates a free trial account on Obsideo's production
+  network automatically: a proof-of-work plus a ~10 second wait stand in for
+  identity, no email and no human in the loop. That account is 100 MB and lasts
+  about 7 days. Credentials are written to ~/.obsideo/mcp.json and go nowhere
+  else. If you would rather this never happen without you asking, set
+  OBSIDEO_NO_AUTO_TRIAL=1 and use the signup_start / signup_verify tools
+  instead (12 GB free tier, email required, no card, no expiry). A trial is
+  claimed in place with signup_start: same account, keys and data.
+
+  ENCRYPTED BY DEFAULT. Content is encrypted client-side with AES-256-GCM
+  before it leaves the machine, so the service stores ciphertext it cannot
+  read. Object keys and sizes are not encrypted. The key is generated locally
+  and written to ~/.obsideo/mcp.json; Obsideo has no copy and cannot recover
+  it. Back that file up. If it is lost the data is unrecoverable no matter how
+  many copies the network still holds. Pass encrypt=false per call if another
+  tool needs to read the stored bytes directly.
+
+  VERIFY DOES NOT TRUST THE VENDOR. The `verify` tool challenges each storage
+  provider directly, recomputes the merkle root, and checks each provider's
+  Ed25519 signature locally. It asks Obsideo's coordinator only which providers
+  to talk to; nothing the coordinator asserts is trusted for the verdict.
+
+  PAYING IS THE HUMAN'S CLICK, NEVER THE AGENT'S. 12 GB is free. `upgrade`
+  returns a Stripe checkout link for 200 GB blocks at $5/month each and
+  charges nothing; the person opens it and pays on Stripe's page. The server
+  cannot resize an existing plan: only the agree link Obsideo emails near the
+  top of a tier does that, and only when the person clicks it. `portal`
+  returns the Stripe portal link (cancel, card, invoices).
+
+  Objects are replicated to 3 providers and challenged on a continuous cycle.
+  This is object storage: not a database, not a query engine, not a CDN, and
+  not a memory provider; it is where an agent's files and its `hermes backup`
+  archive can live off the disk it runs on.
+
+  Start a new Hermes session to load the tools.

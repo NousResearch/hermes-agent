@@ -1000,6 +1000,28 @@ class TestSecretFileReadRedaction:
         assert self.SYNTH not in raw
         assert "«redacted" in raw
 
+    @pytest.mark.parametrize("name, body, secret_words, public", [
+        (".netrc", "machine fixture\nlogin bob\npassword\nhunter2weak\n", ["hunter2weak"], "login bob"),
+        (".pypirc", "[pypi]\nusername = bob\npassword = alpha\n\tbravo charlie\nrepository = https://x.example/\n",
+         ["alpha", "bravo", "charlie"], "repository = https://x.example/"),
+    ])
+    def test_real_read_and_search_of_credential_store_slice(self, tmp_path, name, body, secret_words, public):
+        """A read_file page or search_files match that starts past the ``password`` keyword
+        still carries only the non-reusable marker; public lines stay readable."""
+        from tools.file_tools import search_tool
+
+        store = tmp_path / name
+        store.write_text(body, encoding="utf-8", newline="\n")
+
+        tail = json.loads(read_file_tool(str(store), offset=4, limit=1, task_id=f"slice-{name}"))["content"]
+        assert tail.startswith("4|") and "«redacted-secret»" in tail
+        whole = json.loads(read_file_tool(str(store), task_id=f"whole-{name}"))["content"]
+        match = search_tool(pattern=secret_words[-1], path=str(tmp_path), file_glob=name,
+                            task_id=f"search-{name}")
+        for out in (tail, whole, match):
+            assert not any(word in out for word in secret_words)
+        assert public in whole
+
 
 class TestConflictMarkerFlag:
     def test_read_flags_balanced_conflict_blocks_only(self, tmp_path):

@@ -119,6 +119,23 @@ def _schema_of(provider) -> list:
     return provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
 
 
+def _saved_provider_config(provider, provider_name: str, config: dict) -> dict:
+    """Values to offer as current on (re-)setup. Providers overriding ``save_config`` keep their
+    config outside ``memory.<name>`` (holographic: ``plugins.hermes-memory-store``); when they
+    expose ``load_saved_config`` it is authoritative — otherwise schema defaults are offered as
+    current and written back over the saved values. Falls back to the ``memory.<name>`` block."""
+    if hasattr(provider, "load_saved_config"):
+        try:
+            saved = provider.load_saved_config()
+        except Exception as e:
+            print(f"  Could not load saved provider config: {e}")
+        else:
+            if isinstance(saved, dict):
+                return dict(saved)
+    block = config.get("memory", {}).get(provider_name, {})
+    return block if isinstance(block, dict) else {}
+
+
 def _get_available_providers() -> list:
     """Discover memory providers from plugins/memory/ as ``(name, setup_hint, provider)`` tuples."""
     try:
@@ -226,7 +243,13 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
 
         if choices and not is_secret:
             current = provider_config.get(key, default)
-            current_idx = choices.index(current) if current and current in choices else 0
+            if isinstance(current, bool):
+                # YAML natives: a bool is never a member of string choices, and a
+                # False short-circuited the old `current and current in choices`
+                # guard to index 0 — Enter then silently flipped auto_extract
+                # off→on (review P2 on #123599).
+                current = str(current).lower()
+            current_idx = choices.index(current) if current in choices else 0
             sel = _curses_select(
                 f"  {desc}", [(c, "") for c in choices], default=current_idx, cancel_returns=_CANCELLED
             )
@@ -246,8 +269,13 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
             if val and env_var:
                 env_writes[env_var] = val
         else:
-            effective_default = provider_config.get(key) or default
-            val = _prompt(desc, default=str(effective_default) if effective_default else None)
+            saved = provider_config.get(key)
+            # `saved or default` treated any falsy saved value (0, False, "")
+            # as unset and silently rewrote it on Enter; legal zeros like the
+            # holographic provider's default_trust: 0 must survive re-runs
+            # (review P2 on #123599).
+            effective_default = default if saved is None else saved
+            val = _prompt(desc, default=str(effective_default) if effective_default is not None else None)
             if val:
                 provider_config[key] = val
                 if env_var and env_var not in env_writes:
@@ -289,9 +317,7 @@ def cmd_setup(args) -> None:
     if _post_setup_hook(provider, config):
         return
 
-    provider_config = config["memory"].get(name, {})
-    if not isinstance(provider_config, dict):
-        provider_config = {}
+    provider_config = _saved_provider_config(provider, name, config)
     env_writes: dict = {}
     schema = _schema_of(provider)
     if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
@@ -390,6 +416,8 @@ def cmd_status(args) -> None:
 
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
+        if provider is not None and hasattr(provider, "load_saved_config"):
+            provider_config = _saved_provider_config(provider, provider_name, config)
         display_config = provider_config
         if provider and hasattr(provider, "get_status_config"):
             try:

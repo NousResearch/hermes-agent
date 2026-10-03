@@ -127,14 +127,18 @@ class TestCredentialExclusion:
         with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
             members = {m.name: m for m in tf.getmembers()}
             note = tf.extractfile("testprofile/config.yaml.bak-my-note").read().decode()
+        # The default profile's root allow-list keeps skills/, so its nested copies need the same drop.
+        with tarfile.open(export_profile("default", str(tmp_path / "default.tar.gz")), "r:gz") as tf:
+            default_members = set(tf.getnames())
 
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
+        assert "default/config.yaml" in default_members
         assert _LEAKED_KEY not in note
         rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json", *nested,
                 *(c.relative_to(profile_dir).as_posix() for c in copies)}
-        folded = {n.casefold() for n in members}
-        leaked = sorted(r for r in rels if any(
-            n == f"testprofile/{r}".casefold() or n.startswith(f"testprofile/{r}/".casefold()) for n in folded))
+        folded = {n.casefold() for n in (*members, *default_members)}
+        leaked = sorted(f"{p}/{r}" for p in ("testprofile", "default") for r in rels if any(
+            n == f"{p}/{r}".casefold() or n.startswith(f"{p}/{r}/".casefold()) for n in folded))
         assert not leaked, leaked
 
     @pytest.mark.parametrize("declare_owned", [False, True])

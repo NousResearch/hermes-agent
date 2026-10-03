@@ -2228,9 +2228,10 @@ def _default_export_ignore(root_dir: Path):
     """
 
     def _ignore(directory: str, contents: list) -> set:
-        # Universal exclusions (any depth) plus npm lockfiles that can appear at root.
+        # Universal exclusions and credential names (any depth) plus npm lockfiles that can appear at root.
         ignored = _non_exportable_entries(directory, contents)
         ignored.update({"package.json", "package-lock.json"} & set(contents))
+        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -2238,7 +2239,7 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential names dropped at ANY depth of a named-profile export, on top of the root-relative
+# Credential names dropped at ANY depth of every profile export, on top of the root-relative
 # PROFILE_CREDENTIAL_PATHS. ``bot-desktop`` is the screen's runtime state:
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 # The OS stores are dropped wherever they sit (a skill dir copied from a home carries its ``.ssh``).

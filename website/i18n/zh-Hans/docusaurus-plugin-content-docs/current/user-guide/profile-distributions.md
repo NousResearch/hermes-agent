@@ -66,7 +66,7 @@ hermes profile install github.com/you/my-research-agent --alias
 不适合的场景：
 
 - **你只想在自己的机器上备份一个 profile。** 使用 [`hermes profile export` / `import`](../reference/profile-commands.md#hermes-profile-export)——那正是这两个命令的用途。
-- **你想随 agent 一起共享 API 密钥。** `auth.json`、`.env` 以及 Hermes 从 profile 读取的其他凭据存储（`.op.env`、`npmrc`、OAuth 与机器人 token 文件、`honcho.json`、`mem0.json`、`teams_pipeline_store.json`、`mcp-tokens/`、`vault/`、`proxy/`、浏览器 profile、平台会话）被刻意排除在分发之外。每个安装者使用自己的凭据。（导出文件同样会去除它们。）
+- **你想随 agent 一起共享 API 密钥。** `auth.json`、`.env` 以及 Hermes 从 profile 读取的其他凭据存储（`.op.env`、`npmrc`、OAuth 与机器人 token 文件、`honcho.json`、`mem0.json`、`teams_pipeline_store.json`、`mcp-tokens/`、`vault/`、`proxy/`、浏览器 profile、平台会话，以及位于根目录或嵌套在技能目录下的 `.ssh/`、`.aws/`、`.gnupg/`、`.kube/` 和 `.envrc`）被刻意排除在分发之外。每个安装者使用自己的凭据。（导出文件同样会去除它们。）
 - **你想共享记忆 / 会话 / 对话历史。** 这些是用户数据，不是分发内容，永远不会被发送。
 
 ## 生命周期：从作者到安装者再到更新

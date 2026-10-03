@@ -686,7 +686,7 @@ You cannot import as `default` — that name is the built-in root profile (`~/.h
 
 ### What an export file contains
 
-Always excluded, both profile types: `auth.json`, `.env` and the other credential stores Hermes reads from a profile (OAuth and bot token files such as WeChat's `weixin/accounts/`, `honcho.json`, `mcp-tokens/`, `vault/`, the iron-proxy keys in `proxy/`, browser profiles including the `/browser connect` one in `chrome-debug/`, platform sessions and pairing stores, the Teams pipeline's `teams_pipeline_store.json` with its Graph webhook `clientState`). Your API keys never leave the machine. `honcho.json` and `mem0.json` can hold the provider's API key next to its settings, so after an import run `hermes honcho setup` or `hermes memory setup` again.
+Always excluded, both profile types: `auth.json`, `.env` and the other credential stores Hermes reads from a profile (OAuth and bot token files such as WeChat's `weixin/accounts/`, `honcho.json`, `mcp-tokens/`, `vault/`, the iron-proxy keys in `proxy/`, browser profiles including the `/browser connect` one in `chrome-debug/`, platform sessions and pairing stores, the Teams pipeline's `teams_pipeline_store.json` with its Graph webhook `clientState`), and `.ssh/`, `.aws/`, `.gnupg/`, `.kube/` and `.envrc`, at the root or nested under a skill. Your API keys never leave the machine. `honcho.json` and `mem0.json` can hold the provider's API key next to its settings, so after an import run `hermes honcho setup` or `hermes memory setup` again.
 
 **The default profile** (`~/.hermes`) is exported through an allow-list — only known Hermes artifacts, so an unrelated file sitting in your home directory can't get swept in:
 

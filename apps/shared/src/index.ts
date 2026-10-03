@@ -93,6 +93,7 @@ export {
   APPROVAL_RESPOND_TIMEOUT_MS,
   type ConnectionState,
   type GatewayClientOptions,
+  GatewayConnectError,
   GatewayEventHub,
   isGatewayWebSocketUrl,
   JsonRpcGatewayClient,

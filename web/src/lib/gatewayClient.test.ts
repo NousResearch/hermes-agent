@@ -52,6 +52,7 @@ class FakeWebSocket {
 
 type EventLike = {
   code?: number;
+  data?: string;
 };
 
 beforeEach(() => {
@@ -84,6 +85,13 @@ describe("GatewayClient", () => {
     const socket = FakeWebSocket.instances[0];
     socket.readyState = 1;
     socket.emit("open", {});
+    socket.emit("message", {
+      data: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type: "gateway.ready" },
+      }),
+    });
     await connectPromise;
 
     socket.emit("close", { code: 4401 });
@@ -92,5 +100,23 @@ describe("GatewayClient", () => {
       reloadMocks.maybeReloadForLoopbackWsAuthFailure,
     ).toHaveBeenCalledWith(4401);
     expect(gw.connectionState).toBe("open");
+  });
+
+  it("treats a 4401 close before gateway.ready as a stale-token reload candidate", async () => {
+    reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(true);
+    const gw = new GatewayClient();
+    const connectPromise = gw.connect();
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.readyState = 1;
+    socket.emit("open", {});
+    socket.emit("close", { code: 4401 });
+
+    expect(
+      reloadMocks.maybeReloadForLoopbackWsAuthFailure,
+    ).toHaveBeenCalledWith(4401);
+    await expect(connectPromise).rejects.toBeTruthy();
+    expect(gw.connectionState).toBe("closed");
   });
 });

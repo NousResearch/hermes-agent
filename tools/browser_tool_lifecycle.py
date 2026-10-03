@@ -264,6 +264,36 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     return True
 
 
+def _daemon_pid_bound_to_socket_dir(socket_dir: str) -> Optional[int]:
+    """PID of a live agent-browser daemon bound to ``socket_dir``; None when none is found.
+
+    Some lanes never get a ``<session>.pid`` file (real-profile: agent-browser only
+    ATTACHES there), so the reaper's pidless branch can only find their daemon by
+    scanning the process table. Identity + binding gates mirror
+    ``_verify_reapable_browser_daemon`` but are SILENT: on a busy host most candidates
+    are other sessions' daemons, and refusing each with a warning would spam the log.
+    The kill path still identity-gates via the start-time fingerprint.
+    """
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        return None
+    want = os.path.normpath(socket_dir)
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            argv = list(proc.info["cmdline"] or [])
+            joined = " ".join(argv).lower()
+            if "agent-browser" not in (proc.info["name"] or "").lower() and "agent-browser" not in joined:
+                continue
+            if any(_argv_token_is_path(tok, socket_dir) for tok in argv):
+                return proc.info["pid"]
+            if os.path.normpath((proc.environ() or {}).get("AGENT_BROWSER_SOCKET_DIR", "")) == want:
+                return proc.info["pid"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue  # vanished or unreadable — environ() can be denied even same-user; fail closed
+    return None
+
+
 def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     """Seconds since anything in ``socket_dir`` was last written; None if unknown (fail safe).
     Every command rewrites ``_stdout_<cmd>`` there — a restart-proof activity marker — and
@@ -326,7 +356,9 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
     here and idle past ``BROWSER_ORPHAN_GRACE_SECONDS`` (owner-alive alone made leaked
     daemons immortal); no owner_pid (legacy) falls back to this process's tracking. A
     pidless dir is only stale after the grace period (deleting it immediately races the
-    creator's first stdout open). The PID is identity-verified before any tree-kill.
+    creator's first stdout open). The PID is identity-verified before any tree-kill; a
+    pidless dir gets a process-table scan first so its bound daemon is not rmtree'd
+    around (#131822).
     """
     owner_pid, owner_alive = _owner_pid_alive(socket_dir, session_name)
     if owner_alive is True:
@@ -348,8 +380,21 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
         idle_s = _socket_dir_idle_seconds(socket_dir)
         if idle_s is None or idle_s < _bt.BROWSER_ORPHAN_GRACE_SECONDS:
             return False
+        # A missing .pid does not mean no daemon: attach-only lanes (real-profile) never
+        # get one. The dir is the only binding evidence, so a bound daemon must die BEFORE
+        # the rmtree — deleting it first makes the leak outlive every later sweep (#131822).
+        daemon_pid = _daemon_pid_bound_to_socket_dir(socket_dir)
+        reaped = False
+        if daemon_pid is not None:
+            try:
+                if not _terminate_verified_daemon(daemon_pid, session_name, _bt.logger.warning):
+                    return False  # unfingerprintable — keep the dir as binding evidence for a later sweep
+                _bt.logger.info("Reaped pidless browser daemon PID %d (session %s)", daemon_pid, session_name)
+                reaped = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass  # vanished mid-kill — nothing left to reap, clean up the dir
         shutil.rmtree(socket_dir, ignore_errors=True)
-        return False
+        return reaped
 
     daemon_pid = _read_pid_file(pid_file)
     from gateway.status import _pid_exists

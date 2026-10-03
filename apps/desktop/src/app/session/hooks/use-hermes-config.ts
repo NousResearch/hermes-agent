@@ -4,6 +4,7 @@ import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/te
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
+import { setBusyInputModeFromConfig } from '@/store/busy-input-mode'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
@@ -147,6 +148,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setShowReasoningFromConfig(config.display?.show_reasoning)
         setShowToolActivityFromConfig(config.display?.tool_progress)
+        setBusyInputModeFromConfig(config.display?.busy_input_mode)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
 

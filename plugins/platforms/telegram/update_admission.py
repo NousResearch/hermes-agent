@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from functools import wraps
 
 from telegram import Update
-from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler
+from telegram.ext import Application, ApplicationHandlerStop, BaseUpdateProcessor, ConversationHandler
 
 from gateway.platforms.helpers import bounded_put
 from utils import atomic_json_write
@@ -25,6 +25,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BLOCK = object()
+DEFAULT_MAX_CONCURRENT_UPDATES = 32
 _SEEN_CAP = 4096
 # The Bot API keeps an unconfirmed update for at most 24 hours (getUpdates), so an older
 # receipt can never match a redelivery. That is also well inside the week of silence after
@@ -122,6 +123,59 @@ class _ErrorCallback:
         if claim is not None and claim.owners:
             claim.accepted = True
         return await self.__wrapped__(update, context)
+
+
+class PerChatUpdateProcessor(BaseUpdateProcessor):
+    """Concurrent across chats, FIFO within one chat.
+
+    PTB's default processor (max_concurrent_updates=1) awaits every update inline, so one slow
+    handler deafens all chats; plain concurrency fixes that but lets a chat's second update finish
+    before its first. Each update here waits for the previous update of the same chat; updates
+    without a chat (inline queries) run unchained.
+    """
+
+    __slots__ = ("_tails",)
+
+    def __init__(self, max_concurrent_updates: int):
+        super().__init__(max_concurrent_updates)
+        self._tails: dict[int, asyncio.Future] = {}
+
+    async def do_process_update(self, update, coroutine) -> None:
+        chat = getattr(update, "effective_chat", None)
+        if chat is None:
+            await coroutine
+            return
+        prev = self._tails.get(chat.id)
+        done = asyncio.get_running_loop().create_future()
+        self._tails[chat.id] = done
+        try:
+            if prev is not None:
+                await prev
+            await coroutine
+        finally:
+            done.set_result(None)
+            if self._tails.get(chat.id) is done:
+                del self._tails[chat.id]
+
+    async def initialize(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+
+def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
+    """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
+    raw = (extra or {}).get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit < 1:
+        logger.warning("[%s] Invalid max_concurrent_updates=%r; using %d",
+                       name, raw, DEFAULT_MAX_CONCURRENT_UPDATES)
+        limit = DEFAULT_MAX_CONCURRENT_UPDATES
+    return PerChatUpdateProcessor(limit)
 
 
 class TelegramApplication(Application):

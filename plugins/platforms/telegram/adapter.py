@@ -473,8 +473,9 @@ _POLLING_STALL_TIMEOUT = 150.0
 # Ingress dispatch stall (#102260, #130407): the transport probes prove getUpdates round-trips complete, not
 # that PTB's dispatcher ever handed the fetched updates to a handler. A backlog with no dispatch progress for
 # four heartbeats (360s) hands the adapter to the supervisor for a rebuild (an in-place restart keeps the
-# wedged dispatcher). Sized past _POLLING_ERROR_TASK_STUCK_TIMEOUT (300s), the bound on a slow handler: PTB
-# dispatches sequentially, so e.g. a sticker vision_analyze (120s default) must not trip it. Re-arms on progress.
+# wedged dispatcher). Sized past _POLLING_ERROR_TASK_STUCK_TIMEOUT (300s), the bound on a slow handler: updates
+# of one chat still dispatch in order (PerChatUpdateProcessor), so e.g. a sticker vision_analyze (120s default)
+# must not trip it. Re-arms on progress.
 _INGRESS_DISPATCH_STALL_HEARTBEATS = 4
 # sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
 # to hear the attachment failed, so kept modest.
@@ -3275,7 +3276,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
-            from plugins.platforms.telegram.update_admission import TelegramApplication
+            from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
             custom_base_url = self.config.extra.get("base_url")
@@ -3290,18 +3291,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
             request, get_updates_request = await self._build_ptb_requests()
             builder = builder.request(request).get_updates_request(get_updates_request)
-            # PTB defaults to SimpleUpdateProcessor(max_concurrent_updates=1): the update fetcher
-            # awaits each update's full handler chain inline, so one slow turn (long provider retry,
-            # compaction loop) deafens every other chat and even local commands until it finishes.
-            # Default to a bounded parallel pool (True→PTB's 256); opt down/up via config extra.
-            concurrent = 32
-            raw = (self.config.extra or {}).get("max_concurrent_updates")
-            if raw is not None:
-                try:
-                    concurrent = max(1, int(raw))
-                except (TypeError, ValueError):
-                    concurrent = 32
-            builder = builder.concurrent_updates(concurrent)
+            # PTB's default processor awaits each update inline, so one slow turn deafens every chat.
+            # Concurrent across chats, FIFO within a chat; the builder keeps this instance, so the
+            # connect-retry rebuild in _initialize_app_with_retries gets it too.
+            builder = builder.concurrent_updates(build_update_processor(self.config.extra, self.name))
             self._app = builder.build()
             self._bot = self._app.bot
             # Plugin PTB handlers go BEFORE core: PTB dispatches the first matching handler per group.

@@ -806,6 +806,9 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (adapter, app, delivered):
         assert app.concurrent_updates == 7
 
+    async with connected(monkeypatch, extra={"max_concurrent_updates": "lots"}) as (adapter, app, delivered):
+        assert app.concurrent_updates == 32
+
 
 @pytest.mark.asyncio
 async def test_slow_update_does_not_block_other_chats(monkeypatch):
@@ -813,12 +816,13 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
     while one chat's update is parked inside its handler chain, a different chat's
     update must still be dequeued, dispatched and delivered (#125098). Under the PTB
     default (max_concurrent_updates=1) the fetcher awaits each update inline, so the
-    second update is never dequeued while the first is parked."""
+    second update is never dequeued while the first is parked. A later update of the
+    PARKED chat must wait for it: plain concurrency would deliver it first."""
     gate = asyncio.Event()
 
     async with connected(monkeypatch) as (adapter, app, delivered):
         async def gate_keeper(update, context):
-            if update.effective_chat and update.effective_chat.id == 42:
+            if update.update_id == 10:
                 await gate.wait()
 
         # Group -1 runs before every core handler group inside PTB's real dispatch.
@@ -832,6 +836,7 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
         assert adapter._inflight_update_ids, "update 10 never started processing"
 
         app.update_queue.put_nowait(update(app.bot, uid=11, chat=43))
+        app.update_queue.put_nowait(update(app.bot, uid=12, chat=42, text="second"))
         dequeued = False
         for _ in range(500):
             if app.update_queue.qsize() == 0:
@@ -849,8 +854,11 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
         await asyncio.gather(*adapter._pending_text_batch_tasks.values())
         assert [e.source.chat_id for e in delivered] == ["43"]
         gate.set()
-        for _ in range(500):  # released u10 finishes its chain and delivers too
-            if len(delivered) >= 2:
+        for _ in range(500):  # released u10 finishes its chain, then u12 follows it
+            if any("second" in e.text for e in delivered):
                 break
             await asyncio.sleep(0.02)
-        assert [e.source.chat_id for e in delivered] == ["43", "42"]
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert [e.source.chat_id for e in delivered][0] == "43"
+        same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
+        assert same_chat == "hello\nsecond"

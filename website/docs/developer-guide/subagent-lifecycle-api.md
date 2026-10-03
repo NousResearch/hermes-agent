@@ -59,3 +59,10 @@ parent-broadening toolsets are rejected, and per-tool blocks, working-directory
 overrides, and per-launch timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+`launch` passes the same spawn admission as `delegate_task`. While delegation
+spawning is paused (`p` in the TUI `/agents` overlay, or the `delegation.pause`
+RPC), when the parent is already at `delegation.max_spawn_depth`, or when a
+one-shot run has used up `delegation.oneshot_max_children`, it raises
+`SubagentLifecycleError` with the same reason `delegate_task` returns, and no
+child is built.

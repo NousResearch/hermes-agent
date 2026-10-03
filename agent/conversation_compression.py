@@ -3765,9 +3765,10 @@ def _commit_compaction(
                     # The kept exchanges are durable rows under the watermark, so the archive below covers
                     # them too. Store them after the head in the same transaction, with the seam the caller
                     # would build, and count their originals as carried duplicates like compress()'s tail.
+                    from agent.conversation_compression_archive import durable_rows_behind_tail
                     from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
                     persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
-                    tail_count += len(verbatim_tail)
+                    tail_count += durable_rows_behind_tail(agent._session_db, agent.session_id, verbatim_tail)
                 from agent.conversation_compression_archive import coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(
                     agent._session_db, agent.session_id,

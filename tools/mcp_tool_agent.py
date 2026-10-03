@@ -264,17 +264,57 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     return merged, {_def_name(t) for t in merged}
 
 
+def _injected_tool_names_ever() -> set:
+    """Every name a gate can EVER inject, authorized or not — the scrub set a stale copy left in
+    a staged snapshot must be removed with."""
+    try:
+        from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME
+        return {MESSAGE_AGENT_TOOL_NAME}
+    except Exception:  # noqa: BLE001
+        logger.debug("injected-tool name enumeration skipped", exc_info=True)
+        return set()
+
+
+def _injected_tool_schemas(agent) -> list:
+    """Schemas for tools INJECTED onto an agent by a live authorization gate rather than built
+    from a toolset or the registry.  ``message_agent`` is the current one.
+
+    Such a tool is absent from every registry-derived build BY CONSTRUCTION, so nothing that asks
+    "did THIS surface build tool X?" can see it — a caller must ask HERE instead.  Keep this the
+    single source of truth for what gets injected, so ``injected_tool_names`` (the surface-note
+    accounting) and ``_reinject_authorized_dynamic_tools`` (the snapshot rebuild) cannot drift.
+    Fail-soft: a gate that raises simply injects nothing."""
+    try:
+        from tools.bot_mode_dm import message_agent_authorized, message_agent_tool_schema
+        if not message_agent_authorized(agent):
+            return []
+        return [message_agent_tool_schema()]
+    except Exception:  # noqa: BLE001
+        logger.debug("injected-tool enumeration skipped", exc_info=True)
+        return []
+
+
+def injected_tool_names(agent) -> set:
+    """Names ``_injected_tool_schemas`` would inject for ``agent`` right now.
+
+    A tool named here is dispatchable on this surface, so surface accounting must fold it into
+    "built for this surface"; otherwise it reads as another surface's inert leftover and the
+    model is told a working tool will fail."""
+    return {name for name in map(_def_name, _injected_tool_schemas(agent)) if name}
+
+
 def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -> None:
     """``message_agent`` is injected by an auth gate, never registered, so a registry-derived
     rebuild drops it. Scrub any stale copy from the STAGED pair and re-add it only when the live
     gate re-authorizes, so the publisher exposes a coherent ``(tools, valid_tool_names)``."""
-    from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized, message_agent_tool_schema
-
-    tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
-    name_set.discard(MESSAGE_AGENT_TOOL_NAME)
-    if message_agent_authorized(agent):
-        tools_list.append(message_agent_tool_schema())
-        name_set.add(MESSAGE_AGENT_TOOL_NAME)
+    stale = _injected_tool_names_ever()
+    tools_list[:] = [entry for entry in tools_list if _def_name(entry) not in stale]
+    name_set -= stale
+    for schema in _injected_tool_schemas(agent):
+        name = _def_name(schema)
+        if name:
+            tools_list.append(schema)
+            name_set.add(name)
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

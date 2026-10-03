@@ -700,7 +700,9 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
 def _restore_pinned_tools(agent, session_row) -> list:
     """Pin ``agent.tools`` to the session's persisted array (tools freeze); returns the names
     this surface built BEFORE the pin merged a previous surface's tools back in."""
-    from tools.mcp_tool_agent import agent_tool_names, persist_agent_tool_names, restore_agent_tool_prefix
+    from tools.mcp_tool_agent import (
+        agent_tool_names, injected_tool_names, persist_agent_tool_names, restore_agent_tool_prefix,
+    )
     built_for_this_surface = agent_tool_names(agent)
     saved_tools = session_row.get("tool_names") if session_row else None
     try:
@@ -716,6 +718,18 @@ def _restore_pinned_tools(agent, session_row) -> list:
             persist_agent_tool_names(agent)
     except Exception:
         logger.debug("tool prefix restore skipped", exc_info=True)
+    # A gate-injected tool (Bot Mode's ``message_agent``) lives in NO toolset, so the
+    # registry-derived build captured above can never contain it even though the live gate just
+    # made it dispatchable on this surface.  Count it as this surface's own, or
+    # ``note_inert_pinned_tools`` names a working tool as inert and the model goes hunting for a
+    # workaround for a call that would have succeeded.
+    try:
+        built_for_this_surface = [
+            *built_for_this_surface,
+            *sorted(injected_tool_names(agent) - set(built_for_this_surface)),
+        ]
+    except Exception:
+        logger.debug("injected-tool surface accounting skipped", exc_info=True)
     return built_for_this_surface
 
 

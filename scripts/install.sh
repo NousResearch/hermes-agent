@@ -12,6 +12,34 @@
 #   --include-desktop     build the desktop app too (products stage)
 #   --verbose             stream every child command's output (the default
 #                         off a terminal and in CI)
+#
+# Security review notes (#5192). Agent runtimes with exec approval policies
+# scan this script and can deny `curl ... | bash` with "obfuscation detected".
+# There is no packer, self-extractor or hidden payload here. Each construct such
+# a heuristic reads as encoded content is load-bearing, and is why:
+#
+#   * The $'\033[0;3Xm' colour codes below. Presentation only, and blanked by
+#     NO_COLOR and whenever stdout is not a terminal.
+#   * json_string's control-character loop. A JSON string must escape the quote,
+#     the backslash and 0x01-0x1F, and a stage failure reason can carry a path
+#     the user chose, so the escaping cannot be skipped: a reason holding a raw
+#     control byte would emit a frame the Hermes-Setup driver cannot parse. bash
+#     cannot turn a number into a control byte with printf '%c' -- that prints
+#     the first CHARACTER of the argument, so "1" for 1 -- so the loop builds
+#     '%03o' and reads it back with '%b'. The round trip is what produces the
+#     byte; it does not decode anything that arrived encoded.
+#   * uv_bootstrap_target's $'\x7f'ELF test and the head/tr probe. One named
+#     constant for the ELF magic, read to tell a glibc host from a musl one.
+#   * ensure_uv's curl/tar/mv/chmod over the uv archive. pm/lock.json is the
+#     byte authority: UV_PIN_SHA256 is verified before anything is unpacked, and
+#     the extraction writes into a single pinned store slot. No astral-latest and
+#     no curl|sh. The digest check is the security control, not decoration.
+#   * The awk program in bootstrap_python. A text scan of pm/lock.json for the
+#     Python pin, not a decoder.
+#
+# None of this is exempt, allowlisted or suppressed in any scanner. If a runtime
+# keeps flagging the script, the fix belongs in the installer, not in an
+# exemption.
 set -u
 
 # Prevent uv from discovering config files (uv.toml, pyproject.toml) from the

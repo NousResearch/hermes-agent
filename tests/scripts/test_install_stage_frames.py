@@ -76,6 +76,33 @@ def test_real_single_stage_cli_reports_admission_or_execution_failure(tmp_path, 
     assert frame["skipped"] is False and frame["reason"]
 
 
+@pytest.mark.platforms("posix")
+def test_failure_reason_round_trips_the_whole_json_control_range(tmp_path, real_bash):
+    """json_string is load-bearing: a reason can hold every byte JSON must escape.
+
+    install.sh builds a control byte from its code with '%03o' into '%b' rather
+    than skipping the range, because bash's printf '%c' prints the first
+    CHARACTER of its argument ("1" for 1), not that byte (#5192). A reason
+    carrying the range must come back out of the frame unchanged, or the
+    Hermes-Setup driver cannot parse it.
+    """
+    reason = "path " + '"' + chr(92) + "a b " + "".join(chr(code) for code in range(1, 0x20))
+    env = dict(_env(tmp_path), PROBE_REASON=reason)
+    script = '''source "$1" --manifest
+JSON=true
+STAGE=repository
+STAGE_REASON="$PROBE_REASON"
+stage_result 1
+'''
+    result = subprocess.run([real_bash, "-c", script, "frame-test", SCRIPT.as_posix()],
+                            cwd=tmp_path, env=env, capture_output=True,
+                            text=True, encoding="utf-8", timeout=30)
+    frame = _frame(result)
+    assert frame["ok"] is False and frame["stage"] == "repository"
+    assert frame["skipped"] is False
+    assert frame["reason"] == reason
+
+
 @pytest.mark.parametrize("flag", ["--hermes-home", "-HermesHome"])
 def test_manifest_accepts_the_desktop_home_argument(tmp_path, flag):
     home = tmp_path / "custom home"

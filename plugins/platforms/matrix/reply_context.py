@@ -1,0 +1,318 @@
+"""Resolve Matrix events that are referenced by replies."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from collections import OrderedDict
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Mapping
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MatrixEventContext:
+    sender: str
+    text: str
+    media_path: str | None = None
+    media_type: str | None = None
+    is_image: bool = False
+    redacted: bool = False
+
+
+@dataclass(frozen=True)
+class MatrixReplyContext:
+    body: str
+    event_id: str | None
+    text: str | None
+    author_id: str | None
+    author_name: str | None
+    is_own_message: bool
+    author_authorized: bool | None
+    media_path: str | None = None
+    media_type: str | None = None
+
+
+def _content_dict(event: Any) -> dict:
+    content = getattr(event, "content", None)
+    if content is None and isinstance(event, dict):
+        content = event.get("content")
+    if isinstance(content, dict):
+        return content
+    if content is None:
+        return {}
+    serialise = getattr(content, "serialize", None)
+    if callable(serialise):
+        try:
+            result = serialise()
+        except Exception:
+            return {}
+        if isinstance(result, dict):
+            return result
+    return {}
+
+
+def _event_sender(event: Any) -> str:
+    sender = str(getattr(event, "sender", "") or "")
+    if not sender and isinstance(event, dict):
+        sender = str(event.get("sender", "") or "")
+    return sender
+
+
+def _effective_content(event: Any) -> tuple[dict, bool]:
+    content = _content_dict(event)
+    unsigned = getattr(event, "unsigned", None)
+    if unsigned is None and isinstance(event, dict):
+        unsigned = event.get("unsigned")
+    if not isinstance(unsigned, dict) and unsigned is not None:
+        serialise = getattr(unsigned, "serialize", None)
+        if callable(serialise):
+            try:
+                unsigned = serialise()
+            except Exception:
+                unsigned = None
+    relations = unsigned.get("m.relations") if isinstance(unsigned, dict) else None
+    replacement = relations.get("m.replace") if isinstance(relations, dict) else None
+    replacement_content = _content_dict(replacement) if replacement is not None else {}
+    candidate = replacement_content or content
+    new_content = candidate.get("m.new_content")
+    if isinstance(new_content, dict):
+        return {**content, **new_content}, True
+    if replacement_content:
+        return {**content, **replacement_content}, True
+    return content, False
+
+
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
+
+
+def _split_reply_fallback(body: str) -> tuple[str, str]:
+    """Split a fallback into its quote block and reply text without changing bytes.
+
+    The separator belongs to the quote block. Callers can transform the reply
+    text while preserving the fallback bytes.
+    """
+    if not body or not body.startswith("> "):
+        return "", body
+    lines = body.split("\n")
+    idx = 0
+    while idx < len(lines) and (lines[idx].startswith("> ") or lines[idx] == ">"):
+        idx += 1
+    if idx < len(lines) and lines[idx] == "":
+        idx += 1
+    head = "\n".join(lines[:idx])
+    return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
+
+
+def _has_reply_fallback(body: str, content: Mapping[str, Any]) -> bool:
+    """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
+
+    Matrix 1.13 (MSC2781) removed reply fallbacks, so a modern client sends the reply as typed
+    and a leading ``> `` block is the user's quotation. A legacy client marks its fallback with
+    an ``<mx-reply>`` element at the start of the HTML body. Its plain fallback starts with the
+    quoted sender's pill (``> <@user:srv>``, or ``> * <@user:srv>`` for an emote) and ends with
+    a blank line.
+    """
+    if not body.startswith("> "):
+        return False
+    if starts_with_mx_reply(content):
+        return True
+    if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
+        return False
+    quote_block, reply_text = _split_reply_fallback(body)
+    return quote_block.endswith("\n\n") or not reply_text
+
+
+def _own_text(body: str, content: Mapping[str, Any]) -> str:
+    if not _has_reply_fallback(body, content):
+        return body
+    _, text = _split_reply_fallback(body)
+    return text.strip()
+
+
+class _MxReplyQuoteExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self._done = False
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "mx-reply" and not self._done:
+            self._depth += 1
+        elif tag == "br" and self._depth and not self._done:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "mx-reply" and self._depth:
+            self._depth -= 1
+            if self._depth == 0:
+                self._done = True
+
+    def handle_data(self, data: str) -> None:
+        if self._depth and not self._done:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+_MX_REPLY_START_RE = re.compile(r"\s*<mx-reply(?=[\s/>])", re.IGNORECASE)
+
+
+def starts_with_mx_reply(content: Mapping[str, Any]) -> bool:
+    """Whether the event's HTML body starts with an ``<mx-reply>`` start tag, with or without
+    attributes. The match ignores case because ``_MxReplyQuoteExtractor`` reads tag names
+    lower-cased."""
+    formatted_body = content.get("formatted_body")
+    return (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
+            and _MX_REPLY_START_RE.match(formatted_body) is not None)
+
+
+def extract_mx_reply_quote(content: Mapping[str, Any]) -> str | None:
+    if not starts_with_mx_reply(content):
+        return None
+    parser = _MxReplyQuoteExtractor()
+    try:
+        parser.feed(content["formatted_body"])
+        parser.close()
+    except Exception:
+        return None
+    text = parser.text().strip()
+    first, separator, rest = text.partition("\n")
+    if separator and first.strip().lower().startswith("in reply to"):
+        text = rest.strip()
+    return text or None
+
+
+def _label_body(msgtype: str, body: str) -> str:
+    labels = {
+        "m.image": "image", "m.audio": "audio", "m.video": "video",
+        "m.file": "file", "m.notice": "notice", "m.location": "location",
+    }
+    label = labels.get(msgtype)
+    if label is None:
+        return body
+    if msgtype == "m.image" and body.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        body = ""
+    return f"[{label}: {body}]" if body else f"[{label}]"
+
+
+class MatrixEventContextCache:
+    def __init__(self, max_entries: int = 500, timeout_seconds: float = 10.0) -> None:
+        self.max_entries = max_entries
+        self.timeout_seconds = timeout_seconds
+        self._entries: OrderedDict[tuple[str, str], MatrixEventContext] = OrderedDict()
+
+    def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> MatrixEventContext | None:
+        if not event_id:
+            return None
+        key = room_id, event_id
+        prior = self._entries.get(key)
+        if prior is not None and prior.redacted and not entry.redacted:
+            return None
+        self._entries[key] = entry
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
+        return entry if not entry.redacted and (entry.text or entry.media_path) else None
+
+    def apply_edit(self, room_id: str, sender: str, content: dict) -> None:
+        relation = content.get("m.relates_to")
+        target = relation.get("event_id") if isinstance(relation, dict) else None
+        replacement = content.get("m.new_content")
+        if not isinstance(target, str) or not isinstance(replacement, dict):
+            return
+        body = replacement.get("body")
+        if not isinstance(body, str) or not body.strip():
+            return
+        prior = self._entries.get((room_id, target))
+        # Without the original, the editor cannot be checked against its sender. A later
+        # resolve fetches the event, and the server bundles only same-sender replacements.
+        if prior is None or prior.redacted or prior.sender != sender:
+            return
+        self.store(room_id, target, MatrixEventContext(
+            sender, _own_text(body.strip(), replacement),
+            media_path=prior.media_path, media_type=prior.media_type, is_image=prior.is_image,
+        ))
+
+    def redact(self, room_id: str, event_id: str) -> None:
+        prior = self._entries.get((room_id, event_id))
+        sender = prior.sender if prior is not None else ""
+        self.store(room_id, event_id, MatrixEventContext(sender, "", redacted=True))
+
+    async def resolve(
+        self, client: Any, room_id: str, event_id: str,
+        image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
+    ) -> MatrixEventContext | None:
+        key = room_id, event_id
+        cached = None
+        if key in self._entries:
+            self._entries.move_to_end(key)
+            entry = self._entries[key]
+            if entry.redacted:
+                return None
+            if entry.media_path and not Path(entry.media_path).is_file():
+                self._entries.pop(key)
+            else:
+                cached = entry
+                if not entry.is_image or entry.media_path or image_loader is None:
+                    return entry if entry.text or entry.media_path else None
+        if client is None:
+            return cached
+
+        event = await self.fetch_event(client, room_id, event_id)
+        if event is None:
+            current = self._entries.get(key)
+            return current if current is not None and not current.redacted else None
+        return await self.store_event(room_id, event_id, event, image_loader)
+
+    async def fetch_event(self, client: Any, room_id: str, event_id: str) -> Any | None:
+        """Fetch and decrypt an event from the homeserver. Returns None when either step fails."""
+        try:
+            event = await asyncio.wait_for(client.get_event(room_id, event_id), self.timeout_seconds)
+            if str(getattr(event, "type", "")) == "m.room.encrypted":
+                crypto = getattr(client, "crypto", None)
+                if crypto is None:
+                    return None
+                event = await asyncio.wait_for(crypto.decrypt_megolm_event(event), self.timeout_seconds)
+        except Exception as exc:
+            logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
+            return None
+        return event
+
+    async def store_event(
+        self, room_id: str, event_id: str, event: Any,
+        image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
+    ) -> MatrixEventContext | None:
+        sender = _event_sender(event)
+        content, edited = _effective_content(event)
+        body = content.get("body")
+        if not isinstance(body, str):
+            body = getattr(getattr(event, "content", None), "body", "")
+        body = body.strip() if isinstance(body, str) else ""
+        if edited and body.startswith("* "):
+            body = body[2:].strip()
+        body = _own_text(body, content)
+        msgtype = str(content.get("msgtype") or "")
+        text = _label_body(msgtype, body)
+        media = None
+        if msgtype == "m.image" and image_loader is not None:
+            try:
+                media = await asyncio.wait_for(
+                    image_loader(content, event_id), self.timeout_seconds
+                )
+            except Exception as exc:
+                logger.debug("Matrix: could not cache quoted image %s: %s", event_id, exc)
+        entry = MatrixEventContext(
+            sender=sender, text=text,
+            media_path=media[0] if media else None,
+            media_type=media[1] if media else None,
+            is_image=msgtype == "m.image",
+        )
+        return self.store(room_id, event_id, entry)

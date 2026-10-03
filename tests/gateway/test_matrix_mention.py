@@ -34,8 +34,17 @@ def _make_adapter(tmp_path=None):
 
 
 def _set_dm(adapter, room_id="!room1:example.org", is_dm=True):
-    """Mark a room as DM (or not) in the adapter's cache."""
+    """Give the adapter a complete joined member list for a DM or room."""
     adapter._dm_rooms[room_id] = is_dm
+    members = [adapter._user_id, "@alice:example.org"]
+    if not is_dm:
+        members.append("@bob:example.org")
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    adapter._client.state_store.get_members = AsyncMock(return_value=members)
+    adapter._client.state_store.get_member_profiles = AsyncMock(return_value={})
+    adapter._client.get_joined_members = AsyncMock(return_value={})
 
 
 def _make_event(
@@ -305,6 +314,11 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
     if claims:  # the bare mention is the newest event; the read marker must reach it
         adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
+        claimed_event = adapter.handle_message.await_args.args[0]
+        adapter.fetch_room_context = AsyncMock(return_value="[Recent room messages]\n[alice] Earlier")
+        assert await adapter.fetch_mention_context(claimed_event) == (
+            "[Recent room messages]\n[alice] Earlier"
+        )
 
 
 # ---------------------------------------------------------------------------

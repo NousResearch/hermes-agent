@@ -909,7 +909,8 @@ def _windows_gateway_pause_recovery(token):
         raise
 
 
-def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids, token=None):
+def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids, token=None,
+                           prepared_mapped=None):
     """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
 
     Socket ACK = the gateway drains and exits by its own graceful path. No answer (older
@@ -921,11 +922,15 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
         proc = None if pid in service_gateway_pids else profile_processes.get(pid)
         if proc is None:
             continue
-        profiles[str(proc.profile)] = int(pid)
-        mapped_pids.append(int(pid))
+        if prepared_mapped is not None:
+            profile, path, mapped_pid = prepared_mapped[int(pid)]
+        else:
+            profile, path, mapped_pid = str(proc.profile), Path(proc.path), int(pid)
+        profiles[profile] = mapped_pid
+        mapped_pids.append(mapped_pid)
         if token is not None:
-            token["pause_attempts"][str(proc.profile)] = {"pid": int(pid), "state": "unknown"}
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+            token["pause_attempts"][profile] = {"pid": mapped_pid, "state": "unknown"}
+        _write_update_planned_stop_marker(path, mapped_pid)
         try:
             # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
             # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
@@ -976,6 +981,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
 
     # Finish discovery and replay preparation BEFORE the first marker/socket write.
     mapped_pids = [pid for pid in running_pids if pid in profile_processes and pid not in service_gateway_pids]
+    prepared_mapped = {
+        int(pid): (str(profile_processes[pid].profile), Path(profile_processes[pid].path), int(pid))
+        for pid in mapped_pids
+    }
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
     service_owned_pids = set(service_gateway_pids)
     for service in service_gateways:
@@ -1003,7 +1012,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     token = {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": [], "pause_attempts": {}}
     with _windows_gateway_pause_recovery(token):
         profiles, mapped_pids, socket_acks = _request_socket_pauses(
-            running_pids, profile_processes, service_gateway_pids, token)
+            running_pids, profile_processes, service_gateway_pids, token, prepared_mapped)
         token["profiles"] = profiles
         print("→ Stopping Windows gateway process(es) before updating Hermes...")
         drain_timeout = _gateway_drain_timeout(socket_acks)

@@ -66,6 +66,22 @@ def test_transient_classifier_matches_known_network_errors(exc_cls):
     """Every well-known transient network exception class is classified."""
     assert _is_transient_network_error(exc_cls("boom")) is True
 
+def test_transient_classifier_tolerates_missing_chain_attributes():
+    """Regression for #57298: objects without __cause__/__context__ don't crash.
+
+    A duck-typed exception-like object may omit exception-chain attributes.
+    The classifier must return ``False`` instead of raising ``AttributeError``.
+    Ordinary ``TracebackException.from_exception`` populates both attributes
+    and is not the missing-attribute fixture.
+    """
+
+    class TracebackLike:
+        """Mimics an object that has no exception-chain attributes."""
+        pass
+
+    assert _is_transient_network_error(TracebackLike()) is False
+
+
 # ---------------------------------------------------------------------
 # Loop handler
 # ---------------------------------------------------------------------
@@ -89,6 +105,84 @@ def test_handler_delegates_unknown_errors_to_default(monkeypatch):
         assert forwarded == [context]
     finally:
         loop.close()
+
+@pytest.mark.parametrize("shape", ["missing", "cause_only", "context_only", "cycle"])
+def test_loop_handler_preserves_incomplete_exception_context(monkeypatch, shape):
+    """A third-party loop context must reach the default handler intact."""
+    from types import SimpleNamespace
+
+    exc = SimpleNamespace()
+    if shape == "cause_only":
+        exc.__cause__ = None
+    elif shape == "context_only":
+        exc.__context__ = ValueError("not transient")
+    elif shape == "cycle":
+        exc.__cause__ = exc
+    context = {"message": "adapter diagnostic", "exception": exc}
+    loop = asyncio.new_event_loop()
+    try:
+        forwarded = []
+        monkeypatch.setattr(loop, "default_exception_handler", forwarded.append)
+        loop.set_exception_handler(_gateway_loop_exception_handler)
+        loop.call_exception_handler(context)
+        assert forwarded == [context]
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("edge", ["__cause__", "__context__"])
+def test_classifier_follows_available_chain_attribute(edge):
+    from types import SimpleNamespace
+
+    assert _is_transient_network_error(SimpleNamespace(**{edge: TimedOut("retry")}))
+
+
+def test_classifier_preserves_cause_precedence():
+    from types import SimpleNamespace
+
+    exc = SimpleNamespace(__cause__=ValueError("bug"), __context__=TimedOut("retry"))
+    assert _is_transient_network_error(exc) is False
+
+
+@pytest.mark.parametrize("edge", ["__cause__", "__context__"])
+def test_loop_handler_logs_transient_without_traceback(monkeypatch, caplog, edge):
+    from types import SimpleNamespace
+
+    exc = SimpleNamespace(**{edge: TimedOut("retry")})
+    loop = asyncio.new_event_loop()
+    try:
+        forwarded = []
+        monkeypatch.setattr(loop, "default_exception_handler", forwarded.append)
+        loop.set_exception_handler(_gateway_loop_exception_handler)
+        loop.call_exception_handler({"exception": exc})
+        assert forwarded == []
+        assert "Gateway swallowed transient network error" in caplog.text
+        record = next(r for r in caplog.records if "Gateway swallowed" in r.message)
+        assert record.exc_info is None
+    finally:
+        loop.close()
+
+
+def test_loop_handler_still_swallows_wrapped_transient(monkeypatch, caplog):
+    try:
+        raise RuntimeError("wrapper") from TimedOut("retry")
+    except RuntimeError as caught:
+        exc = caught
+    loop = asyncio.new_event_loop()
+    try:
+        forwarded = []
+        monkeypatch.setattr(loop, "default_exception_handler", forwarded.append)
+        loop.set_exception_handler(_gateway_loop_exception_handler)
+        loop.call_exception_handler({"exception": exc})
+        assert forwarded == []
+        assert "Gateway swallowed transient network error" in caplog.text
+        record = next(r for r in caplog.records if "Gateway swallowed" in r.message)
+        assert record.exc_info == (type(exc), exc, exc.__traceback__)
+        assert exc.__traceback__ is not None
+        assert "TimedOut: retry" in caplog.text
+    finally:
+        loop.close()
+
 
 # ---------------------------------------------------------------------
 # End-to-end: task-level

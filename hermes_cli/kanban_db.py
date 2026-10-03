@@ -3282,8 +3282,14 @@ def block_task(
             ).rowcount
             if reparked != 1:
                 return False
+            # Carry the source phase across the re-park: ``unblock_task`` picks
+            # the landing lane from the newest lifecycle event's source_status,
+            # so a reviewer-blocked card must not silently resume as 'ready'.
+            triage_payload = _json_dict(
+                _row_get(_latest_event(conn, task_id, "block_loop_detected"), "payload"))
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "reparked": True,
+                "source_status": triage_payload.get("source_status") or "ready",
             })
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
@@ -3296,17 +3302,9 @@ def block_task(
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
-        # The loop counter is reason-blind no more (#130239): a same-kind block
-        # with a changed reason text is a new blocker and must not ride the
-        # previous count. Compare against the newest ``blocked`` event's reason.
-        prev_reason = None
-        if _row_get(cur_row, "block_kind") is not None:
-            prev_payload = _json_dict(_row_get(_latest_event(conn, task_id, "blocked"), "payload"))
-            prev_reason = prev_payload.get("reason")
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
-            prev_reason=prev_reason,
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
@@ -3342,7 +3340,7 @@ def block_task(
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int, prev_reason: Optional[str] = None,
+    prev_kind: Optional[str], prev_recurrences: int,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3354,19 +3352,18 @@ def _route_block(
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). Same kind with
-    a *changed* reason text is a new blocker, not a loop, and re-arms the
-    counter at 1 (#130239); an absent reason on either side stays
-    kind-keyed. At ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage``
-    for a human.
+    (un-typed None compares equal to a prior un-typed block). The count is
+    deliberately reason-blind: the reason is free text a worker can reword
+    at zero cost, so keying the reset on it lets a stalled claim loop dodge
+    the breaker by varying the sentence (#28712). A supervisor's legitimate
+    re-park has its own escape hatch — the triage re-park path in
+    :func:`block_task` re-arms the counter at 1 (#130239). At
+    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
-    same_cause = prev_kind == kind and not (
-        reason and prev_reason and str(reason).strip() != str(prev_reason).strip()
-    )
-    recurrences = prev_recurrences + 1 if same_cause else 1
+    recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:

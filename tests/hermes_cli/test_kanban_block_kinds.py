@@ -86,20 +86,25 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
-def test_changed_reason_re_arms_loop_counter(kanban_home: Path) -> None:
-    """#130239: same kind, four genuinely new stall reasons -- no loop, no triage."""
+def test_reason_churn_does_not_dodge_the_breaker(kanban_home: Path) -> None:
+    """#28712/#130239: the counter is reason-blind — free-text reasons can be
+    reworded at zero cost, so keying the reset on the sentence lets a stalled
+    claim loop run forever (20 cycles, eight sentences, loop_detected=0).
+    Same kind keeps counting however the reason is phrased; the supervisor's
+    escape hatch is the explicit triage re-park, not a reworded reason."""
     with kbc.connect_closing() as conn:
         tid = _running_task(conn)
         kb.block_task(conn, tid, reason="awaiting api key", kind="needs_input")
-        for stall in ("schema mismatch", "flaky vendor", "missing review"):
-            kb.unblock_task(conn, tid)
-            _make_running_again(conn, tid)
-            kb.block_task(conn, tid, reason=stall, kind="needs_input")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        # Second block: same kind, completely different sentence — must still
+        # be recurrence 2, i.e. the breaker trips exactly like on a repeated
+        # sentence (base behaviour).
+        kb.block_task(conn, tid, reason="schema mismatch", kind="needs_input")
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
-        assert task.block_recurrences == 1
+        assert task.status == "triage"
         loops = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
-        assert not loops, "changed reason text must never trip the breaker"
+        assert loops and loops[-1].payload["recurrences"] == kb.BLOCK_RECURRENCE_LIMIT
 
 
 def _poison_to_triage(conn, tid: str, reason: str = "same stall") -> None:
@@ -139,6 +144,40 @@ def test_triage_repark_refuses_ownership_asserting_caller(kanban_home: Path) -> 
         assert kb.block_task(conn, tid, reason="probe", kind="needs_input",
                              expected_run_id=1) is False
         assert kb.get_task(conn, tid).status == "triage"
+
+
+def _reviewer_run_poisoned_to_triage(conn, tid: str) -> None:
+    """Drive a *reviewer-blocked* card through block/unblock/re-block to triage.
+
+    The reviewer lane's identity lives in the run's ``claimed`` event
+    (``source_status=review`` via ``claim_review_task``), which
+    ``_retry_status_for_run`` propagates into every block payload."""
+    kb.request_review(conn, tid, force=True)
+    assert kb.get_task(conn, tid).status == "review"
+    assert kb.claim_review_task(conn, tid, claimer="reviewer") is not None
+    assert kb.block_task(conn, tid, reason="changes requested", kind="needs_input")
+    assert kb.unblock_task(conn, tid)
+    assert kb.get_task(conn, tid).status == "review"
+    assert kb.claim_review_task(conn, tid, claimer="reviewer") is not None
+    assert kb.block_task(conn, tid, reason="changes requested", kind="needs_input")
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_triage_repark_preserves_reviewer_phase(kanban_home: Path) -> None:
+    """A reviewer-blocked card that tripped the breaker and was re-parked must
+    resume in ``review`` after the unblock, not silently drop to ``ready`` —
+    ``unblock_task`` picks the landing lane from the newest lifecycle event's
+    ``source_status``, so the re-park event has to carry the phase forward
+    from the ``block_loop_detected`` payload it re-asserts."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        _reviewer_run_poisoned_to_triage(conn, tid)
+        assert kb.block_task(conn, tid, reason="changes requested", kind="needs_input") is True
+        repark = [e for e in kb.list_events(conn, tid)
+                  if e.kind == "blocked" and (e.payload or {}).get("reparked")][-1]
+        assert repark.payload["source_status"] == "review"
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "review"
 
 
 # ---------------------------------------------------------------------------

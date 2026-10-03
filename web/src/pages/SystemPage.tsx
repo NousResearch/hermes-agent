@@ -102,6 +102,29 @@ function backupFileName(path: string | null): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+/** 'Release feed unreachable (HTTP 403) — comparing against origin/main';
+ *  null when the check reached the feed normally. */
+function releaseFeedNotice(
+  channelError: UpdateCheckResponse["channel_error"],
+): string | null {
+  if (!channelError) return null;
+  const reason = `Release feed unreachable (${channelError.message})`;
+  return channelError.branch
+    ? `${reason} — comparing against origin/${channelError.branch}`
+    : reason;
+}
+
+function updateConfirmDescription(info: UpdateCheckResponse | null): string {
+  if (info?.channel_error?.branch) {
+    const { branch } = info.channel_error;
+    return `The release feed is unreachable, so this will run 'hermes update --branch ${branch}' and update from origin/${branch}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+  }
+  if (info && info.behind && info.behind > 0) {
+    return `This will run 'hermes update' (${info.update_command}) and pull ${info.behind} new commit${info.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+  }
+  return `This will run 'hermes update' (${info?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`;
+}
+
 /**
  * Live action-log viewer for the spawn-based admin actions (doctor, audit,
  * backup, import, skills update, checkpoints prune, gateway start/stop).
@@ -627,7 +650,7 @@ export default function SystemPage() {
         return;
       }
       setActiveAction(resp.name ?? "hermes-update");
-      showToast("Update started", "success");
+      showToast(resp.message ?? "Update started", "success");
     } catch (e) {
       showToast(`Update failed: ${errorMessage(e)}`, "error");
     }
@@ -740,11 +763,7 @@ export default function SystemPage() {
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
         title="Update Hermes?"
-        description={
-          updateInfo && updateInfo.behind && updateInfo.behind > 0
-            ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
-            : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
-        }
+        description={updateConfirmDescription(updateInfo)}
         confirmLabel="Update now"
       />
 
@@ -1024,6 +1043,11 @@ export default function SystemPage() {
                 {updateInfo?.message && !updateInfo.update_available && (
                   <span className="text-xs text-muted-foreground">
                     {updateInfo.message}
+                  </span>
+                )}
+                {updateInfo?.channel_error && (
+                  <span className="text-xs text-warning">
+                    {releaseFeedNotice(updateInfo.channel_error)}
                   </span>
                 )}
               </div>

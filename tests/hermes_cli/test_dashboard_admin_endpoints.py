@@ -854,6 +854,85 @@ class TestUpdateCheckEndpoint:
         assert refused["update_command"] == ""
 
 
+class TestUpdateApplyBranchFallback:
+    """``POST /api/hermes/update`` follows the checkout's own branch when the
+    release feed is known unreachable.
+
+    "Known unreachable" is read from the cached check result (no second network
+    probe); a reachable feed keeps spawning a bare ``hermes update``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def _cache_check(self, status):
+        import json
+        import time
+
+        from hermes_cli.config import get_project_root
+        from hermes_cli.update_channel import install_id
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "source-checks" / f"{install_id(get_project_root())}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"identity": {}, "ts": time.time(), "status": status}))
+
+    def _arm_spawn(self, monkeypatch):
+        class Proc:
+            pid = 4321
+
+        calls = []
+
+        def fake_spawn(subcommand, name, *, env_overrides=None):
+            calls.append(subcommand)
+            return Proc()
+
+        monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fake_spawn)
+        _web_server_gateway._ACTION_PROCS.pop("hermes-update", None)
+        _web_server_gateway._ACTION_RESULTS.pop("hermes-update", None)
+        return calls
+
+    def test_unreachable_feed_updates_from_the_checkouts_branch(self, monkeypatch):
+        calls = self._arm_spawn(monkeypatch)
+        self._cache_check({
+            "supported": True, "behind": 0, "branch": "main", "currentBranch": "main",
+            "channel_error": {"code": "release-unavailable", "message": "Channel read unavailable: HTTP 403"},
+        })
+
+        body = self.client.post("/api/hermes/update").json()
+
+        assert body["ok"] is True
+        assert calls == [["update", "--branch", "main"]]
+        assert body["message"] == "Release feed unreachable — updating from origin/main."
+
+    def test_reachable_feed_keeps_the_bare_update_command(self, monkeypatch):
+        calls = self._arm_spawn(monkeypatch)
+        self._cache_check({"supported": True, "behind": 3, "branch": "main", "currentBranch": "main"})
+
+        body = self.client.post("/api/hermes/update").json()
+
+        assert body["ok"] is True
+        assert calls == [["update"]]
+        assert "message" not in body
+
+    def test_check_endpoint_surfaces_the_channel_error(self, monkeypatch):
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {
+            "behind": 0, "commits": [], "branch": "main",
+            "channel_error": {"code": "release-unavailable", "message": "Channel read unavailable: HTTP 403"},
+        })
+
+        body = self.client.get("/api/hermes/update/check").json()
+
+        assert body["behind"] == 0
+        assert body["channel_error"] == {
+            "code": "release-unavailable", "message": "Channel read unavailable: HTTP 403", "branch": "main",
+        }
+
+
 class TestDebugShareEndpoint:
     """POST /api/ops/debug-share returns the paste URLs synchronously so the
     dashboard can render them as copyable links (not a backgrounded log tail)."""

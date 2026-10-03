@@ -94,21 +94,23 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
-def payload_venv(project_root: Path) -> Path | None:
-    """The environment a sealed payload ships beside its tree, or ``None``.
+def _is_git_checkout(root: Path) -> bool:
+    """Whether ``root`` is a live git checkout rather than a sealed payload.
 
-    A git checkout is never a sealed payload: the bundle builder strips ``.git`` when
-    staging one (``scripts/build/agent.py``), so its presence is an exact, load-bearing
-    signal that ``project_root`` is a live checkout, not shipped payload state. Skipping
-    the manifest read entirely for a checkout also avoids reading
-    ``project_root.parent / "manifest.json"`` -- a path derived purely from the checkout's
-    location on disk, independent of ``HERMES_HOME`` -- for Hermes's own documented default
-    install layout (``$HERMES_HOME/hermes-agent``), where that parent IS the real home
-    (issue #126816: this fired as unrelated real-home file I/O under a sandboxed test
-    ``HERMES_HOME`` whenever ``activate_dependencies()`` fell through to this branch).
+    The bundle builder strips ``.git`` when staging a payload (``scripts/build/agent.py``), so
+    its presence is an exact signal that ``root`` is a checkout. A checkout has no sibling
+    ``manifest.json`` of its own, and ``root.parent / "manifest.json"`` is derived purely from
+    where the checkout sits on disk, independent of ``HERMES_HOME`` -- on the documented default
+    layout (``$HERMES_HOME/hermes-agent``) that parent IS the real home (issue #126816). Every
+    reader of that path must therefore skip checkouts, not just one of them.
     """
+    return (root / ".git").exists()
+
+
+def payload_venv(project_root: Path) -> Path | None:
+    """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()
-    if (root / ".git").exists():
+    if _is_git_checkout(root):
         return None
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
@@ -132,7 +134,7 @@ def store_root(project_root: Path) -> Path:
         return Path(override).resolve()
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
-    if manifest_path.is_file():
+    if not _is_git_checkout(root) and manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         if (root.parent / manifest.get("repo", "")).resolve() == root:
             store = (root.parent / manifest["store"]).resolve()

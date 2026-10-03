@@ -716,3 +716,15 @@ class TestModelToolsIntegration:
         assert discord_admin_tool is not None, "discord_admin should be in the schema"
         actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
+
+    def test_dynamic_schema_error_is_logged_and_tool_dropped(self, monkeypatch, caplog):
+        def broken_schema():
+            raise RuntimeError("caps cache corrupt")
+        monkeypatch.setattr("tools.discord_tool.get_dynamic_schema_core", broken_schema)
+
+        from model_tools import _apply_dynamic_schemas
+        defs = [{"type": "function", "function": {"name": "discord", "description": "static"}}]
+        with caplog.at_level("WARNING", logger="model_tools"):
+            assert _apply_dynamic_schemas(defs) == []
+        assert any("discord" in r.getMessage() and "caps cache corrupt" in r.getMessage()
+                   for r in caplog.records)

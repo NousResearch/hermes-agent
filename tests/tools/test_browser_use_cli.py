@@ -10,6 +10,8 @@ Covers the three seams the integration relies on:
   and ``browser_exec`` is advertised instead.
 * ``browser_exec`` execution — code is piped on stdin, ``session`` becomes
   ``BU_NAME``, bad session names and a missing CLI produce actionable errors.
+* Doctor row detail — keyed on *why* the mode is off, so an opted-out or
+  Camofox user is not told to install a CLI that will never be used.
 """
 import json
 import os
@@ -124,6 +126,40 @@ class TestModeDetection:
         monkeypatch.setattr("hermes_cli.config.read_raw_config", boom)
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
+
+
+class TestUnavailableDetail:
+    """Doctor row detail is keyed on why the mode is off — an intentional opt-out or Camofox
+    must not read as a broken install that needs the CLI to be downloaded."""
+
+    def test_opt_out_names_the_config_not_an_install(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_camofox_active", lambda context="": False)
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"backend": bu_cli.BACKEND_DISABLED}},
+        )
+        detail = bu_cli.browser_use_unavailable_detail() or ""
+        assert "browser.backend: off" in detail and "post-setup" not in detail
+
+    def test_camofox_names_camofox_not_an_install(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_camofox_active", lambda context="": True)
+        detail = bu_cli.browser_use_unavailable_detail() or ""
+        assert "Camofox" in detail and "post-setup" not in detail
+
+    def test_other_backend_is_named_verbatim(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_camofox_active", lambda context="": False)
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"backend": "something-else"}},
+        )
+        assert "something-else" in (bu_cli.browser_use_unavailable_detail() or "")
+
+    def test_missing_cli_has_no_override(self, monkeypatch):
+        """Default mode + no CLI: None, so the standard missing-CLI setup hint applies."""
+        monkeypatch.setattr(bu_cli, "_camofox_active", lambda context="": False)
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        assert bu_cli.browser_use_unavailable_detail() is None
 
 
 class TestSubprocessEnvironment:

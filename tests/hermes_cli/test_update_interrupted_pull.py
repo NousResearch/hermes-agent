@@ -87,6 +87,21 @@ def _pull(root: Path) -> None:
                              discard_local_changes=False, keep_stash=False)
 
 
+def test_live_checkout_under_pytest_does_not_probe_recovery_marker(tmp_path, monkeypatch):
+    """The test guard must run before any stat under the executing checkout's git directory."""
+    root = tmp_path / "live-checkout"
+
+    class ForbiddenMarker:
+        def is_file(self):
+            raise AssertionError("live checkout marker was probed")
+
+    monkeypatch.setattr(er, "_project_root", lambda: root)
+    monkeypatch.setattr(er, "interrupted_pull_marker", lambda _root: ForbiddenMarker())
+    monkeypatch.setattr(er, "_pytest_owns_live_checkout", lambda candidate: candidate == root)
+
+    assert er.restore_interrupted_pull() is False
+
+
 def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monkeypatch):
     root, a, b = checkout
     real = update_cmd._git_run

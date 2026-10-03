@@ -5,6 +5,7 @@ reload / targeted unload unwind registries in reverse order. Mixed into :class:`
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
@@ -221,8 +222,35 @@ class PluginLedgerMixin:
 
     def unload(self, plugin: Union[str, PluginManifest, LoadedPlugin, None] = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
+        retired_observers = []
         with self._discovery_lock, _plugin_home_scope(self.home_path):
-            return self._unload_scoped(plugin)
+            found = self._unload_scoped(plugin)
+            try:
+                from agent.plugin_stream_hooks import retire_plugin_observer_dispatchers
+
+                # The manager lock is acquired before the dispatcher lock. Observer workers never
+                # take the dispatcher lock while reporting failures.
+                retired_observers = retire_plugin_observer_dispatchers(
+                    self, unload_all=plugin is None
+                )
+            except Exception:
+                logger.debug("plugin observer dispatcher retirement failed", exc_info=True)
+
+        if retired_observers:
+            from agent.plugin_stream_hooks import _stop_dispatcher
+
+            # Retirement was marked while the discovery lock was held: callbacks that had already
+            # passed their worker gate may finish, but no queued callback can start after unload.
+            # Discard pending events and join only after releasing the manager lock; teardown stays
+            # bounded even when an already-running plugin callback is blocked.
+            deadline = time.monotonic() + 0.2
+            for dispatcher in retired_observers:
+                _stop_dispatcher(
+                    dispatcher,
+                    timeout=max(0.0, deadline - time.monotonic()),
+                    discard_pending=True,
+                )
+        return found
 
     def _unload_scoped(self, plugin: Union[str, PluginManifest, LoadedPlugin, None] = None) -> bool:
         """Unload one plugin (or all when ``plugin=None``, as force rediscovery does). Every ledger registration

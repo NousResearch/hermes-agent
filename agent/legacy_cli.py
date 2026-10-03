@@ -47,6 +47,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="comma-separated toolsets to disable")
     parser.add_argument("--list-tools", "--list_tools", dest="list_tools", action="store_true",
                         help="list available tools and exit")
+    parser.add_argument("--browser-test", "--browser_test", dest="browser_test", action="store_true",
+                        help="run a browser smoke test with the browser toolset")
     parser.add_argument("--save-trajectories", "--save_trajectories", dest="save_trajectories",
                         action="store_true", help="append the conversation to trajectory JSONL files")
     parser.add_argument("--save-sample", "--save_sample", dest="save_sample", action="store_true",
@@ -69,7 +71,7 @@ def main(argv: Optional[List[str]] = None, *, run: Optional[Callable[..., object
     if args.query and positional:
         parser.error("pass the query either positionally or via --query, not both")
     query = args.query or positional or None
-    if query is None and not args.list_tools:
+    if query is None and not args.list_tools and not args.browser_test:
         parser.print_help()
         print("\nNo query given: pass one with --query (or run `hermes` for the interactive CLI).")
         return 0
@@ -90,5 +92,6 @@ def main(argv: Optional[List[str]] = None, *, run: Optional[Callable[..., object
         save_sample=args.save_sample,
         verbose=args.verbose,
         log_prefix_chars=args.log_prefix_chars,
+        browser_test=args.browser_test,
     )
     return 0

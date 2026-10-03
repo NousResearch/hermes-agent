@@ -87,7 +87,7 @@ def holder_namespace_token() -> str:
     return f":pidns={ns}" if ns else ""
 
 
-def recorded_namespace(holder: str) -> Optional[str]:
+def _recorded_namespace(holder: str) -> Optional[str]:
     """The ``pidns=`` stamp from a holder string, or None when it carries none."""
     match = _PIDNS_TOKEN_RE.search(holder or "")
     return match.group(1) if match else None
@@ -103,7 +103,7 @@ def _qualify(recorded: Optional[str], *, unstamped_checkable: bool) -> bool:
         return unstamped_checkable
     if local.id is None:
         return False  # our own lookup failed: unknown authority is not authority
-    return str(recorded) == str(local.id)
+    return recorded == local.id
 
 
 def holder_pid_checkable(holder: str) -> bool:
@@ -114,7 +114,7 @@ def holder_pid_checkable(holder: str) -> bool:
     row's own expiry instead (at most the remaining TTL; a false defer
     self-heals, a false reclaim ends a live turn).
     """
-    return _qualify(recorded_namespace(holder), unstamped_checkable=False)
+    return _qualify(_recorded_namespace(holder), unstamped_checkable=False)
 
 
 def persistent_record_pidns_checkable(recorded: Optional[str]) -> bool:

@@ -33,6 +33,7 @@ from hermes_state_common import (
     escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
+from hermes_state_pidns import holder_pid_checkable
 from hermes_state_health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
 )
@@ -137,18 +138,11 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     Reclaim on kernel proof only: unstructured/same-process holders (another
     thread's live lease) and any probe doubt keep the lease until TTL expiry
     (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
-
-    A PID is namespace-relative: siblings sharing one state.db from different
-    PID namespaces (containers on one volume, systemd ``PrivatePIDs=``) see
-    disjoint PID sets, so a local absence is only proof for a holder stamped
-    with OUR namespace.  Holders stamp ``pidns=<id>`` at write time
-    (``hermes_state_pidns``); a foreign or unstamped holder is never reclaimed
-    on a local PID probe — it releases by TTL expiry instead."""
+    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``."""
     match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
     pid = int(match.group(1)) if match else 0
     if pid <= 0 or pid == os.getpid():
         return False
-    from hermes_state_pidns import holder_pid_checkable
     if not holder_pid_checkable(holder):
         return False  # foreign / unknown namespace: defer to TTL
     if psutil is not None:

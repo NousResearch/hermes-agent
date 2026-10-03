@@ -35,6 +35,7 @@ from agent.model_metadata import estimate_messages_tokens_rough, estimate_reques
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
+from hermes_state_pidns import holder_namespace_token
 
 logger = logging.getLogger(__name__)
 
@@ -1772,14 +1773,9 @@ def recover_rotated_compression_session(agent: Any) -> Optional[List[Dict[str, A
 
 
 def _compression_lock_holder(agent: Any) -> str:
-    """Build a unique lock holder id: ``pid[:pidns]:tid:agent-instance:uuid``.
-    pid+tid tell crashed holders apart in diagnostics; instance id and per-acquire uuid disambiguate
-    co-resident agents on one thread or pooled compressions.  ``pidns`` (the PID-namespace id) keeps a
-    sibling sharing this state.db from reclaiming the lock on a local PID probe — see
-    ``hermes_state_pidns``."""
-    from hermes_state_pidns import holder_namespace_token
-    return (f"pid={os.getpid()}{holder_namespace_token()}:tid={threading.get_ident()}"
-            f":agent={id(agent):x}:nonce={uuid.uuid4().hex[:8]}")
+    """Build a unique lock holder id: ``pid[:pidns]:tid:agent-instance:uuid`` (pidns: see ``hermes_state_pidns``).
+    pid+tid tell crashed holders apart; instance id and per-acquire uuid disambiguate co-resident/pooled agents."""
+    return f"pid={os.getpid()}{holder_namespace_token()}:tid={threading.get_ident()}:agent={id(agent):x}:nonce={uuid.uuid4().hex[:8]}"
 
 
 def _supported_compression_kwargs(

@@ -14,10 +14,10 @@ def build_migrate_parser(subparsers) -> None:
     migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
 
     migrate_xai = migrate_subparsers.add_parser(
-        "xai", help="Migrate xAI models scheduled for retirement on May 15, 2026",
-        description="Scan config.yaml for references to xAI models retiring on "
-            "May 15, 2026 and, with --apply, rewrite them in-place to the "
-            "official replacements per the xAI migration guide. The original "
+        "xai", help="Migrate retired xAI models",
+        description="Scan config.yaml for references to retired xAI models "
+            "and, with --apply, rewrite them in-place to the official "
+            "replacements per the xAI migration guides. The original "
             "config.yaml is backed up before any rewrite.")
     migrate_xai.add_argument(
         "--apply", action="store_true",

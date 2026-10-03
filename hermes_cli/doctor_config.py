@@ -544,15 +544,18 @@ def _check_config_drift(should_fix: bool, f: Finding) -> None:
 @doctor_check("xAI retirement check skipped", "({e})")
 def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
     from hermes_cli.config import load_config
-    from hermes_cli.xai_retirement import MIGRATION_GUIDE_URL, find_retired_xai_refs, format_issue
+    from hermes_cli.xai_retirement import find_retired_xai_refs, format_issue, guide_urls
     retired_refs = find_retired_xai_refs(load_config())
     if not retired_refs:
         check_ok("No retired xAI models in config")
         return
     for ref in retired_refs:
         check_warn(format_issue(ref))
-    check_info(f"Migration guide: {MIGRATION_GUIDE_URL}")
-    f.manual_issues.append(f"Update {len(retired_refs)} retired xAI model reference(s) in config.yaml — see {MIGRATION_GUIDE_URL}")
+    guides = guide_urls(retired_refs)
+    for guide_url in guides:
+        check_info(f"Migration guide: {guide_url}")
+    f.manual_issues.append(
+        f"Update {len(retired_refs)} retired xAI model reference(s) in config.yaml — see {', '.join(guides)}")
 
 
 @doctor_check("Session reset check skipped", "({e})")

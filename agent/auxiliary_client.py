@@ -2380,29 +2380,46 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
     return "no usable OpenRouter credentials found"
 
 
-def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    nous = _read_nous_auth()
-    runtime = _resolve_nous_runtime_api(force_refresh=False)
-    if runtime is None and not nous:
-        logger.warning("Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).")
-        _mark_provider_unhealthy("nous", ttl=60, reason="no Nous authentication found", level=logging.DEBUG)
-        return None, None
-    if runtime is None and nous:
-        logger.debug("Auxiliary Nous: runtime JWT refresh failed; checking stored auth.json token.")
-    if runtime is not None:
-        api_key, base_url = runtime
+def _try_nous(
+    vision: bool = False,
+    explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+    explicit_base_url: Optional[str] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Resolve a Nous client, keeping a caller-supplied credential/route authoritative."""
+    override_key = _normalize_api_key(explicit_api_key)
+    override_url = str(explicit_base_url or "").strip().rstrip("/")
+    if override_key:
+        # A fallback/task pin identifies the account that should receive and bill this prompt.
+        # Never replace that credential with whichever Portal login is ambient (#124269 is the
+        # separate cross-provider env-key class; #126104 is same-host vs same-origin inheritance).
+        api_key = override_key
+        base_url = override_url or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
+        logger.debug("Auxiliary Nous: using caller-supplied credential and route")
     else:
-        api_key = _nous_api_key(nous or {})
-        if not api_key:
-            logger.warning(
-                "Auxiliary Nous client unavailable: no usable inference JWT found "
-                "(run: hermes auth add nous)."
-            )
-            _mark_provider_unhealthy("nous", ttl=60, reason="no usable Nous inference JWT", level=logging.DEBUG)
+        nous = _read_nous_auth()
+        runtime = _resolve_nous_runtime_api(force_refresh=False)
+        if runtime is None and not nous:
+            logger.warning("Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).")
+            _mark_provider_unhealthy("nous", ttl=60, reason="no Nous authentication found", level=logging.DEBUG)
             return None, None
-        base_url = str(
-            (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
-        ).rstrip("/")
+        if runtime is None and nous:
+            logger.debug("Auxiliary Nous: runtime JWT refresh failed; checking stored auth.json token.")
+        if runtime is not None:
+            api_key, base_url = runtime
+        else:
+            api_key = _nous_api_key(nous or {})
+            if not api_key:
+                logger.warning(
+                    "Auxiliary Nous client unavailable: no usable inference JWT found "
+                    "(run: hermes auth add nous)."
+                )
+                _mark_provider_unhealthy("nous", ttl=60, reason="no usable Nous inference JWT", level=logging.DEBUG)
+                return None, None
+            base_url = str(
+                (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
+            ).rstrip("/")
+        if override_url:
+            base_url = override_url
     with contextlib.suppress(Exception):
         from agent.nous_rate_guard import nous_rate_limit_remaining
         from hermes_cli.anon_auth import is_anonymous_request
@@ -5036,11 +5053,23 @@ def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
 
 
 def _resolve_nous_branch(req: _ResolveRequest) -> _ResolveResult:
-    """Nous Portal (OAuth)."""
+    """Nous Portal, with explicit fallback/task credentials taking precedence over ambient OAuth."""
     model = req.model
     # Vision: caller flag, _PROVIDER_VISION_MODELS override, or a known vision id.
-    client, default = _try_nous(vision=(req.is_vision or model in _PROVIDER_VISION_MODELS.values()
-                                        or (model or "").strip().lower() == "mimo-v2-omni"))
+    vision = (
+        req.is_vision
+        or model in _PROVIDER_VISION_MODELS.values()
+        or (model or "").strip().lower() == "mimo-v2-omni"
+    )
+    if req.explicit_api_key or req.explicit_base_url:
+        client, default = _try_nous(
+            vision=vision,
+            explicit_api_key=req.explicit_api_key,
+            explicit_base_url=req.explicit_base_url,
+        )
+    else:
+        # Keep the historical one-argument call shape for test/plugin seams that stub _try_nous.
+        client, default = _try_nous(vision=vision)
     if client is None:
         logger.warning("resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)")
         return None, None

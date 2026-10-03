@@ -226,6 +226,15 @@ const targetOf = (entry: McpServers[string]): string => {
   return [text(command) ?? '', ...parts].join(' ').trim()
 }
 
+/** Command-shaped entry with no url: the backend spawns it per session that
+ *  needs it. Background health checks never probe these (probing would launch
+ *  the user's command), so an unprobed one is idle until first use. */
+const isStdioEntry = (entry: McpServers[string]): boolean => {
+  const { command, url } = entry as ServerEntry
+
+  return text(url) === undefined && text(command) !== undefined
+}
+
 export function joinLocalServers({ catalog, servers, status, toolCounts, usage }: LocalJoinInput): LocalServerInput[] {
   return Object.entries(servers).map(([name, entry]) => {
     const bundled = catalog.find(candidate => candidate.name === name)
@@ -240,6 +249,7 @@ export function joinLocalServers({ catalog, servers, status, toolCounts, usage }
       enabled: serverEnabled(entry),
       inCatalog: bundled !== undefined,
       name,
+      onDemand: raw === 'unknown' && isStdioEntry(entry),
       status: raw,
       target: targetOf(entry),
       toolsOn: counts?.on,
@@ -289,12 +299,16 @@ export function pluginServerRows({ runtime, servers }: PluginServerJoinInput): L
     .map(row => {
       const state = live.get(row.name)
       const split = row.name.indexOf('__')
+      const status = state ? RUNTIME_STATUS[state.status] : 'unknown'
 
       return {
         enabled: row.enabled,
         name: row.name,
+        // Same reasoning as joinLocalServers: a command-shaped server with no
+        // live runtime row (or a lazy one) only runs while a session needs it.
+        onDemand: status === 'unknown' && text(row.url) === undefined && text(row.command) !== undefined,
         plugin: row.plugin ?? '',
-        status: state ? RUNTIME_STATUS[state.status] : 'unknown',
+        status,
         target: text(row.url) ?? [row.command ?? '', ...row.args].join(' ').trim(),
         title: connectorTitle(split === -1 ? row.name : row.name.slice(split + 2)),
         toolsTotal: state?.tools

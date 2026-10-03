@@ -133,6 +133,7 @@ export const en: Translations = {
         serverNeedsAuth: 'Needs authentication',
         serverOff: 'Off',
         serverOn: 'On',
+        serverOnDemand: 'On demand',
         serverOnUnused: 'On, unused'
       },
       fact: {

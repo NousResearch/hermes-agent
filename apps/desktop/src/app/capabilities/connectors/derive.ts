@@ -141,15 +141,22 @@ export function localWay(server: LocalServerInput): ConnectorWayLocal {
   const status: LocalServerStatus = server.enabled ? server.status : 'off'
   const phase = LOCAL_PHASES[status]
 
+  // An unprobed stdio server is not mid-connection: nothing is happening to it,
+  // and nothing ever will outside a session that needs it (background health
+  // checks skip stdio on purpose). Say so instead of borrowing the connecting
+  // phase, which reads as a startup that never finishes.
+  const onDemand = server.onDemand === true && status === 'unknown'
+
   return {
     fact: localFact(server, phase.state),
     inCatalog: server.inCatalog,
     installed: true,
+    onDemand,
     plugin: server.plugin,
     reason: phase.reason ? { key: phase.reason } : undefined,
     serverEnabled: server.enabled,
     serverName: server.name,
-    state: phase.state,
+    state: onDemand ? 'unknown' : phase.state,
     target: server.target,
     unused: server.unused,
     verb: phase.verb === 'authenticate' && server.canAuthenticate === false ? 'openLogs' : phase.verb
@@ -198,6 +205,10 @@ export function hostedStateWord(way: ConnectorWayHosted): ConnectorStateWord {
 export function localWord(way: ConnectorWayLocal): ConnectorStateWord {
   if (way.reason?.key === 'serverNeedsAuth') {
     return 'serverNeedsAuth'
+  }
+
+  if (way.onDemand === true) {
+    return 'serverOnDemand'
   }
 
   return way.state === 'connected' && way.unused === true ? 'serverOnUnused' : LOCAL_WORDS[way.state]

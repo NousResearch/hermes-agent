@@ -1533,6 +1533,60 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
     assert agent.api_key == pre_refresh_key
 
 
+def _codex_jwt(account_id, iat):
+    import base64
+    import json
+
+    def _part(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    claims = {"iat": iat, "https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
+    return f"{_part({'alg': 'none'})}.{_part(claims)}.sig"
+
+
+def _codex_store(monkeypatch, stored_key):
+    refresh_calls = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+        return {"api_key": stored_key, "base_url": "https://chatgpt.com/backend-api/codex"}
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_codex_runtime_credentials", _fake_resolve)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **kwargs: object())
+    return refresh_calls
+
+
+def test_try_refresh_codex_client_credentials_adopts_same_account_stored_token(monkeypatch):
+    """A long-lived gateway agent keeps the bearer it was built with. When that token expires, the pool
+    refreshes it on disk, the request 401s on the old bearer, and this refresh used to refuse the stored
+    token as an account swap, so every turn failed until restart. A newer token for the same ChatGPT
+    account must be adopted without spending the single-use refresh token."""
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.api_key = _codex_jwt("acct-1", 1)
+    fresh = _codex_jwt("acct-1", 2)
+    refresh_calls = _codex_store(monkeypatch, fresh)
+    monkeypatch.setattr(agent, "_retire_shared_openai_client", lambda client, *, reason: None)
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is True
+    assert agent.api_key == fresh
+    assert refresh_calls["count"] == 0
+
+
+def test_try_refresh_codex_client_credentials_refuses_other_account_stored_token(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.api_key = old = _codex_jwt("acct-1", 1)
+    refresh_calls = _codex_store(monkeypatch, _codex_jwt("acct-2", 2))
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is False
+    assert agent.api_key == old
+    assert refresh_calls["count"] == 0
+
+
 def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     rebuilt = {"kwargs": None}

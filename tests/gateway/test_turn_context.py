@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 
 from gateway.config import Platform
+from gateway.platforms.base import resolve_channel_prompt
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
@@ -129,3 +130,103 @@ class TestTurnRunner:
             "Context length exceeded. Cannot compress further."
         )
         assert result["compression_exhausted"] is True
+
+    def test_wildcard_channel_prompt_composes_with_channel_override(self, tmp_path, monkeypatch):
+        from gateway.config import load_gateway_config
+        from gateway.run import GatewayRunner
+        from gateway.run_turn_runner import TurnRunner
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            'discord:\n'
+            '  channel_prompts:\n'
+            '    "*": "Global policy"\n'
+            '    "channel-a": "Exact context"\n'
+            '  channel_overrides:\n'
+            '    "channel-a":\n'
+            '      system_prompt: "Override persona"\n',
+            encoding="utf-8",
+        )
+        prompt_runner = object.__new__(GatewayRunner)
+        prompt_runner.config = load_gateway_config()
+
+        class _CapturingAgent:
+            init_kwargs: dict = {}
+
+            def __init__(self, **kwargs):
+                type(self).init_kwargs = kwargs
+                self.model = kwargs["model"]
+                self.session_id = kwargs["session_id"]
+                self.tools = []
+                self.context_compressor = SimpleNamespace(
+                    last_prompt_tokens=0,
+                    context_length=200_000,
+                )
+                self.session_prompt_tokens = 0
+                self.session_completion_tokens = 0
+
+            def run_conversation(self, _message, **_kwargs):
+                return {
+                    "final_response": "ok",
+                    "messages": [],
+                    "api_calls": 1,
+                    "completed": True,
+                }
+
+        gateway_runner = MagicMock()
+        gateway_runner.config = prompt_runner.config
+        gateway_runner._provider_routing = {}
+        gateway_runner._agent_cache_lock = None
+        gateway_runner._agent_cache = {}
+        gateway_runner._session_db = None
+        gateway_runner._prefill_messages = None
+        gateway_runner._pending_model_notes = {}
+        gateway_runner._pending_skills_reload_notes = {}
+        gateway_runner.session_store._entries = {}
+        gateway_runner._get_system_prompt_for_channel = prompt_runner._get_system_prompt_for_channel
+        gateway_runner._resolve_session_agent_runtime.return_value = ("test-model", {})
+        gateway_runner._resolve_session_reasoning_config.return_value = None
+        gateway_runner._resolve_session_service_tier.return_value = None
+        gateway_runner._resolve_turn_agent_config.return_value = {
+            "model": "test-model",
+            "runtime": {},
+        }
+        gateway_runner._agent_config_signature.return_value = ("test-signature",)
+        gateway_runner._extract_cache_busting_config.return_value = {}
+        gateway_runner._refresh_fallback_model.return_value = None
+        gateway_runner._consume_pending_native_image_paths.return_value = []
+        gateway_runner._consume_pending_turn_sidecar_notes.return_value = []
+        gateway_runner._is_telegram_topic_lane.return_value = False
+        gateway_runner._is_discord_auto_thread_lane.return_value = False
+        gateway_runner._is_relay_discord_channel_lane.return_value = False
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-a",
+            user_id="test-user",
+        )
+        channel_prompt = resolve_channel_prompt(
+            prompt_runner.config.platforms[Platform.DISCORD].extra,
+            source.chat_id,
+        )
+        ctx = TurnContext(
+            source=source,
+            message="continue",
+            history=[],
+            session_id="test-session",
+            session_key="test-session-key",
+            user_config={},
+            context_prompt="Platform context",
+            channel_prompt=channel_prompt,
+            AIAgent=_CapturingAgent,
+            resolve_display_setting=lambda *_args: False,
+            _run_still_current=lambda: True,
+            _hooks_ref=SimpleNamespace(loaded_hooks=False),
+        )
+
+        result = TurnRunner(gateway_runner, ctx).run_sync()
+
+        assert result["final_response"] == "ok"
+        assert _CapturingAgent.init_kwargs["ephemeral_system_prompt"] == (
+            "Platform context\n\nGlobal policy\n\nExact context\n\nOverride persona"
+        )

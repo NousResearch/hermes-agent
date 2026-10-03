@@ -315,6 +315,8 @@ Assign ephemeral system prompts to specific Mattermost channels. The prompt is i
 ```yaml
 mattermost:
   channel_prompts:
+    "*": |
+      Follow the workspace-wide privacy and escalation policy.
     "channel_id_abc123": |
       You are a research assistant. Focus on academic sources,
       citations, and concise synthesis.
@@ -323,7 +325,7 @@ mattermost:
       performance implications.
 ```
 
-Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+Keys are Mattermost channel IDs (find them in the channel URL or via the API). The `"*"` prompt is prepended to every channel; a matching channel prompt is appended as additional ephemeral context.
 
 ## Security
 

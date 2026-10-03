@@ -391,13 +391,19 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
     so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
     foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
+    Launches with an argument vector add a digest of the effectful request so one grant cannot authorize different
+    executable arguments.
     """
     from tools.approval import _run_approval_gate
 
     mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
     description = f"Allow computer_use to perform `{action}`?"
+    pattern_key = f"cua:{action}:{mode}"
+    if action == "launch_app" and args.get("additional_arguments"):
+        encoded = json.dumps(_launch_approval_payload(args), sort_keys=True, separators=(",", ":")).encode()
+        pattern_key += f":request:{hashlib.sha256(encoded).hexdigest()}"
     result = _run_approval_gate(
-        pattern_key=f"cua:{action}:{mode}", description=description,
+        pattern_key=pattern_key, description=description,
         display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
         subject=f"computer_use `{action}` requires approval", noun="desktop actions",
         advice="Find an alternative approach that avoids driving the desktop.",
@@ -460,10 +466,18 @@ def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
     return f"{action}{where}{fg}"
 
+_LAUNCH_EFFECT_FIELDS = (
+    "bundle_id", "name", "path", "aumid", "launch_path", "urls", "additional_arguments",
+    "creates_new_application_instance", "start_minimized",
+)
+
+def _launch_approval_payload(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The exact effectful launch fields shown to the user and bound to a scoped grant."""
+    return {key: value for key in _LAUNCH_EFFECT_FIELDS if (value := args.get(key))}
+
 def _summarize_launch(action: str, args: Dict[str, Any], fg: str) -> str:
-    target = (args.get("launch_path") or args.get("path") or args.get("aumid") or
-              args.get("bundle_id") or args.get("name") or args.get("urls") or "")
-    return f"launch {target!r}"
+    payload = json.dumps(_launch_approval_payload(args), ensure_ascii=False, sort_keys=True)
+    return f"launch {payload}"
 
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
 # guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).

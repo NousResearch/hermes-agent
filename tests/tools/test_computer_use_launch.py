@@ -129,6 +129,45 @@ def launch_driver(tmp_path, monkeypatch, grant_computer_use_approvals):
     tool.reset_backend_for_tests()
 
 
+def test_launch_approval_displays_and_scopes_argument_vector(monkeypatch):
+    from tools import approval
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.computer_use import tool
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    prompts = []
+    tool.set_approval_callback(lambda command, description, **kwargs: prompts.append(command) or "session")
+    token = set_current_session_key("launch-argument-approval")
+    request = {
+        "name": "chrome",
+        "additional_arguments": [
+            "--remote-debugging-port=9222",
+            "--user-data-dir=C:/tmp/attacker-profile",
+        ],
+    }
+    try:
+        assert tool._request_approval("launch_app", {"name": "chrome"}) is None
+        assert tool._request_approval("launch_app", request) is None
+        assert request["name"] in prompts[1]
+        assert all(argument in prompts[1] for argument in request["additional_arguments"])
+
+        assert tool._request_approval("launch_app", request) is None
+        assert len(prompts) == 2
+
+        changed = {**request, "additional_arguments": ["--incognito"]}
+        assert tool._request_approval("launch_app", changed) is None
+        assert len(prompts) == 3
+
+        retargeted = {**changed, "name": "firefox"}
+        assert tool._request_approval("launch_app", retargeted) is None
+        assert len(prompts) == 4
+    finally:
+        tool.set_approval_callback(None)
+        reset_current_session_key(token)
+        approval.clear_session("launch-argument-approval")
+
+
 @pytest.mark.parametrize("case,key,target,capture_after", [
     ("returned", "bundle_id", "com.example.editor", True),
     ("returned", "name", "SharedName", False),
@@ -145,6 +184,7 @@ def test_launch_binds_only_the_launched_window(launch_driver, case, key, target,
     initial = dispatch(action="capture", mode="ax", pid=111, window_id=222)
     assert "error" not in initial, initial
     backend = tool._get_backend()
+    assert backend._last_target == {"pid": 111, "window_id": 222}
     assert backend._snapshot_tokens == {1: "fresh-token"}
 
     result = dispatch(action="launch_app", **{key: target},

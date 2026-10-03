@@ -2,6 +2,7 @@ import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import hermes_cli.memory_setup as memory_setup
 from hermes_cli.memory_setup import _CANCELLED
 
@@ -122,3 +123,36 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+@pytest.mark.parametrize("auto_extract, default_trust", [("true", "0.7"), (False, 0)])
+def test_rerunning_setup_keeps_holographic_settings(monkeypatch, auto_extract, default_trust):
+    """Re-running the wizard and accepting every offered value must leave the provider's stored
+    settings as they were, falsy ones included (a YAML ``false``, a trust of 0). Real discovery,
+    real holographic provider, real config.yaml."""
+    import io
+    import sys
+
+    import hermes_yaml as _yaml
+    from hermes_constants import get_hermes_home
+    from plugins.memory.holographic import _load_plugin_config
+
+    stored = {"db_path": str(get_hermes_home() / "facts" / "store.db"),
+              "auto_extract": auto_extract, "default_trust": default_trust}
+    (get_hermes_home() / "config.yaml").write_text(_yaml.safe_dump(
+        {"memory": {"provider": "holographic"}, "plugins": {"hermes-memory-store": stored}}), encoding="utf-8")
+    names = [name for name, _, _ in memory_setup._get_available_providers()]
+
+    def press_enter(title, items, default=0, **_):
+        return names.index("holographic") if title == "Memory provider setup" else default
+
+    monkeypatch.setattr(memory_setup, "_curses_select", press_enter)
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n" * 20))
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    after = _load_plugin_config()
+    # save_config writes the prompt's answers as strings.
+    assert {key: str(after.get(key)).lower() for key in stored} == {
+        key: str(value).lower() for key, value in stored.items()}

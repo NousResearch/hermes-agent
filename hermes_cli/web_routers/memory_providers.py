@@ -19,8 +19,9 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
 from hermes_cli.web_server_memory import (
-    _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
+    _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _require_memory_provider_ready, _run_setup_command,
 )
+from hermes_cli.profile_memory_config import read_memory_provider_values
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
@@ -403,7 +404,7 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
 # ── Legacy provider surface (provider.config_schema()) ────────────────────────
 
 def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
-    data = _read_memory_provider_existing_values(name)
+    data = read_memory_provider_values(name)
     fields = [
         {
             **{k: field[k] for k in ("key", "label", "kind", "description", "placeholder", "required")},
@@ -471,7 +472,7 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[s
 
 
 def _write_memory_provider_config_values(name: str, provider: Any, values: Dict[str, Any]) -> None:
-    existing = _read_memory_provider_existing_values(name)
+    existing = read_memory_provider_values(name)
     fields = _normalize_memory_provider_schema(name, provider)
     fields_by_key = {field["key"]: field for field in fields}
     config_values: Dict[str, Any] = {}

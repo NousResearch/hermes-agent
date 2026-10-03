@@ -4056,6 +4056,26 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _tcp_port_probe_addresses(host: str | None, port: int):
+    """Resolve addresses for the bind probe, preserving specific-host behavior.
+
+    A wildcard listener owns the wildcard address, not just 127.0.0.1. Normalize the ``*``
+    spelling before resolution and inspect every wildcard family returned by the OS; this is
+    required on Windows where an exclusive bind to a specific address can coexist with 0.0.0.0.
+    """
+    from gateway.platforms.shared_ingress import is_wildcard_host
+
+    lookup_host = None if is_wildcard_host(host) else host
+    flags = socket.AI_PASSIVE if is_wildcard_host(host) else 0
+    infos = socket.getaddrinfo(lookup_host, port, type=socket.SOCK_STREAM, flags=flags)
+    addresses = []
+    for family, socktype, proto, _, address in infos:
+        candidate = (family, socktype, proto, address)
+        if candidate not in addresses:
+            addresses.append(candidate)
+    return addresses
+
+
 def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
     """Wait until nothing accepts TCP connections on host:port.
 
@@ -4075,13 +4095,12 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
             # instead of returning ECONNREFUSED. A bind matches the operation the
             # replacement api_server is about to perform and distinguishes that case.
             try:
-                family, socktype, proto, _, address = socket.getaddrinfo(
-                    host, port, type=socket.SOCK_STREAM
-                )[0]
-                with socket.socket(family, socktype, proto) as probe:
-                    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-                    probe.bind(address)
+                addresses = _tcp_port_probe_addresses(host, port)
+                for family, socktype, proto, address in addresses:
+                    with socket.socket(family, socktype, proto) as probe:
+                        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                        probe.bind(address)
                 return True
             except OSError:
                 pass  # the listener is still bound, or the probe cannot bind yet

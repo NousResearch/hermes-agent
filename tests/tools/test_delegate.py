@@ -168,6 +168,31 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestDelegateTask(unittest.TestCase):
+    def test_fork_mode_clones_parent_history(self):
+        parent = _make_mock_parent()
+        parent._session_messages = [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": [{"type": "text", "text": "Earlier answer"}]},
+        ]
+        child = MagicMock()
+        with patch("run_agent.AIAgent", return_value=child):
+            _build_child_agent(
+                task_index=0,
+                goal="Use the earlier answer",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=1,
+                context_mode="fork",
+            )
+
+        fork_history = child._delegate_fork_history
+        self.assertEqual(fork_history, parent._session_messages)
+        self.assertIsNot(fork_history, parent._session_messages)
+        self.assertIsNot(fork_history[1]["content"], parent._session_messages[1]["content"])
+
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
@@ -1556,6 +1581,37 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+
+    def test_model_context_mode_is_forwarded(self):
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent, {"goal": "test", "context_mode": "fork"}
+            )
+
+        self.assertEqual(captured["context_mode"], "fork")
+
+    def test_context_mode_preserves_tool_error_for_malformed_tasks(self):
+        parent = _make_mock_parent(depth=0)
+
+        for malformed in (123, "hello", None):
+            with self.subTest(malformed=malformed):
+                result = json.loads(
+                    delegate_task(
+                        tasks=[malformed],  # type: ignore[list-item]
+                        context_mode="fork", parent_agent=parent
+                    )
+                )
+                self.assertIn("error", result)
+                self.assertIn("Task 0 must be an object", result["error"])
 
 
 

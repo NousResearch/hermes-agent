@@ -212,6 +212,7 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    context_mode: str = "blank",
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -298,6 +299,13 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    if str(context_mode).strip().lower() == "fork":
+        # Copy the live, already-compacted parent transcript without sharing nested
+        # tool-call/content objects with either agent.
+        from agent.turn_finalizer import _clone_background_review_messages
+        setattr(child, "_delegate_fork_history", _clone_background_review_messages(
+            list(getattr(parent_agent, "_session_messages", None) or [])
+        ))
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -424,7 +432,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                context_mode=t.get("context_mode", "blank"), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -476,7 +485,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    credentials_cfg: Optional[Dict[str, Any]] = None, context_mode: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -533,6 +542,11 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    if not err and context_mode is not None:
+        # Apply the top-level mode only after normalization so malformed task entries
+        # still produce the structured validation error instead of crashing here.
+        for task in task_list:
+            task["context_mode"] = context_mode
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -711,6 +725,12 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "context_mode": _p(
+                            "string",
+                            "Optional context mode. Omit or use 'blank' for the current isolated-child behavior; use 'fork' "
+                            "to copy the parent's current conversation history into the child before its goal turn.",
+                            enum=["blank", "fork"],
+                        ),
                         "output_schema": _p(
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
@@ -792,6 +812,7 @@ registry.register(
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
+        context_mode=args.get("context_mode"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

@@ -49,6 +49,15 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
 
+    snapshot_p = mcp_sub.add_parser("snapshot", help="Save a server's live tool definitions for comparison")
+    snapshot_p.add_argument("name", help="Configured server name (uses the active profile)")
+    snapshot_p.add_argument("--output", required=True, help="JSON file to write (replaced only after successful discovery)")
+
+    diff_p = mcp_sub.add_parser("diff", help="Compare two tool snapshots offline")
+    diff_p.add_argument("baseline", help="Snapshot of the previous tool definitions")
+    diff_p.add_argument("current", help="Snapshot of the new tool definitions")
+    diff_p.add_argument("--json", action="store_true", help="Print a machine-readable report")
+
     mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
     mcp_cfg_p.add_argument("name", help="Server name to configure")
 

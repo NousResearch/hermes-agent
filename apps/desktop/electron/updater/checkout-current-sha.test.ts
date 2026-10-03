@@ -18,6 +18,7 @@ function deps(root: string, status: SourceUpdate | null, isWindows: boolean): Ch
   return {
     readSourceUpdate: vi.fn(async (): Promise<SourceUpdate | null> => status),
     hermesHome: 'home',
+    proxyEnv: {},
     isWindows,
     isMac: process.platform === 'darwin',
     defaultUpdateBranch: 'main',

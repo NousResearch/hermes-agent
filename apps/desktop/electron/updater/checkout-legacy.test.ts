@@ -26,6 +26,7 @@ it('moves a checkout without a source probe to main, but surfaces a broken probe
   const deps: CheckoutStrategyDeps = {
     readSourceUpdate: probe,
     hermesHome: home,
+    proxyEnv: {},
     isWindows: process.platform === 'win32',
     isMac: process.platform === 'darwin',
     defaultUpdateBranch: 'main',

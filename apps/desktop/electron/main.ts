@@ -594,6 +594,13 @@ import { updateGateReason, waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
+  proxyFetchFactory,
+  proxyFromResolveProxyResult,
+  proxyRulesFor,
+  readConfiguredUpdateProxy,
+  resolveUpdateProxy
+} from './update-transport-proxy'
+import {
   resolveUpdaterMechanism,
   type UpdaterApplyResultWire,
   type UpdaterStatusWire,
@@ -3746,7 +3753,73 @@ function emitUpdateProgress(payload) {
   }
 }
 
+/**
+ * The one proxy answer for update traffic (#60049): `updates.proxy` from
+ * config.yaml, else the ambient env a proxied shell exported, else
+ * Electron's own system-proxy/PAC answer for the update host. Resolved once
+ * per update flow and applied to every transport — the fetch the channel
+ * resolver uses, electron-updater's network session, and the env inherited by
+ * the source-check and hand-off children. Never throws: an unreadable config,
+ * malformed value, or failing resolveProxy means "no proxy from that rung",
+ * and the remaining rungs still apply.
+ */
+let lastResolvedUpdateProxy: string | null = null
+
+/** The proxy overlay for update children, resolved with the same single answer. */
+let lastResolvedUpdateProxyEnv: NodeJS.ProcessEnv = {}
+
+/** The URL whose system proxy Chromium is asked about: the channel feed host. */
+function updateProxyProbeUrl(): string {
+  return resolveDesktopFeedBaseUrl() || 'https://github.com/NousResearch/hermes-agent/'
+}
+
+async function applyUpdateProxy(): Promise<void> {
+  const configured = await readConfiguredUpdateProxy(path.join(HERMES_HOME, 'config.yaml'))
+  let systemProxy: string | null = null
+
+  try {
+    systemProxy = proxyFromResolveProxyResult(await session.defaultSession.resolveProxy(updateProxyProbeUrl()))
+  } catch (error) {
+    rememberLog(`[updates] system proxy resolution skipped: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  const { proxy, env } = resolveUpdateProxy(
+    process.env,
+    configured ? { updates: { proxy: configured } } : null,
+    process.env,
+    systemProxy
+  )
+
+  lastResolvedUpdateProxy = proxy
+  lastResolvedUpdateProxyEnv = env
+
+  if (!proxy || !IS_MAC) {
+    return
+  }
+
+  // electron-updater dials through the shared "electron-updater" session; a
+  // dedicated rules string keeps every other session (and the app's own
+  // traffic) untouched. Only the macOS electron-updater arm reads it — the
+  // Windows/checkout arms carry the proxy via the child env instead.
+  const rules = proxyRulesFor(proxy)
+
+  if (!rules) {
+    return
+  }
+
+  try {
+    const { NET_SESSION_NAME } = await import('electron-updater/out/electronHttpExecutor') as { NET_SESSION_NAME: string }
+    const session = (await import('electron')).session.fromPartition(NET_SESSION_NAME, { cache: false })
+    await session.setProxy({ proxyRules: rules })
+    rememberLog(`[updates] using proxy ${proxy} from updates.proxy/env/system for update traffic`)
+  } catch (error) {
+    rememberLog(`[updates] could not apply update proxy: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
+  await applyUpdateProxy()
+
   // A packaged install delegates to the update owner named by its stamp.
   let strategy: UpdaterStrategy | null = null
 
@@ -3817,12 +3890,16 @@ async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
     return new ChannelStrategy({
       build,
       mechanism,
-      resolver: new ChannelResolver({
-        build,
-        platform: process.platform,
-        arch: process.arch,
-        signer: installed.signer
-      }),
+      resolver: ChannelResolver.withProxy(
+        {
+          build,
+          platform: process.platform,
+          arch: process.arch,
+          signer: installed.signer,
+          proxyUrl: lastResolvedUpdateProxy ?? undefined
+        },
+        proxyFetchFactory()
+      ),
       nativeFactory: (target: ChannelTarget): UpdaterStrategy => createNativePackagedStrategy(mechanism, target)
     })
   }
@@ -3954,6 +4031,7 @@ function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): Payload
 function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
   return createCheckoutStrategy({
     hermesHome: HERMES_HOME,
+    proxyEnv: lastResolvedUpdateProxyEnv,
     isWindows: IS_WINDOWS,
     isMac: IS_MAC,
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,

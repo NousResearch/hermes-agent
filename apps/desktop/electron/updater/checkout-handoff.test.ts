@@ -34,6 +34,7 @@ function handoffFixture(remote: boolean): { root: string; deps: CheckoutStrategy
   const deps: CheckoutStrategyDeps = {
     readSourceUpdate: async (): Promise<SourceUpdate> => status,
     hermesHome: home,
+    proxyEnv: {},
     isWindows: IS_WINDOWS,
     isMac: process.platform === 'darwin',
     defaultUpdateBranch: 'main',
@@ -62,6 +63,7 @@ it.each([true, false])(
   'hand-off passes the no-gateway flag iff a remote gateway serves the app: %s',
   async (remote: boolean): Promise<void> => {
     const { root, deps } = handoffFixture(remote)
+    deps.proxyEnv = { HTTPS_PROXY: 'http://127.0.0.1:7890', HERMES_PROXY_BRIDGE_TEST: '1' }
     const spawned: string[][] = []
     const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
@@ -84,6 +86,8 @@ it.each([true, false])(
       // The Windows cmd wrapper must inherit its hidden console; the POSIX
       // script needs to outlive Electron as a detached child (#116161).
       expect(spawnOptions[0]?.detached).toBe(!IS_WINDOWS)
+      expect(spawnOptions[0]?.env?.HERMES_PROXY_BRIDGE_TEST).toBe('1')
+      expect(spawnOptions[0]?.env?.HTTPS_PROXY).toBe('http://127.0.0.1:7890')
       expect(args).toContain(IS_WINDOWS ? '-Branch' : '--branch')
 
       if (remote) {

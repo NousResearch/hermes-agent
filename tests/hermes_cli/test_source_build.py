@@ -77,6 +77,49 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     assert intent == [False]
 
 
+def test_source_build_enables_electron_get_for_standard_proxy_env(monkeypatch):
+    from hermes_cli.source_build import source_build_env
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.delenv("ELECTRON_GET_USE_PROXY", raising=False)
+    monkeypatch.setattr(pm, "ensure", lambda name, **kwargs: Runner(name, kwargs["base_env"]))
+
+    env = source_build_env()
+
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:7890"
+    assert env["ELECTRON_GET_USE_PROXY"] == "1"
+
+
+@pytest.mark.parametrize("proxy_key", ["ALL_PROXY", "all_proxy"])
+def test_source_build_enables_electron_get_for_all_proxy_only_env(monkeypatch, proxy_key):
+    """ALL_PROXY alone must count as a proxy-present env (#123387 review)."""
+    from hermes_cli.source_build import source_build_env
+
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+                "ALL_PROXY", "all_proxy", "ELECTRON_GET_USE_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(proxy_key, "http://127.0.0.1:7890")
+    monkeypatch.setattr(pm, "ensure", lambda name, **kwargs: Runner(name, kwargs["base_env"]))
+
+    env = source_build_env()
+
+    assert env[proxy_key] == "http://127.0.0.1:7890"
+    assert env["ELECTRON_GET_USE_PROXY"] == "1"
+
+
+def test_source_build_leaves_electron_get_unset_without_proxy_env(monkeypatch):
+    from hermes_cli.source_build import source_build_env
+
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+                "ALL_PROXY", "all_proxy", "ELECTRON_GET_USE_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(pm, "ensure", lambda name, **kwargs: Runner(name, kwargs["base_env"]))
+
+    env = source_build_env()
+
+    assert "ELECTRON_GET_USE_PROXY" not in env
+
+
 def test_installed_npm_does_not_authorize_missing_workspace_dependencies(source_checkout, monkeypatch):
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
 

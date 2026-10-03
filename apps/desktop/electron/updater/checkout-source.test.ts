@@ -362,6 +362,7 @@ urllib.request.build_opener = local_build
 
     const deps: CheckoutStrategyDeps = {
       hermesHome: home,
+      proxyEnv: {},
       isWindows: process.platform === 'win32',
       isMac: process.platform === 'darwin',
       defaultUpdateBranch: 'main',

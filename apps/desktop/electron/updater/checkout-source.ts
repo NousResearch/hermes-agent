@@ -25,8 +25,15 @@ export interface SourceUpdateProbe {
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 
-export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
+export function sourceUpdateEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  // The resolved update-proxy overlay (#60049, #123387): spread FIRST so an
+  // exported ambient value is never clobbered — it fills unset keys only.
+  proxyEnv: NodeJS.ProcessEnv = {}
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
+    ...proxyEnv,
     ...process.env,
     ...buildDesktopBackendEnv(),
     HERMES_HOME: hermesHome,

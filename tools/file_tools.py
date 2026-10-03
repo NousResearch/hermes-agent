@@ -998,8 +998,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _replace_target = _path_to_resolved.get(path) or path
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
-                if not patch:
-                    return tool_error("patch content required")
+                # ponytail: error-text guidance only; strict per-mode required
+                # stays ["mode"] (anyOf/oneOf break Anthropic/Fireworks/Kimi sanitizers).
+                if not patch or not str(patch).strip():
+                    return tool_error(
+                        "patch: missing required field 'patch' for mode='patch'. "
+                        "Re-emit the tool call with V4A patch content in 'patch' "
+                        "(start with '*** Begin Patch', include a '*** Update File:' "
+                        "/ '*** Add File:' header, end with '*** End Patch'), or use "
+                        "mode='replace' with path + old_string + new_string for a "
+                        "single find-and-replace edit."
+                    )
                 result = file_ops.patch_v4a(
                     _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
             else:

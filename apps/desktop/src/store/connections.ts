@@ -34,6 +34,8 @@ import {
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
+import { startupProfileForConnection } from './startup-profile-restore'
+
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
 // Every await of a source switch is bounded. A wedged spawn, ticket mint,
@@ -73,6 +75,9 @@ export const $hasMultipleConnections = computed(
 )
 
 const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
+// Preserve the per-source preference across the initial Electron descriptor:
+// its legacy global profile can briefly be paired with the wrong connection.
+const startupLastProfileByConnection = { ...$lastProfileByConnection.get() }
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
@@ -271,7 +276,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     }
 
     if (registry.connections.some(connection => connection.id === connectionId)) {
-      await selectConnection(connectionId, { profile: defaultRoute.profile })
+      await selectConnection(connectionId, { profile: defaultRoute.profile, fromBoot: true })
     }
 
     return $connectionsRegistry.get() ?? registry
@@ -303,9 +308,44 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   }
 
   if ($activeConnectionId.get() === preferredId) {
+    // Electron's legacy `profile` preference is global, while this primary
+    // connection can be remote. Validate that inherited name against the
+    // selected source before treating it as the new session's owner. An
+    // explicit default route was handled above and must never be second-guessed.
+    if (preferred?.kind !== 'local' && !$activeSessionId.get() && !$selectedStoredSessionId.get()) {
+      const profile = normalizeProfileKey($activeGatewayProfile.get())
+      const revision = switchRevision
+      // A failed roster read is not evidence the profile is absent. Do not
+      // mask a subsequent switch failure as a roster failure, though.
+      const roster = await getProfiles({ connectionId: preferredId }).catch(() => null)
+
+      if (
+        roster &&
+        revision === switchRevision &&
+        pendingTarget === null &&
+        $freshSessionRequest.get() === freshSessionRequest &&
+        $activeConnectionId.get() === preferredId &&
+        normalizeProfileKey($activeGatewayProfile.get()) === profile &&
+        !$activeSessionId.get() &&
+        !$selectedStoredSessionId.get()
+      ) {
+        const target = startupProfileForConnection(
+          profile,
+          startupLastProfileByConnection[preferredId],
+          roster.profiles
+        )
+
+        if (target) {
+          await selectConnection(preferredId, { profile: target, fromBoot: true })
+        } else if (roster.profiles.some(candidate => candidate.name === profile)) {
+          $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [preferredId]: profile })
+        }
+      }
+    }
+
     await rememberConnection(preferredId)
   } else {
-    await selectConnection(preferredId)
+    await selectConnection(preferredId, { fromBoot: true })
   }
 
   return $connectionsRegistry.get() ?? registry
@@ -340,6 +380,8 @@ export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
+  /** Silent startup restoration must not clear the persisted All profiles view. */
+  fromBoot?: boolean
 }
 
 export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
@@ -354,7 +396,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // picker is a concrete-source action. The silent boot-time restore (below,
   // from initializeConnectionsRegistry) is not — it must leave the persisted
   // browse-mode preference alone so it survives restart (#93197).
-  const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
+  const restoreOnBoot = options.fromBoot === true || (pendingTarget === null && $activeConnectionId.get() === null)
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
@@ -400,7 +442,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
-    $showAllProfiles.set(false)
+    if (!restoreOnBoot) {
+      $showAllProfiles.set(false)
+    }
+
     $newChatProfile.set(targetProfile)
     // A connection switch is a new-chat intent on THAT source: keep the
     // registry identity with the profile so the next create names local::x /

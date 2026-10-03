@@ -107,8 +107,10 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
 
 
 def test_turn_settles_before_post_turn_trim(monkeypatch, caplog):
-    """A blocked post-turn trim must not hold the session running or its bookend (#131740)."""
+    """A blocked post-turn trim must not hold the session running or its bookend (#131740);
+    turn audio still ends BEFORE settlement, so a next turn admitted during the trim keeps its own."""
     import hermes_cli.mem_trim as mem_trim
+    import tools.voice_mode as voice_mode
 
     entered, release = threading.Event(), threading.Event()
 
@@ -122,6 +124,10 @@ def test_turn_settles_before_post_turn_trim(monkeypatch, caplog):
     monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
     monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    audio_end = []  # (event, session running at that moment)
+    tts = types.SimpleNamespace(put=lambda x: x is None and audio_end.append(("tts", session["running"])))
+    monkeypatch.setattr(server, "_start_turn_voice", lambda: (tts, True))
+    monkeypatch.setattr(voice_mode, "stop_thinking_sound", lambda: audio_end.append(("thinking", session["running"])))
     agent = types.SimpleNamespace(
         session_id="agent-sid-1", run_conversation=lambda *a, **k: {"final_response": "done"},
         clear_interrupt=lambda: None)
@@ -133,6 +139,7 @@ def test_turn_settles_before_post_turn_trim(monkeypatch, caplog):
             assert entered.wait(timeout=5)
             assert session["running"] is False
             assert len(_records(caplog, "tui turn finished")) == 1
+            assert audio_end == [("thinking", True), ("tts", True)]
     finally:
         release.set()
         session["_run_thread"].join(timeout=5)

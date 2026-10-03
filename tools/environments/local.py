@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import contextlib
+import itertools
 import logging
 import ntpath
 import os
@@ -948,6 +949,79 @@ def _kill_process_windows(proc) -> None:
         proc.wait(timeout=2.0)
 
 
+# --- Foreground cgroup isolation for gateway-spawned local commands -----------------
+# #70716 isolates *background* executors in a transient systemd scope. A foreground
+# command still runs inside the gateway's own cgroup, so a memory-heavy foreground
+# build/test can push that cgroup past MemoryHigh/MemoryMax and let systemd-oomd kill the
+# whole messaging control plane — the same failure domain the background fix closed. The
+# wrapper is reused verbatim; only the foreground spawn point is added. Import is
+# function-local because tools.process_registry imports this module at module level.
+_foreground_scope_counter = itertools.count(1)
+
+
+_FOREGROUND_DEGRADED_CONSEQUENCE = (
+    "foreground commands share the gateway cgroup, so a memory-heavy one can take the "
+    "messaging control plane down with it. Give this user a session bus "
+    "(`loginctl enable-linger <user>`) or install systemd-run.")
+_foreground_degraded_warned = False
+
+
+def _warn_foreground_scope_degraded(detail: str) -> None:
+    """Report degraded foreground isolation once per process.
+
+    Separate flag from ``process_registry._warn_scope_degraded_once`` on purpose: that one
+    is a topic-level latch shared by cron/worker dispatch, and a condition there would
+    otherwise silence this one entirely.
+    """
+    global _foreground_degraded_warned
+    if _foreground_degraded_warned:
+        return
+    _foreground_degraded_warned = True
+    logger.warning("%s; %s", detail, _FOREGROUND_DEGRADED_CONSEQUENCE)
+
+
+def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], str | None, dict]":
+    """Wrap *args* in a transient ``systemd-run --user --scope`` when this process is the
+    supervised gateway on Linux.
+
+    Returns ``(argv, unit_name, run_env)``. The environment is completed with the user-bus
+    variables on the scoped path only — the availability probe derives them
+    (``systemd_user_bus_env``) so a system-level unit without login variables can still
+    reach the manager, and an ulterior spawn that skipped them would fail where the probe
+    succeeded. Fail-open everywhere else: any surprise leaves the command exactly as it is
+    today (``unit_name is None``).
+    """
+    if _IS_WINDOWS:
+        return args, None, run_env
+    try:
+        from tools import process_registry as _pr
+    except Exception as exc:  # pragma: no cover - import cycle guard
+        logger.debug("foreground executor scope unavailable: %s", exc)
+        return args, None, run_env
+    supervised = False
+    try:
+        if not (_pr._IS_LINUX and _pr._is_supervised_gateway_process()):
+            return args, None, run_env
+        # Past this point the command is *meant* to be isolated, so every fallback is a
+        # degraded failure domain and must be reported (once), not silently degraded.
+        supervised = True
+        if not _pr._systemd_run_user_scope_available():
+            _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
+            return args, None, run_env
+        suffix = f"{os.getpid()}-{next(_foreground_scope_counter)}"
+        scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix="hermes-fg")
+        if scoped == args:
+            _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
+            return args, None, run_env
+        return scoped, f"hermes-fg-{suffix}.scope", _pr.systemd_user_bus_env(run_env)
+    except Exception as exc:
+        if supervised:
+            _warn_foreground_scope_degraded(f"building the scope wrapper failed ({type(exc).__name__}: {exc})")
+        else:
+            logger.debug("foreground executor not isolated in a systemd scope: %s", exc)
+        return args, None, run_env
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
     the session snapshot preserves env vars across calls; CWD persists via the
@@ -1049,8 +1123,12 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        # Foreground parity with the background scope: an OOM/limit breach inside the
+        # command must not take the gateway cgroup (and the messaging control plane)
+        # down with it. See #70716.
+        scoped_args, scope_unit, run_env = _foreground_scope_argv(args, _make_run_env(self.env))
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            scoped_args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
@@ -1064,17 +1142,34 @@ class LocalEnvironment(BaseEnvironment):
                 # platform, macOS included.
                 from gateway.status import get_process_start_time
                 proc._hermes_pgid_start = get_process_start_time(proc.pid)
+        if scope_unit:
+            proc._hermes_scope_unit = scope_unit
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
 
     def _kill_process(self, proc):
-        """Kill the entire process group (all children)."""
+        """Kill the entire process group (all children), then the transient scope that
+        held them: a double-forked descendant reparented to init still dies with its
+        cgroup when the wrapper's group no longer covers it. Scope teardown must happen
+        even when the group kill raised something that is not an ``OSError`` — the cgroup
+        is the authoritative cleanup, and a leaked transient unit outlives the command.
+        See #70716."""
         try:
-            (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
-        except OSError:  # ProcessLookupError / PermissionError included
-            with contextlib.suppress(Exception):
-                proc.kill()
+            try:
+                (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
+            except OSError:  # ProcessLookupError / PermissionError included
+                with contextlib.suppress(Exception):
+                    proc.kill()
+        finally:
+            unit = getattr(proc, "_hermes_scope_unit", None)
+            if unit:
+                from tools.process_registry import _stop_systemd_unit
+                with contextlib.suppress(Exception):
+                    if not _stop_systemd_unit(unit):
+                        logger.debug(
+                            "foreground scope %s could not be reaped; the unit may "
+                            "outlive the command (its cgroup still holds survivors)", unit)
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""

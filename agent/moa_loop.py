@@ -249,7 +249,8 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
 def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
-    Cached per (profile home, provider, model) with a short TTL. Falls back to bare provider/model
+    Cached per (profile home, provider, model) with a short TTL, except pooled OAuth
+    credentials whose refresh may revoke a cached bearer. Falls back to bare provider/model
     on error — never cached, or a transient error would pin bare kwargs for a TTL.
     """
     provider = str(slot.get("provider") or "").strip()
@@ -272,6 +273,12 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         extra_body = overrides.get("extra_body") if isinstance(overrides, dict) else None
         if isinstance(extra_body, dict) and extra_body:
             out["extra_body"] = dict(extra_body)
+        pool = rt.get("credential_pool")
+        selected = pool.current() if pool is not None else None
+        # OAuth refresh revokes the old bearer immediately. A different process can
+        # rotate the pool between turns, so never pin that bearer for the runtime TTL.
+        if selected is not None and selected.auth_type == "oauth":
+            return out
     except Exception as exc:
         logger.warning("MoA slot %s: provider '%s' could not be resolved (%s); calling with bare provider/model",
                        _slot_label(slot), provider, exc)

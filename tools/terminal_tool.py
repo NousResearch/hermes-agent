@@ -249,6 +249,11 @@ _session_cwd_lock = threading.Lock()
 _container_aliases: Dict[str, str] = {}
 _container_alias_lock = threading.Lock()
 
+# Session-less scheduler runs need a durable owner key for the local shell
+# snapshot. Otherwise every run collapses to ``"default"`` and inherits
+# exported variables, PATH changes, and other shell state from unrelated jobs.
+_run_scoped_tasks: set[str] = set()
+
 
 def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
@@ -369,6 +374,33 @@ def _resolve_container_alias(task_id: str) -> str:
             seen.add(key)
             key = _container_aliases[key]
     return key
+
+
+def register_run_scoped_task(task_id: str) -> None:
+    """Give a session-less scheduler run its own local terminal environment."""
+    if not task_id:
+        return
+    with _container_alias_lock:
+        _run_scoped_tasks.add(task_id)
+
+
+def clear_run_scoped_task(task_id: str) -> None:
+    """Release the local terminal ownership marker for a completed run."""
+    with _container_alias_lock:
+        _run_scoped_tasks.discard(task_id)
+
+
+def _run_scoped_owner(task_id: Optional[str]) -> Optional[str]:
+    """Return the registered run owning *task_id*, following delegate aliases."""
+    if not task_id:
+        return None
+    seen = set()
+    key = task_id
+    with _container_alias_lock:
+        while key in _container_aliases and key not in seen:
+            seen.add(key)
+            key = _container_aliases[key]
+        return key if key in _run_scoped_tasks else None
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -495,10 +527,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
-    4. No session key (CLI, cron): ``shared:<key>`` when opted in (else a CLI run of a
-       keyed profile would split from its gateway sessions); a routed multiplexed profile
-       keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
-       else ``"default"``, which subagent ids collapse onto to share the parent's container.
+    4. No session key (CLI, cron): local cron runs use their registered per-run owner
+       (including delegated children); ``shared:<key>`` applies when Docker opts in (else a
+       CLI run of a keyed profile would split from its gateway sessions); a routed multiplexed
+       profile keys its own home (``profile:<name>`` under persistent Docker, matching branch 3);
+       everything else uses ``"default"``.
     """
     if task_id and _has_isolation_overrides(task_id):
         return _qualify_task_key(task_id)
@@ -521,6 +554,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
         return f"shared:{shared}"
     if not session_key:
+        if scope.env_type == "local":
+            run_owner = _run_scoped_owner(task_id)
+            if run_owner:
+                return run_owner
         return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")

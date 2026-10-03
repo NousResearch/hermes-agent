@@ -2355,7 +2355,7 @@ class _CronRunScope:
 
     def __init__(self, job: dict, job_id: str, execution_id: Optional[str]):
         from gateway.session_context import set_session_vars, _VAR_MAP
-        from tools.terminal_tool import record_session_cwd
+        from tools.terminal_tool import record_session_cwd, register_run_scoped_task
 
         self._var_map = _VAR_MAP
         # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
@@ -2388,6 +2388,7 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        register_run_scoped_task(self.task_id)
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2401,9 +2402,10 @@ class _CronRunScope:
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
-        from tools.terminal_tool import clear_session_cwd
+        from tools.terminal_tool import clear_run_scoped_task, clear_session_cwd
 
         clear_session_cwd(self.task_id)
+        clear_run_scoped_task(self.task_id)
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
             self._cron_session_var.reset(self._cron_session_token)

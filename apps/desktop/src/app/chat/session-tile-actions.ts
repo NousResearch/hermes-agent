@@ -16,6 +16,7 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import { isNoPayloadSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -326,7 +327,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       listTileSession(visibleText)
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
+        const hasAttachments = attachments.length > 0
+
+        // Known client-side no-payload surface — the attachment can never ride
+        // it, and nothing has executed yet, so warn-and-refuse matches the main
+        // composer's guard (#131233).
+        if (hasAttachments && isNoPayloadSlashCommand(visibleText)) {
           notify({
             kind: 'warning',
             title: copy.slashCommandIgnoredTitle,
@@ -338,6 +344,18 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
         triggerHaptic('selection')
         await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+
+        if (hasAttachments) {
+          // The tile delegate cannot thread attachments (the primary submit
+          // path would consume them against the main composer's scope), so the
+          // command ran text-only — tell the user their attachment was not
+          // included; it stays staged in the tile (#131233).
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+        }
 
         return true
       }

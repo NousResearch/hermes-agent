@@ -3,6 +3,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import { isNoPayloadSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
@@ -219,10 +220,13 @@ export function useComposerQueue({
         return false
       }
 
-      // Editing a queued entry into a slash-command + attachment combo would
-      // produce an undrainable entry (submitText rejects it on every attempt).
-      // Refuse the save so the queue can never hold an entry that livelocks.
-      if (isSlashCommandText(text) && next.length) {
+      // Editing a queued entry into a KNOWN no-payload slash-command +
+      // attachment combo would produce an undrainable entry (submitText warns
+      // and returns false on every attempt). Refuse the save so the queue can
+      // never hold an entry that livelocks. Unknown commands are allowed:
+      // drain executes them and the post-dispatch check re-homes anything the
+      // dispatch did not consume (#131233).
+      if (isSlashCommandText(text) && next.length && isNoPayloadSlashCommand(text)) {
         notify({
           kind: 'warning',
           title: t.desktop.slashCommandIgnoredTitle,
@@ -264,10 +268,11 @@ export function useComposerQueue({
       return false
     }
 
-    // Slash commands cannot ride alongside attachments — the drain path would
-    // reject the entry on every attempt (submitText warns + returns false) and
-    // the queue would livelock. Refuse to enqueue it in the first place.
-    if (isSlashCommandText(text) && attachments.length) {
+    // A KNOWN no-payload slash command cannot drain with attachments (submitText
+    // warns + returns false on every attempt → queue livelock), so refuse to
+    // enqueue it in the first place. Unknown commands are allowed: drain runs
+    // them and the post-dispatch check re-homes unconsumed attachments (#131233).
+    if (isSlashCommandText(text) && attachments.length && isNoPayloadSlashCommand(text)) {
       notify({
         kind: 'warning',
         title: t.desktop.slashCommandIgnoredTitle,

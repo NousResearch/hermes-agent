@@ -1785,8 +1785,17 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
             str(fb.get("base_url") or "").strip().rstrip("/"))
 
 
-def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
+def _fallback_entry_unavailable_without_network(agent, fb: dict, reason=None) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
+    if reason is FailoverReason.timeout:
+        base_url = str(fb.get("base_url") or "").strip()
+        hostname = base_url_hostname(base_url) if base_url else ""
+        # A fallback can be local without using loopback: Docker host aliases,
+        # LAN/private addresses, Tailscale, and operator-defined `.lan` names
+        # are all valid local inference endpoints.
+        is_local = is_local_endpoint(base_url) or hostname.lower().endswith(".lan")
+        if hostname and not is_local:
+            return "network_unreachable"
     if (fb.get("provider") or "").strip().lower() != "nous":
         return None
     try:
@@ -1960,7 +1969,7 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     return until is None or until - time.time() > 600
 
 
-def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
+def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set, reason=None) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
     if fb_key in unavailable:
@@ -1975,7 +1984,7 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     if _candidate_pool_exhausted(agent, fb_provider, fb_model):
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
         return True
-    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
+    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb, reason=reason)
     if local_skip_reason:
         unavailable.add(fb_key)
         logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
@@ -2090,7 +2099,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
-        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable, reason=reason):
             continue
 
         try:

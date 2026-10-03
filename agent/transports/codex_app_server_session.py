@@ -52,7 +52,12 @@ class TurnResult:
     thread_id: Optional[str] = None
     # Exact turn/start text distinguishes the input echo from a new user event.
     submitted_user_text: Optional[str] = None
+    # A Codex turn is its own agent loop with one tokenUsage notification per model request: ``last`` is the
+    # newest request (its prompt size is the context fill), ``turn`` sums every request in the turn (the spend).
     token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_turn: Optional[dict[str, int]] = None
+    # Thread-cumulative total as of the newest notification; Codex re-emits a snapshot with an unchanged total.
+    token_usage_total: Optional[dict[str, Any]] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
     # Codex likely wedged (turn timeout, dead subprocess, token refresh failure): caller respawns next turn.
@@ -257,6 +262,8 @@ class CodexAppServerSession:
         # In-progress fileChange items by id (item/started -> item/completed):
         # approval params don't carry the changeset, so this feeds the prompt summary.
         self._pending_file_changes: dict[str, str] = {}
+        # Newest thread-cumulative usage total, carried across turns so a turn-start re-emit isn't counted.
+        self._usage_total_seen: Optional[dict[str, Any]] = None
         self._closed = False
 
     def ensure_started(self) -> str:
@@ -435,6 +442,7 @@ class CodexAppServerSession:
             except Exception:  # pragma: no cover - display callback
                 logger.debug("on_event callback raised", exc_info=True)
         _apply_accounting_notification(result, note)
+        self._usage_total_seen = result.token_usage_total
         self._track_pending_file_change(note)
         projection = projector.project(note)
         if projection.messages:
@@ -469,7 +477,7 @@ class CodexAppServerSession:
         reason for minutes without emitting a single event while the app-server still answers RPCs
         (#112928). Only subprocess death or ``turn_timeout`` retires the session.
         """
-        result = TurnResult()
+        result = TurnResult(token_usage_total=self._usage_total_seen)
         if self._start_for(result):
             # Do not clear first: a hard stop arriving during ensure_started() must
             # be honored before launching a Codex turn.
@@ -629,7 +637,7 @@ class CodexAppServerSession:
         ``thread/compact/start`` returns immediately with no turn id; progress streams
         as normal turn/item notifications, so wait for the matching ``turn/completed``.
         """
-        result = TurnResult()
+        result = TurnResult(token_usage_total=self._usage_total_seen)
         if not self._start_for(result):
             return result
         self._interrupt_event.clear()
@@ -800,6 +808,15 @@ def _summarize_file_changes(raw_changes: list) -> str:
     return f"{counts}: {preview}" if preview else counts
 
 
+def _add_usage(acc: Optional[dict[str, int]], breakdown: dict) -> dict[str, int]:
+    """Field-wise sum of two tokenUsage breakdowns (non-integer fields are skipped)."""
+    summed = dict(acc or {})
+    for key, value in breakdown.items():
+        if isinstance(value, int) and not isinstance(value, bool):
+            summed[key] = summed.get(key, 0) + value
+    return summed
+
+
 def _apply_accounting_notification(result: TurnResult, note: dict) -> None:
     """Capture token usage (thread/tokenUsage/updated, not turn/completed) and compaction
     boundaries (a contextCompaction item on recent builds, deprecated thread/compacted on older)."""
@@ -812,9 +829,14 @@ def _apply_accounting_notification(result: TurnResult, note: dict) -> None:
     if method == "thread/tokenUsage/updated":
         token_usage = params.get("tokenUsage") or {}
         if isinstance(token_usage, dict):
-            last, window = token_usage.get("last"), token_usage.get("modelContextWindow")
+            last, total, window = token_usage.get("last"), token_usage.get("total"), token_usage.get("modelContextWindow")
             if isinstance(last, dict):
+                # An unchanged cumulative total means the same request reported again, not a new one.
+                if not (isinstance(total, dict) and total == result.token_usage_total):
+                    result.token_usage_turn = _add_usage(result.token_usage_turn, last)
                 result.token_usage_last = dict(last)
+            if isinstance(total, dict):
+                result.token_usage_total = dict(total)
             if isinstance(window, int) and window > 0:
                 result.model_context_window = window
         return

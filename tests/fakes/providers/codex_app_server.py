@@ -536,8 +536,14 @@ def _step_usage(ctx: _TurnCtx, step: dict) -> None:
     breakdown = {"inputTokens": step["input"], "cachedInputTokens": step.get("cached", 0),
                  "outputTokens": step.get("output", 10), "reasoningOutputTokens": step.get("reasoning", 0)}
     breakdown["totalTokens"] = breakdown["inputTokens"] + breakdown["outputTokens"]
+    # ``total`` is thread-cumulative, as codex reports it.
+    data = ctx.server.store.load()
+    thread = data["threads"][ctx.thread_id]
+    total = {k: thread.get("usage_total", {}).get(k, 0) + v for k, v in breakdown.items()}
+    thread["usage_total"] = total
+    ctx.server.store.save(data)
     ctx.server.notify("thread/tokenUsage/updated", ctx.scope(tokenUsage={
-        "last": breakdown, "total": breakdown, "modelContextWindow": step.get("window", 272000)}))
+        "last": breakdown, "total": total, "modelContextWindow": step.get("window", 272000)}))
 
 
 def _step_compaction(ctx: _TurnCtx, step: dict) -> None:

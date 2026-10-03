@@ -73,10 +73,16 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       flushQueuedDeltas(sessionId)
 
       const state = $sessionStates.get()[sessionId]
+
       // Read before the upsert seals the part: only a completion that resolves
       // a still-pending call is a fresh production; a duplicate or replayed
-      // completion may never re-offer a dismissed target.
-      const pendingProduction = !event.replayed && Boolean(toolCallOwnerMessageId(state?.messages ?? [], payload))
+      // completion may never re-offer a dismissed target. This call site only
+      // ever handles `tool.complete`, so the phase is always 'complete' — the
+      // running-phase restriction in `toolCallOwnerMessageId` is never
+      // evaluated here, and the #113035 late completion classification is
+      // unchanged.
+      const pendingProduction =
+        !event.replayed && Boolean(toolCallOwnerMessageId(state?.messages ?? [], payload, 'complete'))
 
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 

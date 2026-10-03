@@ -116,4 +116,96 @@ describe('tool events for a part that already exists on a sealed message', () =>
     expect(rows[1].part).toMatchObject({ args: { command: 'echo step2' }, result: 'step 2 output' })
     expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
   })
+
+  it('seeds a new row when a new turn reuses an id from a prior turn whose completion was lost', () => {
+    // Turn 1: tool.complete is lost; message.complete settles the turn and
+    // sealOpenToolParts seals the still-open tool part with completedAt and
+    // no result.
+    event('message.start', 600)
+    event('tool.start', 601, { args: { command: 'echo step1' }, name: 'terminal', tool_id: 'call_lost' })
+    event('message.complete', 602, { text: 'first turn done' })
+
+    // Same tool_call_id in the next turn (llama.cpp constant id / Hermes
+    // deterministic id). A sealed-no-result part on a settled prior turn is
+    // history, not a new running call's owner, so this seeds its own row in
+    // the live bubble instead of clobbering the prior turn's command.
+    event('message.start', 700)
+    event('tool.start', 701, { args: { command: 'echo step2' }, name: 'terminal', tool_id: 'call_lost' })
+    event('tool.complete', 702, { name: 'terminal', result: 'step 2 output', tool_id: 'call_lost' })
+    event('message.complete', 703, { text: 'second turn done' })
+
+    const rows = toolRows('call_lost')
+    expect(rows).toHaveLength(2)
+    // The prior turn keeps its own command and stays sealed without a result
+    // (its lost completion is not backfilled by the new turn's result).
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo step1' } })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    expect(rows[0].part).toMatchObject({ toolName: 'terminal' })
+    // The new turn grows its own row, with its own command and result.
+    expect(rows[1].part).toMatchObject({
+      args: { command: 'echo step2' },
+      result: 'step 2 output',
+      toolName: 'terminal'
+    })
+    expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
+  })
+
+  it('seeds a new row when a later turn reuses an id after an interim boundary in that later turn', () => {
+    // Turn A: tool.complete is lost; message.complete settles the turn and
+    // sealOpenToolParts seals the still-open tool part (completedAt, no
+    // result).
+    event('message.start', 900)
+    event('tool.start', 901, { args: { command: 'echo stepA' }, name: 'terminal', tool_id: 'call_interim_reuse' })
+    event('message.complete', 902, { text: 'first turn done' })
+
+    // Turn B: a new message.start resets `interimBoundaryPending` to false,
+    // then `message.interim` raises the session-wide flag and seals B's own
+    // commentary bubble as `interim`. That session-global bit belongs to B's
+    // bubble, not to A's sealed-no-result row, so it must NOT read as
+    // ownership evidence for a different bubble: the reused id seeds B's own
+    // row instead of re-arming (and clobbering) A's history.
+    event('message.start', 950)
+    event('message.interim', 951, { text: 'thinking about step B', already_streamed: true })
+    event('tool.start', 952, { args: { command: 'echo stepB' }, name: 'terminal', tool_id: 'call_interim_reuse' })
+    event('tool.complete', 953, { name: 'terminal', result: 'step B output', tool_id: 'call_interim_reuse' })
+    event('message.complete', 954, { text: 'second turn done' })
+
+    const rows = toolRows('call_interim_reuse')
+    expect(rows).toHaveLength(2)
+    // The prior turn keeps its own command and stays sealed without a result
+    // (its lost completion is not backfilled by the new turn's result).
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo stepA' }, toolName: 'terminal' })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    // The new turn grows its own row, with its own command and result.
+    expect(rows[1].part).toMatchObject({
+      args: { command: 'echo stepB' },
+      result: 'step B output',
+      toolName: 'terminal'
+    })
+    expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
+  })
+
+  it('attaches a late completion to a part sealed by turn settle (no interim boundary)', () => {
+    // No message.interim: message.complete settles the turn and seals the
+    // still-open tool part with completedAt and no result — the #113035
+    // pure-settle late-completion shape (a tool.complete lost to a degraded
+    // websocket, arriving after the turn it belongs to already settled).
+    event('message.start', 800)
+    event('tool.start', 801, { args: { command: 'echo step1' }, name: 'terminal', tool_id: 'call_settle' })
+    event('message.complete', 802, { text: 'first turn done' })
+
+    // The late tool.complete arrives after settle. It must reconcile with the
+    // sealed row that owns the call instead of seeding a fresh bubble.
+    event('tool.complete', 803, { name: 'terminal', result: 'ok', tool_id: 'call_settle' })
+
+    const state = stream.state(SID)
+    const assistants = (state.messages ?? []).filter(message => message.role === 'assistant')
+    const rows = toolRows('call_settle')
+
+    expect(assistants).toHaveLength(1)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo step1' }, result: 'ok', toolCallId: 'call_settle' })
+    // A late completion does not re-open a stream bubble.
+    expect(state.streamId).toBeNull()
+  })
 })

@@ -81,6 +81,24 @@ def _parse_model_config(raw: Any) -> Dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _model_config_decode_failed(raw: Any) -> bool:
+    """True when *raw* is a non-empty payload that ``_parse_model_config`` maps to ``{}``.
+
+    Those are the failure shapes — malformed JSON text, or JSON that parses to a
+    scalar/array. The LEGAL empty shapes (``None`` / whitespace / ``'{}'`` / ``{}``)
+    are exactly the ones that are empty or parse cleanly to a dict, so the two are
+    distinguishable and a merge that decoded to empty must not write over a FAILED
+    decode: the payload may hold lineage markers the tolerant parse silently dropped.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    return not isinstance(parsed, dict)
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
@@ -760,7 +778,21 @@ class SessionSessionsMixin:
             if on_missing == "raise":
                 raise ValueError(f"Session not found: {session_id}")
             return _MODEL_CONFIG_ROW_MISSING
-        config = _parse_model_config(row[0])
+        raw_row = row[0]
+        # A non-empty payload that decodes to {} is a FAILURE shape (malformed JSON, or a
+        # scalar/array) — the raw text may hold ``_branched_from``/``_delegate_from``/
+        # ``_reset_from`` markers the tolerant parse silently dropped. Merging the patch
+        # into that {} and writing it back as the WHOLE model_config erases them, so
+        # refuse the write (callers treat the sentinel as no-op) and say why. Legal empty
+        # shapes (NULL / '' / '{}') never trip this: they are empty or parse to a dict.
+        if _model_config_decode_failed(raw_row):
+            logger.error(
+                "session %s: model_config failed to decode (%s chars); refusing the "
+                "model_config merge that would erase its lineage markers",
+                session_id, len(raw_row) if isinstance(raw_row, str) else -1,
+            )
+            return _MODEL_CONFIG_ROW_MISSING
+        config = _parse_model_config(raw_row)
         for key, value in patch.items():
             if value is None:
                 config.pop(key, None)

@@ -61,7 +61,11 @@ def _build_prompt(items: List[Dict[str, Any]], criteria: str) -> str:
         # Compact view of the salient fields; the whole object when none are present.
         view = {k: item[k] for k in _VIEW_KEYS if k in item} or item
         lines.append(f"[{i}] {json.dumps(view, ensure_ascii=False)[:1200]}")
-    lines.append("\nReturn the JSON array of scores now (one object per item, same order).")
+    lines.append(
+        '\nReturn a JSON array of scores now, one object per item in the same order, each shaped '
+        'exactly {"index": <int>, "score": <int 0-10>, "reason": "<short>"}. '
+        '"index" MUST be the bracketed item number.'
+    )
     return "\n".join(lines)
 
 
@@ -88,13 +92,29 @@ def _parse_scores(content: str, n_items: int) -> Dict[int, Dict[str, Any]]:
             return {}
     if not isinstance(arr, list):
         return {}
-    return {
+    out = {
         obj["index"]: obj
         for obj in arr
         if isinstance(obj, dict)
         and isinstance(obj.get("index"), int)
+        and not isinstance(obj.get("index"), bool)
         and 0 <= obj["index"] < n_items
     }
+    if out:
+        return out
+    # Fallback: the contract is "one object per item, same order", so when the model returns a
+    # full-length array of score objects without a usable "index" (bare {"score":...}, or the
+    # observed {"id": <ordinal>, "score":...} variant) map them positionally. Without this the
+    # whole batch silently scores as empty — a monitor that goes permanently quiet while exiting 0.
+    if (
+        len(arr) == n_items
+        and all(
+            isinstance(o, dict) and isinstance(o.get("score"), (int, float)) and not isinstance(o.get("score"), bool)
+            for o in arr
+        )
+    ):
+        return {i: o for i, o in enumerate(arr)}
+    return {}
 
 
 def _render_text(surfaced: list) -> str:
@@ -148,7 +168,9 @@ def main() -> int:
     for i, item in enumerate(items):
         s = scores.get(i)
         score = s.get("score") if isinstance(s, dict) else None
-        if isinstance(score, int) and score >= args.threshold:
+        if isinstance(score, bool):
+            score = None
+        if isinstance(score, (int, float)) and score >= args.threshold:
             surfaced.append((i, item, s))
 
     if not surfaced:

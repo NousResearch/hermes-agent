@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_cli.kanban_proof import is_proof_contract
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -1112,6 +1113,14 @@ def _handle_create(args: dict, **kw) -> str:
         _parse_bool_arg(args, "goal_mode"))
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
+    # A proof command runs in the HOST process that completes the card (worker, gateway,
+    # CLI, dashboard), not in the worker's terminal backend. A model-authored proof would
+    # be host code execution outside the terminal sandbox and the approval system, so
+    # only human surfaces (CLI, dashboard) may declare one.
+    _check(not is_proof_contract(args.get("completion_contract")),
+           "proof: completion contracts cannot be declared from kanban_create; a human "
+           "declares them with `hermes kanban create --completion-contract \"proof:<command>\"` "
+           "or the dashboard. Use local-only, OWNER/REPO or a PR URL here.")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env

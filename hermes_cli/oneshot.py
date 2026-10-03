@@ -164,9 +164,29 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
 
 
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
+    from toolsets import ZERO_TOOLSET
+
+    # A flag that was PASSED but names nothing is not "unspecified". Folding it into the
+    # config default is how `-t ""` — the natural way to ask for a tool-less probe — silently
+    # ran with the full configured toolset. Fail closed instead, and name the way to actually
+    # ask for zero tools (#126122).
+    if toolsets is not None and not _normalize_toolsets(toolsets):
+        return None, (
+            "hermes -z: --toolsets was passed an empty value, which means \"unspecified\" — "
+            f"pass a toolset name, or '{ZERO_TOOLSET}' for an explicitly tool-less session.\n"
+        )
+
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
         return None, None
+
+    if ZERO_TOOLSET in normalized:
+        if len(normalized) > 1:
+            return None, (
+                f"hermes -z: '{ZERO_TOOLSET}' means zero tools and cannot be combined with "
+                f"other toolsets: {', '.join(n for n in normalized if n != ZERO_TOOLSET)}\n"
+            )
+        return [ZERO_TOOLSET], None
 
     try:
         from toolsets import validate_toolset

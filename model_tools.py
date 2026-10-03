@@ -316,11 +316,16 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     """Tool names requested by the toolset selection (before check_fn filtering)."""
     tools: set = set()
     if enabled_toolsets is not None:
+        from toolsets import ZERO_TOOLSET
+
         enabled = list(enabled_toolsets)
         # Dispatcher-spawned kanban workers always get the lifecycle handoff
         # tools, even when the assignee profile restricts its chat toolsets.
+        # The exception is an explicit zero-tool request: the caller asked for a session that
+        # cannot act at all, and quietly adding kanban_* would contradict that (#126122).
         if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
+                and _is_dispatcher_owned_worker() and "kanban" not in enabled
+                and ZERO_TOOLSET not in enabled):
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:

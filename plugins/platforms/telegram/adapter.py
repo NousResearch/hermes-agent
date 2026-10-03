@@ -5309,9 +5309,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.error(
-                "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
-                _redact_telegram_error_text(e), exc_info=True)
+            if "voice_messages_forbidden" in str(e).lower():
+                # Recipient-controlled privacy setting, not a fault: the fallback below delivers the reply.
+                logger.info(
+                    "[%s] Recipient does not accept voice messages (Voice_messages_forbidden); "
+                    "falling back to base adapter", self.name)
+            else:
+                logger.error(
+                    "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
+                    _redact_telegram_error_text(e), exc_info=True)
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
         finally:
             if _transcoded_voice_path:

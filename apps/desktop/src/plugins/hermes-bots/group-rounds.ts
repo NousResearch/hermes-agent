@@ -11,9 +11,7 @@ import {
   $groupChats,
   $groupNeedsYou,
   appendGroupChatEntry,
-  GROUP_CHAT_MAX_CONTINUATIONS,
-  GROUP_CHAT_MAX_MESSAGES,
-  GROUP_CHAT_MAX_ROUNDS,
+  groupChatLimits,
   groupChatRoomKey,
   groupThreadOf,
   mintGroupThreadId,
@@ -598,13 +596,14 @@ export async function runGroupChatRounds(
 
   let posted = 0
   let continuations = 0
+  const limits = groupChatLimits($groupChats.get()[group])
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
   // passed with nothing pending); 'capped' means a round/message/continuation
   // cap forced the exit — the activity feed must tell those apart.
   let exitKind: 'capped' | 'settled' = 'settled'
 
   try {
-    for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+    for (let round = 0; round < limits.maxRounds; round++) {
       // Deliver any replies that finished after their turn timed out —
       // every member, not just this round's responders, so long work is
       // late, never lost.
@@ -651,7 +650,7 @@ export async function runGroupChatRounds(
       let spokeThisRound = 0
 
       for (const member of responders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+        if (!isCurrent() || posted >= limits.maxMessages) {
           if (!isCurrent()) {
             recordGroupActivity(group, {
               kind: 'cancelled',
@@ -709,7 +708,7 @@ export async function runGroupChatRounds(
           // exit, not consensus. (#94478)
           if (
             pendingKeys.length &&
-            (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)
+            (continuations > limits.maxContinuations || posted >= limits.maxMessages)
           ) {
             exitKind = 'capped'
           }
@@ -719,7 +718,7 @@ export async function runGroupChatRounds(
       }
     }
 
-    // All GROUP_CHAT_MAX_ROUNDS rounds ran with someone still speaking —
+    // All configured rounds ran with someone still speaking —
     // the round cap ended the drive, not consensus. (#94478)
     exitKind = 'capped'
   } finally {

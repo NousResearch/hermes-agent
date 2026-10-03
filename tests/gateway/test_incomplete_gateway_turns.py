@@ -73,6 +73,19 @@ def _make_incomplete_result() -> dict:
     }
 
 
+def _make_failed_result() -> dict:
+    """A pre-work failure whose sanitized reply can still be delivered."""
+    return {
+        "final_response": "The provider timed out before work began.",
+        "messages": [],
+        "tools": [],
+        "history_offset": 0,
+        "api_calls": 1,
+        "failed": True,
+        "error": "timeout",
+    }
+
+
 def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = GatewayConfig(
@@ -158,3 +171,25 @@ async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(mo
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),
     ]
+
+
+@pytest.mark.asyncio
+async def test_delivered_failed_turn_exposes_semantic_failure_to_completion_hook(monkeypatch, tmp_path):
+    """Delivery success must not erase the runner's pre-work failure signal."""
+    adapter = CaptureSlackAdapter()
+    runner = _make_runner(adapter)
+    runner._run_agent = AsyncMock(return_value=_make_failed_result())
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
+
+    adapter.set_message_handler(runner._handle_message)
+    adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
+
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert adapter.sent
+    assert adapter.processing_hooks[-1] == ("complete", "m-1", ProcessingOutcome.SUCCESS)
+    assert event.agent_turn_failed is True

@@ -53,7 +53,11 @@ _QUOTED_HEADER_RE = re.compile(
 )
 _BARE_HEADER_RE = re.compile(
     rf"(?P<prefix>\b(?:{_HEADER_NAME_PATTERN})\b\s*[:=]\s*)"
-    r"(?P<value>(?>(?:(?:Bearer|Basic|Digest)\s+)?)(?!\[REDACTED\])[^\s,}\]]+)",
+    # agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
+    # keeps the key, so ``***`` before a same-line value (not another secret
+    # header) is a scheme too, and the key after it is the value.
+    r"(?P<value>(?>(?:(?:Bearer|Basic|Digest)\s+|\*\*\*[ \t]+(?=[^\s,}\]])"
+    rf"(?!(?:{_HEADER_NAME_PATTERN})\b\s*[:=]))?)(?!\[REDACTED\])[^\s,}}\]]+)",
     re.IGNORECASE,
 )
 

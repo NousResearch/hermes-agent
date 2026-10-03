@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -205,6 +206,9 @@ class _CuaDriverSession:
         # Stable driver-side identity declared through start_session. Used to revive a logical ended-session
         # rejection without recursive call_tool re-entry or backend-owned state (#71166).
         self._declared_session_id: Optional[str] = None
+        # Labels belong to the MCP transport that declared them. The backend keeps its public run label, so
+        # remember replaced labels and translate them at this boundary after a transport swap.
+        self._retired_session_ids: set[str] = set()
         self._transport_generation, self._transport_reset_callback = 0, None
 
     async def _lifecycle_coro(self) -> None:
@@ -410,6 +414,34 @@ class _CuaDriverSession:
             logger.warning(failure_msg, session_id, _logical_error_text(result))
         return result.get("isError") is not True
 
+    @staticmethod
+    def _new_session_label() -> str:
+        return f"hermes-{uuid.uuid4().hex[:12]}"
+
+    def _adopt_fresh_session_label(self, timeout: float) -> bool:
+        """Replace a label rejected by a new transport with one it owns."""
+        previous = self._declared_session_id
+        if not previous:
+            return False
+        replacement = self._new_session_label()
+        result = self._bridge.run(
+            self._call_tool_async("start_session", {"session": replacement}), timeout=timeout)
+        if result.get("isError") is True:
+            logger.warning("cua-driver fresh public session label %s was rejected: %s",
+                           replacement, _logical_error_text(result))
+            return False
+        self._retired_session_ids.add(previous)
+        self._declared_session_id = replacement
+        return True
+
+    def _live_label_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Translate a backend-cached label when its declaring transport was replaced."""
+        session_id = args.get("session")
+        if (session_id in getattr(self, "_retired_session_ids", set())
+                and (live_id := self._declared_session_id)):
+            return {**args, "session": live_id}
+        return args
+
     def _recreate_session(self, name: str, timeout: float, log_msg: str, *, restart: bool = True,
                           clear_timeout_suspect: bool = False) -> None:
         """Log *log_msg* (``%s`` = *name*), then either start() a dead session or (``restart``) tear
@@ -432,7 +464,8 @@ class _CuaDriverSession:
             if clear_timeout_suspect:
                 self._timeout_suspect = False
         if getattr(self, "_declared_session_id", None):
-            self._redeclare_session(timeout, "cua-driver public session label %s could not be restored: %s")
+            if not self._redeclare_session(timeout, "cua-driver public session label %s could not be restored: %s"):
+                self._adopt_fresh_session_label(timeout)
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: ``cua-driver call <tool> <json>`` subprocess. The MCP stdio bridge can persistently
@@ -466,6 +499,7 @@ class _CuaDriverSession:
                     os.remove(shot_file)
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        args = self._live_label_args(args)
         if name not in self._LIFECYCLE_CALLS:
             # A prior MCP timeout marks the session suspect (possibly wedged): recreate it so one timeout never
             # poisons the run. Healthy sessions are never restarted here.
@@ -503,11 +537,14 @@ class _CuaDriverSession:
             self._recreate_session(name, timeout, "cua-driver MCP session closed during %s; reconnecting once")
             if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
                 return _outcome_unknown(name, e, "transport_outcome_unknown")
+            # The label can have been replaced during recovery; this replay still holds the caller's old args.
+            args = self._live_label_args(args)
             result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         # Remember only a SUCCESSFULLY declared identity: no stale recovery state.
         declared_id, ok = args.get("session"), result.get("isError") is not True
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
+            self._retired_session_ids.discard(declared_id)
         if _is_ended_session_result(result):
             # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.

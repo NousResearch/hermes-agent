@@ -28,7 +28,40 @@ pub fn hermes_home() -> PathBuf {
             return PathBuf::from(override_path);
         }
     }
+    platform_default_home()
+}
 
+/// Root of the profile tree that holds this process's home. Mirrors
+/// `hermes_constants.get_default_hermes_root()`: a HERMES_HOME under the
+/// platform default resolves to the default; otherwise a
+/// `<root>/profiles/<name>` home resolves to `<root>`; any other HERMES_HOME
+/// is its own root; unset means the platform default. Host-wide state (the
+/// update marker) must live here, never in a per-profile home.
+pub fn hermes_root() -> PathBuf {
+    let env_home = std::env::var("HERMES_HOME").ok();
+    hermes_root_from(env_home.as_deref(), &platform_default_home())
+}
+
+fn hermes_root_from(env_home: Option<&str>, native_home: &Path) -> PathBuf {
+    let Some(env_home) = env_home.map(str::trim).filter(|s| !s.is_empty()) else {
+        return native_home.to_path_buf();
+    };
+    let env_path = PathBuf::from(env_home);
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    if canonical(&env_path).starts_with(canonical(native_home)) {
+        return native_home.to_path_buf();
+    }
+    match (env_path.parent(), env_path.parent().and_then(Path::parent)) {
+        (Some(parent), Some(grandparent))
+            if parent.file_name().is_some_and(|name| name == "profiles") =>
+        {
+            grandparent.to_path_buf()
+        }
+        _ => env_path,
+    }
+}
+
+fn platform_default_home() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         // %LOCALAPPDATA%\hermes — matches scripts/install.ps1's $HermesHome.
@@ -83,11 +116,12 @@ pub fn installer_dest() -> PathBuf {
 /// mid-update re-locks the venv shim and triggers `force_kill_other_hermes`,
 /// which then kills that legitimate backend in a respawn loop (#50238).
 ///
-/// Lives directly under HERMES_HOME (same rationale as `installer_dest`) so the
-/// Electron desktop — which resolves HERMES_HOME identically and pins it into
-/// the updater's env — agrees on the exact path.
+/// Lives directly under the profile-tree ROOT (`hermes_root`), never a
+/// `profiles/<name>` home: it is one host-wide lock shared with
+/// `hermes_cli/update_lock.py` and the Electron gate, so a profile-scoped
+/// HERMES_HOME must not split it into a second, unguarded file.
 pub fn update_in_progress_marker() -> PathBuf {
-    hermes_home().join(".hermes-update-in-progress")
+    hermes_root().join(".hermes-update-in-progress")
 }
 
 /// Copy the currently-running installer binary to `installer_dest()` so it's
@@ -213,4 +247,30 @@ pub fn open_log_dir(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_home_resolves_to_its_tree_root() {
+        let native = Path::new("/nonexistent-native/.hermes");
+        assert_eq!(
+            hermes_root_from(Some("/srv/hermes-root/profiles/work"), native),
+            PathBuf::from("/srv/hermes-root"),
+            "a profiles/<name> home must share the root's single update marker"
+        );
+        assert_eq!(
+            hermes_root_from(Some("/srv/hermes-root"), native),
+            PathBuf::from("/srv/hermes-root")
+        );
+        assert_eq!(
+            hermes_root_from(Some("/nonexistent-native/.hermes/profiles/work"), native),
+            native.to_path_buf(),
+            "a home under the platform default resolves to the default"
+        );
+        assert_eq!(hermes_root_from(None, native), native.to_path_buf());
+        assert_eq!(hermes_root_from(Some("  "), native), native.to_path_buf());
+    }
 }

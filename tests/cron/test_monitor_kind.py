@@ -365,6 +365,76 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     assert "state B" in prompt  # new output included verbatim
 
 
+@pytest.mark.parametrize("refusal", ["resolution", "preflight"])
+def test_pre_inference_refusal_leaves_monitor_change_replayable(hermes_env, monkeypatch, refusal):
+    """A run refused before inference must not consume the change it detected: the healed tick
+    still sees it, and only that admitted run suppresses the next identical tick."""
+    from cron.jobs import get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+    from hermes_cli import runtime_provider as _rtp
+    from hermes_cli.auth import AuthError
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    healthy = _rtp.resolve_runtime_provider
+    # Preflight's key probe reports AuthError as [blocked_config] (setup.blocked) and leaves any
+    # other error to provider resolution, which then refuses the run.
+    error_cls, marker = {
+        "preflight": (AuthError, "[blocked_config]"), "resolution": (RuntimeError, ""),
+    }[refusal]
+
+    def _broken(**_kw):
+        raise error_cls("No API key configured for provider 'test'")
+
+    monkeypatch.setattr(_rtp, "resolve_runtime_provider", _broken)
+    success, _doc, _final, error = run_job(job)
+    assert success is False
+    assert error and marker in error
+    assert observed["agent_runs"] == 0
+    assert get_job(job["id"]).get("monitor_state") is None
+
+    monkeypatch.setattr(_rtp, "resolve_runtime_provider", healthy)
+    success, _doc, _final, error = run_job(get_job(job["id"]))
+    assert (success, error) == (True, None)
+    assert observed["agent_runs"] == 1
+    assert "state A" in observed["prompts"][0]
+
+    success, doc, final, _error = run_job(get_job(job["id"]))
+    assert final == SILENT_MARKER
+    assert "no_change" in doc
+    assert observed["agent_runs"] == 1
+
+
+def test_agent_run_failure_still_consumes_the_change(hermes_env, monkeypatch):
+    """Once admitted past the pre-inference gates, a failing agent run still commits the change,
+    so the same content does not re-alert forever."""
+    from cron.jobs import get_job
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    _install_agent_stubs(monkeypatch, {})
+
+    class _FailingAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, prompt, *_a, **_kw):
+            raise RuntimeError("inference blew up")
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+    fake_mod = type(sys)("run_agent")
+    fake_mod.AIAgent = _FailingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+
+    success, _doc, _final, error = run_job(job)
+    assert success is False
+    assert error is not None
+    assert get_job(job["id"])["monitor_state"]["last_output_hash"]
+
+
 def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     """Suppression state must survive a scheduler restart (module reload)."""
     import importlib

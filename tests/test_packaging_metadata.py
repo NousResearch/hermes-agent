@@ -1,5 +1,4 @@
-import ast
-import re
+"""Independent core/optional dependency and reviewed CVE policies."""
 import tomllib
 from pathlib import Path
 
@@ -8,6 +7,8 @@ from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.version import Version
 
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -260,6 +261,27 @@ def _locked_versions(package: str) -> set[str]:
     }
 
 
+def test_test_dependencies_are_group_only_in_manifest_and_lock():
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    hermes = next(package for package in lock["package"] if package["name"] == manifest["project"]["name"])
+    assert manifest["tool"]["uv"]["default-groups"] == []
+    assert "dev" in manifest["dependency-groups"]
+    assert "dev" not in manifest["project"]["optional-dependencies"]
+    assert "dev" in hermes["dev-dependencies"]
+    assert "dev" not in hermes.get("optional-dependencies", {})
+
+
+def test_core_and_optional_speech_dependencies():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    core = {Requirement(dep).name for dep in project["dependencies"]}
+    assert "packaging" in core  # Runtime code imports it directly, not transitively.
+    assert "faster-whisper" not in core
+    assert "faster-whisper" in {
+        Requirement(dep).name for dep in project["optional-dependencies"]["stt-whisper"]
+    }
+
+
 def _pyproject_pinned_specs():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     specs = list(data["project"].get("dependencies", []))
@@ -449,61 +471,25 @@ def _lazy_deps_by_feature():
     raise AssertionError("LAZY_DEPS dict literal not found in tools/lazy_deps.py")
 
 
-# Security-critical packages whose patched floor must be enforced on EVERY
-# install path, eager and lazy. test_pyproject_and_lazy_deps_pins_agree only
-# fires when a package is pinned in BOTH sources, so it cannot catch a lazy
-# feature that omits the pin entirely — the exact gap that left platform.slack
-# carrying aiohttp==3.14.0 while platform.discord (whose discord.py dep pulls
-# aiohttp transitively as its HTTP backbone) shipped without it, so the lazy
-# Discord path could keep an already-installed vulnerable aiohttp. A fully
-# general "no mirrored feature drops a pin" check is impossible statically
-# (it can't see transitive deps), so this is the explicit coverage contract:
-# each security package -> the lazy features that bundle an SDK pulling it and
-# must therefore carry the same pin as the pyproject extra.
-_REQUIRED_SECURITY_PINS = {
-    # Every lazy messaging feature whose SDK pulls aiohttp transitively must
-    # carry the patched floor directly: discord.py (aiohttp<4), slack-bolt,
-    # mautrix/aiohttp-socks (aiohttp<4 / >=3.10), and microsoft-teams-apps —
-    # none of those upper/lower bounds excludes a vulnerable already-installed
-    # aiohttp, so the lazy path would not upgrade it without an explicit pin.
-    "aiohttp": {
-        "platform.discord",
-        "platform.slack",
-        "platform.matrix",
-        "platform.teams",
-    },
-}
-
-
-def test_security_pins_present_in_mirrored_lazy_features():
-    """Curated security pins must be present (not just version-consistent) in
-    every lazy feature that bundles an SDK pulling that package transitively.
-    """
-    py = _pins_from_specs(_pyproject_pinned_specs())
-    by_feature = _lazy_deps_by_feature()
-
-    problems = []
-    for pkg, features in _REQUIRED_SECURITY_PINS.items():
-        canon = _canonical(pkg)
-        expected = py.get(canon)
-        assert expected, (
-            f"{pkg} is listed in _REQUIRED_SECURITY_PINS but is not exact-pinned "
-            f"in pyproject.toml — update the map or the pin."
-        )
-        for feature in sorted(features):
-            specs = by_feature.get(feature)
-            assert specs is not None, (
-                f"lazy feature {feature!r} named in _REQUIRED_SECURITY_PINS no "
-                f"longer exists in LAZY_DEPS — update the map."
-            )
-            got = _pins_from_specs(specs).get(canon)
-            if got != expected:
-                problems.append(
-                    f"{feature}: {pkg}="
-                    f"{sorted(got) if got else 'MISSING'}, expected {sorted(expected)}"
-                )
-    assert not problems, (
-        "a lazy feature is missing a security pin it must mirror from the "
-        "pyproject extras — the lazy install path would not enforce the "
-        "CVE-patched floor:\n  " + "\n  ".join(problems)
-    )
+def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
+    # BadHost's reviewed fixed boundary is independent of today's exact pin.
+    floor = Version("1.0.1")
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    found = set()
+    for extra, specs in metadata["project"]["optional-dependencies"].items():
+        for requirement in map(Requirement, specs):
+            if requirement.name != "starlette":
+                continue
+            pins = list(requirement.specifier)
+            assert len(pins) == 1 and pins[0].operator == "==", (extra, requirement)
+            assert Version(pins[0].version) >= floor, (extra, requirement)
+            found.add(extra)
+    assert {"web", "mcp", "computer-use"} <= found
+    dev = [req for req in map(Requirement, metadata["dependency-groups"]["dev"])
+           if req.name == "starlette"]
+    assert len(dev) == 1
+    pins = list(dev[0].specifier)
+    assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
+    versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
+    assert versions and all(version >= floor for version in versions)

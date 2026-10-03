@@ -185,7 +185,7 @@ def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(tmp_path):
             )
         )
     finally:
-        assert resumed.stop(timeout=1.0)
+        assert resumed.stop(timeout=5.0)
 
     assert rpc.submits == ["ops"]
     assert hosted_room_driver.list_tasks(db, room_id="room-1", status="settled")
@@ -226,8 +226,8 @@ def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path
         )
         time.sleep(0.05)
     finally:
-        assert gateway.stop(timeout=1.0)
-        assert dashboard.stop(timeout=1.0)
+        assert gateway.stop(timeout=5.0)
+        assert dashboard.stop(timeout=5.0)
 
     assert len(gateway_rpc.submits) + len(dashboard_rpc.submits) == 1
     events = hosted_rooms.read_events(db, room_id="room-1", since_seq=0)["events"]

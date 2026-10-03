@@ -365,6 +365,187 @@ def test_server_strips_client_auth_header():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("bound,headers,allowed", [
+    ("127.0.0.1", {}, True),                                              # plain local client
+    ("127.0.0.1", {"Origin": "http://{authority}"}, True),                # the proxy's own origin
+    ("127.0.0.1", {"Host": "localhost:{port}"}, True),                    # loopback alias
+    ("127.0.0.1", {"Host": "localhost.:{port}"}, True),                   # same alias, absolute form
+    ("127.0.0.1", {"Host": "rebound.example:{port}"}, False),             # foreign Host
+    ("127.0.0.1", {"Origin": "https://site.example"}, False),             # cross-site browser request
+    ("127.0.0.1", {"Origin": "null"}, False),                             # opaque browser origin
+    ("127.0.0.1", {"Host": "localhost:80", "Origin": "http://localhost"}, True),  # Origin omits :80
+    ("127.0.0.1", {"Sec-Fetch-Site": "cross-site"}, False),               # cross-site GET, no Origin
+    ("127.0.0.1", {"Host": "user@localhost:{port}"}, False),              # userinfo smuggled into Host
+    ("127.0.0.1", {"Origin": "http://{authority}/path"}, False),          # an Origin never has a path
+    ("192.0.2.10", {"Host": "192.0.2.10:{port}",                          # specific-IP bind: its own
+                    "Origin": "http://192.0.2.10:{port}"}, True),           # address and origin...
+    ("192.0.2.10", {"Host": "192.0.2.11:{port}"}, False),                 # ...but not a neighbour's
+    ("0.0.0.0", {"Host": "lan-name.example:{port}"}, True),               # LAN API client, no Origin
+    ("0.0.0.0", {"Host": "rebound.example:{port}",                        # DNS-rebound page: its
+                 "Origin": "http://rebound.example:{port}"}, False),      # Origin equals its Host
+    ("0.0.0.0", {"Host": "rebound.example:{port}",                        # ...and its same-origin
+                 "Sec-Fetch-Site": "same-origin"}, False),                # GET carries no Origin
+    ("::", {"Host": "rebound.example:{port}",
+            "Origin": "http://rebound.example:{port}"}, False),
+])
+def test_loopback_proxy_serves_only_local_non_browser_requests(bound, headers, allowed):
+    """The proxy forwards with the operator's credential only for requests whose Host names its
+    listener (any name on a wildcard LAN bind) and that carry no browser Origin it cannot vouch for;
+    refused ones never go upstream. A wildcard bind has no single origin of its own, and a
+    DNS-rebound page's Origin always equals its Host, so no Origin is trusted there."""
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        proxy_runner, proxy_base = await _start_runner(create_app(FakeAdapter(f"{upstream_base}/v1"), bound_host=bound))
+        authority = proxy_base.removeprefix("http://")
+        sent = {k: v.format(authority=authority, port=authority.rsplit(":", 1)[1]) for k, v in headers.items()}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{proxy_base}/v1/chat/completions", json={}, headers=sent) as resp:
+                    await resp.read()
+                    status = resp.status
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+        assert status == (200 if allowed else 403)
+        assert len(captured["requests"]) == int(allowed)
+
+    asyncio.run(run())
+
+
+def _build_sse_upstream(
+    frames: list[bytes],
+    *,
+    path: str = "/v1/chat/completions",
+) -> "web.Application":
+    async def sse(request):
+        _ = await request.read()
+        resp = web.StreamResponse(
+            status=200, headers={"Content-Type": "text/event-stream"},
+        )
+        await resp.prepare(request)
+        for chunk in frames:
+            await resp.write(chunk)
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_route("*", path, sse)
+    return app
+
+
+def test_proxy_appends_done_when_upstream_omits_sentinel():
+    """#90848: complete Portal-shaped SSE without [DONE] gets one appended."""
+    async def run():
+        frames = [
+            b'data: {"choices":[{"delta":{"content":"LONGCAT_OK"}}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices":[],"lastOne":true,"usage":{"prompt_tokens":1}}\n\n',
+        ]
+        upstream_runner, upstream_base = await _start_runner(
+            _build_sse_upstream(frames)
+        )
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"stream": True},
+                ) as resp:
+                    body = await resp.read()
+            text = body.decode("utf-8")
+            assert 'data: {"choices":[{"delta":{"content":"LONGCAT_OK"}}]}' in text
+            assert '"finish_reason":"stop"' in text
+            assert '"lastOne":true' in text
+            assert text.count("data: [DONE]") == 1
+            assert text.rstrip().endswith("data: [DONE]")
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_proxy_does_not_duplicate_existing_done():
+    async def run():
+        frames = [
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        upstream_runner, upstream_base = await _start_runner(
+            _build_sse_upstream(frames)
+        )
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"stream": True},
+                ) as resp:
+                    body = await resp.read()
+            assert body.decode("utf-8").count("data: [DONE]") == 1
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_proxy_does_not_append_done_after_error_event():
+    async def run():
+        frames = [
+            b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+            b'data: {"error":{"message":"boom","type":"api_error"}}\n\n',
+        ]
+        upstream_runner, upstream_base = await _start_runner(
+            _build_sse_upstream(frames)
+        )
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"stream": True},
+                ) as resp:
+                    body = await resp.read()
+            assert "data: [DONE]" not in body.decode("utf-8")
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_proxy_does_not_append_done_after_malformed_trailing_frame():
+    async def run():
+        frames = [
+            b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices": [MALFORMED]}\n\n',
+        ]
+        upstream_runner, upstream_base = await _start_runner(
+            _build_sse_upstream(frames)
+        )
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"stream": True},
+                ) as resp:
+                    body = await resp.read()
+            assert "data: [DONE]" not in body.decode("utf-8")
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # CLI handlers
 # ---------------------------------------------------------------------------

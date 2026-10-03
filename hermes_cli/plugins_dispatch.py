@@ -43,7 +43,13 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    "on_maintenance_tick",
 }
+# Bounded hooks whose callbacks legitimately do network work get a longer bound than the hot-path
+# default: ``on_maintenance_tick`` shares the gateway housekeeping thread with the curator, state.db
+# maintenance and every later profile's tick, so a hung plugin must not hold it, but a sync pull
+# needs more than 30s. The configured timeout still wins when larger; ``0`` still disables.
+_HOOK_TIMEOUT_FLOOR_SECS: Dict[str, float] = {"on_maintenance_tick": 120.0}
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
@@ -171,6 +177,11 @@ def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _hook_callback_timeout(hook_name: str, configured: float) -> float:
+    """The bound for one hook: ``configured`` raised to the hook's floor (``<= 0`` stays disabled)."""
+    return max(configured, _HOOK_TIMEOUT_FLOOR_SECS.get(hook_name, 0.0)) if configured > 0 else configured
+
+
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     """Whether *hook_name* should run under the non-blocking timeout path."""
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
@@ -221,7 +232,7 @@ class PluginDispatchMixin:
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: List[Any] = []
-        timeout = _resolve_hook_callback_timeout()
+        timeout = _hook_callback_timeout(hook_name, _resolve_hook_callback_timeout())
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
@@ -495,7 +506,7 @@ class PluginDispatchMixin:
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: List[Any] = []
-        timeout = _resolve_hook_callback_timeout()
+        timeout = _hook_callback_timeout(hook_name, _resolve_hook_callback_timeout())
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):

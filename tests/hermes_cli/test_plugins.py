@@ -1196,6 +1196,29 @@ class TestForceReloadSymmetry:
         hold.set()
 
 
+    def test_maintenance_tick_is_cut_off_at_its_own_bound(self, monkeypatch):
+        """A hung ``on_maintenance_tick`` plugin is abandoned (it would otherwise hold the gateway
+        housekeeping thread: curator, state.db maintenance, every later profile), and at a bound no
+        shorter than the hook's own floor even when the global timeout is lower."""
+        import time
+
+        import hermes_cli.plugins_dispatch as dispatch
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05)
+        monkeypatch.setitem(dispatch._HOOK_TIMEOUT_FLOOR_SECS, "on_maintenance_tick", 0.3)
+        hold = threading.Event()
+        mgr = PluginManager()
+        mgr._hooks["on_maintenance_tick"] = [lambda **_: hold.wait(10.0)]
+
+        t0 = time.monotonic()
+        results = mgr.invoke_hook("on_maintenance_tick", surface="gateway")
+        elapsed = time.monotonic() - t0
+        hold.set()
+
+        assert results == []
+        assert 0.3 <= elapsed < 5.0, f"maintenance tick held the caller {elapsed:.2f}s"
+
+
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0

@@ -564,6 +564,128 @@ class TestProbeEnvResolution:
         assert seen["config"]["connect_timeout"] == 315.0
 
 
+class TestProbeVsConcurrentReload:
+    """``reload.mcp`` runs a wildcard ``shutdown_mcp_servers()``, which stops the shared MCP loop
+    and cancels every task on it. The Desktop tests a server it just installed while that install
+    reloads MCP, so the probe was cancelled mid-connect: its empty ``CancelledError`` crossed
+    ``asyncio.to_thread`` as a task cancellation and ``POST /api/mcp/servers/{name}/test``
+    answered 500 "No response returned" (Context7 failed on first install, worked on retry)."""
+
+    class _FakeTool:
+        name = "resolve_library_id"
+        description = "a tool"
+
+    def _patch_connect(self, monkeypatch, *, cancelled_attempts):
+        import asyncio
+        import threading
+
+        outer = self
+
+        class _FakeServer:
+            _tools = [outer._FakeTool()]
+
+            async def shutdown(self):
+                return None
+
+        connecting = threading.Event()
+        calls = []
+
+        async def _fake_connect(name, config):
+            calls.append(name)
+            if len(calls) <= cancelled_attempts:
+                connecting.set()
+                await asyncio.sleep(30)  # still connecting when the reload lands
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        return connecting, calls
+
+    @staticmethod
+    def _reload_when(connecting, times=1):
+        import threading
+
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+        def _run():
+            for _ in range(times):
+                assert connecting.wait(10)
+                connecting.clear()
+                shutdown_mcp_servers()
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
+
+    def test_probe_retries_after_a_reload_cancels_it(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        connecting, calls = self._patch_connect(monkeypatch, cancelled_attempts=1)
+        reloader = self._reload_when(connecting)
+
+        tools = mc._probe_single_server("context7", {"url": "https://mcp.context7.com/mcp"})
+        reloader.join(10)
+
+        assert tools == [("resolve_library_id", "a tool")]
+        assert len(calls) == 2
+
+    def test_probe_cancelled_twice_raises_a_plain_error(self, monkeypatch):
+        import concurrent.futures
+
+        import hermes_cli.mcp_config as mc
+
+        connecting, calls = self._patch_connect(monkeypatch, cancelled_attempts=2)
+        reloader = self._reload_when(connecting, times=2)
+
+        with pytest.raises(RuntimeError, match="interrupted by an MCP reload") as info:
+            mc._probe_single_server("context7", {"url": "https://mcp.context7.com/mcp"})
+        reloader.join(10)
+
+        assert not isinstance(info.value, concurrent.futures.CancelledError)
+        assert len(calls) == 2
+
+    def test_oauth_probe_without_tokens_is_not_retried(self, monkeypatch):
+        """A retry would open a second browser consent for the same login."""
+        import hermes_cli.mcp_config as mc
+
+        monkeypatch.setattr(mc, "_oauth_tokens_present", lambda name: False)
+        connecting, calls = self._patch_connect(monkeypatch, cancelled_attempts=2)
+        reloader = self._reload_when(connecting)
+
+        with pytest.raises(RuntimeError, match="interrupted by an MCP reload"):
+            mc._probe_single_server(
+                "hugging_face", {"url": "https://huggingface.co/mcp?login", "auth": "oauth"}
+            )
+        reloader.join(10)
+
+        assert len(calls) == 1
+
+    def test_dashboard_test_endpoint_answers_instead_of_500(self, tmp_path, monkeypatch):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_cli.mcp_config as mc
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+        servers = {"context7": {"url": "https://mcp.context7.com/mcp"}}
+        _seed_config(tmp_path, servers)
+        monkeypatch.setattr(mc, "_get_mcp_servers", lambda: servers)
+        connecting, calls = self._patch_connect(monkeypatch, cancelled_attempts=1)
+        reloader = self._reload_when(connecting)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        resp = client.post("/api/mcp/servers/context7/test")
+        reloader.join(10)
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert [t["name"] for t in body["tools"]] == ["resolve_library_id"]
+        assert len(calls) == 2
+
+
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at
     servers that either disabled them in config or never advertised them.

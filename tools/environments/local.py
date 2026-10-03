@@ -1006,16 +1006,6 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     if not _pr._systemd_run_user_scope_available():
         _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
         return args, None, run_env
-    # Random, not a counter: a scope leaked past a restart must not collide with a later
-    # gateway that reuses the same PID ("Unit ... already exists").
-    suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
-    # more than the background cap; the isolation alone protects the gateway.
-    scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix=_FOREGROUND_SCOPE_PREFIX,
-                                           memory_max=False)
-    if scoped == args:
-        _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
-        return args, None, run_env
     # The probe verdict is cached; a user bus lost since then would make systemd-run fail
     # before the command runs (cron's ``scoped_spawn_lost_user_bus`` race). Run it unwrapped.
     # Re-derive without an inherited address, or that stale value would pass for a live bus.
@@ -1024,6 +1014,22 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     bus_env = _pr.systemd_user_bus_env(probe_env)
     if "DBUS_SESSION_BUS_ADDRESS" not in bus_env:
         _warn_foreground_scope_degraded("user D-Bus session is gone")
+        return args, None, run_env
+    # systemd-run needs the user bus, but the command must keep the bus _make_run_env chose
+    # (the Bot Desktop's private Xfce bus, #125830), so re-apply it inside the scope.
+    own_bus = run_env.get("DBUS_SESSION_BUS_ADDRESS")
+    inner = args
+    if own_bus and own_bus != bus_env["DBUS_SESSION_BUS_ADDRESS"]:
+        inner = ["env", f"DBUS_SESSION_BUS_ADDRESS={own_bus}", *args]
+    # Random, not a counter: a scope leaked past a restart must not collide with a later
+    # gateway that reuses the same PID ("Unit ... already exists").
+    suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
+    # more than the background cap; the isolation alone protects the gateway.
+    scoped = _pr._build_systemd_scope_argv(inner, unit_suffix=suffix, prefix=_FOREGROUND_SCOPE_PREFIX,
+                                           memory_max=False)
+    if scoped == inner:
+        _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
         return args, None, run_env
     global _foreground_scope_issued
     _foreground_scope_issued = True

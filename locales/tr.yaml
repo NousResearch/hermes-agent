@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ Kalıcı izin listesine eklendi"
   denied: "      ✗ Reddedildi"
   cancelled: "      ✗ İptal edildi"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,onayla,evet,tamam,onaylıyorum,e"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ Komutlar onaylandı (desen bu oturum için onaylandı) ({count} komut). Ajan devam ediyor..."
     always_singular: "✅ Komut onaylandı (desen kalıcı olarak onaylandı). Ajan devam ediyor..."
     always_plural: "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "Kullanım: /bg <prompt>\nÖrnek: /bg Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
     started: "🔄 Arka plan görevi başlatıldı: \"{preview}\"\nGörev kimliği: {task_id}\nSohbete devam edebilirsin — sonuçlar tamamlandığında burada görünecek."
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "Bir kez çalıştırmak için `{prefix}approve` yazın"
     text_choice_session: "bu deseni oturumun geri kalanında izin vermek için `{prefix}approve session`"
     text_choice_always: "kalıcı olarak izin vermek için `{prefix}approve always`"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "iptal etmek için `{prefix}deny`"
     text_choice_joiner: ", "
     text_choice_last: ", veya {choice}.\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "Bir kez izin ver"
     approval_session: "Bu oturum için izin ver"
     approval_always: "Kalıcı izin listesine ekle"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "Reddet"
     approval_view: "Komutun tamamını göster"
     approval_title: "⚠️  Tehlikeli Komut"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "bir kez izin verildi"
     outcome_session: "oturum için izin verildi"
     outcome_always: "izin listesine eklendi"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "reddedildi"
   clarify:
     bell_context: "netleştirme"

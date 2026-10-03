@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ By permanente toelaatlys gevoeg"
   denied: "      ✗ Geweier"
   cancelled: "      ✗ Gekanselleer"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,goedkeur,ja,j,bevestig"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ Opdragte goedgekeur (patroon goedgekeur vir hierdie sessie) ({count} opdragte). Die agent gaan voort..."
     always_singular: "✅ Opdrag goedgekeur (patroon permanent goedgekeur). Die agent gaan voort..."
     always_plural: "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "Gebruik: /bg <prompt>\nVoorbeeld: /bg Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
     started: "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "Antwoord `{prefix}approve` om dit eenmalig uit te voer"
     text_choice_session: "`{prefix}approve session` om hierdie patroon vir die res van hierdie sessie toe te laat"
     text_choice_always: "`{prefix}approve always` om dit permanent toe te laat"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny` om te kanselleer"
     text_choice_joiner: ", "
     text_choice_last: ", of {choice}.\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "Laat eenmalig toe"
     approval_session: "Laat toe vir hierdie sessie"
     approval_always: "Voeg by permanente toelaatlys"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "Weier"
     approval_view: "Wys volledige opdrag"
     approval_title: "⚠️  Gevaarlike Opdrag"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "eenmalig toegelaat"
     outcome_session: "vir sessie toegelaat"
     outcome_always: "by toelaatlys gevoeg"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "geweier"
   clarify:
     bell_context: "verduideliking"

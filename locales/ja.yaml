@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ 永続的な許可リストに追加"
   denied: "      ✗ 拒否しました"
   cancelled: "      ✗ キャンセルしました"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,承認,はい,了解,許可,実行,確認"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ コマンドを承認しました (このセッション中はパターンを許可) ({count} 件)。エージェントを再開しています..."
     always_singular: "✅ コマンドを承認しました (パターンを永続的に許可)。エージェントを再開しています..."
     always_plural: "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "使い方: /bg <プロンプト>\n例: /bg 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
     started: "🔄 バックグラウンドタスクを開始しました: 「{preview}」\nタスク ID: {task_id}\nチャットを続けられます — 完了したらここに結果が表示されます。"
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "1 回だけ実行するには `{prefix}approve`"
     text_choice_session: "このセッション中このパターンを許可するには `{prefix}approve session`"
     text_choice_always: "永続的に許可するには `{prefix}approve always`"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "キャンセルするには `{prefix}deny`"
     text_choice_joiner: ", "
     text_choice_last: ", または {choice} と返信してください。\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "今回のみ許可"
     approval_session: "このセッション中は許可"
     approval_always: "永続的な許可リストに追加"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "拒否"
     approval_view: "コマンド全文を表示"
     approval_title: "⚠️  危険なコマンド"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "今回のみ許可"
     outcome_session: "セッション中は許可"
     outcome_always: "許可リストに追加"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "拒否"
   clarify:
     bell_context: "確認"

@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ Додано до постійного списку дозволених команд"
   denied: "      ✗ Відхилено"
   cancelled: "      ✗ Скасовано"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "Ця команда є в безумовному списку блокування, її не можна схвалити."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,схвалити,так,підтвердити,т"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ Команди схвалено (шаблон схвалено для цього сеансу) ({count} команд). Агент відновлює роботу…"
     always_singular: "✅ Команду схвалено (шаблон схвалено назавжди). Агент відновлює роботу…"
     always_plural: "✅ Команди схвалено (шаблон схвалено назавжди) ({count} команд). Агент відновлює роботу…"
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "Використання: /bg <запит>\nПриклад: /bg Підсумуй найкращі історії з HN сьогодні\n\nЗапускає запит в окремому сеансі. Можна продовжити спілкування — результат з'явиться тут після завершення."
     started: "🔄 Фонове завдання запущено: «{preview}»\nID завдання: {task_id}\nМожна продовжити спілкування — результати з'являться тут після завершення."
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "Відповідайте `{prefix}approve`, щоб виконати один раз"
     text_choice_session: "`{prefix}approve session`, щоб дозволити цей шаблон до кінця сеансу"
     text_choice_always: "`{prefix}approve always`, щоб дозволити назавжди"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny`, щоб скасувати"
     text_choice_joiner: ", "
     text_choice_last: ", або {choice}.\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "Дозволити один раз"
     approval_session: "Дозволити для цього сеансу"
     approval_always: "Додати до постійного списку дозволених"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "Відхилити"
     approval_view: "Показати команду повністю"
     approval_title: "⚠️  Небезпечна команда"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "дозволено один раз"
     outcome_session: "дозволено для сеансу"
     outcome_always: "додано до списку дозволених"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "відхилено"
   clarify:
     bell_context: "уточнення"

@@ -35,7 +35,9 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
 
-    Returns 'once', 'session', 'always', 'deny', 'timeout', or 'cancelled'. 'timeout'
+    Returns 'once', 'session', 'always', 'yolo', 'deny', 'timeout', or 'cancelled'. 'yolo'
+    approves the command and disables the approval gate for the rest of the session (the
+    host arms it in :func:`tools.approval._human_decision`). 'timeout'
     means no user response — still blocked (fail-closed), but callers report "no
     response" rather than an explicit denial. 'cancelled' is an :class:`Unanswered`
     sentinel: the prompt never reached a human (callback raised, no callback under
@@ -69,12 +71,14 @@ _CLI_CHOICE_ALIASES = {
     "o": "once", "once": "once",
     "s": "session", "session": "session",
     "a": "always", "always": "always",
+    "y": "yolo", "yolo": "yolo",
 }
 
 _CLI_CHOICE_I18N = {
     "once": "approval.allowed_once",
     "session": "approval.allowed_session",
     "always": "approval.allowed_always",
+    "yolo": "approval.allowed_yolo",
     "deny": "approval.denied",
 }
 

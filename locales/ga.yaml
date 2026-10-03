@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ Curtha leis an liosta ceadaithe buan"
   denied: "      ✗ Diúltaithe"
   cancelled: "      ✗ Cealaithe"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,ceadaigh,tá,sea,t"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ Orduithe ceadaithe (patrún ceadaithe don seisiún seo) ({count} ordú). Tá an gníomhaire ag atosú..."
     always_singular: "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
     always_plural: "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started: "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "Freagair `{prefix}approve` chun é a rith uair amháin"
     text_choice_session: "`{prefix}approve session` chun an patrún seo a cheadú don chuid eile den seisiún seo"
     text_choice_always: "`{prefix}approve always` chun é a cheadú go buan"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny` chun cealú"
     text_choice_joiner: ", "
     text_choice_last: ", nó {choice}.\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "Ceadaigh uair amháin"
     approval_session: "Ceadaigh don seisiún seo"
     approval_always: "Cuir leis an liosta ceadaithe buan"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "Diúltaigh"
     approval_view: "Taispeáin an t-ordú iomlán"
     approval_title: "⚠️  Ordú Contúirteach"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "ceadaithe uair amháin"
     outcome_session: "ceadaithe don seisiún"
     outcome_always: "curtha leis an liosta ceadaithe"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "diúltaithe"
   clarify:
     bell_context: "soiléiriú"

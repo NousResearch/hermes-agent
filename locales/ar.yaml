@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ أُضيف إلى قائمة السماح الدائمة"
   denied: "      ✗ مرفوض"
   cancelled: "      ✗ أُلغي"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,موافق,نعم,أوافق,تأكيد,حسنًا"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه لهذه الجلسة) ({count} أوامر). الوكيل يستأنف..."
     always_singular: "✅ تمت الموافقة على الأمر (النمط مُوافق عليه دائمًا). الوكيل يستأنف..."
     always_plural: "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه دائمًا) ({count} أوامر). الوكيل يستأنف..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "الاستخدام: /bg <prompt>\nمثال: /bg لخّص أهم قصص HN اليوم\n\nيشغّل الموجِّه في جلسة منفصلة. يمكنك متابعة المحادثة — ستظهر النتيجة هنا عند الانتهاء."
     started: "🔄 بدأت مهمة خلفية: \"{preview}\"\nمعرّف المهمة: {task_id}\nيمكنك متابعة المحادثة — ستظهر النتائج عند الانتهاء."
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "أرسل `{prefix}approve` لتشغيله مرة واحدة"
     text_choice_session: "`{prefix}approve session` للسماح بهذا النمط لبقية هذه الجلسة"
     text_choice_always: "`{prefix}approve always` للسماح به دائمًا"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny` للإلغاء"
     text_choice_joiner: "، "
     text_choice_last: "، أو {choice}.\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "السماح مرة واحدة"
     approval_session: "السماح لهذه الجلسة"
     approval_always: "إضافة إلى قائمة السماح الدائمة"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "رفض"
     approval_view: "عرض الأمر كاملًا"
     approval_title: "⚠️  أمر خطير"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "مسموح مرة واحدة"
     outcome_session: "مسموح لهذه الجلسة"
     outcome_always: "أُضيف إلى قائمة السماح"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "مرفوض"
   clarify:
     bell_context: "استيضاح"

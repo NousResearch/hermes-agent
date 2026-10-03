@@ -32,6 +32,7 @@ _APPROVAL_OUTCOME_KEYS = {
     "once": "cli.approval.outcome_once",
     "session": "cli.approval.outcome_session",
     "always": "cli.approval.outcome_always",
+    "yolo": "cli.approval.outcome_yolo",
     "deny": "cli.approval.outcome_deny"}
 
 
@@ -1106,13 +1107,15 @@ class CLIModalMixin:
                           allow_session: bool = True,
                           smart_denied: bool = False) -> list[str]:
         """Smart-DENY overrides and re-ask-every-time gates (allow_session=False) show only
-        once/deny; ``allow_permanent=False`` for another reason (e.g. tirith) hides only 'always'."""
+        once/deny; ``allow_permanent=False`` for another reason (e.g. tirith) hides only 'always'.
+        'yolo' ("stop asking for the rest of this session") rides with 'session', which carries the
+        same capability boundary: both are per-session grants the caller must allow."""
         if smart_denied or not allow_session:
             choices = ["once", "deny"]
         elif allow_permanent:
-            choices = ["once", "session", "always", "deny"]
+            choices = ["once", "session", "always", "yolo", "deny"]
         else:
-            choices = ["once", "session", "deny"]
+            choices = ["once", "session", "yolo", "deny"]
         if len(command) > 70:
             choices.append("view")
         return choices

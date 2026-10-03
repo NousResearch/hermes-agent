@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ Aggiunto alla lista permessi permanente"
   denied: "      ✗ Negato"
   cancelled: "      ✗ Annullato"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,approva,sì,si,conferma,s"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ Comandi approvati (modello approvato per questa sessione) ({count} comandi). L'agente sta riprendendo..."
     always_singular: "✅ Comando approvato (modello approvato in modo permanente). L'agente sta riprendendo..."
     always_plural: "✅ Comandi approvati (modello approvato in modo permanente) ({count} comandi). L'agente sta riprendendo..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "Uso: /bg <prompt>\nEsempio: /bg Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al termine."
     started: "🔄 Attività in background avviata: \"{preview}\"\nID attività: {task_id}\nPuoi continuare a chattare — i risultati appariranno al termine."
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "Rispondi `{prefix}approve` per eseguirlo una volta"
     text_choice_session: "`{prefix}approve session` per consentire questo pattern per il resto della sessione"
     text_choice_always: "`{prefix}approve always` per consentirlo in modo permanente"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny` per annullare"
     text_choice_joiner: ", "
     text_choice_last: ", oppure {choice}.\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "Consenti una volta"
     approval_session: "Consenti per questa sessione"
     approval_always: "Aggiungi alla allowlist permanente"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "Nega"
     approval_view: "Mostra il comando completo"
     approval_title: "⚠️  Comando pericoloso"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "consentito una volta"
     outcome_session: "consentito per la sessione"
     outcome_always: "aggiunto alla allowlist"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "negato"
   clarify:
     bell_context: "chiarimento"

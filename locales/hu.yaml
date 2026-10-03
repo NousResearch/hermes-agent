@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ Hozzáadva az állandó engedélylistához"
   denied: "      ✗ Elutasítva"
   cancelled: "      ✗ Megszakítva"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,jóváhagy,igen,oké,rendben,i"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ Parancsok jóváhagyva (minta jóváhagyva ehhez a munkamenethez) ({count} parancs). Az ügynök folytatja..."
     always_singular: "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
     always_plural: "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "Használat: /bg <prompt>\nPélda: /bg Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
     started: "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."
@@ -619,6 +622,7 @@ gateway:
     text_choice_once: "Válaszolj `{prefix}approve` az egyszeri futtatáshoz"
     text_choice_session: "`{prefix}approve session` a minta engedélyezéséhez a munkamenet hátralévő részére"
     text_choice_always: "`{prefix}approve always` a végleges engedélyezéshez"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny` a megszakításhoz"
     text_choice_joiner: ", "
     text_choice_last: |
@@ -2036,6 +2040,7 @@ cli:
     approval_once: "Engedélyezés egyszer"
     approval_session: "Engedélyezés erre a munkamenetre"
     approval_always: "Állandó engedélylistára"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "Elutasítás"
     approval_view: "Teljes parancs megjelenítése"
     approval_title: "⚠️  Veszélyes parancs"
@@ -2274,6 +2279,7 @@ cli:
     outcome_once: "egyszer engedélyezve"
     outcome_session: "a munkamenetre engedélyezve"
     outcome_always: "engedélyezőlistára téve"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "elutasítva"
   clarify:
     bell_context: "pontosítás"

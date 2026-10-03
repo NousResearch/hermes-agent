@@ -14,6 +14,7 @@ approval:
   allowed_always: "      ✓ 已加入永久允許清單"
   denied: "      ✗ 已拒絕"
   cancelled: "      ✗ 已取消"
+  allowed_yolo: "      ✓ Allowed, approval off for this session (YOLO)"
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
   inputs:
     approve: "approve,yes,ok,okay,confirm,y,批准,同意,是,好,確認"
@@ -97,6 +98,8 @@ gateway:
     session_plural: "✅ 指令已批准（本次工作階段內允許該模式）（{count} 條指令）。代理正在恢復…"
     always_singular: "✅ 指令已批准（永久允許該模式）。代理正在恢復…"
     always_plural: "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
+    yolo_singular: "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural: "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
   background:
     usage: "用法：/bg <提示>\n範例：/bg 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
     started: "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
@@ -616,6 +619,7 @@ gateway:
     text_choice_once: "回覆 `{prefix}approve` 執行一次"
     text_choice_session: "`{prefix}approve session` 在本次工作階段內允許此模式"
     text_choice_always: "`{prefix}approve always` 永久允許"
+    text_choice_yolo: "`{prefix}approve yolo` to run it and stop asking for the rest of this session"
     text_choice_deny: "`{prefix}deny` 取消"
     text_choice_joiner: ", "
     text_choice_last: "，或 {choice}。\n"
@@ -2019,6 +2023,7 @@ cli:
     approval_once: "允許一次"
     approval_session: "本次工作階段允許"
     approval_always: "加入永久允許清單"
+    approval_yolo: "Allow and stop asking for this session"
     approval_deny: "拒絕"
     approval_view: "顯示完整指令"
     approval_title: "⚠️  危險指令"
@@ -2257,6 +2262,7 @@ cli:
     outcome_once: "允許一次"
     outcome_session: "本工作階段允許"
     outcome_always: "已加入允許清單"
+    outcome_yolo: "allowed, approval off for this session"
     outcome_deny: "已拒絕"
   clarify:
     bell_context: "澄清"

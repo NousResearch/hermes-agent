@@ -336,3 +336,35 @@ class TestAllowAnyAttachment:
         assert len(event.media_urls) == 1
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inline", [True, False])
+async def test_yaml_inline_switch_retains_cached_document_and_honest_inline_flag(adapter, inline):
+    config = {"inline_text_attachments": inline}
+    adapter.config.extra.update(discord_platform._apply_yaml_config({}, config) or {})
+    raw = b"synthetic document contents"
+    attachment = make_attachment(filename="notes.txt", content_type="text/plain", size=len(raw))
+
+    with _mock_aiohttp_download(raw):
+        await adapter._handle_message(make_message([attachment], "review this document"))
+    event = adapter.handle_message.await_args.args[0]
+
+    from pathlib import Path
+    assert Path(event.media_urls[0]).read_bytes() == raw
+    assert event.media_text_inlined == [inline]
+    assert (raw.decode() in event.text) is inline
+
+
+@pytest.mark.asyncio
+async def test_top_level_yaml_attachment_cap_rejects_before_download(adapter):
+    config = {"max_attachment_bytes": 4}
+    adapter.config.extra.update(discord_platform._apply_yaml_config({}, config) or {})
+    attachment = make_attachment(filename="notes.txt", content_type="text/plain", size=8)
+    adapter._cache_discord_document = AsyncMock(side_effect=AssertionError("oversized document was downloaded"))
+
+    await adapter._handle_message(make_message([attachment], "review this document"))
+    event = adapter.handle_message.await_args.args[0]
+
+    adapter._cache_discord_document.assert_not_awaited()
+    assert event.media_urls == []

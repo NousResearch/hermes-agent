@@ -1528,7 +1528,7 @@ def register(ctx):
 | `matrix` | Matrix client | event callbacks |
 | `teams` | Teams `App` | `on_message` / `on_card_action` decorators |
 | `dingtalk` | `DingTalkStreamClient` | `register_callback_handler` for other stream topics |
-| `feishu` | lark_oapi client | API calls; event routing |
+| `feishu` | lark_oapi client | API calls; WebSocket event registration through `adapter.event_dispatcher_builder` |
 | `line`, `api_server`, `msgraph_webhook` | aiohttp `web.Application` | `router.add_get/post` — custom routes (wired before the router freezes) |
 | everything else (whatsapp, signal, irc, email, sms, ntfy, wecom, weixin, bluebubbles, yuanbao, ...) | `None` | connect-time hook; work through the `adapter` handle |
 
@@ -1539,6 +1539,30 @@ def register(ctx):
 - Each factory is isolated: if it raises, the error is logged and the platform still connects.
 - Import platform SDKs inside the factory body, not at module level — `register()` must work when the SDK isn't installed.
 - One plugin can register factories for several platforms; each fires only when its platform connects.
+
+**Feishu WebSocket events:** `native` remains the API client for compatibility.
+Use the getter-only `adapter.event_dispatcher_builder` to register SDK event
+callbacks; it is available inside the factory after core registrations, before
+transport startup. For example:
+
+```python
+def register(ctx):
+    def wire(native, adapter):
+        adapter.event_dispatcher_builder.register_p2_customized_event(
+            "task.task.update_user_access_v2", on_task_change)
+    ctx.register_platform_handler("feishu", wire)
+```
+
+`on_task_change` is a synchronous SDK callback receiving the decoded event.
+Enable the event subscription and permissions in the Feishu app separately.
+Core event keys cannot be replaced: the SDK rejects duplicate registrations,
+and factory errors are isolated. Factories run again when the native client is
+rebuilt and must tolerate connection retries; the bot identity and connected
+state are not yet available. Later plugin loads register against the same live
+SDK dispatcher, without reinstalling already-wired factories. This is not
+transactional handler replacement or unloading. The builder is `None` before
+preparation and after disconnect. The separate **webhook** routing table does
+not dispatch these plugin-added SDK events.
 
 **Telegram alias:** `ctx.register_telegram_handler(factory)` is a back-compat alias for `ctx.register_platform_handler("telegram", factory)`.
 

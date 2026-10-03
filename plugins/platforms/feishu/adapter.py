@@ -1310,6 +1310,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_restart_backoff = 5.0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner = self._webhook_site = self._event_handler = None
+        self._event_dispatcher_builder = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
@@ -1426,10 +1427,20 @@ class FeishuAdapter(BasePlatformAdapter):
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
 
+    @property
+    def event_dispatcher_builder(self) -> Any:
+        """SDK registration surface for native WebSocket event plugin factories.
+
+        ``native`` remains the API client. Core handlers are registered first;
+        the SDK rejects duplicate event keys rather than replacing core routing.
+        The builder is available during factory wiring and cleared on disconnect.
+        """
+        return self._event_dispatcher_builder
+
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
             return None
-        return (
+        builder = (
             EventDispatcherHandler.builder(self._encrypt_key, self._verification_token)
             .register_p2_im_message_message_read_v1(self._on_message_read_event)
             .register_p2_im_message_receive_v1(self._on_message_event)
@@ -1442,8 +1453,13 @@ class FeishuAdapter(BasePlatformAdapter):
             .register_p2_im_message_recalled_v1(self._on_message_recalled)
             .register_p2_customized_event("drive.notice.comment_add_v1", self._on_drive_comment_event)
             .register_p2_customized_event("vc.bot.meeting_invited_v1", self._on_meeting_invited_event)
-            .build()
         )
+        self._event_dispatcher_builder = builder
+        # Wire before a transport can receive events, including reconnect rebuilds.
+        # Keep the API client as native for existing factories. The SDK's build()
+        # shares the registration maps, so late plugin wiring uses this builder too.
+        self._wire_plugin_handlers(self._client)
+        return builder.build()
 
     def _get_sdk_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Adapter-owned executor; recreated after an *external* shutdown, never after our own close.
@@ -1532,8 +1548,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._ws_supervisor = asyncio.ensure_future(self._supervise_websocket_thread())
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
-            # Plugin-registered native handlers (lark_oapi client).
-            self._wire_plugin_handlers(self._client)
             return True
         except Exception as exc:
             await self._release_app_lock()
@@ -1565,6 +1579,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
+        self._event_dispatcher_builder = None
         self._shutdown_sdk_executor()
         self._persist_seen_message_ids()
         await self._release_app_lock()

@@ -96,3 +96,34 @@ def test_reset_aux_to_auto_resets_plugin_tasks(tmp_path, monkeypatch, patched_ma
     cfg = load_config()
     assert cfg["auxiliary"]["my_aux"]["provider"] == "auto"
     assert cfg["auxiliary"]["my_aux"]["model"] == ""
+
+
+def test_plugin_auxiliary_task_inherits_builtin_and_user_overrides(monkeypatch, patched_manager):
+    from agent import auxiliary_client
+    from hermes_cli import config as config_mod
+
+    ctx = PluginContext(PluginManifest(name="plug"), patched_manager)
+    ctx.register_auxiliary_task(
+        key="cheap_mcp", display_name="Cheap MCP", description="d",
+        inherit_from="mcp", defaults={"model": "cheap-model", "timeout": 12},
+    )
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: {
+        "auxiliary": {"mcp": {"provider": "openai", "model": "base-model", "timeout": 45},
+                      "cheap_mcp": {"timeout": 99}},
+    })
+
+    result = auxiliary_client._get_auxiliary_task_config("cheap_mcp")
+
+    assert result["provider"] == "openai"
+    assert result["model"] == "cheap-model"
+    assert result["timeout"] == 99
+
+
+def test_plugin_auxiliary_task_rejects_unknown_inheritance(patched_manager):
+    ctx = PluginContext(PluginManifest(name="plug"), patched_manager)
+
+    with pytest.raises(ValueError, match="unknown task"):
+        ctx.register_auxiliary_task(
+            key="broken_aux", display_name="Broken", description="d",
+            inherit_from="does_not_exist",
+        )

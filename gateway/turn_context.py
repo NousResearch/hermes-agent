@@ -11,6 +11,29 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 
+_COMPLETION_GATE_SOURCE_STATES = {"closed", "cancelled", "superseded", "deferred_quiet_hours"}
+
+
+def completion_gate_source_state(metadata: Any) -> Optional[dict]:
+    """Copy the bounded transport-authored disposition used by the completion gate."""
+    if not isinstance(metadata, dict):
+        return None
+    state = metadata.get("completion_gate_source_state")
+    if not isinstance(state, dict):
+        return None
+    request_id = state.get("request_id")
+    status = state.get("status")
+    if (not isinstance(request_id, str) or not request_id or len(request_id) > 128
+            or status not in _COMPLETION_GATE_SOURCE_STATES):
+        return None
+    result = {"request_id": request_id, "status": status}
+    for key in ("card_id", "destination"):
+        value = state.get(key)
+        if isinstance(value, str) and value and len(value) <= 256:
+            result[key] = value
+    return result
+
+
 @dataclass
 class TurnContext:
     # read-only turn identity / wiring
@@ -54,6 +77,9 @@ class TurnContext:
     event_message_id: Optional[str] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
+    inbound_internal: bool = False
+    # Transport-authored source disposition; never parsed from user text.
+    inbound_source_state: Optional[dict] = None
     moa_config: Optional[dict] = None
     title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None

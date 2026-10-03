@@ -34,7 +34,7 @@ from gateway.session import (
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
-from gateway.turn_context import TurnContext
+from gateway.turn_context import TurnContext, completion_gate_source_state
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -2199,6 +2199,8 @@ class GatewayTurnMixin:
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                inbound_internal=bool(event.internal),
+                inbound_source_state=completion_gate_source_state(event.metadata),
                 channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 title_user_message=prepared.title_user_message,
                 persist_user_message=prepared.persist_user_message,
@@ -3860,6 +3862,7 @@ class GatewayTurnMixin:
         next_inbound_id = None
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
+        next_persist_user_timestamp = None
         next_display_kind = display_kind_for_event(pending_event)
         next_reply_expected = pending_event.reply_expected if pending_event is not None else None
         # See #60671.
@@ -3889,6 +3892,10 @@ class GatewayTurnMixin:
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
+            from gateway.message_timestamps import coerce_message_timestamp
+            next_persist_user_timestamp = coerce_message_timestamp(
+                getattr(pending_event, "timestamp", None)
+            )
             next_channel_prompt, next_source = self._pinned_channel_inputs(
                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
             )
@@ -3944,6 +3951,10 @@ class GatewayTurnMixin:
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                inbound_internal=bool(getattr(pending_event, "internal", False)),
+                inbound_source_state=completion_gate_source_state(
+                    getattr(pending_event, "metadata", None)),
+                persist_user_timestamp=next_persist_user_timestamp,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
@@ -4271,6 +4282,7 @@ class GatewayTurnMixin:
         source: SessionSource, session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        inbound_internal: bool = False, inbound_source_state: Optional[dict] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
@@ -4309,6 +4321,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
+            inbound_internal=inbound_internal, inbound_source_state=inbound_source_state,
             channel_prompt=channel_prompt, moa_config=moa_config,
             title_user_message=title_user_message,
             persist_user_message=persist_user_message,

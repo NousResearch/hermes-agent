@@ -411,6 +411,12 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     r'(?:\n[^\n]*\|[^\n]*)*)',                          # data rows (newline-led, trailing \n left for prose)
     re.MULTILINE)
 
+# RTL script runs (Hebrew/Arabic blocks incl. presentation forms). The Bot API 10.1 rich
+# renderer picks each paragraph's base direction itself and ignores leading RLM controls,
+# so Persian/Arabic replies sent via sendRichMessage render LTR-scrambled unless the
+# message payload explicitly opts in with is_rtl.
+_RICH_IS_RTL_RE = re.compile(r'[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u0780-\u07BF\u07C0-\u07FF\uFB50-\uFDFF\uFE70-\uFEFF]')
+
 
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert lone ``\\n`` (a Markdown soft break) to hard breaks for sendRichMessage; ``\\n\\n``,
@@ -1495,6 +1501,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
         payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        if _RICH_IS_RTL_RE.search(content):
+            payload["is_rtl"] = True
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

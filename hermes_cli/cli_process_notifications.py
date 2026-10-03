@@ -35,7 +35,9 @@ class CLIProcessNotificationsMixin:
 
     def _drain_process_notifications(self, consumer: str) -> None:
         from tools.process_registry import process_registry
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery
+        from tools.async_delegation import (
+            begin_event_delivery, claim_event_delivery, complete_event_delivery, return_completion_offer,
+        )
         from tools.process_registry_notifications import (
             HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification, group_process_notifications,
             heartbeat_display_text)
@@ -46,6 +48,9 @@ class CLIProcessNotificationsMixin:
         ):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
+                return_completion_offer(event)
+                continue
+            if not begin_event_delivery(event, claim):
                 continue
             claimed.append((event, text))
             complete_event_delivery(event, claim)

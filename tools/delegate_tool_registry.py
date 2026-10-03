@@ -6,8 +6,10 @@ import logging
 import json
 import threading
 import time
+from collections.abc import MutableMapping
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
+from hermes_constants import hermes_home_key
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -15,15 +17,76 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False
 _active_subagents_lock = threading.Lock()
+
+
+class _ProfileScopedRegistry(MutableMapping):
+    """Dict-compatible ``raw_id -> record`` view over profile-qualified storage.
+
+    Public delegation ids stay byte-for-byte unchanged.  The ambient profile selects the
+    mapping view, while ``all_values``/``all_items`` are reserved for host-wide teardown and
+    monitors.  Keeping the qualification inside the registry also protects the few existing
+    low-level users that call ``get(raw_id)`` directly.
+    """
+
+    def __init__(self):
+        self._data: Dict[tuple[str, Any], Any] = {}
+
+    @staticmethod
+    def _storage_key(key):
+        if isinstance(key, tuple) and len(key) == 2:
+            return key
+        return hermes_home_key(), key
+
+    def _lookup_key(self, key):
+        storage_key = self._storage_key(key)
+        if storage_key in self._data or isinstance(key, tuple):
+            return storage_key
+        # Before multiplex activates, preserve the historical raw-id view for an off-thread
+        # single-profile callback whose ContextVar was lost. Multiplex mode must fail closed:
+        # a unique foreign match is still foreign authority.
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            return storage_key
+        matches = [candidate for candidate in self._data if candidate[1] == key]
+        return matches[0] if len(matches) == 1 else storage_key
+
+    def __getitem__(self, key):
+        return self._data[self._lookup_key(key)]
+
+    def __setitem__(self, key, value):
+        self._data[self._storage_key(key)] = value
+
+    def __delitem__(self, key):
+        del self._data[self._lookup_key(key)]
+
+    def __iter__(self):
+        profile = hermes_home_key()
+        return (raw_id for (owner, raw_id) in self._data if owner == profile)
+
+    def __len__(self):
+        profile = hermes_home_key()
+        return sum(owner == profile for owner, _raw_id in self._data)
+
+    def clear(self) -> None:
+        # Test/reset and shutdown callers historically clear the process-global registry.
+        self._data.clear()
+
+    def all_items(self):
+        return list(self._data.items())
+
+    def all_values(self):
+        return list(self._data.values())
+
+
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
-_active_subagents: Dict[str, Dict[str, Any]] = {}
+_active_subagents: MutableMapping[Any, Dict[str, Any]] = _ProfileScopedRegistry()
 # subagent_id -> {goal, delegation_id, owner_agent_session_id} retained AFTER the child finishes (bounded FIFO).
 # Child-started background processes routinely outlive the child (its npm ci with notify_on_complete=true finishes
 # after the summary was delivered); their completion notifications reach the parent via the shared completion_queue
 # and need delegation attribution even though the live registry entry is gone.
 _RECENT_SUBAGENTS_CAP = 200
-_recent_subagents: Dict[str, Dict[str, Any]] = {}
+_recent_subagents: MutableMapping[Any, Dict[str, Any]] = _ProfileScopedRegistry()
 
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """``{subagent_id, goal, delegation_id}`` for a process task_id that belongs to a live or recently-finished child
@@ -58,14 +121,27 @@ def _register_subagent(record: Dict[str, Any]) -> None:
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
     """Drop the live record (exact agent identity when given) and keep a bounded attribution stub."""
     with _active_subagents_lock:
+        storage_key: Any = subagent_id
         record = _active_subagents.get(subagent_id)
+        if agent is not None and (record is None or record.get("agent") is not agent):
+            # Teardown should retain the dispatcher's Context, but exact object identity is a safe
+            # recovery seam if a legacy callback lost it.  Never fall back by raw id alone.
+            matches = [
+                (key, candidate) for key, candidate in getattr(_active_subagents, "all_items", lambda: [])()
+                if key[1] == subagent_id and candidate.get("agent") is agent
+            ]
+            if len(matches) == 1:
+                storage_key, record = matches[0]
         if record is None or not (agent is None or record.get("agent") is agent):
             return
-        _active_subagents.pop(subagent_id, None)
+        _active_subagents.pop(storage_key, None)
         sid = record.get("subagent_id")
         if not sid:
             return
-        _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        recent_key = storage_key if isinstance(storage_key, tuple) else sid
+        _recent_subagents[recent_key] = {
+            k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")
+        }
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
 
@@ -76,6 +152,12 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
     closing its replacement."""
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
+        if record is None or record.get("agent") is not agent:
+            matches = [
+                candidate for key, candidate in getattr(_active_subagents, "all_items", lambda: [])()
+                if key[1] == subagent_id and candidate.get("agent") is agent
+            ]
+            record = matches[0] if len(matches) == 1 else None
         if record is None or record.get("agent") is not agent:
             return None
         record["accepting_steer"] = False

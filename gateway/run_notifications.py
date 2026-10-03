@@ -127,7 +127,10 @@ class GatewayNotificationsMixin:
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
     _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
-    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
+    _ASYNC_GROUP_KEY_FIELDS = (
+        "_profile_key", "session_key", "parent_session_id", "task_failure_notice",
+        *_COMPLETION_BATCH_KEY_FIELDS[1:],
+    )
 
     @dataclasses.dataclass
     class _UpdatePaths:
@@ -1498,11 +1501,12 @@ class GatewayNotificationsMixin:
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
                 try:
-                    from tools.async_delegation import claim_completion_delivery
-                    claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
-                    if not claim_completion_delivery(claim.delegation_id, claim.claim_id):
+                    from tools.async_delegation import claim_event_delivery
+                    claim_id = claim_event_delivery(evt, f"gateway:{id(self)}")
+                    if claim_id is None:
                         claim.proceed = False
                         return claim
+                    claim.claim_id = claim_id
                 except Exception as exc:
                     logger.warning("Could not claim durable async completion %s: %s", claim.delegation_id, exc)
                     claim.proceed, claim.early_result = False, False
@@ -1554,6 +1558,11 @@ class GatewayNotificationsMixin:
         state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
         from gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
+        event_profile = str(evt.get("_profile_key") or "")
+        if event_profile:
+            # The private stamp is the ledger authority. Always enter the full scope, including
+            # for the launch home under multiplex; a matching home override alone can be half-bound.
+            return _async_profile_runtime_scope(Path(event_profile))
         source = self._build_process_event_source(evt)
         if source is None or not getattr(source, "profile", None):
             # No routed profile: the launch profile's own completion. Bind ITS scope once the
@@ -1582,6 +1591,7 @@ class GatewayNotificationsMixin:
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
+        from tools.async_delegation import begin_completion_delivery
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
@@ -1589,6 +1599,16 @@ class GatewayNotificationsMixin:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
                 return claim.early_result
+            # Cross a non-expiring barrier immediately before adapter admission. A claimant whose
+            # lease was taken over cannot send, and a later timeout cannot create a second sender.
+            barriers = [
+                (claim.delegation_id, claim.claim_id),
+                *((str(sibling.get("delegation_id") or ""), claim_id)
+                  for sibling, claim_id in sibling_claims),
+            ]
+            if any(claim_id and not begin_completion_delivery(delegation_id, claim_id)
+                   for delegation_id, claim_id in barriers):
+                return False
             if identity is not None:
                 if self._completion_identity_seen(identity, claim=True):
                     return None

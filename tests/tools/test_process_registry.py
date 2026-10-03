@@ -2598,11 +2598,16 @@ class TestSystemdCgroupIsolation:
         import tools.process_registry as pr
 
         monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "6144")
-        monkeypatch.setattr(
-            pr.Path,
-            "read_text",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
-        )
+
+        def unlimited_slice_read(self, *args, **kwargs):
+            path = str(self)
+            if path == "/proc/self/cgroup":
+                return "0::/user.slice/app.slice/hermes-gateway.scope\n"
+            if path.endswith("/memory.max"):
+                return "max\n"
+            raise OSError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(pr.Path, "read_text", unlimited_slice_read)
         monkeypatch.setattr(
             pr.os,
             "sysconf",
@@ -2618,11 +2623,16 @@ class TestSystemdCgroupIsolation:
         import tools.process_registry as pr
 
         monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
-        monkeypatch.setattr(
-            pr.Path,
-            "read_text",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
-        )
+
+        def unlimited_slice_read(self, *args, **kwargs):
+            path = str(self)
+            if path == "/proc/self/cgroup":
+                return "0::/user.slice/app.slice/hermes-gateway.scope\n"
+            if path.endswith("/memory.max"):
+                return "max\n"
+            raise OSError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(pr.Path, "read_text", unlimited_slice_read)
         monkeypatch.setattr(
             pr.os,
             "sysconf",
@@ -2631,6 +2641,32 @@ class TestSystemdCgroupIsolation:
 
         # ... but never past the half-RAM safe bound (16 GiB of a 32 GiB host).
         assert pr._worker_memory_max_bytes() == 16 * 1024 * 1024 * 1024
+
+    def test_worker_memory_limit_override_keeps_cap_when_slice_unknown_v1(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "6144")
+
+        def v1_cgroup_read(self, *args, **kwargs):
+            path = str(self)
+            if path == "/proc/self/cgroup":
+                # cgroup v1 layout: no "0::" line, so the slice's memory controller
+                # is invisible to the v2-only probe.
+                return "1:memory:/user.slice\n2:cpuset:/\n"
+            raise OSError(f"unexpected read: {path}")
+
+        monkeypatch.setattr(pr.Path, "read_text", v1_cgroup_read)
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: {"SC_PHYS_PAGES": 8 * 1024 * 1024, "SC_PAGE_SIZE": 4096}[name],
+        )
+
+        # With the slice bound unobservable, widening past the absolute cap could
+        # exceed the real (invisible) slice limit, so the override stays capped.
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch

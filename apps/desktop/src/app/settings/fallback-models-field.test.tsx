@@ -110,6 +110,26 @@ describe('FallbackModelsField', () => {
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
   })
 
+  it('reorders rows with the move controls (#117908)', async () => {
+    const onChange = await renderField(CHAIN)
+
+    // The chain is tried top-down; before this fix the only way to reorder was
+    // delete + re-add in sequence (#117908).
+    expect(screen.getAllByLabelText('Move up')).toHaveLength(2)
+    expect(screen.getAllByLabelText('Move down')).toHaveLength(2)
+
+    fireEvent.click(screen.getAllByLabelText('Move down')[0])
+
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([
+      { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      { provider: 'copilot', model: 'gpt-5-mini' }
+    ])
+
+    // End rows keep the control but disabled so the layout never shifts.
+    expect((screen.getAllByLabelText('Move up')[0] as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getAllByLabelText('Move down')[1] as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('keeps a draft row visible after autosave re-renders the same persisted chain', async () => {
     const onChange = vi.fn()
     const rerender = await renderFieldWithRerender([], onChange)

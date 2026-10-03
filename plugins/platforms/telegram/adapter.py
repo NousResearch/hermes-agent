@@ -509,15 +509,6 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class _IngressDispatchStallError(_PollingStallError):
-    """A confirmed PTB dispatcher stall: getUpdates fetches but no handler dispatch (#102260, #130407).
-
-    Subclasses ``_PollingStallError`` so the recovery ladder hands the adapter to the supervisor for a
-    rebuild instead of restarting the same Updater in place: an in-place polling restart keeps the same
-    ``Application`` (and its wedged dispatcher task), while a rebuild constructs a fresh dispatcher.
-    """
-
-
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -2365,8 +2356,8 @@ class TelegramAdapter(BasePlatformAdapter):
         ``received`` and ``dispatched`` count the same population (every fetched update reaches the
         group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
         so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
-        is a wedged dispatcher at any traffic rate. Warns once per stall, marks the adapter degraded,
-        and hands it to the supervisor for a rebuild; re-arms on dispatch progress.
+        is a wedged dispatcher at any traffic rate. Hands the adapter to the supervisor for a rebuild once
+        per stall (``_PollingStallError``: an in-place restart keeps the wedged dispatcher); re-arms on progress.
         """
         if self._webhook_mode or self._teardown_started or self.has_fatal_error or self._recovery_in_flight():
             return
@@ -2382,19 +2373,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._ingress_stalled_heartbeats = stalled + 1
         if stalled + 1 < _INGRESS_DISPATCH_STALL_HEARTBEATS:
             return
-        backlog = received - dispatched
-        logger.warning(
-            "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "
-            "dispatched to any handler across %d heartbeats (%d received, %d dispatched, generation %d). "
-            "Polling is fine; PTB's dispatcher is not draining its queue.",
-            self.name, backlog, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
-            getattr(self, "_polling_generation", 0))
+        # No pre-log: the handoff warning and ``_go_fatal_network`` carry this text (see _check_polling_stall).
+        generation = getattr(self, "_polling_generation", 0)
         self._schedule_polling_recovery(
-            _IngressDispatchStallError(
-                "PTB dispatcher made no progress for %d heartbeats "
-                "(%d received, %d dispatched, generation %d; ingress dispatch stall watchdog)"
-                % (_INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
-                   getattr(self, "_polling_generation", 0))),
+            _PollingStallError(
+                "ingress healthy but deaf: PTB dispatcher made no progress for %d heartbeats with %d update(s) "
+                "fetched but not dispatched (%d received, %d dispatched, generation %d)"
+                % (_INGRESS_DISPATCH_STALL_HEARTBEATS, received - dispatched, received, dispatched, generation)),
             reason="ingress dispatch stall watchdog")
 
     async def _check_polling_stall(self) -> None:

@@ -49,6 +49,13 @@ def _deaf_reports(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if _DEAF in r.message]
 
 
+def _stall_reports(sched) -> list[str]:
+    """Errors handed to the (stubbed) recovery handoff: the stall's only announcement."""
+    errors = [call.args[0] for call in sched.call_args_list]
+    assert all(type(e) is tg_adapter._PollingStallError for e in errors)
+    return [str(e) for e in errors if _DEAF in str(e)]
+
+
 @pytest.mark.asyncio
 async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
     """Healthy dispatch never reports; a wedged dispatcher is reported after four heartbeats even
@@ -60,11 +67,11 @@ async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
     _heartbeats(adapter, 3)
     assert _deaf_reports(caplog) == []
 
-    with patch.object(adapter, "_schedule_polling_recovery"):
+    with patch.object(adapter, "_schedule_polling_recovery") as sched:
         for _ in range(5):  # a fresh update lands before every heartbeat, none dispatched
             _receive(adapter, 1)
             adapter._check_ingress_dispatch_stall()
-    (report,) = _deaf_reports(caplog)
+    (report,) = _stall_reports(sched)
     assert "4 update(s) fetched" in report and "6 received, 2 dispatched" in report
 
 
@@ -77,15 +84,14 @@ async def test_dispatch_progress_rearms_the_report(caplog):
         _heartbeats(adapter, 3)  # 270s: a slow-but-bounded (<=300s) sequential handler is not a wedge
         assert sched.call_count == 0
         _heartbeats(adapter, 2)
-        assert len(_deaf_reports(caplog)) == 1 and sched.call_count == 1
+        assert len(_stall_reports(sched)) == 1
 
         await _dispatch(adapter, 1)  # partial drain: progress, backlog remains
         adapter._check_ingress_dispatch_stall()
-        assert len(_deaf_reports(caplog)) == 1 and sched.call_count == 1
+        assert len(_stall_reports(sched)) == 1
         _heartbeats(adapter, 4)
-        assert len(_deaf_reports(caplog)) == 2 and sched.call_count == 2
-    for call in sched.call_args_list:
-        assert isinstance(call.args[0], tg_adapter._IngressDispatchStallError)
+        assert len(_stall_reports(sched)) == 2
+    assert _deaf_reports(caplog) == []  # stubbed handoff: no separate pre-log announces the stall
 
 
 @pytest.mark.asyncio

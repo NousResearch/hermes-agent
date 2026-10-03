@@ -170,3 +170,33 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
+
+
+def test_importing_run_agent_injects_truststore_before_any_sdk_can_capture_sslcontext():
+    """#126808: Python 3.14's ``ssl.SSLContext.options`` setter resolves
+    ``super(SSLContext, SSLContext)`` against the ``ssl`` module globals, so a
+    class captured before truststore's injection (botocore does ``from ssl
+    import SSLContext`` at import time) recurses forever once it later assigns
+    ``context.options``. ``import run_agent`` must close that window for every
+    embedding of ``AIAgent``, not just the entrypoints that install trust
+    themselves."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    child = subprocess.run([sys.executable, "-c", """
+import ssl, sys
+import run_agent
+if sys.version_info >= (3, 14):
+    assert ssl.SSLContext.__module__ != "ssl", (
+        "import run_agent left ssl.SSLContext unswapped; a provider SDK "
+        "imported next would capture the pre-injection class"
+    )
+# What botocore-style code captures AFTER run_agent is loaded: constructing a
+# context and assigning .options must not recurse on 3.14.
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.options |= ssl.OP_NO_COMPRESSION
+assert ctx.verify_mode == ssl.CERT_REQUIRED
+"""], capture_output=True, text=True, timeout=120,
+        cwd=str(Path(__file__).resolve().parents[2]))
+    assert child.returncode == 0, child.stderr

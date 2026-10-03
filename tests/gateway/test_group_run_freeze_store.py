@@ -20,10 +20,10 @@ def store(tmp_path):
         value.close()
 
 
-def reserve(store, run_id="run-one", *, identity=IDENTITY, status="queued"):
+def reserve(store, run_id="run-one", *, identity=IDENTITY, status="queued", recorded=False):
     return store.reserve(room_run_scope_key(identity), "key-" + run_id, "fingerprint-" + run_id, run_id,
                          {"status": status, "output": "PRIVATE /private/credential", "token": "SECRET"},
-                         owner_pid=123, owner_started=456)
+                         owner_pid=123, owner_started=456, identity=identity if recorded else None)
 
 
 def test_freeze_replays_receipts_and_commands_without_exposing_status_bodies(store):
@@ -55,16 +55,45 @@ def test_freeze_replays_receipts_and_commands_without_exposing_status_bodies(sto
         assert restarted.freeze_room_scope(IDENTITY, "stop-two")["frozen_at"] == first["frozen_at"]
 
 
-@pytest.mark.parametrize("field", tuple(IDENTITY))
+@pytest.mark.parametrize("field", ("room_id", "member_id", "target_install_id", "target_profile", "authority_epoch"))
 def test_every_other_participant_identity_remains_open(store, field):
     reserve(store)
     store.freeze_room_scope(IDENTITY, "stop-one")
-    other = {**IDENTITY, field: 4 if field == "authority_epoch" else IDENTITY[field] + "-other"}
-    assert reserve(store, "other-run", identity=other)[0] == "created"
+    # Another group, Bot or local target, or an epoch before the frozen one.
+    other = {**IDENTITY, field: 2 if field == "authority_epoch" else IDENTITY[field] + "-other"}
+    assert reserve(store, "other-run", identity=other, recorded=True)[0] == "created"
     with store.group_control_open(room_run_scope_key(other)) as allowed:
         assert allowed is True
     with pytest.raises(storage.GroupStopCommandConflict):
         store.freeze_room_scope(other, "stop-one")
+
+
+def test_a_freeze_outlives_a_change_of_the_groups_host(store):
+    """A later host's work for the frozen participant is refused, and its earlier admissions are frozen too."""
+    moved = {**IDENTITY, "home_install_id": "install-successor", "authority_gateway_id": "successor",
+             "authority_epoch": 4}
+    assert reserve(store, "moved-run", identity=moved, recorded=True)[0] == "created"
+    reserve(store, recorded=True)
+    frozen_at = store.freeze_room_scope(IDENTITY, "stop-one")["frozen_at"]
+    moved_scope = room_run_scope_key(moved)
+    assert store.is_scope_frozen(moved_scope)
+    with store.group_control_open(moved_scope) as allowed:
+        assert allowed is False
+    for later in (moved, {**moved, "home_install_id": "install-later", "authority_gateway_id": "later",
+                          "authority_epoch": 9}):
+        with pytest.raises(storage.GroupRunFrozen) as denied:
+            reserve(store, "new-run", identity=later, recorded=True)
+        assert (denied.value.code, denied.value.status) == ("group_work_frozen", 403)
+    listed = store.list_room_scopes(target_install_id=IDENTITY["target_install_id"],
+                                    target_profile=IDENTITY["target_profile"])["participants"]
+    assert {item["identity"]["authority_epoch"]: item["frozen_at"] for item in listed} == {3: frozen_at, 4: frozen_at}
+    # Its own scope keeps its own freeze, readback and capacity: the moved scope can still be stopped by name.
+    assert store.freeze_room_scope(moved, "stop-moved")["scope"] == moved_scope
+    with closing(storage.RunIdempotencyStore(str(store.path))) as restarted:
+        assert restarted.is_scope_frozen(moved_scope)
+        with pytest.raises(storage.GroupRunFrozen):
+            restarted.reserve(room_run_scope_key({**moved, "authority_epoch": 5}), "key-x", "fp", "run-x",
+                              {"status": "queued"}, identity={**moved, "authority_epoch": 5})
 
 
 def test_unknown_scope_and_command_never_claim_empty_stop(store):

@@ -269,8 +269,28 @@ class RunIdempotencyStore:
         except sqlite3.Error:
             raise GroupStopStorageUnavailable() from None
 
-    def _scope_frozen_locked(self, scope: str) -> bool:
+    def _frozen_row_locked(self, scope: str) -> bool:
         return self._conn.execute(f"SELECT 1 FROM {_FREEZES} WHERE scope=?", (scope,)).fetchone() is not None
+
+    def _scope_frozen_locked(self, scope: str, identity: dict[str, Any] | None = None) -> bool:
+        """Whether a freeze covers this scope: its own, or one of the same participant at an earlier
+        or equal epoch of the same group, so a change of the group's host never reopens it."""
+        if self._frozen_row_locked(scope):
+            return True
+        identity = self._scope_identity_locked(scope) if identity is None else identity
+        return identity is not None and self._covering_freeze_locked(identity) is not None
+
+    def _covering_freeze_locked(self, identity: dict[str, Any]) -> float | None:
+        """When the owner first froze this participant (room, member and local target) at this
+        epoch or an earlier one, whichever host the group had then; ``None`` if never."""
+        row = self._conn.execute(f"""SELECT MIN(frozen_at) FROM {_FREEZES}
+            WHERE json_extract(identity_json,'$.room_id')=? AND json_extract(identity_json,'$.member_id')=?
+              AND json_extract(identity_json,'$.target_install_id')=?
+              AND json_extract(identity_json,'$.target_profile')=?
+              AND json_extract(identity_json,'$.authority_epoch')<=?""", (
+            identity["room_id"], identity["member_id"], identity["target_install_id"], identity["target_profile"],
+            int(identity["authority_epoch"]))).fetchone()
+        return None if row is None or row[0] is None else float(row[0])
 
     def _scope_identity_locked(self, scope: str) -> dict[str, Any] | None:
         row = self._conn.execute(f"SELECT identity_json FROM {_SCOPES} WHERE scope=?", (scope,)).fetchone()
@@ -320,7 +340,7 @@ class RunIdempotencyStore:
             ).fetchone()
             if command is not None and command[0] != scope:
                 raise GroupStopCommandConflict()
-            frozen = self._scope_frozen_locked(scope)
+            frozen = self._frozen_row_locked(scope)
             if command is not None and not frozen:
                 raise GroupStopStorageUnavailable()
             if not frozen:
@@ -440,7 +460,8 @@ class RunIdempotencyStore:
                     (scope,)).fetchone()
                 participants.append({
                     "identity": identity, "first_admitted_at": first_at, "last_admitted_at": last_at,
-                    "frozen_at": frozen_at, "counts": {
+                    "frozen_at": frozen_at if frozen_at is not None else self._covering_freeze_locked(identity),
+                    "counts": {
                         "total": total + retired + missing, "terminal": terminal + retired,
                         "nonterminal": total - terminal - unknown, "unknown": unknown + missing},
                 })
@@ -469,7 +490,7 @@ class RunIdempotencyStore:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
-            if self._scope_frozen_locked(scope):
+            if self._scope_frozen_locked(scope, identity):
                 raise GroupRunFrozen()
             if identity is not None and identity["authority_epoch"] <= fence.fenced_epoch_locked(
                     self._conn, identity["room_id"]):

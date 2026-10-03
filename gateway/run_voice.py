@@ -267,6 +267,14 @@ class GatewayVoiceMixin:
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a
         # resume-pending marker (issue #23778).
+        # The /voice join copy never carries the per-event role grant (to_dict drops it), so a
+        # role-only speaker was always refused here. Recompute it for THIS speaker against the
+        # guild's current member, with the flag's message-path meaning, never the joiner's.
+        if isinstance(roles := getattr(adapter, "_allowed_role_ids", None), (set, frozenset)) and roles:
+            client = getattr(adapter, "_client", None)
+            guild = client.get_guild(guild_id) if client else None
+            source.role_authorized = guild is not None and adapter._is_allowed_user(
+                str(user_id), guild=guild, is_dm=False) is True
         if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return

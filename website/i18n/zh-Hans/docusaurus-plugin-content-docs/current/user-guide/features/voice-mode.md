@@ -360,7 +360,7 @@ Bot 在播放 TTS 回复时会自动暂停音频监听，防止听到并重复�
 
 ### 访问控制
 
-只有 `DISCORD_ALLOWED_USERS` 中列出的用户才能通过语音进行交互。其他用户的音频会被静默忽略。
+只有 `DISCORD_ALLOWED_USERS` 或 `DISCORD_ALLOWED_ROLES` 允许的用户才能通过语音进行交互；每次说话时都会为说话者检查身份组。其他用户的音频会被静默忽略。
 
 ```bash
 # ~/.hermes/.env

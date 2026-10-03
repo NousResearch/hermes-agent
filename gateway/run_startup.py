@@ -54,9 +54,48 @@ class GatewayStartupMixin:
     # A configured platform failed non-retryably this boot and is parked: every "we are serving"
     # status stamp (startup, drain release, scale-to-zero wake) must say ``degraded``, not ``running``.
     _startup_parked_platforms: bool = False
+    # Enabled builtin platforms that could not even be instantiated this boot (missing dependency
+    # or configuration). Surfaced as a ``fatal`` platform entry plus a ``degraded`` serving state
+    # — never folded into the exit-78 fatal-config report, so the gateway keeps running for cron.
+    _startup_unavailable_platforms: list = []
 
     def _serving_state(self) -> str:
         return "degraded" if self._startup_parked_platforms else "running"
+
+    def _start_dependency_preflight(self) -> None:
+        """Refuse to call this boot healthy when the runtime cannot import a turn's client.
+
+        A gateway whose provider client (or an enabled adapter's dependency) does not import
+        answers ``/health`` and then fails every real request — the shape of the reported
+        incident, where ``pydantic_core`` raised under the running interpreter while the API
+        server still reported healthy. The probe is side-effect free: local imports only, no
+        provider call, no credential read, no config read.
+        """
+        from gateway.readiness import collect_dependency_readiness
+
+        enabled = [platform.value for platform, config in self.config.platforms.items() if config.enabled]
+        try:
+            readiness = collect_dependency_readiness(platforms=enabled)
+        except Exception as exc:  # noqa: BLE001 - a failed probe must never stop startup
+            logger.warning("Gateway dependency preflight could not run: %s", exc)
+            return
+        broken = {
+            name: check for name, check in readiness.get("checks", {}).items()
+            if check.get("status") != "ok"
+        }
+        if not broken:
+            return
+        self._startup_parked_platforms = True
+        logger.error(
+            "Gateway dependency preflight failed (%s): %s. Requests would fail after binding, "
+            "so the gateway is DEGRADED — repair the runtime (re-run the installer or "
+            "`hermes update`) and restart before trusting `/health`.",
+            ", ".join(sorted(broken)),
+            "; ".join(
+                f"{name}: {check.get('detail') or check.get('status')}"
+                for name, check in sorted(broken.items())
+            ),
+        )
 
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
@@ -1189,8 +1228,28 @@ class GatewayStartupMixin:
             enabled_platform_count += 1
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
+                from gateway.run import _BUILTIN_ADAPTERS
+
+                spec = _BUILTIN_ADAPTERS.get(platform)
+                if spec is not None:
+                    # Enabled, but its dependency/configuration is unavailable: without this the
+                    # platform is silently absent from every serving surface while the startup
+                    # summary reports a healthy run with the remaining platforms. Report it like
+                    # a failed connect — status ``fatal`` plus a non-retryable startup error.
+                    message = spec[3]
+                    self._update_platform_runtime_status(
+                        platform.value, platform_state="fatal", error_code="dependencies_unavailable",
+                        error_message=message,
+                    )
+                    self._startup_unavailable_platforms.append(f"{platform.value}: {message}")
+                    logger.error(
+                        "%s is enabled in config.yaml but could not be started: %s. Install or "
+                        "repair its dependencies (re-run the installer or `hermes update`) and "
+                        "restart the gateway.",
+                        platform.value, message,
+                    )
                 # Distinguish between missing builtin deps and missing plugin
-                if platform.value in {m.value for m in Platform.__members__.values()}:
+                elif platform.value in {m.value for m in Platform.__members__.values()}:
                     logger.warning("No adapter available for %s", platform.value)
                 else:
                     logger.warning(
@@ -1608,9 +1667,22 @@ class GatewayStartupMixin:
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         self._startup_parked_platforms = False  # fresh boot: no platform has failed yet
+        self._startup_unavailable_platforms = []
+        # Before any adapter binds: can this interpreter import what a served turn needs?
+        self._start_dependency_preflight()
         (
             _aborted, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
         ) = await self._start_prefilter_platforms()
+        # A platform that could not even be instantiated never reaches the connect gate below, so
+        # report it here: the platform entry is already ``fatal`` and the serving state must read
+        # ``degraded``, not a healthy "running with N platform(s)". Deliberately NOT folded into
+        # ``startup_nonretryable_errors``: that list drives the fatal-config exit 78, which is a
+        # whole-process exit. An enabled builtin adapter whose dependency/config is missing on this
+        # host is a per-platform problem (fleet nodes share one config.yaml but hold a subset of
+        # deps), so exiting would also take down cron and every sibling platform. Park the gateway
+        # degraded and keep it running — the operator sees it in status/logs.
+        if self._startup_unavailable_platforms:
+            self._startup_parked_platforms = True
         if _aborted:
             return True
         if await self._abort_startup_if_shutdown_requested():

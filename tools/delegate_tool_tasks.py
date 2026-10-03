@@ -98,8 +98,11 @@ def _normalize_task_list(
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return None, f"Task {i} must be an object, got {type(task).__name__}."
-        if not task.get("goal", "").strip():
-            return None, f"Task {i} is missing a 'goal'."
+        goal = task.get("goal", "")
+        if not isinstance(goal, str) or not goal.strip():
+            # Same contract as the non-dict check above and the batch gate's str() coercion:
+            # a malformed model-supplied goal is a friendly tool error, never an AttributeError.
+            return None, f"Task {i} has an invalid 'goal' ({type(goal).__name__}); goals must be non-empty strings."
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)

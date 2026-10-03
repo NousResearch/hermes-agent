@@ -251,7 +251,14 @@ def _file_metadata(resolved: str) -> tuple | None:
 
 
 def _file_version(resolved: str) -> tuple | None:
-    """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
+    """A byte snapshot, not just mtime (editors/copy tools can preserve that).
+
+    The stability check compares fstat(fd) before/after the digest, and the
+    returned metadata is os.stat()-sourced so it round-trips against
+    ``_file_metadata``. Windows reports st_ctime_ns from different sources in
+    stat() vs fstat(), so the old mixed-source compare returned None for every
+    file — full reads were stamped partial and write_file was refused forever.
+    """
     try:
         if not stat.S_ISREG(os.stat(resolved).st_mode):
             return None
@@ -261,12 +268,15 @@ def _file_version(resolved: str) -> tuple | None:
             if not stat.S_ISREG(before.st_mode):
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
-            after = os.stat(resolved)
+            after = os.fstat(stream.fileno())
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        version = tuple(getattr(before, name) for name in fields)
-        if version == tuple(getattr(after, name) for name in fields):
-            return (*version, digest)
-        return None
+        if tuple(getattr(before, name) for name in fields) != tuple(getattr(after, name) for name in fields):
+            return None
+        now = os.stat(resolved)
+        if (now.st_dev, now.st_ino) != (before.st_dev, before.st_ino):
+            return None  # the path now names a different file than the descriptor read
+        return (
+            now.st_dev, now.st_ino, now.st_size, now.st_mtime_ns, now.st_ctime_ns, digest)
     except OSError:
         return None
 

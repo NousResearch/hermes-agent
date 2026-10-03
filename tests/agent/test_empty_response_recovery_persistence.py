@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -267,3 +268,29 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
     # The Stop owner strips the nudge scaffold itself and closes with its own reason.
     assert result["messages"][-1]["content"] == result["final_response"]
+
+
+def _tool_round(path, call_id):
+    call = _write_file_call(path)
+    call.id = call_id
+    return _response(finish_reason="tool_calls", tool_calls=[call])
+
+
+@pytest.mark.parametrize("script_after_nudge", [[], ["tool"]], ids=["budget_on_nudge", "budget_after_later_tool"])
+def test_budget_exhausted_after_empty_response_nudge_still_summarizes(real_loop, script_after_nudge):
+    # An empty reply after a tool is nudged; the retry is not an answer, so running out of
+    # iterations later must still take the max-iterations summary, not end silently (#92552).
+    script = [_tool_round(real_loop.ledger, "call_1"), _response()]
+    script += [_tool_round(real_loop.ledger, "call_2") for _ in script_after_nudge]
+    real_loop.agent.max_iterations = len(script)
+    result = real_loop.run(script + [_response(content="Wrote the ledger entry.")], "record the payment in ledger.txt")
+
+    assert result["turn_exit_reason"].startswith("max_iterations_reached")
+    assert "Wrote the ledger entry." in result["final_response"]
+    saved = real_loop.db.get_messages_as_conversation(real_loop.sid)
+    assert saved[-1]["role"] == "assistant" and "Wrote the ledger entry." in saved[-1]["content"]
+    # The live list is the next turn's history (TUI/Desktop): the summary request must follow
+    # real history, never a retry nudge the tail-only scaffolding drop can no longer reach.
+    live = result["messages"]
+    ask = next(i for i, m in enumerate(live) if m.get("content") == MAX_ITERATIONS_SUMMARY_REQUEST)
+    assert not live[ask - 1].get("_empty_recovery_synthetic")

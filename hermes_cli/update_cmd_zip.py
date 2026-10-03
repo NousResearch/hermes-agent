@@ -227,12 +227,29 @@ def _abort_zip_update_if_dirty_tree() -> None:
     _m().sys.exit(1)
 
 
+def _zip_filesystem_path(path: str) -> str:
+    """Keep the entire ZIP transaction usable beyond Win32's legacy path limit.
+
+    Convert roots, not archive member names: traversal/symlink validation still
+    runs unchanged, and recursive copy, rollback and cleanup inherit the prefix.
+    """
+    if os.name != "nt":
+        return path
+    path = os.path.abspath(path)
+    if path.startswith("\\\\?\\"):
+        return path
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
+
 def _extract_zip_safely(zip_path: str, tmp_dir: str) -> None:
     """Extract, rejecting zip-slip AND symlink members: a source ZIP never legitimately contains
     symlinks, and a compromised mirror could use them to plant files anywhere."""
     import stat as _stat
     import zipfile
-    with zipfile.ZipFile(zip_path, "r") as zf:
+    tmp_dir = _zip_filesystem_path(tmp_dir)
+    with zipfile.ZipFile(_zip_filesystem_path(zip_path), "r") as zf:
         tmp_dir_real = os.path.realpath(tmp_dir)
         for member in zf.infolist():
             member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
@@ -331,7 +348,7 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
     import tempfile
     from urllib.request import urlretrieve
     print("→ Downloading latest version...")
-    tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
+    tmp_dir = _zip_filesystem_path(tempfile.mkdtemp(prefix="hermes-update-"))
     try:
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
@@ -339,7 +356,7 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         _extract_zip_safely(zip_path, tmp_dir)
         extracted = _extracted_root(tmp_dir, branch)
         entries = [i for i in os.listdir(extracted) if i not in _ZIP_PRESERVED_TOP_LEVEL]
-        project_root = str(_m().PROJECT_ROOT)
+        project_root = _zip_filesystem_path(str(_m().PROJECT_ROOT))
         _require_staging_space(extracted, entries, project_root)
         staged = _stage_entries(extracted, entries, project_root)
         try:

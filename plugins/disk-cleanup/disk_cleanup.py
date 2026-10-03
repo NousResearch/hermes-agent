@@ -128,6 +128,9 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     # per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "patches", "projects", "skins", "themes", "contributors",
     "profiles", "backups", "optional-skills", "workspace", "plans", "home",
+    # Git worktrees are repo-owned trees; the auto path already refuses them via the
+    # ``.git``-pointer check (#115295) — never-track extends that to manual entries.
+    ".worktrees",
     # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
     # not disposable (#114552).
     "kanban"})
@@ -145,18 +148,43 @@ def _is_protected_dir(p: Path) -> bool:
 
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
 def _protected_cron_paths(home: Path) -> frozenset:
-    """Defense-in-depth for quick(): EXACT cron control-plane paths (``cron/``, ``output/`` root,
-    ``jobs.json``, ``.tick.lock``) never deleted regardless of stored category (stale tracked.json).
-    Never widen to everything under ``cron/output/``: run artifacts there are disposable; only
-    wholesale deletion of ``output/`` is fatal."""
+    """Exact cron roots, state markers and store locks, never disposable.
+
+    Run artifacts under ``output/`` remain disposable; only its root is protected.
+    Per-fire locks are matched separately because their UUID names are dynamic.
+    """
+    names = ("output", "jobs.json", ".tick.lock", ".jobs.lock", "ticker_heartbeat",
+             "ticker_last_success", "ticker_last_error", "catch_up_occurrences")
     return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (home / parent,)
-                     for x in (base, base / "output", base / "jobs.json", base / ".tick.lock"))
+                     for x in (base, *(base / name for name in names)))
 
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(), regardless of what the stored category
 # says. This is a defense-in-depth guard against stale tracked.json entries from before #34840.
 def _is_protected_cron_path(p: Path) -> bool:
-    return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
+    resolved = p.resolve()
+    home = get_hermes_home()
+    return (str(resolved) in _protected_cron_paths(home)
+            or (resolved.parent in (home / "cron", home / "cronjobs")
+                and resolved.name.startswith(".fire-") and resolved.name.endswith(".lock")))
+
+
+def _is_never_track_path(p: Path) -> bool:
+    """True for paths the auto-tracker (``guess_category``) refuses whatever their name:
+    state, logs, memory, sessions, config/secrets, plugin sources, user project trees, git
+    worktrees, and the cron control-plane.
+
+    ``track()`` refuses these on manual registration too, and ``quick()`` drops stored
+    entries regardless of category. ``dry_run()`` excludes them from automatic deletion
+    but retains read-only prompt candidates. Quick's re-validation only re-checks
+    ``cron-output`` and ``test``, so a manual ``track <state path> temp`` would otherwise age
+    past 7 days and be deleted by the no-prompt on-session-end sweep."""
+    if _is_protected_dir(p) or _is_protected_cron_path(p):
+        return True
+    with contextlib.suppress(ValueError, OSError):
+        rel = p.resolve().relative_to(get_hermes_home())
+        return not rel.parts or rel.parts[0] in _NEVER_TRACK_TOP_LEVEL
+    return False
 
 
 def fmt_size(n: float) -> str:
@@ -184,6 +212,9 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         return False
     if not is_safe_path(path):
         _log(f"REJECT: {path} (outside HERMES_HOME)")
+        return False
+    if _is_never_track_path(path):
+        _log(f"REJECT: {path} (never-track path: state, config, secrets or user tree)")
         return False
     size = path.stat().st_size if path.is_file() else 0
     tracked = load_tracked()
@@ -259,11 +290,12 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
         cat = item["category"]
-        # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
+        # Preserve read-only preview coverage for protected files and aged research.
         if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
             continue
         if _is_auto_delete(cat, age):
-            auto.append(item)
+            if not _is_never_track_path(p):
+                auto.append(item)
         elif _prompt_group(item, age):
             prompt.append(item)
     return auto, prompt
@@ -280,12 +312,11 @@ def quick() -> Dict[str, Any]:
             # Misclassified stale entry — drop it rather than delete the file.
             _log(f"SKIP stale {cat} entry: {p} (re-classified as {re_cat!r}{_STALE_SKIP_NOTE[cat]})")
             continue
-        # Hard safety net even if re-validation above somehow let it through.
-        if _is_protected_cron_path(p):
-            _log(f"SKIP protected cron path: {p}")
-            continue
-        if _is_protected_dir(p):
-            _log(f"SKIPPED: {p} (protected top-level dir)")
+        # Hard safety net even if re-validation above somehow let it through: never-track
+        # paths (protected dirs + cron control-plane + never-track top-level files/trees)
+        # are dropped, never deleted, regardless of the stored category.
+        if _is_never_track_path(p):
+            _log(f"SKIPPED: {p} (never-track path: state, config, secrets or user tree)")
             continue
         if not _is_auto_delete(cat, age):
             new_tracked.append(item)

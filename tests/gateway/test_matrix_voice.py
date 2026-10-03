@@ -94,16 +94,22 @@ def _make_audio_event(
     return event
 
 
-def _make_state_store(member_count: int = 2):
-    """Create a mock state store with get_members/get_member support."""
-    store = MagicMock()
-    # get_members returns a list of member user IDs
-    members = [MagicMock() for _ in range(member_count)]
-    store.get_members = AsyncMock(return_value=members)
-    # get_member returns a single member info object
-    member = MagicMock()
-    member.displayname = "Alice"
-    store.get_member = AsyncMock(return_value=member)
+def _make_state_store():
+    """A mautrix state store in which the bot and Alice have joined the test room."""
+    from mautrix.client.state_store import MemoryStateStore
+
+    room_id = "!test:example.org"
+    store = MemoryStateStore()
+    store.deserialize({
+        "members": {room_id: {
+            "@bot:example.org": {"membership": "join"},
+            "@alice:example.org": {"membership": "join", "displayname": "Alice"},
+        }},
+        "full_member_list": {room_id: True},
+        "power_levels": {},
+        "encryption": {},
+        "create": {},
+    })
     return store
 
 

@@ -55,8 +55,18 @@ def _make_adapter():
 
 class _FakeMatrixClient:
     def __init__(self):
-        self.state_store = MagicMock()
-        self.state_store.get_members = AsyncMock(return_value=["@bot:example.org", SENDER])
+        from mautrix.client.state_store import MemoryStateStore
+
+        joined = {"@bot:example.org": {"membership": "join"}, SENDER: {"membership": "join"}}
+        rooms = (PROJECT_A_ROOM_ID, PROJECT_B_ROOM_ID)
+        self.state_store = MemoryStateStore()
+        self.state_store.deserialize({
+            "members": {room_id: joined for room_id in rooms},
+            "full_member_list": {room_id: True for room_id in rooms},
+            "power_levels": {},
+            "encryption": {},
+            "create": {},
+        })
 
     async def get_state_event(self, room_id, event_type):
         rid = str(room_id)

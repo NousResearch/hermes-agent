@@ -39,6 +39,11 @@ def _sealed(root: Path, distribution: str = "desktop-app", version: str = "0.21.
     return root
 
 
+def _counts(state: dict) -> dict:
+    """The host-independent part of a notice state: ``partial`` is True on Windows only."""
+    return {key: state[key] for key in ("count", "dismissed")}
+
+
 def _ok(stdout: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
@@ -217,6 +222,7 @@ class TestNotice:
         installs.record_launch(root=tmp_path / "store" / "hermes-agent", now=1)
 
         assert installs.launch_notice() is None
+        assert _counts(installs.notice_state()) == {"count": 0, "dismissed": False}
 
     def test_dismissal_holds_until_the_set_of_installs_changes(self, home, running, tmp_path):
         _checkout(home / "hermes-agent")
@@ -488,6 +494,20 @@ class TestCli:
         assert ids[installs.install_id(managed)]["removable"] is True
         assert ids[installs.install_id(running)]["removable"] is False
         assert isinstance(data["launchers"], list)
+
+    def test_list_json_reports_the_notice_state(self, home, running, capsys):
+        def notice():
+            installs.run_cli(self._args(json=True), run=_quiet)
+            return json.loads(capsys.readouterr().out)["notice"]
+
+        assert _counts(notice()) == {"count": 0, "dismissed": False}
+
+        _checkout(home / "hermes-agent")
+        assert _counts(notice()) == {"count": 1, "dismissed": False}
+
+        installs.dismiss()
+        assert _counts(notice()) == {"count": 1, "dismissed": True}
+        assert notice()["partial"] is installs._windows(None)
 
     def test_dry_run_changes_nothing(self, home, running, capsys):
         managed = _checkout(home / "hermes-agent")

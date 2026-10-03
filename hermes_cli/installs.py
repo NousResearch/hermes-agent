@@ -592,14 +592,25 @@ def _notice_line(count: int, *, partial: bool) -> str:
         "or `hermes installs dismiss` to hide this.")
 
 
-def launch_notice(*, current: Path | None = None) -> str | None:
-    """One line about other installs, or None. Uses only cheap sources, so it is safe at launch."""
+def notice_state(*, current: Path | None = None) -> dict:
+    """How many other installs the launch notice counts, and whether the user hid the notice.
+
+    Uses only cheap sources, so it is safe at launch. ``list --json`` reports the same values.
+    ``partial`` is True when the count can be low: ``hermes installs`` also lists Windows Store
+    packages, which the launch path leaves out (``discover(appx=False)``).
+    """
     others = _others(current)
-    if not others or read_registry()["dismissed"] == fingerprint(others):
+    hidden = bool(others) and read_registry()["dismissed"] == fingerprint(others)
+    return {"count": len(others), "dismissed": hidden, "partial": _windows(None)}
+
+
+def launch_notice(*, current: Path | None = None) -> str | None:
+    """One line about other installs, or None."""
+    state = notice_state(current=current)
+    count = state["count"]
+    if not count or state["dismissed"]:
         return None
-    # ``hermes installs`` also lists Windows Store packages, which the launch path leaves out
-    # (``discover(appx=False)``), so the count here can be low on Windows.
-    return _notice_line(len(others), partial=_windows(None))
+    return _notice_line(count, partial=state["partial"])
 
 
 def dismiss(*, current: Path | None = None) -> int:
@@ -718,6 +729,7 @@ def run_cli(args, *, run: Runner = subprocess.run) -> int:
             "current": install_id(current),
             "installs": entries,
             "launchers": [{"path": str(lnch.path), "owner": lnch.owner} for lnch in launchers],
+            "notice": notice_state(current=current),
         }, indent=2))
     else:
         _print_list(entries, launchers)

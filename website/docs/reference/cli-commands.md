@@ -2037,7 +2037,7 @@ Additional behavior:
 
 | Command | Description |
 |---------|-------------|
-| `hermes installs [list] [--json]` | List every Hermes install on this machine and the `hermes` launchers on PATH, in the order a new terminal finds them. |
+| `hermes installs [list] [--json]` | List every Hermes install on this machine and the `hermes` launchers on PATH, in the order a new terminal finds them. `--json` also reports the launch notice: `notice.count` (other installs), `notice.dismissed`, and `notice.partial` (true on Windows, where the count leaves out Store packages). |
 | `hermes installs remove <id> [--dry-run] [--yes]` | Remove one other install: its folder, and the launchers and shortcuts that point into it. Your data, User PATH, User environment variables, and the gateway stay as they are. The running install and sealed installs are refused. A Windows package install is removed with `Remove-AppxPackage`. |
 | `hermes installs dismiss` | Hide the launch notice until the set of other installs changes. |
 

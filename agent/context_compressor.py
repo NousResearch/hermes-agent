@@ -5186,8 +5186,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             # agentic turn whose assistant rows only carry tool_calls (no text reply yet), the
             # newest text-bearing assistant is the PREVIOUS turn's closer: anchoring to it retains
             # the whole oversized active turn, the middle collapses to nothing, and the session
-            # wedges in no_progress (#131412). When the anchored region is over the soft ceiling,
-            # keep the walk's tool-group-aligned cut instead.
+            # wedges in no_progress (#131412). When the anchored region holds tool-call bodies and is
+            # over the soft ceiling, keep the walk's tool-group-aligned cut instead.
             if (
                 asst_anchored_cut < cut_idx
                 and allow_split_turn

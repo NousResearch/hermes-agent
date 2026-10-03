@@ -1445,7 +1445,7 @@ def _render_skills_index(
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", unloadable: "list[str]" = (),
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
-    sharing a name AND path in one tier) get a rename note instead of a row skill_view would refuse."""
+    sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
@@ -1458,7 +1458,8 @@ def _render_skills_index(
     ) if demoted else ""
     if unloadable:
         hidden_note += (f"\n(A copy of {', '.join(unloadable)} is not listed: it shares both its name and its path "
-                        "with a different skill in the same skills directory, so skill_view cannot load it — rename one.)")
+                        "with a different skill in the same skills directory tier (e.g. another external_dirs entry), "
+                        "so skill_view cannot load it — rename one.)")
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []

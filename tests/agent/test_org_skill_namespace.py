@@ -141,7 +141,7 @@ class TestListingCollisionsAndLabels:
         # root-level personal copy (whose only path IS the bare name, so nothing can load it) is called out.
         assert "- _org/org-1/k8s-debug: [name collision" in out
         assert "- k8s-debug:" not in out
-        assert "A copy of k8s-debug is not listed" in out
+        assert "A copy of k8s-debug is not listed" in out and "same skills directory tier" in out
 
     def test_no_collision_flag_when_unique(self, tmp_path, monkeypatch):
         skills, pb = self._render(tmp_path, monkeypatch)

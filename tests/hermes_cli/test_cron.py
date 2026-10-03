@@ -588,7 +588,7 @@ class TestStatusSurfacesDeadScheduler:
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         monkeypatch.setattr(
-            "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
+            "gateway.host_topology.named_profile_served_by_running_multiplexer", lambda: None
         )
         monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
 

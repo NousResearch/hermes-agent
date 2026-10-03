@@ -74,7 +74,9 @@ def _served_profile_scope(target_profile: str):
     for ``target_profile``, so its config and credentials must be read there, never from the
     launch profile's env or whatever home happens to be active (#116900)."""
     from contextlib import nullcontext
-    from hermes_cli.profiles import get_profile_dir, normalize_profile_name, profile_exists, profile_matches_home
+    from profiles.names import normalize_profile_name
+    from profiles.paths import get_profile_dir
+    from profiles.registry import profile_exists, profile_matches_home
     # "default" is the launch home (a `-p x` multiplexer hosts it too), never a switch to ~/.hermes.
     if normalize_profile_name(target_profile) == "default" or profile_matches_home(target_profile):
         return nullcontext()

@@ -260,7 +260,7 @@ def test_pythonpath_descendants_are_not_owned():
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
-    from hermes_cli.gateway_windows import _preserve_hermes_home_path
+    from gateway.windows_service import _preserve_hermes_home_path
     from hermes_cli.profiles import resolve_profile_env
     physical_home = child_env / "physical-home"
     physical_root = physical_home / "hermes-agent"
@@ -707,7 +707,7 @@ class TestNativeEnvironmentContracts:
         """The real producer spelling is derived and consumed end to end."""
         import tools.environments.local as local
         from tools.environments import local_pythonpath
-        from hermes_cli.gateway_windows import _preserve_hermes_home_path
+        from gateway.windows_service import _preserve_hermes_home_path
 
         physical_home = tmp_path / "physical-home"
         physical_root = _physical_repo_root(tmp_path)
@@ -756,7 +756,7 @@ class TestNativeEnvironmentContracts:
         """
         import tools.environments.local as local
         from tools.environments import local_pythonpath
-        from hermes_cli.profiles import resolve_profile_env
+        from profiles.paths import resolve_profile_env
 
         physical_home = tmp_path / "physical-home"
         physical_root = physical_home / "hermes-agent"

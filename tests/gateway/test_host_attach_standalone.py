@@ -11,13 +11,13 @@ from gateway import host_attach, host_rendezvous as hr
 
 def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home, monkeypatch, caplog):
     from gateway.run import _log_standalone_profiles_at_boot
-    from hermes_cli import profiles
+    from gateway import profile_serving
 
     root, solo = standalone_home
     member = root / "profiles" / "member"
     member.mkdir()
     (member / "config.yaml").write_text("{}\n")
-    monkeypatch.setattr(profiles, "profiles_to_serve", lambda *a, **kw: [("solo", solo), ("member", member)])
+    monkeypatch.setattr(profile_serving, "profiles_to_serve", lambda *a, **kw: [("solo", solo), ("member", member)])
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), served_profile_names=lambda: ["default"])
     with caplog.at_level("INFO"):
         _log_standalone_profiles_at_boot(runner)
@@ -27,7 +27,7 @@ def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home,
     def broken_roster(*a, **kw):
         raise OSError("unreadable roster")
 
-    monkeypatch.setattr(profiles, "profiles_to_serve", broken_roster)
+    monkeypatch.setattr(profile_serving, "profiles_to_serve", broken_roster)
     _log_standalone_profiles_at_boot(runner)
     assert any(r.levelname == "WARNING" and "boot notice failed" in r.message for r in caplog.records)
 
@@ -40,9 +40,12 @@ def standalone_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("gateway:\n  standalone: true\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: root / "profiles")
+    from gateway import profile_serving
+    from profiles import paths as profile_paths, registry as profile_registry
+    monkeypatch.setattr(profile_serving, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr(profile_paths, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr(profile_paths, "_get_profiles_root", lambda: root / "profiles")
+    monkeypatch.setattr(profile_registry, "_get_profiles_root", lambda: root / "profiles")
     return root, home
 
 

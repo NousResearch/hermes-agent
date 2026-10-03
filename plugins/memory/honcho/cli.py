@@ -922,7 +922,7 @@ def _active_profile_name() -> str:
     if _profile_override:
         return _profile_override
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return get_active_profile_name()
     except Exception:
         return "default"
@@ -1054,7 +1054,7 @@ def _state_db_path() -> Path:
     """Return the state.db path for the targeted profile."""
     if _profile_override and _profile_override not in {"default", "custom"}:
         try:
-            from hermes_cli.profiles import get_profile_dir
+            from profiles.paths import get_profile_dir
             return get_profile_dir(_profile_override) / "state.db"
         except Exception:
             pass

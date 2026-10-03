@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-import hermes_cli.gateway_windows as gateway_windows
+import gateway.windows_service as gateway_windows
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ def _install_pid_sequence(monkeypatch, snapshots):
         calls["n"] += 1
         return list(snapshots[idx])
 
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", _fake)
+    monkeypatch.setattr("gateway.process_discovery.find_gateway_pids", _fake)
     return calls
 
 

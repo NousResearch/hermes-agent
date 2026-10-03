@@ -8,6 +8,7 @@ reinstalled deps + rebuilt the desktop app against the stale tree — no
 error, no warning. The gate compares the pre-pull and post-pull HEAD SHA
 and fails loudly when the update was a no-op.
 """
+from gateway import process_discovery, systemd_runtime
 
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ import pytest
 from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
+import hermes_cli.update_owning_install as update_owning_install
 from hermes_cli import update_cmd
 
 def _make_head_pinned_side_effect(sha="abc123"):
@@ -46,6 +48,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)
     (tmp_path / ".git").mkdir()  # pass the "is a git repo" gate
     monkeypatch.setattr(
         hermes_main, "_resolve_update_branch", lambda args: "main"
@@ -91,10 +94,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
     )
     monkeypatch.setattr(
-        hermes_gateway, "supports_systemd_services", lambda: False
+        systemd_runtime, "supports_services", lambda: False
     )
     monkeypatch.setattr(
-        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+        process_discovery, "find_profile_gateway_processes", lambda *a, **k: []
     )
 
 def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):

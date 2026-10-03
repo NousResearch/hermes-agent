@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.main_install_repair as main_install_repair
-from hermes_cli import gateway as gateway_mod
-from hermes_cli import gateway_windows
+from gateway import process_discovery
+from gateway import windows_service as gateway_windows
 from hermes_cli import main as cli_main
 from hermes_cli import update_cmd
 from hermes_cli import update_cmd_windows
@@ -48,9 +48,9 @@ def host_gateways(tmp_path):
 
 
 def test_update_pause_takes_only_this_installs_gateways(monkeypatch, host_gateways):
-    monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_kw: [])
-    monkeypatch.setattr(gateway_mod, "find_windows_gateway_services", lambda **_kw: [])
-    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_kw: list(host_gateways.values()))
+    monkeypatch.setattr(process_discovery, "find_profile_gateway_processes", lambda **_kw: [])
+    monkeypatch.setattr(process_discovery, "find_windows_gateway_services", lambda **_kw: [])
+    monkeypatch.setattr(process_discovery, "find_gateway_pids", lambda **_kw: list(host_gateways.values()))
 
     running_pids = update_cmd_windows._discover_windows_gateways()[3]
 
@@ -61,7 +61,7 @@ def test_foreign_gateways_do_not_suppress_cold_start(monkeypatch, host_gateways)
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
-    monkeypatch.setattr(gateway_mod, "find_gateway_pids",
+    monkeypatch.setattr(process_discovery, "find_gateway_pids",
                         lambda **_kw: [host_gateways["foreign"], host_gateways["foreign_default"]])
     spawned = []
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawned.append(4242) or 4242)

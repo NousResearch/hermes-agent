@@ -123,7 +123,8 @@ def _cmd_subscribe(args):
     if profile_arg is None:
         profile = existing.get("profile", "default")
     else:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+        from profiles.names import normalize_profile_name, validate_profile_name
+        from profiles.registry import profile_exists
         try:
             profile = normalize_profile_name(profile_arg)
             validate_profile_name(profile)

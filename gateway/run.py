@@ -1659,7 +1659,7 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     reserved = getattr(config, "_runtime_profile_homes", None)
     if reserved is not None:
         return list(reserved)
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
     return list(profiles_to_serve(multiplex=True))
 
 
@@ -1669,7 +1669,8 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
     process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
     already skips ``active``."""
-    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+    from profiles.current import get_active_profile_name
+    from profiles.paths import get_profile_dir
 
     homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
@@ -1863,7 +1864,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     default root, not ``get_hermes_home()`` — a named launcher's home is not the owner
     of the primary adapter map.
     """
-    from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+    from gateway.multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
     log_multiplex_decision(resolve_multiplex_mode(cfg))
     if not cfg.multiplex_profiles:
@@ -3517,7 +3518,7 @@ class GatewayRunner(
         # standalone opt-out: --config must not turn that profile into a host multiplexer.
         self.config = config if config is not None else load_gateway_config_for_runner()
         if config is not None:
-            from hermes_cli.gateway_multiplex_mode import standalone_launcher_decision, log_multiplex_decision
+            from gateway.multiplex_mode import standalone_launcher_decision, log_multiplex_decision
             decision = standalone_launcher_decision(self.config)
             if decision is not None:
                 log_multiplex_decision(decision)
@@ -3727,7 +3728,7 @@ class GatewayRunner(
                 _profile = source.profile
             else:
                 try:
-                    from hermes_cli.profiles import get_active_profile_name
+                    from profiles.current import get_active_profile_name
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
@@ -3850,7 +3851,7 @@ class GatewayRunner(
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
@@ -4281,7 +4282,9 @@ class GatewayRunner(
         ``build_source``), then the active profile."""
         from gateway.profile_routing import ProfileRouteRejected
         from gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
+        from profiles.current import get_active_profile_name
+        from profiles.paths import get_profile_dir
+        from profiles.registry import profile_exists
         from hermes_constants import get_hermes_home
         identity = identity_of(source)
         if identity is not None:
@@ -5011,7 +5014,7 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     from gateway.host_attach import (
         ATTACH_CHANNEL_WAIT_S, START, host_gateway, standalone_attach_decision,
     )
-    from hermes_cli.profiles import profile_is_standalone
+    from gateway.profile_serving import profile_is_standalone
     if profile_is_standalone(get_hermes_home()):
         # Recheck after losing the atomic lock: the pre-lock served set may be stale.
         live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
@@ -5040,7 +5043,7 @@ def _claim_host_gateway_role(force: bool = False) -> None:
 
 
 def _migrate_command() -> str:
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from gateway.migration import MIGRATE_COMMAND
 
     return MIGRATE_COMMAND
 
@@ -5097,8 +5100,8 @@ def _log_standalone_profiles_at_boot(runner) -> None:
     try:
         if not getattr(runner.config, "multiplex_profiles", False):
             return
-        from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
-        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+        from gateway.profile_serving import profiles_to_serve, profile_is_standalone
+        from gateway.multiplex_mode import STANDALONE_DEPRECATION_NOTICE
         served = set(runner.served_profile_names())
         for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
             if name != "default" and name not in served and profile_is_standalone(home):
@@ -5258,7 +5261,7 @@ def main():
         with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
-        from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+        from gateway.multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a

@@ -6,6 +6,8 @@ exit-code``). The generated unit now marks the stop via ``ExecStop=`` first.
 """
 
 from __future__ import annotations
+from gateway import systemd_lifecycle
+from gateway import systemd_unit_render
 
 import pytest
 
@@ -51,8 +53,8 @@ def test_stop_mark_never_blocks_restart_and_unit_wires_exec_stop(monkeypatch):
 
     from hermes_cli import gateway as gateway_cli
 
-    unit = gateway_cli.generate_systemd_unit(system=False)
-    # Both modules run through the installation launcher (`hermes --run-module <mod>`).
+    unit = systemd_unit_render.generate_systemd_unit(system=False)
+    # Both modules run through the installation launcher.
     assert "ExecStop=-" in unit and "gateway.systemd_stop_mark" in unit
     # The cgroup reaper still runs after the main process exits.
     assert "ExecStopPost=-" in unit and "gateway.cgroup_cleanup" in unit

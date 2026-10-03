@@ -14,7 +14,9 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   const root = path.resolve('../..')
   // The JS-only CI runner has no repository venv; this helper uses stdlib only.
   const python = process.env.HERMES_TEST_PYTHON || 'python3'
-  const endpoint = { profile_id: home, instance_id: 'owner', runtime_protocol: 1 }
+  // Real serialized endpoints include control_home (null for the launch profile).
+  // The bridge must merge the default rather than pass a duplicate Python keyword.
+  const endpoint = { profile_id: home, instance_id: 'owner', runtime_protocol: 1, control_home: null }
   const requests: any[] = []
   let override = {}
 
@@ -28,9 +30,9 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   await fs.chmod(path.join(home, 'gateway.sock'), 0o600)
   const backend = { command: python, env: { PYTHONPATH: root, HERMES_HOME: '/must-not-win' } }
   const cwd = path.join(home, 'project')
-  await fs.mkdir(path.join(cwd, 'hermes_cli'), { recursive: true })
-  await fs.writeFile(path.join(cwd, 'hermes_cli', '__init__.py'), '')
-  await fs.writeFile(path.join(cwd, 'hermes_cli', 'gateway_client.py'), 'def _session_ticket(*args, **kwargs):\n    return "untrusted-project-ticket"\n')
+  await fs.mkdir(path.join(cwd, 'gateway'), { recursive: true })
+  await fs.writeFile(path.join(cwd, 'gateway', '__init__.py'), '')
+  await fs.writeFile(path.join(cwd, 'gateway', 'client.py'), 'def _session_ticket(*args, **kwargs):\n    return "untrusted-project-ticket"\n')
 
   try {
     for (const purpose of ['interactive', 'native-http'] as const) {
@@ -45,5 +47,52 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(process.platform === 'win32')('Python ticket bridge routes served-secondary tickets through the multiplexer', async () => {
+  const root = path.resolve('../..')
+  const python = process.env.HERMES_TEST_PYTHON || 'python3'
+  const host = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-host-')))
+  const secondary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-secondary-')))
+  const endpoint = {
+    profile_id: secondary,
+    instance_id: 'owner',
+    runtime_protocol: 1,
+    control_home: host
+  }
+  const requests: any[] = []
+
+  const server = net.createServer(socket => socket.once('data', chunk => {
+    const request = JSON.parse(chunk.toString())
+    requests.push(request)
+    socket.end(JSON.stringify({
+      protocol: 1,
+      id: 1,
+      ok: true,
+      result: { ...endpoint, ticket: 'secondary-grant' }
+    }) + '\n')
+  }))
+
+  await new Promise<void>(resolve => server.listen(path.join(host, 'gateway.sock'), resolve))
+  await fs.chmod(path.join(host, 'gateway.sock'), 0o600)
+  const backend = { command: python, env: { PYTHONPATH: root } }
+  const cwd = path.join(secondary, 'project')
+  await fs.mkdir(cwd, { recursive: true })
+
+  try {
+    await expect(mintGatewayTicketWithPython(backend, cwd, endpoint, 'interactive')).resolves.toBe('secondary-grant')
+    expect(requests).toHaveLength(1)
+    expect(requests[0].params).toEqual({
+      profile_id: secondary,
+      instance_id: 'owner',
+      purpose: 'interactive'
+    })
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await Promise.all([
+      fs.rm(host, { recursive: true, force: true }),
+      fs.rm(secondary, { recursive: true, force: true })
+    ])
   }
 })

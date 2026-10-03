@@ -68,7 +68,7 @@ def test_named_gateway_is_never_the_default_profile_process(tmp_path, cmdline, m
     """Every spelling of the profile flag the CLI pre-parser accepts marks a NAMED gateway, so neither
     the default-home identity check nor the default profile's process-table fallback (what a
     ``gateway stop`` with no pid file kills) may claim it -- ``--profile=ops`` used to pass both."""
-    import hermes_cli.gateway as gw
+    import gateway.process_discovery as gw
     from gateway.status import _command_line_belongs_to_profile
     assert _command_line_belongs_to_profile(cmdline, tmp_path) is False
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -93,7 +93,7 @@ def test_scan_gateway_pids_claims_own_home_spellings_not_the_sibling(
     """``_scan_gateway_pids`` drives the mirrored HERMES_HOME predicate: the process-table
     fallback must not sweep a longer sibling home's live gateway, while the supervisor
     trailing-separator spelling (``HERMES_HOME=/root/.hermes/``) is still its own home."""
-    import hermes_cli.gateway as gw
+    import gateway.process_discovery as gw
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     rendered = cmdline.format(home=tmp_path)
     monkeypatch.setattr(gw, "_iter_proc_cmdlines", lambda exclude: iter([(424242, rendered)]))

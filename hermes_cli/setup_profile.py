@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from hermes_cli import profiles as profiles_mod
+from profiles.metadata import SETUP_ROLE, write_profile_meta
+from profiles.paths import get_profile_dir
+from profiles.registry import profile_exists
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +55,7 @@ class SetupProfile(NamedTuple):
 def find_setup_profile() -> Optional[tuple[str, Path]]:
     """``(name, path)`` of the profile carrying ``role: setup``, first by name; None when absent."""
     found = [(p.name, Path(p.path)) for p in profiles_mod.list_profiles(lazy_skill_count=True)
-             if p.role == profiles_mod.SETUP_ROLE]
+             if p.role == SETUP_ROLE]
     if len(found) > 1:
         logger.warning("several profiles carry role: setup (%s); using %s",
                        ", ".join(name for name, _ in found), found[0][0])
@@ -67,14 +70,14 @@ def ensure_setup_profile() -> SetupProfile:
     found = find_setup_profile()
     if found is not None:
         return SetupProfile(found[0], found[1], created=False)
-    if profiles_mod.profile_exists(SETUP_PROFILE_NAME):
-        path = profiles_mod.get_profile_dir(SETUP_PROFILE_NAME)
-        profiles_mod.write_profile_meta(path, role=profiles_mod.SETUP_ROLE)
+    if profile_exists(SETUP_PROFILE_NAME):
+        path = get_profile_dir(SETUP_PROFILE_NAME)
+        write_profile_meta(path, role=SETUP_ROLE)
         return SetupProfile(SETUP_PROFILE_NAME, path, created=False)
     path = profiles_mod.create_profile(SETUP_PROFILE_NAME, clone_from="default", clone_config=True, no_alias=True,
                                        description=SETUP_PROFILE_DESCRIPTION)
     _write_soul(path)
-    profiles_mod.write_profile_meta(path, role=profiles_mod.SETUP_ROLE)
+    write_profile_meta(path, role=SETUP_ROLE)
     return SetupProfile(SETUP_PROFILE_NAME, path, created=True)
 
 
@@ -86,7 +89,7 @@ def reset_setup_profile() -> SetupProfile:
     if found is None:
         raise LookupError("no setup profile to reset")
     name, path = found
-    source = profiles_mod.get_profile_dir("default")
+    source = get_profile_dir("default")
     _write_soul(path)
     _replace_dir(path / "memories")
     for relpath in profiles_mod._CLONE_SUBDIR_FILES:

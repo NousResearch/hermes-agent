@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 def bootstrap(start: bool) -> dict:
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
-    from hermes_cli.gateway_runtime_discovery import _socket_path
+    from gateway.runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
+    from gateway.runtime_discovery import _socket_path
 
     home = get_hermes_home().resolve()
     # Launch policy travels in session.create, not into daemon-wide defaults.

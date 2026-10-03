@@ -36,7 +36,7 @@ def _latest_version() -> int:
 def _setup(monkeypatch, tmp_path, active_home: Path):
     import hermes_cli.profiles as profiles_mod
 
-    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: tmp_path / "profiles")
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: tmp_path / "profiles")
     import hermes_constants
 
     monkeypatch.setattr(

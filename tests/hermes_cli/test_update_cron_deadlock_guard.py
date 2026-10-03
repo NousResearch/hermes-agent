@@ -15,6 +15,9 @@ the gateway burns the full 1800s force-drain cap.
 The fix: when the target gateway PID is an ancestor of this process,
 fire-and-forget (SIGUSR1 + return) instead of drain-waiting.
 """
+from gateway import process_liveness
+from gateway import restart
+from gateway import signal_restart
 
 from unittest.mock import patch
 
@@ -29,14 +32,14 @@ class TestAncestorDetectionGuard:
     def test_own_pid_is_ancestor(self):
         import os
 
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from gateway.restart import _is_pid_ancestor_of_current_process
 
         assert _is_pid_ancestor_of_current_process(os.getpid()) is True
 
     def test_parent_pid_is_ancestor(self):
         import os
 
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from gateway.restart import _is_pid_ancestor_of_current_process
 
         ppid = os.getppid()
         if ppid <= 1:
@@ -44,7 +47,7 @@ class TestAncestorDetectionGuard:
         assert _is_pid_ancestor_of_current_process(ppid) is True
 
     def test_unrelated_pid_is_not_ancestor(self):
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from gateway.restart import _is_pid_ancestor_of_current_process
 
         # PID 0 / negative are never ancestors; a very high unlikely PID isn't
         # either. Use the documented zero/negative contract for determinism.
@@ -57,7 +60,7 @@ class TestSelfRestartFireAndForget:
     """_request_gateway_self_restart signals without waiting for exit."""
 
     def test_refuses_non_ancestor_pid(self):
-        from hermes_cli.gateway import _request_gateway_self_restart
+        from gateway.restart import _request_gateway_self_restart
 
         # A non-ancestor must be refused — signalling an unrelated gateway
         # and returning immediately would skip its drain entirely.
@@ -68,21 +71,18 @@ class TestSelfRestartFireAndForget:
         import os
         import signal as _signal
 
-        from hermes_cli import gateway as gw
-
         sent = []
 
         def _fake_kill(pid, sig):
             sent.append((pid, sig))
 
-        with patch.object(gw.os, "kill", side_effect=_fake_kill), patch.object(
-            gw, "_wait_for_pid_exit",
+        with patch.object(restart.os, "kill", side_effect=_fake_kill), patch(
+            "gateway.process_liveness._wait_for_pid_exit",
             side_effect=AssertionError(
-                "fire-and-forget must NOT wait for the gateway to exit — "
-                "that wait is the #100179 deadlock"
+                "fire-and-forget must NOT wait for the gateway to exit"
             ),
         ):
-            ok = gw._request_gateway_self_restart(os.getpid())
+            ok = restart._request_gateway_self_restart(os.getpid())
 
         assert ok is True
         assert sent == [(os.getpid(), _signal.SIGUSR1)]
@@ -91,15 +91,13 @@ class TestSelfRestartFireAndForget:
         """Contrast: the non-ancestor path DOES drain-wait (unchanged)."""
         import signal as _signal
 
-        from hermes_cli import gateway as gw
-
         waited = []
 
-        with patch.object(gw.os, "kill"), patch.object(
-            gw, "_wait_for_pid_exit",
+        with patch.object(signal_restart.os, "kill"), patch.object(
+            signal_restart, "_wait_for_pid_exit",
             side_effect=lambda pid, t, **_: waited.append((pid, t)) or True,
         ):
-            ok = gw._graceful_restart_via_sigusr1(4242, drain_timeout=7.0)
+            ok = signal_restart._graceful_restart_via_sigusr1(4242, drain_timeout=7.0)
 
         assert ok is True
         assert waited == [(4242, 7.0)], "drain path must still wait for exit"
@@ -109,27 +107,25 @@ class TestDrainOrSignalTriage:
     """_drain_or_signal_gateway_for_update routes the three cases correctly."""
 
     def _patched(self, monkeypatch, *, ancestor, wedged):
-        from hermes_cli import gateway as gw
-
         calls = {"self_restart": [], "escalate": [], "drain": []}
         monkeypatch.setattr(
-            gw, "_is_pid_ancestor_of_current_process", lambda pid: ancestor
+            restart, "_is_pid_ancestor_of_current_process", lambda pid: ancestor
         )
         monkeypatch.setattr(
-            gw,
+            process_liveness,
             "probe_gateway_loop_liveness",
-            lambda pid: gw.GATEWAY_LOOP_WEDGED if wedged else "alive",
+            lambda pid: process_liveness.GATEWAY_LOOP_WEDGED if wedged else "alive",
         )
         monkeypatch.setattr(
-            gw,
+            restart,
             "_request_gateway_self_restart",
             lambda pid: calls["self_restart"].append(pid) or True,
         )
         monkeypatch.setattr(
-            gw, "_escalate_wedged_gateway", lambda pid: calls["escalate"].append(pid)
+            process_liveness, "_escalate_wedged_gateway", lambda pid: calls["escalate"].append(pid)
         )
         monkeypatch.setattr(
-            gw,
+            signal_restart,
             "_graceful_restart_via_sigusr1",
             lambda pid, drain_timeout, **_: calls["drain"].append((pid, drain_timeout))
             or True,

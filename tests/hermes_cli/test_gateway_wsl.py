@@ -1,4 +1,5 @@
 """Tests for WSL detection and WSL-aware gateway behavior."""
+from gateway import systemd_runtime
 
 from types import SimpleNamespace
 from unittest.mock import patch, mock_open
@@ -46,13 +47,14 @@ class TestSupportsSystemdServicesWSL:
         Linux-gated: ``supports_systemd_services()`` short-circuits on
         ``is_linux()``, so off Linux this asserted nothing about systemd.
         """
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(systemd_runtime, "is_linux", lambda: True)
+        monkeypatch.setattr(systemd_runtime, "is_termux", lambda: False)
         monkeypatch.setattr(
-            gateway.shutil, "which", lambda _name: "/usr/bin/systemctl"
+            systemd_runtime.shutil, "which", lambda _name: "/usr/bin/systemctl"
         )
-        monkeypatch.setattr(gateway, "is_wsl", lambda: True)
-        monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: True)
-        assert gateway.supports_systemd_services() is True
+        monkeypatch.setattr(systemd_runtime, "is_wsl", lambda: True)
+        monkeypatch.setattr(systemd_runtime, "_systemd_operational", lambda system=False: system)
+        assert systemd_runtime.supports_services() is True
 
     @pytest.mark.platforms("linux")
     def test_termux_still_excluded(self, monkeypatch):
@@ -61,8 +63,9 @@ class TestSupportsSystemdServicesWSL:
         Linux-gated: off Linux the ``not is_linux()`` arm returns False first,
         so the Termux exclusion itself would never be exercised.
         """
-        monkeypatch.setattr(gateway, "is_termux", lambda: True)
-        assert gateway.supports_systemd_services() is False
+        monkeypatch.setattr(systemd_runtime, "is_linux", lambda: True)
+        monkeypatch.setattr(systemd_runtime, "is_termux", lambda: True)
+        assert systemd_runtime.supports_services() is False
 
 # =============================================================================
 # WSL messaging in gateway commands
@@ -83,7 +86,7 @@ class TestGatewayCommandWSLMessages:
         """
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
         monkeypatch.setattr(gateway, "is_managed", lambda: False)
 
         args = SimpleNamespace(

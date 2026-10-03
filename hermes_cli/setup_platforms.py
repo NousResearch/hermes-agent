@@ -287,10 +287,14 @@ def _restart_running_gateway(any_messaging: bool, supports_systemd: bool) -> Non
     """Already running: offer a restart only when this pass may have changed platform config —
     a restart interrupts any active session, so it stays behind a prompt."""
     from hermes_cli.setup import print_error, prompt_yes_no
+    from gateway.launchd_service import launchd_restart
     from hermes_cli.gateway import (
-        systemd_restart, launchd_restart, UserSystemdUnavailableError, SystemScopeRequiresRootError,
-        _system_scope_wizard_would_need_root, _print_system_scope_remediation,
+        _system_scope_wizard_would_need_root,
+        _print_system_scope_remediation,
     )
+    from gateway.systemd_identity import SystemScopeRequiresRootError
+    from gateway.systemd_restart import systemd_restart
+    from gateway.systemd_runtime import UserSystemdUnavailableError
     import platform as _platform
     if supports_systemd and _system_scope_wizard_would_need_root():
         _print_system_scope_remediation("restart")
@@ -303,7 +307,7 @@ def _restart_running_gateway(any_messaging: bool, supports_systemd: bool) -> Non
         elif _platform.system() == "Darwin":
             launchd_restart()
         elif _platform.system() == "Windows":
-            from hermes_cli import gateway_windows
+            from gateway import windows_service as gateway_windows
             gateway_windows.restart()
     except UserSystemdUnavailableError as e:
         print_error("  Restart failed — user systemd not reachable:")
@@ -347,9 +351,10 @@ def setup_gateway(config: dict):
         _warn_missing_home_channels()
 
     # Offer optional persistence even with no messaging platforms: cron can run alone.
-    from hermes_cli.gateway import _is_service_running, supports_systemd_services
+    from hermes_cli.gateway import _is_service_running
+    from gateway.systemd_runtime import supports_services
     from hermes_cli.gateway_setup_service import ensure_gateway_service
-    supports_systemd = supports_systemd_services()
+    supports_systemd = supports_services()
     print()
     if _is_service_running():
         _restart_running_gateway(any_messaging, supports_systemd)

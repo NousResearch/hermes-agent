@@ -16,7 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
-from hermes_cli import gateway_migrate as gm
+from gateway import migration as gm
+from nous_cli import gateway_migrate as migrate_cli
 
 
 def _write_live_gateway(home: Path, served: list[str] | None = None) -> None:
@@ -81,8 +82,9 @@ def test_the_compensator_restores_one_gateway_and_never_rebuilds_the_fleet(stran
     """Design (a): the flipped host lock forbids N per-profile gateways, and the compensator
     clears the served record first — so every secondary it used to start would lose the flock
     race and respawn at exit 75 forever. It restores the ONE gateway the topology allows."""
-    assert gm.rollback_migration(stranded.root) is True
-    out = capsys.readouterr().out
+    result = gm.rollback_migration_result(stranded.root)
+    assert result.succeeded is True
+    out = "\n".join(result.lines)
 
     started = [(name, verb) for name, verb in stranded.ops if verb in ("install", "start", "restart")]
     assert all(name == "default" for name, _ in started), f"a secondary gateway was rebuilt: {started}"
@@ -95,8 +97,9 @@ def test_the_compensator_reports_failure_when_no_gateway_comes_up(stranded, caps
     """A service-manager ``start`` that returns is not proof of a live gateway: returning True on
     it printed '✓ Restored' over a unit respawning every 5s at ExecMainStatus=75."""
     stranded.start_succeeds = False
-    assert gm.rollback_migration(stranded.root) is False
-    out = capsys.readouterr().out
+    result = gm.rollback_migration_result(stranded.root)
+    assert result.succeeded is False
+    out = "\n".join(result.lines)
     assert "no gateway confirmed serving this host" in out
     assert "Compensation incomplete" in out
     assert (stranded.root / gm.MANIFEST_NAME).exists(), "the manifest must survive for the next resume"
@@ -113,7 +116,7 @@ def test_a_preflight_blocker_can_no_longer_trap_a_host_that_is_mid_migration(str
     assert plan.blocked and plan.manifest is not None, "the premise: blocked AND mid-migration"
 
     with pytest.raises(SystemExit) as exc:
-        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
+        migrate_cli.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
     assert exc.value.code == 0, "the blocked gate must not refuse a host that is already mid-migration"
     out = capsys.readouterr().out
     assert "resuming the migration recorded in" in out

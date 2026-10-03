@@ -182,7 +182,9 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     if env is None:
         return None
     from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
-    from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
+    from profiles.current import get_active_profile
+    from profiles.names import normalize_profile_name
+    from profiles.paths import profile_root_for_env_home
     argv = _dashboard_cmdline_for_pid(pid) or []
     env_home = env.get("HERMES_HOME", "").strip()
     profile = _profile_flag_value(argv)

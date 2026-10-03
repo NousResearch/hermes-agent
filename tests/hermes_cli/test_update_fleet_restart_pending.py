@@ -15,6 +15,7 @@ No live gateway, no network. Git and restart are mocked.
 """
 
 from __future__ import annotations
+from gateway import systemd_runtime
 
 import json
 from types import SimpleNamespace
@@ -158,7 +159,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_gateway_pids", lambda **_kwargs: []
     )
-    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )

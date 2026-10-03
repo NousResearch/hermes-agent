@@ -611,7 +611,7 @@ class GatewayConfig:
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
     # The default profile's gateway serves every profile on the host (profiles stamped into session
     # keys, per-profile adapters/credentials). On by default (DEFAULT_CONFIG), but UNSET here is
-    # ``None``: a request the gateway settles at boot, not a verdict. ``hermes_cli.gateway_multiplex_mode
+    # ``None``: a request the gateway settles at boot, not a verdict. ``gateway.multiplex_mode
     # .resolve_multiplex_mode`` runs the migration preflight (default profile, >= 2 profiles, no
     # secondary running its own gateway, no blocker, migratable host) and only then writes True/False.
     # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured

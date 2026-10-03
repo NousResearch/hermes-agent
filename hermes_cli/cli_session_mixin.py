@@ -1174,7 +1174,7 @@ class CLISessionMixin:
         # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in
         # the hint ("default"/"custom" use the standard HERMES_HOME).
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             _active_profile = get_active_profile_name()
         except Exception:
             _active_profile = "default"

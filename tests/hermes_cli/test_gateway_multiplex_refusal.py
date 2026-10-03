@@ -27,8 +27,8 @@ def standalone_home(tmp_path, monkeypatch):
     from hermes_cli import gateway as gw
     # The probe seams live on the hermes_cli.gateway facade, like the other refusal tests.
     monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
-    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda name=None: None)
-    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: False)
+    monkeypatch.setattr("gateway.host_topology.served_by_another_host_gateway", lambda name=None: None)
+    monkeypatch.setattr("gateway.host_topology.named_profile_served_by_running_multiplexer", lambda name=None: False)
     return gw, home
 
 
@@ -48,7 +48,7 @@ def test_standalone_named_home_is_not_refused_without_force(standalone_home):
 
 def test_standalone_named_home_still_served_by_host_record_is_refused_with_rescan(standalone_home, monkeypatch):
     gw, _home = standalone_home
-    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: True)
+    monkeypatch.setattr("gateway.host_topology.named_profile_served_by_running_multiplexer", lambda name=None: True)
     refused, out = _refusal(gw)
     assert refused is True
     assert "gateway.standalone" in out
@@ -66,7 +66,7 @@ def test_non_standalone_refusal_names_the_opt_out(standalone_home):
 
 def test_setup_stale_host_record_names_rescan(standalone_home, monkeypatch, capsys):
     gw, _home = standalone_home
-    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: True)
+    monkeypatch.setattr("gateway.host_topology.named_profile_served_by_running_multiplexer", lambda name=None: True)
     assert gw._served_profile_needs_no_service() is True
     assert "rescan-profiles" in capsys.readouterr().out
 

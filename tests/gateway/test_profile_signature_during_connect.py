@@ -19,7 +19,7 @@ async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, s
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        "profiles.current.get_active_profile_name", lambda: "default"
     )
     (profile / "config.yaml").write_text("model: {default: test}\n", encoding="utf-8")
     secrets = profile / ".env"

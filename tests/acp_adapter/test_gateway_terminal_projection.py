@@ -6,7 +6,7 @@ import pytest
 from acp.schema import TextContentBlock
 
 from acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from gateway.client import GatewayClientError
 
 
 def agent_with_admission():
@@ -42,6 +42,16 @@ async def test_cancelled_admission_suppresses_only_interrupt_metadata(text, visi
                       for call in agent._conn.session_update.await_args_list)
     assert emitted == visible
     assert 'other' in agent._terminals and 'current' not in agent._terminals
+
+
+@pytest.mark.asyncio
+async def test_replay_gap_is_a_recoverable_projection_failure():
+    agent = agent_with_admission()
+    with pytest.raises(GatewayClientError, match='session_replay_gap'):
+        await agent._project({
+            'session_id': 's', 'type': 'session.replay_gap',
+            'payload': {'reason': 'subscriber_overflow'},
+        })
 
 
 @pytest.mark.asyncio

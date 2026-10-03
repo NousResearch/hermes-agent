@@ -1,4 +1,6 @@
-"""Tests for hermes_cli.gateway_windows."""
+"""Tests for gateway.windows_service."""
+from gateway import service_identity
+from gateway import service_process
 
 import logging
 import os
@@ -9,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway
-import hermes_cli.gateway_windows as gateway_windows
+import gateway.windows_service as gateway_windows
 import hermes_cli.setup as setup
 
 
@@ -103,50 +105,28 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
 
 
 @pytest.mark.platforms("windows")
-def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
-    """No pythonw / base-interpreter detour: the venv console python.exe is
-    launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
-    console instead of flashing their own (#54220/#56747).
-
-    Windows-only: ``_build_gateway_argv()`` asserts the host is Windows and the
-    argv/env overlay it returns is built from real Windows path separators and
-    ``Scripts/python.exe`` layout — a patched ``sys.platform`` covered the
-    branch but not any of that.
-    """
-
+def test_build_gateway_argv_uses_runtime_bootstrap_without_venv_overlay(monkeypatch, tmp_path):
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
-    site_packages = project / "venv" / "Lib" / "site-packages"
     hermes_home = tmp_path / "hermes-home"
-    base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
     scripts.mkdir(parents=True)
-    site_packages.mkdir(parents=True)
     hermes_home.mkdir()
-    base.mkdir(parents=True)
+    python = scripts / "python.exe"
+    python.write_text("", encoding="utf-8")
 
-    venv_python = scripts / "python.exe"
-    venv_pythonw = scripts / "pythonw.exe"
-    base_pythonw = base / "pythonw.exe"
-    for exe in (venv_python, venv_pythonw, base_pythonw):
-        exe.write_text("", encoding="utf-8")
-    (project / "venv" / "pyvenv.cfg").write_text(
-        f"home = {base}\nimplementation = CPython\nuv = 0.11.14\nversion_info = 3.11.15\n",
-        encoding="utf-8",
-    )
-
-    import hermes_cli.gateway as gateway
-
-    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
-    monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr(service_process, "PROJECT_ROOT", project)
+    monkeypatch.setattr(service_process, "python_path", lambda: str(python))
+    monkeypatch.setattr(service_identity, "profile_arg", lambda hermes_home: "")
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
-    assert argv[:3] == [str(venv_python), "-m", "hermes_cli.main"]
+    assert argv[:3] == [str(python), "-I", "-c"]
+    assert "hermes_bootstrap" in argv[3]
+    assert argv[-2:] == ["gateway", "run"]
     assert cwd == str(hermes_home.resolve())
-    assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
-    assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
+    assert "VIRTUAL_ENV" not in env_overlay
+    assert "PYTHONPATH" not in env_overlay
 
 
 @pytest.mark.platforms("windows")
@@ -349,27 +329,26 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 
 
 def test_gateway_vbs_script_is_console_less(monkeypatch):
-    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
-    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+    """Persisted Windows launchers use the stable installation command, hidden by wscript."""
     monkeypatch.setattr(
-        gateway_windows,
-        "_resolve_detached_python",
-        lambda exe: (r"C:\venv\Scripts\pythonw.exe", Path(r"C:\venv"), []),
+        "hermes_cli._launchers.installation_command",
+        lambda root, args=(), **kwargs: [r"C:\\Hermes\\.hermes\\bin\\hermes.exe", *args],
     )
     content = gateway_windows._build_gateway_vbs_script(
-        r"C:\venv\Scripts\python.exe",
-        r"C:\Hermes",
-        r"C:\Hermes",
+        r"C:\\store\\python.exe",
+        r"C:\\Hermes",
+        r"C:\\Hermes",
         "--profile work",
     )
     assert "cmd.exe" not in content.lower()
     assert 'CreateObject("WScript.Shell")' in content
-    assert "pythonw.exe" in content
-    assert "hermes_cli.main" in content
+    assert ".hermes" in content and "hermes.exe" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
-    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
+    assert ", 0, False" in content
+    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED"):
         assert var in content
+    assert "VIRTUAL_ENV" not in content
+    assert "PYTHONPATH" not in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
 

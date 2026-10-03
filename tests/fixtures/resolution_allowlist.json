@@ -165,32 +165,32 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
-    "symbol": "_append_node_dir_for_service",
+    "path": "gateway/service_process.py",
+    "symbol": "append_node_dir",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
-    "symbol": "_build_wsl_interop_paths",
+    "path": "gateway/service_process.py",
+    "symbol": "build_wsl_interop_paths",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
-    "symbol": "_ensure_linger_enabled",
+    "path": "gateway/systemd_linger.py",
+    "symbol": "ensure_linger_enabled",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "gateway/restart.py",
     "symbol": "_get_parent_pid",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
-    "symbol": "_preflight_user_systemd",
+    "path": "gateway/systemd_runtime.py",
+    "symbol": "preflight_user",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "gateway/process_discovery.py",
     "symbol": "_windows_process_listing",
     "kind": "bare_which"
   },
@@ -200,13 +200,13 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
-    "symbol": "get_systemd_linger_status",
+    "path": "gateway/systemd_runtime.py",
+    "symbol": "linger_status",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
-    "symbol": "supports_systemd_services",
+    "path": "gateway/systemd_runtime.py",
+    "symbol": "supports_services",
     "kind": "bare_which"
   },
   {
@@ -215,7 +215,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_windows.py",
+    "path": "gateway/windows_service.py",
     "symbol": "_exec_schtasks",
     "kind": "bare_which"
   },

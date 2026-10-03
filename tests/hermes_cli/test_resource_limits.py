@@ -270,9 +270,7 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
     )
-    monkeypatch.setattr(
-        hermes_cli.profiles,
-        "get_active_profile_name",
+    monkeypatch.setattr("profiles.current.get_active_profile_name",
         lambda: "worker",
     )
     monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda *args: False)

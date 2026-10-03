@@ -72,7 +72,7 @@ async def test_authenticated_token_can_create_without_identityless_permissions(t
 def test_ordinary_daemon_keeps_control_auth_and_loop_witness(tmp_path, layout):
     from gateway.control_socket import identify_gateway, resolve_client_socket_path
     from gateway.shutdown_watchdog import get_loop_tick_socket_path
-    from hermes_cli.gateway import probe_gateway_loop_liveness
+    from gateway.process_liveness import probe_gateway_loop_liveness
 
     async def create(origin, token):
         url = origin.replace('http:', 'ws:') + '/api/ws'

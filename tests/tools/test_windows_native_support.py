@@ -442,7 +442,7 @@ class TestWindowlessGatewayRestartSpec:
 
     @pytest.mark.platforms("linux")
     def test_noop_on_non_windows(self):
-        import hermes_cli.gateway_windows as gw
+        import gateway.windows_service as gw
 
         argv = ["/path/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
         new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
@@ -451,7 +451,7 @@ class TestWindowlessGatewayRestartSpec:
         assert env == {}
 
     def test_empty_argv_is_safe(self):
-        import hermes_cli.gateway_windows as gw
+        import gateway.windows_service as gw
 
         new_argv, cwd, env = gw.windowless_gateway_restart_spec([])
         assert new_argv == []
@@ -472,7 +472,7 @@ class TestWindowlessGatewayRestartSpec:
         symptoms of testing Windows on a host that isn't Windows; on the
         Windows runner neither is needed.
         """
-        import hermes_cli.gateway_windows as gw
+        import gateway.windows_service as gw
 
         argv = [
             "C:/venv/Scripts/python.exe",

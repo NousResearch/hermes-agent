@@ -23,8 +23,8 @@ def _uncached_sidebar(monkeypatch):
 
 @pytest.fixture
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
-    from hermes_cli import profiles
     from hermes_constants import get_hermes_home
+    from profiles import paths as profile_paths
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -32,8 +32,8 @@ def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     for home in (default_home, worker_home):
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(profile_paths, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profile_paths, "_get_profiles_root", lambda: profiles_root)
     return {"default": default_home, "worker": worker_home}
 
 

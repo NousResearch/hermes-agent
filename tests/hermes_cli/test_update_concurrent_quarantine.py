@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway import process_discovery
 from hermes_cli import main as cli_main
 
 def test_restore_windows_gateway_service_waits_out_stop_pending(monkeypatch):
@@ -119,14 +120,14 @@ def test_pause_stops_launcher_after_worker_drain(
         profile="default", path=profile_home, pid=worker_pid
     )
 
-    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [worker_pid])
+    monkeypatch.setattr(process_discovery, "find_gateway_pids", lambda **_k: [worker_pid])
     monkeypatch.setattr(
-        gateway_mod, "find_windows_gateway_services", lambda **_k: []
+        process_discovery, "find_windows_gateway_services", lambda **_k: []
     )
     monkeypatch.setattr(
-        gateway_mod, "find_profile_gateway_processes", lambda **_k: [profile_proc]
+        process_discovery, "find_profile_gateway_processes", lambda **_k: [profile_proc]
     )
-    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr("gateway.restart.get_restart_drain_timeout", lambda: 0.1)
     # Graceful drain succeeds: the worker exits, leaving zero survivors — and
     # an exited worker is UNINSPECTABLE afterwards, exactly like the real
     # process table. Resolving the launcher after this point is impossible,

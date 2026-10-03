@@ -126,7 +126,8 @@ def enumerate_stores() -> List[Store]:
     """Default root plus every live named profile (a live profile claims its namespace whether or not
     it has written a ``state.db`` yet). The root store owns the routing index: the multiplexer's
     ``_routing_home`` is its launch home, the root."""
-    from hermes_cli.profiles import _get_default_hermes_home, _iter_named_profile_dirs
+    from profiles.paths import _get_default_hermes_home
+    from profiles.registry import _iter_named_profile_dirs
     root = _get_default_hermes_home()
     stores = [Store("default", root, routing=True)]
     stores.extend(Store(entry.name, entry) for entry in _iter_named_profile_dirs())
@@ -137,7 +138,7 @@ def _gateway_multiplexes(root: Path) -> bool:
     """Does the default gateway serve every profile? Same reader as every other CLI surface: the live
     record, else the explicit flag, else False — an unset flag is a verdict only the gateway reaches,
     and guessing "yes" would uproot a standalone gateway's own routing index."""
-    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    from gateway.multiplex_mode import default_gateway_multiplexes
     try:
         return default_gateway_multiplexes(root)
     except Exception:

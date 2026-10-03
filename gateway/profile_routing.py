@@ -146,7 +146,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             continue
         # Validate profile name to prevent path traversal (lazy import: cycle).
         try:
-            from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+            from profiles.names import normalize_profile_name, validate_profile_name
 
             profile = normalize_profile_name(profile)
             validate_profile_name(profile)

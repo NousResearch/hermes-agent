@@ -45,7 +45,7 @@ def fold_named_slot_intent(default_prior_state: Optional[str],
 
 
 def named_slot_name(profile: str) -> str:
-    from hermes_cli.service_manager import S6_SERVICE_PREFIX
+    from gateway.s6_manager import S6_SERVICE_PREFIX
     return f"{S6_SERVICE_PREFIX}{profile}"
 
 
@@ -84,7 +84,7 @@ def park_named_slot(profile: str, manager=None) -> None:
 
 
 def _wait_down(service_dir: Path, timeout_ms: int = 15000) -> None:
-    from hermes_cli.service_manager import _s6_run
+    from gateway.s6_manager import _s6_run
     try:
         _s6_run("s6-svwait", "-d", "-t", str(timeout_ms), str(service_dir), timeout=timeout_ms / 1000 + 5)
     except Exception:
@@ -104,5 +104,5 @@ def bring_root_slot_up(manager=None) -> str:
 
 
 def _manager():
-    from hermes_cli.service_manager import S6ServiceManager
+    from gateway.s6_manager import S6ServiceManager
     return S6ServiceManager()

@@ -69,8 +69,8 @@ def homes(tmp_path, monkeypatch, _isolate_hermes_home):
     # ``named_profile_has_servable_identity`` deliberately refuses to count as a tenant.
     (beta / ".env").write_text("BETA=1\n", encoding="utf-8")
 
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: launch_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: launch_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
     return {"launch": launch_home, "worker_beta": beta}
 
 
@@ -320,7 +320,7 @@ def test_unnamed_profile_still_means_the_launch_profile_on_a_single_profile_host
 
     empty_root = tmp_path / "no-named-profiles"
     empty_root.mkdir()
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: empty_root)
+    monkeypatch.setattr("profiles.registry._get_profiles_root", lambda: empty_root)
     assert activate_multi_profile_hosting_eagerly() is False
     assert not is_multiplex_active()
 

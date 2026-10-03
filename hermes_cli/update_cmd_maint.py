@@ -1047,7 +1047,7 @@ def _run_post_update_maintenance(
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the
     # update summary is the one line operators read (the boot log under s6 is not).
     with suppress(Exception):
-        from hermes_cli.gateway_multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
+        from gateway.multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
         for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
             print(line)
 

@@ -265,7 +265,7 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
+# Mirrors profiles._PROFILE_ID_RE -- duplicated so gateway identity code
 # stays import-light (hermes_constants + stdlib only).
 _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -681,7 +681,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             return None
         tokens = [t.lower() for t in cased_tokens]
         basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
+    # The launchd job's osascript wrapper (gateway.launchd_service.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
@@ -1397,8 +1397,8 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     if not name:
         return None
     from gateway.host_topology import host_gateway_topology
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
+    from gateway.served_profiles import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
     # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
     # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is

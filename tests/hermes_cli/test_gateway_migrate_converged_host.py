@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 
 import hermes_constants
-from hermes_cli import gateway_migrate as gm
+from gateway import migration as gm
+from nous_cli import gateway_migrate as migrate_cli
 
 
 @pytest.fixture
@@ -95,8 +96,8 @@ def test_three_consecutive_runs_signal_nothing(converged_host, capsys):
     """The update hook and the explicit command, three times over, on an untouched host."""
     from types import SimpleNamespace
     for _ in range(3):
-        gm.maybe_auto_migrate_after_update()
-        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))  # returns, never exits
+        migrate_cli.maybe_auto_migrate_after_update()
+        migrate_cli.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))  # returns, never exits
     out = capsys.readouterr().out
     assert converged_host.signals == [], f"a converged host was signalled: {converged_host.signals}"
     assert "Half-migrated" not in out and "SIGTERM" not in out

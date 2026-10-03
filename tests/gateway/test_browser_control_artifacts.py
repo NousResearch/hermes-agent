@@ -632,7 +632,7 @@ def test_multiplex_profiles_get_distinct_stores_regardless_of_touch_order(tmp_pa
 
     adapter = _adapter()
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir",
+        "profiles.paths.get_profile_dir",
         lambda profile: str(tmp_path / f"home-{profile}"),
     )
 

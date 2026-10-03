@@ -1,6 +1,11 @@
 """Profile-scoped helpers: profile discovery fallback, profile dir/MCP-server writes,
 the profile/config scope context managers, skills-hub and tools/analytics catalog helpers.
 """
+from profiles import current as profile_current
+from profiles import metadata as profile_metadata
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
 
 import logging
 import hashlib
@@ -60,10 +65,10 @@ def serving_profile_name() -> str:
     """
     from hermes_cli import profiles as profiles_mod
     try:
-        name = (profiles_mod.get_active_profile_name() or "").strip()
+        name = (profile_current.get_active_profile_name() or "").strip()
         if not name or name == "custom":
             return ""
-        return name if profiles_mod.profile_matches_home(name, get_process_hermes_home()) else ""
+        return name if profile_registry.profile_matches_home(name, get_process_hermes_home()) else ""
     except Exception:
         return ""
 
@@ -146,7 +151,7 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
                             has_env: bool, gateway_running: Callable[[], bool]) -> Dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
     meta = lambda key, default: _safe(  # noqa: E731
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+        lambda: profile_metadata.read_profile_meta(home).get(key, default), default)
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
@@ -160,14 +165,14 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
 
 def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     profiles: List[Dict[str, Any]] = []
-    default_home = profiles_mod._get_default_hermes_home()
+    default_home = profile_paths._get_default_hermes_home()
     if default_home.is_dir():
         profiles.append(_fallback_profile_entry(
             profiles_mod, "default", default_home, is_default=True,
             has_env=(default_home / ".env").exists(),
             gateway_running=lambda: profiles_mod._check_gateway_running(default_home)))
 
-    profiles_root = profiles_mod._get_profiles_root()
+    profiles_root = profile_paths._get_profiles_root()
     if profiles_root.is_dir():
         # os.scandir (context-managed) rather than Path.iterdir: an exception mid-iteration
         # must not leak the directory fd — the sidebar polls every few seconds, so a leak
@@ -176,7 +181,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             entries = sorted(scan, key=lambda e: e.name)
         for entry in entries:
             home = Path(entry.path)
-            if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
+            if not entry.is_dir() or not profile_names._PROFILE_ID_RE.match(entry.name):
                 continue
             profiles.append(_fallback_profile_entry(
                 profiles_mod, entry.name, home, is_default=False,
@@ -191,12 +196,12 @@ def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles_mod.validate_profile_name(name)
+        profile_names.validate_profile_name(name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(name):
+    if not profile_registry.profile_exists(name):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
-    return profiles_mod.get_profile_dir(name)
+    return profile_paths.get_profile_dir(name)
 
 
 def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
@@ -444,7 +449,7 @@ def _profile_cli_args(profile: Optional[str]) -> List[str]:
         return []
     from hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)
-    return ["-p", profiles_mod.normalize_profile_name(requested)]
+    return ["-p", profile_names.normalize_profile_name(requested)]
 
 
 def _hub_action_name(verb: str, key: str) -> str:

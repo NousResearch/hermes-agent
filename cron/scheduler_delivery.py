@@ -561,7 +561,7 @@ def cron_delivery_targets() -> list[dict]:
 
     # Bot Chat targets: one per local profile (machine-local; no gateway config or home channel).
     try:
-        from hermes_cli.profiles import list_profile_names
+        from profiles.registry import list_profile_names
         for profile_name in list_profile_names():
             targets.append({
                 "id": f"{BOT_CHAT_PLATFORM}:{profile_name}",
@@ -717,7 +717,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     import json
     import uuid
     from hermes_constants import get_hermes_home
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     from tools.bot_live_delivery import (
         deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
     )
@@ -827,7 +827,8 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
     if not profile_arg:
         return {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from profiles.names import normalize_profile_name
+        from profiles.registry import profile_exists
         canon = normalize_profile_name(profile_arg)
         if not profile_exists(canon):
             logger.warning(

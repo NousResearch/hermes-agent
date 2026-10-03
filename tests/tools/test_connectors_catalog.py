@@ -103,7 +103,7 @@ def _approve(env=None):
 
 def test_only_a_setup_profile_session_selects_the_tool(tmp_path, monkeypatch):
     import model_tools
-    from hermes_cli.profiles import write_profile_meta
+    from profiles.metadata import write_profile_meta
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     homes = {}
@@ -163,7 +163,8 @@ def test_unknown_and_unsupported_ids_are_drawn_failed_and_never_installed():
 
 
 def test_an_approved_row_installs_into_default_and_lists_the_live_tools(tmp_path):
-    from hermes_cli.profiles import get_profile_dir, write_profile_meta
+    from profiles.metadata import write_profile_meta
+    from profiles.paths import get_profile_dir
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     setup_home = tmp_path / "hermes-setup"

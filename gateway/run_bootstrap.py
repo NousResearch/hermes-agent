@@ -269,8 +269,8 @@ async def _start_gateway_start_control_socket(runner):
 
         def _pause_for_update_handler() -> dict:
             try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                from gateway.restart import get_restart_drain_timeout
+                _drain = float(get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
             accepted_box: list[bool] = []
@@ -475,9 +475,9 @@ def _launch_home_may_multiplex(config=None) -> bool:
     name = profile_name_for_home(get_hermes_home())
     if name in (None, "default"):
         return True
-    from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+    from gateway.multiplex_mode import explicit_multiplex_flag
     if config is not None and not explicit_multiplex_flag(get_hermes_home()):
-        from hermes_cli.gateway_multiplex_mode import MultiplexDecision, log_multiplex_decision
+        from gateway.multiplex_mode import MultiplexDecision, log_multiplex_decision
         decision = MultiplexDecision(
             False, "guard",
             f"profile {name!r} launched the gateway, and only the default profile runs the multiplexer "
@@ -568,7 +568,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
         # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
         # Any other same-user contender keeps the ordinary "already running" exit 1.
-        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        from gateway.host_topology import named_profile_served_by_running_multiplexer
         if named_profile_served_by_running_multiplexer():
             from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
             from gateway.run import _write_runtime_status_quiet

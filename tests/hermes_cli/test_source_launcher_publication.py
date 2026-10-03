@@ -459,10 +459,10 @@ def test_external_interpreter_keeps_its_owned_dependencies(tmp_path, monkeypatch
 @pytest.mark.platforms("posix")
 @pytest.mark.spawns_gateway_lookalike
 def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
-    from hermes_cli import gateway
+    from gateway import service_process, systemd_unit_render
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
-    monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
+    monkeypatch.setattr(service_process, "PROJECT_ROOT", repo)
     select_generation(repo, "shared", "ready")
     store = home / "tools"
     for version in ("python-A", "python-B"):
@@ -470,9 +470,9 @@ def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
         python.parent.mkdir(parents=True)
         python.symlink_to(interpreter)
         (store / "facts.json").write_text(json.dumps({"packages": {"python": {"entry": version}}}), encoding="utf-8")
-        gateway._prepare_service_launcher()
+        service_process.prepare_installation_launcher(repo, home)
         if version == "python-A":
-            unit = gateway.generate_systemd_unit()
+            unit = systemd_unit_render.generate_systemd_unit()
             assert str(store / version) not in unit
             command = shlex.split(next(line.split("=", 1)[1] for line in unit.splitlines() if line.startswith("ExecStart=")))
     shutil.rmtree(store / "python-A")

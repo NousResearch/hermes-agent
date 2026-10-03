@@ -258,6 +258,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/lazy-deps-guard.yml
 
+  pitlord-policy:
+    name: Enforce architecture policy
+    needs: detect
+    uses: ./.github/workflows/pitlord-policy.yml
+
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
@@ -327,6 +332,7 @@ jobs:
       - infographic-check
       - case-collision-check
       - lazy-deps-guard
+      - pitlord-policy
       - lockfile-diff
       - docker-lint
       - profile-artifact-check

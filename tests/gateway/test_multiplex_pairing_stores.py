@@ -45,9 +45,9 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _no_secondary
     runner._adapter_credential_fingerprint = lambda adapter: None
 
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
+    with patch("gateway.profile_serving.profiles_to_serve", return_value=[
         ("coder", tmp_path / ".hermes" / "profiles" / "coder"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    ]), patch("profiles.current.get_active_profile_name", return_value="default"):
         runner._profile_adapters["coder"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 
@@ -74,9 +74,9 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _no_secondary
     runner._adapter_credential_fingerprint = lambda adapter: None
 
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
+    with patch("gateway.profile_serving.profiles_to_serve", return_value=[
         ("ops", tmp_path / ".hermes" / "profiles" / "ops"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    ]), patch("profiles.current.get_active_profile_name", return_value="default"):
         runner._profile_adapters["ops"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 

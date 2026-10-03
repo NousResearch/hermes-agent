@@ -47,11 +47,14 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     """
     from hermes_cli import gateway as gw
     from hermes_constants import is_container
+    from gateway.systemd_identity import SystemScopeRequiresRootError
+    from gateway.systemd_lifecycle import install as systemd_install, start as systemd_start
+    from gateway.systemd_runtime import UserSystemdUnavailableError, has_conflicting_units, supports_services
 
     if is_container():
         gw.print_info("Run hermes gateway run as the container main process; use a Docker restart policy for persistence.")
         return False
-    supports_systemd = gw.supports_systemd_services()
+    supports_systemd = supports_services()
     if not (supports_systemd or gw.is_macos() or gw.is_windows()):
         gw.print_info("No supported service manager found. Run: hermes gateway run")
         return False
@@ -67,11 +70,11 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
                 gw.print_info("No service installed. Run: hermes gateway run")
                 gw.print_info("Without a service, scheduled jobs and messaging stop at logout/reboot; jobs cannot run while the host is off.")
                 return False
-            if supports_systemd and gw.has_conflicting_systemd_units():
+            if supports_systemd and has_conflicting_units():
                 gw.print_systemd_scope_conflict_warning()
                 return False
             if supports_systemd:
-                gw.systemd_install(force=False, non_interactive=True)
+                systemd_install(force=False, remove_legacy=True)
             elif gw.is_macos():
                 gw.launchd_install(force=False)
             else:
@@ -82,17 +85,17 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
                 return False
             record_service_choice("install", config)
         if supports_systemd:
-            gw.systemd_start()
+            systemd_start()
         elif gw.is_macos():
             gw.launchd_start()
         else:
             gw._gw_windows().start()
         gw.print_success("Gateway service running (cron jobs + messaging platforms).")
         return True
-    except gw.UserSystemdUnavailableError as exc:
+    except UserSystemdUnavailableError as exc:
         gw.print_warning("Could not reach user systemd to start the gateway service:")
         gw._print_indented(str(exc), gw.print_info)
-    except gw.SystemScopeRequiresRootError as exc:
+    except SystemScopeRequiresRootError as exc:
         gw.print_warning(f"Gateway service needs root for this scope: {exc}")
         gw._print_system_scope_remediation("start")
     except SystemExit:
@@ -107,7 +110,7 @@ def _wizard_install_service(backend: str) -> None:
     """Choose persistence once; start-now without persistence stays unmanaged."""
     import subprocess
     from hermes_cli import gateway as gw
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from gateway.runtime import ensure_gateway_runtime
 
     if not sys.stdin.isatty():
         return

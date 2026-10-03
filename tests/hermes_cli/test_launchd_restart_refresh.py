@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.gateway as gateway_cli
+from gateway import launchd_service, signal_restart
 
 
 @pytest.fixture
@@ -32,21 +32,21 @@ def launchd_seam(monkeypatch, tmp_path):
     plist_path = tmp_path / "ai.hermes.gateway.plist"
     plist_path.write_text("<plist>whatever</plist>", encoding="utf-8")
 
-    monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
-    monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
-    monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(launchd_service, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(launchd_service, "_launchd_domain", lambda: "gui/501")
+    monkeypatch.setattr(launchd_service, "get_launchd_plist_path", lambda: plist_path)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
-    monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+    monkeypatch.setattr(launchd_service, "_request_gateway_self_restart", lambda pid: False)
     monkeypatch.setattr(
-        gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: False
+        signal_restart, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: False
     )
     monkeypatch.setattr(
-        gateway_cli,
+        launchd_service,
         "_wait_for_launchd_service_pid",
         lambda label, old_pid, timeout=10.0, *, domain: False,
     )
     monkeypatch.setattr(
-        gateway_cli,
+        launchd_service,
         "_launchd_unsupported_marker_exists",
         lambda: False,
     )
@@ -55,10 +55,10 @@ def launchd_seam(monkeypatch, tmp_path):
         calls.append(cmd)
         if check and cmd[0] == "launchctl" and cmd[1] == "kickstart" and "-k" in cmd:
             # The wedged-launchctl shape: kickstart never returns.
-            raise gateway_cli.subprocess.TimeoutExpired(cmd, 90)
+            raise launchd_service.subprocess.TimeoutExpired(cmd, 90)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(launchd_service.subprocess, "run", fake_run)
     return calls
 
 
@@ -66,13 +66,13 @@ def test_stale_plist_is_refreshed_before_any_kickstart(monkeypatch, launchd_seam
     """The update-restart path must repair the definition, not revive a stale one."""
     refreshed = []
     monkeypatch.setattr(
-        gateway_cli, "refresh_launchd_plist_if_needed", lambda: refreshed.append(1) or True
+        launchd_service, "refresh_launchd_plist_if_needed", lambda: refreshed.append(1) or True
     )
     # Even when the kickstart later wedges (TimeoutExpired escapes to the
     # caller, exactly as on the broken host), the refresh must already have
     # run — that ordering is the contract.
-    with pytest.raises(gateway_cli.subprocess.TimeoutExpired):
-        gateway_cli.launchd_restart()
+    with pytest.raises(launchd_service.subprocess.TimeoutExpired):
+        launchd_service.launchd_restart()
 
     assert refreshed == [1], "refresh must run before the restart decision"
     kickstarts = [c for c in launchd_seam if c[:2] == ["launchctl", "kickstart"]]
@@ -84,9 +84,9 @@ def test_failed_refresh_routes_to_bounded_bootstrap_not_the_90s_kickstart(monkey
 
     The bootstrap path (30s timeouts, loud failure) is the bounded revival.
     """
-    monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+    monkeypatch.setattr(launchd_service, "refresh_launchd_plist_if_needed", lambda: False)
 
-    gateway_cli.launchd_restart()
+    launchd_service.launchd_restart()
 
     kickstarts = [c for c in launchd_seam if "kickstart" in c]
     assert not [c for c in kickstarts if "-k" in c], (

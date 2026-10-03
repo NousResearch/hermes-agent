@@ -185,7 +185,7 @@ class _LivenessPatches:
         )
         self._stack.enter_context(
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "gateway.host_topology.named_profile_served_by_running_multiplexer",
                 return_value=False,
             )
         )
@@ -247,7 +247,7 @@ class TestRuntimeLockFirstLiveness:
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "gateway.host_topology.named_profile_served_by_running_multiplexer",
                 return_value=False,
             ),
         ):
@@ -284,7 +284,7 @@ class TestRuntimeLockFirstLiveness:
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "gateway.host_topology.named_profile_served_by_running_multiplexer",
                 return_value=True,
             ),
         ):
@@ -300,7 +300,7 @@ class TestRuntimeLockFirstLiveness:
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "gateway.host_topology.named_profile_served_by_running_multiplexer",
                 return_value=False,
             ),
         ):

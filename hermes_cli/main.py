@@ -456,7 +456,7 @@ def _looks_like_hermes_invocation() -> bool:
 
 
 def _exit_invalid_profile_name(value: str) -> None:
-    from hermes_cli.profiles import _invalid_profile_name_error
+    from profiles.names import _invalid_profile_name_error
 
     print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
     print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
@@ -574,7 +574,7 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
         return False
     if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
         return False
-    from hermes_cli.service_manager import _s6_running
+    from gateway.service_manager import _s6_running
     return _s6_running()
 
 
@@ -620,7 +620,7 @@ def _apply_profile_override() -> None:
     if profile_name is None:
         return
     try:
-        from hermes_cli.profiles import resolve_profile_env
+        from profiles.paths import resolve_profile_env
 
         hermes_home = resolve_profile_env(profile_name)
     except FileNotFoundError as exc:

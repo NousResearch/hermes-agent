@@ -104,8 +104,8 @@ def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:
 
 
 def _multiplexer_starting(home: Path) -> bool:
-    from hermes_cli.gateway_runtime_discovery import missing_owner_state
-    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    from gateway.runtime_discovery import missing_owner_state
+    from gateway.runtime_multiplex import multiplexer_root_for
     root = multiplexer_root_for(home)
     return root is not None and missing_owner_state(root) == "starting"
 
@@ -117,7 +117,7 @@ def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None
     parked = payload.get("parked_profiles")
     if not isinstance(parked, dict):
         return None
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
     name = normalize_profile_name(home.name)
     reason = next((r for n, r in parked.items() if normalize_profile_name(str(n)) == name), None)
     if reason is None:
@@ -129,8 +129,8 @@ def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | 
     """A served secondary has no socket of its own: the default multiplexer's control socket
     answers for it, and its ``identify`` lists the home under ``served_profiles``. Only the
     multiplexer's live descriptor proves service; a held ``gateway.lock`` alone does not."""
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError, query_identify
-    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    from gateway.runtime_discovery import DiscoveryError, query_identify
+    from gateway.runtime_multiplex import multiplexer_root_for
     root = multiplexer_root_for(home)
     if root is None:
         return None
@@ -151,7 +151,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     A named profile served by the default multiplexer resolves to the multiplexer's endpoint
     with ``profile_id`` = the profile's own home, so clients attach to it with that identity.
     """
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError, missing_owner_state, query_identify
+    from gateway.runtime_discovery import DiscoveryError, missing_owner_state, query_identify
 
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
@@ -181,7 +181,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     owner/start request is observed this invocation never launches another.
     """
     import time
-    from hermes_cli.gateway_runtime_service import (
+    from gateway.runtime_service import (
         RuntimeStartError, discover_existing_gateway_service, remaining,
         start_existing_gateway_service,
     )
@@ -219,7 +219,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 # A named profile the default multiplexer serves has no daemon of its own: start
                 # (or await) the MULTIPLEXER. A per-profile spawn here would become a second owner
                 # that blocks the multiplexer's next all-or-nothing reserve.
-                from hermes_cli.gateway_runtime_multiplex import implied_host_root, multiplexer_serves_home
+                from gateway.runtime_multiplex import implied_host_root, multiplexer_serves_home
                 target = multiplexer_serves_home(home) or home
                 service = discover_existing_gateway_service(target, deadline=deadline)
                 if service is None and target == home and (host := implied_host_root(home)) is not None:
@@ -234,7 +234,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 if service is not None:
                     start_existing_gateway_service(service, deadline=deadline)
                 else:
-                    from hermes_cli.gateway_runtime_start import spawn_unmanaged_gateway
+                    from gateway.runtime_start import spawn_unmanaged_gateway
                     spawn_unmanaged_gateway(target, deadline=deadline)
                 requested = True
             time.sleep(min(delay, remaining(deadline)))

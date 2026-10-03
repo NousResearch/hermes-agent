@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
+
 from contextlib import contextmanager
 from typing import Optional
 
@@ -31,17 +35,16 @@ def _scope_to_profile(profile: Optional[str]):
         yield
         return
 
-    from hermes_cli import profiles as profiles_mod
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     try:
-        profiles_mod.validate_profile_name(requested)
+        profile_names.validate_profile_name(requested)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(requested):
+    if not profile_registry.profile_exists(requested):
         raise HTTPException(status_code=404, detail=f"Profile '{requested}' does not exist.")
 
-    token = set_hermes_home_override(str(profiles_mod.get_profile_dir(requested)))
+    token = set_hermes_home_override(str(profile_paths.get_profile_dir(requested)))
     try:
         yield
     finally:

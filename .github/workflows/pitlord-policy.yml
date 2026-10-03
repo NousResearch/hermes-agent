@@ -1,0 +1,30 @@
+name: Pitlord Policy
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  pitlord-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Install Pitlord
+        # v0.1.2 — pin the required policy gate to immutable source.
+        run: go install github.com/Lokee86/pitlord/cmd/pitlord@c6b9c035b46e54c49408e7972cfe5e53c27779bd
+
+      - name: Validate architecture policy
+        run: pitlord validate --policy pitlord.json
+
+      - name: Enforce architecture policy
+        run: pitlord check --repo . --policy pitlord.json

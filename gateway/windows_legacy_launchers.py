@@ -1,8 +1,8 @@
 """Pre-suffix Windows gateway launchers: the objects the current per-profile names cannot reach.
 
-Before task/launcher names carried ``_profile_suffix()``, an install wrote the Scheduled Task
+Before task/launcher names carried the profile suffix, an install wrote the Scheduled Task
 ``Hermes_Gateway``, the Startup entry ``Hermes_Gateway.vbs``/``.cmd`` and the launcher pair
-``gateway-service\\Hermes_Gateway.{vbs,cmd}``. Every operation in ``gateway_windows`` is keyed on
+``gateway-service\\Hermes_Gateway.{vbs,cmd}``. Every operation in ``windows_service`` is keyed on
 ``get_task_name()`` → ``Hermes_Gateway_<suffix>``, so those strays are never queried, rewritten,
 reported or removed: they keep launching a second gateway at logon, never pick up launcher
 fixes, and ``hermes gateway status`` prints ✓ while they do (#116157). This module enumerates
@@ -15,9 +15,9 @@ from pathlib import Path
 
 
 def _w():
-    import hermes_cli.gateway_windows as gateway_windows  # facade binding is the seam for tests
+    import gateway.windows_service as windows_service
 
-    return gateway_windows
+    return windows_service
 
 
 def _targets_this_home(text: str) -> bool:

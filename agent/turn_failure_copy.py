@@ -344,7 +344,7 @@ _ONE_OFF_COPY: Dict[str, str] = {
     ),
     "max_iterations_no_summary": (
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
-        "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
+        "produce a summary. Send `continue` to keep going, or raise `agent.max_turns` in your config."
     ),
     "nous_rate_limit": (
         "Wait for the reset and send /retry, or switch models with /model. To avoid waits, add "

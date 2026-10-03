@@ -484,10 +484,12 @@ class GatewaySlashCommandsMixin(
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — inspect and manually control failed/paused
         adapters (pause stops the reconnect watcher; resume re-queues for retry)."""
-        # Strip the leading "/platform" (or "/PLATFORM") token if present
-        parts = (getattr(event, "content", "") or "").strip().split(maxsplit=2)
-        if parts and parts[0].lower().lstrip("/").startswith("platform"):
-            parts = parts[1:]
+        # get_command_args() reads event.text, drops the "/platform" token and
+        # normalizes iOS smart-dash corruption (em/en dash → "--"/"-"); the old
+        # code read a nonexistent event.content, so every pause/resume silently
+        # degraded to the list action. maxsplit=1 keeps the old target semantics
+        # (a trailing extra word still lands in the platform name, not dropped).
+        parts = event.get_command_args().strip().split(maxsplit=1)
         action = (parts[0] if parts else "list").lower()
         target = parts[1].lower() if len(parts) > 1 else ""
         failed = getattr(self, "_failed_platforms", {}) or {}

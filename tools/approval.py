@@ -642,7 +642,16 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     An un-importable tirith honours ``security.tirith_fail_open``: fail-closed means block,
     since nobody can approve.
     """
-    if ctx.mode() != "deny":
+    mode = ctx.mode()
+    if mode == "smart":
+        warnings = _command_warnings(command, get_current_session_key())
+        if not warnings:
+            return None
+        return _unattended_smart(
+            _COMMAND_GATE, command, "; ".join(item[1] for item in warnings),
+            warnings[0][0], [item[0] for item in warnings],
+        )
+    if mode != "deny":
         return None
 
     def block(subject: str) -> dict:
@@ -948,6 +957,35 @@ def _presence(approval_callback=None) -> tuple:
     return approval_callback, is_cli, is_gateway, is_ask
 
 
+def _unattended_smart(spec: _GateSpec, command: str, description: str,
+                      pattern_key: str, pattern_keys: list[str]) -> dict:
+    """Review one action, never grant a pattern or wait on an absent owner.
+
+    An explicit plugin human-decision gate stays a human decision. Only the
+    built-in risk guard can automatically clear an ordinary false positive.
+    """
+    if pattern_key.startswith("plugin_rule:"):
+        return _blocked(
+            f"BLOCKED: {description}. A plugin requires an explicit owner decision.",
+            pattern_key=pattern_key, description=description,
+        )
+    result, _ = _smart_gate(
+        spec, command, description, pattern_key, pattern_keys,
+        get_current_session_key(), human_present=False,
+    )
+    if result is not None:
+        return result
+    return {
+        "approved": False, "status": "blocked", "smart_escalated": True,
+        "pattern_key": pattern_key, "description": description,
+        "message": (
+            f"BLOCKED: smart review did not authorize this action ({description}). "
+            "Keep the task and its exact review requirement; do not rephrase the "
+            "command to evade review or claim completion. No owner prompt is pending."
+        ),
+    }
+
+
 def _run_approval_gate(
     *, pattern_key: str, description: str, display_target: str, approval_callback=None,
     subject: str = "", noun: str = "flagged actions",
@@ -985,6 +1023,10 @@ def _run_approval_gate(
             "unattended": unattended_deny_message,
         }
         for ctx in _unattended_contexts():
+            if ctx.mode() == "smart":
+                return _unattended_smart(
+                    _ACTION_GATE, display_target, description, pattern_key, [pattern_key],
+                )
             if ctx.mode() == "deny":
                 message = deny_messages[ctx.name]
                 if not message and ctx.name == "unattended":
@@ -1165,6 +1207,22 @@ def _tirith_scan(command: str) -> dict:
         }]}
 
 
+def _command_warnings(command: str, session_key: str) -> list[tuple]:
+    """Gather the same scanner and pattern evidence on attended and worker paths."""
+    tirith_result = _tirith_scan(command)
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    warnings = []
+    if tirith_result["action"] in {"block", "warn"}:
+        findings = tirith_result.get("findings") or []
+        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+        tirith_key = f"tirith:{rule_id}"
+        if not is_approved(session_key, tirith_key):
+            warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
+    if is_dangerous and not is_approved(session_key, pattern_key):
+        warnings.append((pattern_key, description, False))
+    return warnings
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1202,18 +1260,8 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
     # approval flow (block used to be a hard stop) so users can inspect the findings and approve.
-    tirith_result = _tirith_scan(command)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    warnings = []
     session_key = get_current_session_key()
-    if tirith_result["action"] in {"block", "warn"}:
-        findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
-        if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
-    if is_dangerous and not is_approved(session_key, pattern_key):
-        warnings.append((pattern_key, description, False))
+    warnings = _command_warnings(command, session_key)
     if not warnings:
         return _approved()
 
@@ -1271,6 +1319,11 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # No user is present to approve arbitrary code in -q / cron / unattended
     # sessions: the first active context resolves instantly from its mode.
     for ctx in _unattended_contexts():
+        if ctx.mode() == "smart":
+            return _unattended_smart(
+                _EXECUTE_CODE_GATE, f"execute_code <<'PY'\n{code}\nPY",
+                description, pattern_key, [pattern_key],
+            )
         if ctx.mode() == "deny":
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "

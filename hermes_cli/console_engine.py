@@ -716,9 +716,9 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
     ns = _parse(
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
-    from hermes_state import DEFAULT_DB_PATH
+    from hermes_state import _default_db_path
     from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
-    db_path = DEFAULT_DB_PATH
+    db_path = _default_db_path()
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return

@@ -1,4 +1,8 @@
 import asyncio
+import subprocess
+import sys
+
+import pytest
 
 
 from gateway.config import Platform
@@ -80,6 +84,44 @@ def _unseen_terminal_events(tid):
         return events
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("ping_recorded", [False, True])
+def test_notifier_recovers_a_claim_after_gateway_exit(tmp_path, monkeypatch, ping_recorded):
+    """A dead claimant cannot consume a ping; a checkpointed ping is not sent twice."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "crashed-claim.db"))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    claim_in_child = """
+import sys
+from hermes_cli import kanban_db_connect as kbc, kanban_db_notify as kbn
+with kbc.connect() as conn:
+    _, _, events = kbn.claim_unseen_events_for_sub(
+        conn, task_id=sys.argv[1], platform='telegram', chat_id='chat-1', kinds=['completed'])
+    assert [event.kind for event in events] == ['completed']
+    if sys.argv[2] == '1':
+        kbn.record_notify_ping(
+            conn, task_id=sys.argv[1], platform='telegram', chat_id='chat-1',
+            event_id=events[0].id)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", claim_in_child, tid, str(int(ping_recorded))],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert child.returncode == 0, child.stderr
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == (0 if ping_recorded else 1)
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+        assert sub["claim_owner_pid"] is None
+        assert kbn.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", kinds=["completed"],
+        )[1] == []
 
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):

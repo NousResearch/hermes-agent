@@ -27,6 +27,45 @@
 
 import { backendProfileArg } from './profile-id-guard'
 
+// eslint-disable-next-line no-control-regex -- deliberately reject C0/C1 controls in launcher values
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
+
+function assertNoControlCharacters(value: string, field: string): void {
+  if (CONTROL_CHARACTERS.test(value)) {
+    throw new Error(`${field} contains control characters`)
+  }
+}
+
+export interface OpenInTerminalOptions {
+  cwd?: unknown
+  profile?: unknown
+}
+
+export interface OpenInTerminalRequest {
+  cwd?: string
+  profile?: string
+  sessionId: string
+}
+
+/** Validate renderer-controlled values before the IPC handler resolves a runtime. */
+export function normalizeOpenInTerminalRequest(
+  sessionId: unknown,
+  opts?: OpenInTerminalOptions
+): OpenInTerminalRequest | null {
+  if (typeof sessionId !== 'string' || !sessionId.trim() || CONTROL_CHARACTERS.test(sessionId)) {
+    return null
+  }
+
+  const profile = typeof opts?.profile === 'string' ? opts.profile : undefined
+  const cwd = typeof opts?.cwd === 'string' ? opts.cwd : undefined
+
+  if ((profile && CONTROL_CHARACTERS.test(profile)) || (cwd && CONTROL_CHARACTERS.test(cwd))) {
+    return null
+  }
+
+  return { sessionId: sessionId.trim(), profile: profile?.trim() || undefined, cwd }
+}
+
 /** Argv for resuming a session in the TUI, profile-pinned when we know it. */
 export function tuiResumeArgs(sessionId: string, profile?: string): string[] {
   // A non-slug profile value must never cross into spawn argv (#88842).
@@ -41,9 +80,14 @@ export function posixQuote(value: string): string {
   return `'${String(value ?? '').replaceAll("'", `'\\''`)}'`
 }
 
-/** Quote a value for a cmd.exe script line. */
+/**
+ * Quote a value for a cmd.exe script line. Batch files expand `%VAR%` even
+ * inside double quotes, so a literal `%` is written as `%%`.
+ */
 export function windowsQuote(value: string): string {
-  return `"${String(value ?? '').replaceAll('"', '""')}"`
+  return `"${String(value ?? '')
+    .replaceAll('"', '""')
+    .replaceAll('%', '%%')}"`
 }
 
 /**
@@ -89,6 +133,14 @@ export interface TerminalScriptSpec {
  */
 export function buildTerminalScript({ command, args, cwd, env = {}, platform = process.platform }: TerminalScriptSpec) {
   const entries = Object.entries(env)
+
+  assertNoControlCharacters(command, 'command')
+  assertNoControlCharacters(cwd, 'cwd')
+  args.forEach((arg, index) => assertNoControlCharacters(arg, `args[${index}]`))
+  entries.forEach(([key, value]) => {
+    assertNoControlCharacters(key, 'environment key')
+    assertNoControlCharacters(value, `environment value for ${key}`)
+  })
 
   if (platform === 'win32') {
     return [

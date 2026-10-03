@@ -1273,6 +1273,23 @@ class TestDeleteAndExport:
         assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
         assert db.get_session("too-many-messages") is None
 
+    def test_session_id_boundaries_reject_controls_without_narrowing_historical_ids(self, db):
+        historical_id = "agent:main:legacy/session id_2026-08-14"
+        assert db.create_session(historical_id, source="cli") == historical_id
+
+        imported_id = "imported-session\r\n@echo attacker-line"
+        result = db.import_sessions([{"id": imported_id, "messages": []}])
+
+        assert result["ok"] is False
+        assert result["errors"] == [
+            {"index": 0, "session_id": imported_id, "error": "session id contains control characters"}
+        ]
+        assert db.get_session(imported_id) is None
+
+        with pytest.raises(ValueError, match="session id contains control characters"):
+            db.create_session("created-session\x00attacker", source="cli")
+        assert db.get_session("created-session\x00attacker") is None
+
 
 # =========================================================================
 # Prune

@@ -4539,6 +4539,14 @@ def _absorb_windows_console_controls() -> None:
         pass
 
 
+# Exit-diag ceiling: a crash loop appends one full traceback blob per restart, so the recorder
+# rotates the file to .1/.2 before a write once it passes this size (a gateway crash loop grew it
+# past 130 MB on a VPS host, #132222). Inline rotation, not a logging handler: this runs on the
+# exit path, where building managed-handler machinery per record is too heavy and too fragile.
+_EXIT_DIAG_MAX_BYTES = 1_048_576
+_EXIT_DIAG_BACKUP_COUNT = 2
+
+
 def _make_exit_diag():
     """``_exit_diag(tag, **extra)`` recorder writing ``logs/gateway-exit-diag.log`` — captures every way
     ``asyncio.run()`` can return, for chasing silent Windows gateway deaths. HERMES_GATEWAY_EXIT_DIAG=0 opts out."""
@@ -4555,7 +4563,16 @@ def _make_exit_diag():
                 "ts": _dt.now(_tz.utc).isoformat(), "tag": tag, "pid": os.getpid(),
                 "python": sys.version.split()[0], "platform": sys.platform, **extra,
             }
-            with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
+            diag = log_dir / "gateway-exit-diag.log"
+            try:
+                if diag.stat().st_size >= _EXIT_DIAG_MAX_BYTES:
+                    for i in range(_EXIT_DIAG_BACKUP_COUNT, 0, -1):
+                        src = diag if i == 1 else log_dir / f"gateway-exit-diag.log.{i - 1}"
+                        if src.exists():
+                            src.replace(log_dir / f"gateway-exit-diag.log.{i}")
+            except OSError:
+                pass  # rotation is best-effort; losing an old backup must not lose the new record
+            with open(diag, "a", encoding="utf-8") as f:
                 f.write(json.dumps(line, default=str) + "\n")
         except Exception:
             pass  # never let the diagnostic itself crash the gateway

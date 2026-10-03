@@ -1407,6 +1407,31 @@ def terminal_tool(
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
         )
+        # Pure hard blocks first (no env, no subprocess): workdir + self-repo.
+        # They preserve their specific messages without prompting for trivially
+        # blocked commands. The env-dependent gateway-lifecycle scan (which may
+        # ``env.execute`` script reads) runs after approval below.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                raise _Rejected(_error_json(workdir_error, status="blocked"))
+        if plan.env_type == "local":
+            from tools.approval import get_current_session_key as _session_key_for_pure_block
+            _pure_session_key = _session_key_for_pure_block(default="") or (task_id or "")
+            _pure_blocked = self_repo_block(
+                command=command, cwd=plan.cwd, workdir=workdir, session_key=_pure_session_key,
+            )
+            if _pure_blocked:
+                raise _Rejected(_pure_blocked)
+        # Approval gates ALL remaining side effects (#130890): env creation,
+        # guard script reads, spawn/execute. A denied/timed-out command must
+        # never create environments nor spawn subprocesses, so this runs before
+        # _acquire_env and _pre_exec_block. Pre-exec security checks (tirith +
+        # dangerous command detection); force=True means the user already confirmed.
+        verdict = _run_approval_guards(command, plan.env_type, plan.config, force=force)
+
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
@@ -1448,9 +1473,9 @@ def terminal_tool(
                 "(process-identity probe wedged); the command was not run. Retry the call.",
                 status="error",
             ))
-        # Pre-exec security checks (tirith + dangerous command detection);
-        # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        # ``verdict`` was obtained before any environment was acquired (see
+        # above); the pre-exec hard blocks just ran after approval so a
+        # gateway-lifecycle refusal keeps its specific message.
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:

@@ -39,9 +39,10 @@ def test_restored_sessions_keep_the_pin_and_the_sweeps_archive_provenance(tmp_pa
         payload = json.loads(json.dumps(source.export_all(include_inactive=True)))
         # An export that predates the durable flags still imports as an ordinary, visible session.
         payload.append({"id": "legacy", "source": "cli", "messages": [{"role": "user", "content": "old"}]})
-        # A hand-edited export's string "0" flags are coerced like the int columns, not by truthiness.
+        # A hand-edited export's string "0" flags are coerced like the int columns, not by truthiness,
+        # and a live row is never marked as the sweep's archive.
         flags = ("archived", "auto_archived", "pinned", "hidden")
-        payload.append({"id": "edited", "source": "cli", **{flag: "0" for flag in flags}})
+        payload.append({"id": "edited", "source": "cli", **{flag: "0" for flag in flags}, "auto_archived": 1})
 
         assert target.import_sessions(payload)["imported"] == 4
         target.maybe_auto_prune_and_vacuum(retention_days=90, vacuum=False)

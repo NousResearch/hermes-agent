@@ -553,6 +553,7 @@ class SessionPortabilityMixin:
             **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
+        params["auto_archived"] &= params["archived"]  # only the sweep sets it, and only on rows it archives
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value

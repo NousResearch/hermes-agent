@@ -59,3 +59,12 @@ def test_unmatched_rotation_uses_requested_model_eligibility():
     )
 
     assert rotated is not None and rotated.id == "cred-0"
+
+
+def test_unidentified_failure_selects_using_requested_model_eligibility():
+    pool = _pool_with_unrelated_cooldown()
+    pool._current_id = None
+
+    rotated = pool.mark_exhausted_and_rotate(status_code=401, model=TARGET_MODEL)
+
+    assert rotated is not None and rotated.id == "cred-1"

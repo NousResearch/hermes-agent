@@ -586,3 +586,256 @@ class TestDirectoryPluginKeepsIdentityOverEntryPoint:
         rows = [r for r in _discover_all_plugins() if r[0] == "twin"]
         assert [r[3] for r in rows] == ["user"]
         assert str(rows[0][4]).endswith("plugins/twin")
+
+
+class TestUserKeyCollisionFailLoud:
+    """Flat user manifests take their registry key from the manifest ``name:`` field, so a backup copy of a
+    plugin directory (``statusboard.bak-…``) races the live directory for the SAME key and
+    last-in-discovery-order (``sorted(path.iterdir())``) wins silently. Each such race must be announced as
+    a WARNING on the ``hermes_cli.plugins.collisions`` logger — one line per colliding key, every competing
+    path in discovery order, the winner named — WITHOUT changing which manifest loads."""
+
+    COLLISION_LOGGER = "hermes_cli.plugins.collisions"
+
+    @staticmethod
+    def _collision_records(caplog) -> list:
+        return [r for r in caplog.records
+                if r.name == TestUserKeyCollisionFailLoud.COLLISION_LOGGER
+                and r.levelno == logging.WARNING]
+
+    def test_stale_backup_copy_sorting_last_warns_and_still_wins(self, hermes_home, caplog):
+        """Historical name shape (dot in the MIDDLE of the dir name): the stale copy sorts AFTER the live
+        directory and used to re-activate old code with no trace in the log. The winner is unchanged; the
+        race is now loudly named with both paths in discovery order."""
+        live = _write_plugin(hermes_home / "plugins", "statusboard",
+                             register_body="import sys; sys._collision_probe = 'live'")
+        stale = _write_plugin(hermes_home / "plugins", "statusboard.bak-copy-20260930",
+                              manifest_extra={"name": "statusboard"},
+                              register_body="import sys; sys._collision_probe = 'stale'")
+        _enable(hermes_home, ["statusboard"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            records = self._collision_records(caplog)
+            assert len(records) == 1  # the counter: exactly one WARNING per colliding key
+            message = records[0].getMessage()
+            assert "statusboard" in message
+            assert str(live) in message and str(stale) in message
+            assert message.index(str(live)) < message.index(str(stale))  # discovery order
+            # Behavior unchanged: last-in-order (the stale copy) still wins and loads.
+            assert mgr._plugins["statusboard"].manifest.path == str(stale)
+            assert sys._collision_probe == "stale"
+            assert message.split("loading", 1)[1].lstrip().startswith(str(stale))
+        finally:
+            if hasattr(sys, "_collision_probe"):
+                delattr(sys, "_collision_probe")
+
+    def test_dot_prefixed_copy_sorting_first_warns_and_live_dir_wins(self, hermes_home, caplog):
+        """The dot-PREFIX name shape (sorts BEFORE the live dir): the live
+        directory wins — and the race is still announced, not only the dangerous direction."""
+        stale = _write_plugin(hermes_home / "plugins", ".bak-copy-20260930",
+                              manifest_extra={"name": "statusboard"},
+                              register_body="import sys; sys._collision_probe = 'stale'")
+        live = _write_plugin(hermes_home / "plugins", "statusboard",
+                             register_body="import sys; sys._collision_probe = 'live'")
+        _enable(hermes_home, ["statusboard"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            records = self._collision_records(caplog)
+            assert len(records) == 1
+            message = records[0].getMessage()
+            assert message.index(str(stale)) < message.index(str(live))
+            assert mgr._plugins["statusboard"].manifest.path == str(live)
+            assert sys._collision_probe == "live"
+        finally:
+            if hasattr(sys, "_collision_probe"):
+                delattr(sys, "_collision_probe")
+
+    @pytest.mark.platforms("posix")
+    def test_symlinked_live_dir_and_stale_copy_warn_with_symlink_winning(self, hermes_home, caplog):
+        """Live dir as a symlink to a checked-out copy + a dot-prefixed stale
+        copy: the symlink sorts last, wins, and both paths — symlink and stale copy — appear in the warning
+        with the winner named."""
+        target = hermes_home / "plugin-source" / "statusboard"
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text(yaml.safe_dump(
+            {"name": "statusboard", "version": "2.0.0", "description": "live target"}))
+        (target / "__init__.py").write_text("def register(ctx):\n    import sys; sys._collision_probe = 'current'\n")
+        (hermes_home / "plugins" / "statusboard").symlink_to(target, target_is_directory=True)
+        stale = _write_plugin(hermes_home / "plugins", ".bak-copy-20260930",
+                              manifest_extra={"name": "statusboard"},
+                              register_body="import sys; sys._collision_probe = 'stale'")
+        _enable(hermes_home, ["statusboard"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            records = self._collision_records(caplog)
+            assert len(records) == 1
+            message = records[0].getMessage()
+            assert message.index(str(stale)) < message.index(str(hermes_home / "plugins" / "statusboard"))
+            assert mgr._plugins["statusboard"].manifest.path == str(hermes_home / "plugins" / "statusboard")
+            assert sys._collision_probe == "current"
+        finally:
+            if hasattr(sys, "_collision_probe"):
+                delattr(sys, "_collision_probe")
+
+    def test_three_copies_still_produce_exactly_one_counter_warning(self, hermes_home, caplog):
+        """N copies of one plugin = ONE warning line naming every path, not N fragments: silence means no
+        race, one warning per raced key is the effectiveness counter."""
+        first = _write_plugin(hermes_home / "plugins", "alpha")
+        second = _write_plugin(hermes_home / "plugins", "alpha.bak-1", manifest_extra={"name": "alpha"})
+        third = _write_plugin(hermes_home / "plugins", "alpha.bak-2", manifest_extra={"name": "alpha"})
+        _enable(hermes_home, ["alpha"])
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        records = self._collision_records(caplog)
+        assert len(records) == 1
+        message = records[0].getMessage()
+        for path in (first, second, third):
+            assert str(path) in message
+        assert mgr._plugins["alpha"].manifest.path == str(third)  # last-in-order, unchanged
+
+    def test_category_layout_same_manifest_name_is_no_collision(self, hermes_home, caplog):
+        """Category manifests take path-derived keys (``<cat>/<dir>``), so the same ``name:`` field in two
+        categories is two different registry keys — no collision warning, no false alarm."""
+        foo = _write_plugin(hermes_home / "plugins" / "web", "alpha", manifest_extra={"name": "shared-name"})
+        bar = _write_plugin(hermes_home / "plugins" / "tools", "beta", manifest_extra={"name": "shared-name"})
+        _enable(hermes_home, ["web/alpha", "tools/beta"])
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        assert self._collision_records(caplog) == []
+        assert mgr._plugins["web/alpha"].manifest.path == str(foo)
+        assert mgr._plugins["tools/beta"].manifest.path == str(bar)
+
+    def test_documented_bundled_override_does_not_trip_the_collision_warning(
+            self, tmp_path, monkeypatch, caplog):
+        """A user dir shadowing a bundled plugin is the documented override mechanism (INFO, existing
+        behavior) — exactly one user manifest races, so no collision warning may fire."""
+        home = tmp_path / "home"
+        (home / "plugins").mkdir(parents=True)
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        _write_plugin(bundled, "overridable")
+        _write_plugin(home / "plugins", "overridable")
+        _enable(home, ["overridable"])
+        with caplog.at_level(logging.INFO, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        assert self._collision_records(caplog) == []
+        assert mgr._plugins["overridable"].manifest.source == "user"
+        assert "shadows the bundled copy" in caplog.text
+
+
+class TestCrossSourceOverrideIsNotACollision:
+    """A ``user`` and a ``project`` manifest claiming the same key is the documented precedence order
+    (project > user > bundled): a deliberate project-local override of a personal plugin loads without
+    the stale-copy collision WARNING. Only a same-SOURCE duplicate (user-vs-user, project-vs-project)
+    at a different path is a race worth announcing."""
+
+    COLLISION_LOGGER = "hermes_cli.plugins.collisions"
+
+    @staticmethod
+    def _collision_records(caplog) -> list:
+        return [r for r in caplog.records
+                if r.name == TestCrossSourceOverrideIsNotACollision.COLLISION_LOGGER
+                and r.levelno == logging.WARNING]
+
+    @staticmethod
+    def _enable_project_plugins(tmp_path, monkeypatch):
+        project = tmp_path / "project-root"
+        (project / ".hermes" / "plugins").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+        monkeypatch.chdir(project)
+        return project
+
+    def test_project_override_of_user_plugin_loads_without_collision_warning(
+            self, hermes_home, monkeypatch, caplog):
+        """The project copy overrides the personal plugin on purpose: the documented precedence decides
+        silently — the stale-copy advice would be a false alarm here."""
+        _write_plugin(hermes_home / "plugins", "statusboard",
+                      register_body="import sys; sys._override_probe = 'user'")
+        project = self._enable_project_plugins(hermes_home.parent, monkeypatch)
+        project_copy = _write_plugin(project / ".hermes" / "plugins", "statusboard",
+                                     manifest_extra={"version": "1.1.0"},
+                                     register_body="import sys; sys._override_probe = 'project'")
+        _enable(hermes_home, ["statusboard"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            assert self._collision_records(caplog) == []
+            assert mgr._plugins["statusboard"].manifest.source == "project"
+            assert mgr._plugins["statusboard"].manifest.path == str(project_copy)
+            assert sys._override_probe == "project"
+        finally:
+            if hasattr(sys, "_override_probe"):
+                delattr(sys, "_override_probe")
+
+    def test_project_local_duplicate_paths_still_warn(self, hermes_home, monkeypatch, caplog):
+        """The project half of the same-source rule: two project manifests racing for one key are
+        announced exactly like the user-vs-user race (one WARNING, both paths, winner named)."""
+        project = self._enable_project_plugins(hermes_home.parent, monkeypatch)
+        live = _write_plugin(project / ".hermes" / "plugins", "statusboard",
+                             register_body="import sys; sys._override_probe = 'live'")
+        stale = _write_plugin(project / ".hermes" / "plugins", "statusboard.bak-alt",
+                              manifest_extra={"name": "statusboard"},
+                              register_body="import sys; sys._override_probe = 'stale'")
+        _enable(hermes_home, ["statusboard"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            records = self._collision_records(caplog)
+            assert len(records) == 1
+            message = records[0].getMessage()
+            assert message.index(str(live)) < message.index(str(stale))
+            assert mgr._plugins["statusboard"].manifest.path == str(stale)
+            assert sys._override_probe == "stale"
+        finally:
+            if hasattr(sys, "_override_probe"):
+                delattr(sys, "_override_probe")
+
+    def test_user_race_with_project_override_warns_about_the_user_race(
+            self, hermes_home, monkeypatch, caplog):
+        """A user-vs-user duplicate racing alongside a deliberate project override: exactly one WARNING
+        for the user race — the override shows up in the ladder and as the winner, tagged [project]."""
+        live = _write_plugin(hermes_home / "plugins", "statusboard",
+                             register_body="import sys; sys._override_probe = 'user-live'")
+        stale = _write_plugin(hermes_home / "plugins", "statusboard.bak-alt",
+                              manifest_extra={"name": "statusboard"},
+                              register_body="import sys; sys._override_probe = 'user-stale'")
+        project = self._enable_project_plugins(hermes_home.parent, monkeypatch)
+        project_copy = _write_plugin(project / ".hermes" / "plugins", "statusboard",
+                                     manifest_extra={"version": "2.0.0"},
+                                     register_body="import sys; sys._override_probe = 'project'")
+        _enable(hermes_home, ["statusboard"])
+        import sys
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            records = self._collision_records(caplog)
+            assert len(records) == 1
+            message = records[0].getMessage()
+            assert message.index(str(live)) < message.index(str(stale)) < message.index(str(project_copy))
+            assert "[user] -> " in message and "[project]" in message
+            assert message.split("loading", 1)[1].lstrip().startswith(str(project_copy))
+            assert mgr._plugins["statusboard"].manifest.path == str(project_copy)
+            assert sys._override_probe == "project"
+        finally:
+            if hasattr(sys, "_override_probe"):
+                delattr(sys, "_override_probe")

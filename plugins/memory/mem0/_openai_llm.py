@@ -45,20 +45,17 @@ class DirectOpenAILLM(OpenAILLM):
             raise ValueError("OpenAI API key is required for the Hermes Mem0 OSS provider")
         from openai import OpenAI
         base_url = self.config.openai_base_url or get_secret("OPENAI_BASE_URL", "") or "https://api.openai.com/v1"
-        # OpenCode Go requires its session header on every request, including the
-        # requests made by Mem0's private OpenAI client.  Configure it at the SDK
-        # client boundary so chat-completions calls and future retries share the
-        # same conversation affinity as Hermes' main provider path.
-        from agent.opencode_affinity import opencode_session_headers
-        session_headers = opencode_session_headers("openai", base_url)
-        client_kwargs = {"api_key": api_key, "base_url": base_url}
-        if session_headers:
-            client_kwargs["default_headers"] = session_headers
-        self.client = OpenAI(**client_kwargs)
+        self._base_url = base_url
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
 
     def generate_response(self, messages: List[Dict[str, str]], response_format=None, tools: Optional[List[Dict]] = None, tool_choice: str = "auto", **kwargs):
         params = self._get_supported_params(messages=messages, **kwargs)
         params.update({"model": self.config.model, "messages": messages})
+        # Resolve affinity in the active turn, not when Mem0 constructs its long-lived
+        # private client.  Construction can happen outside a conversation and produce
+        # a one-shot fallback that would otherwise be reused for every extraction.
+        from agent.opencode_affinity import merge_session_affinity_headers
+        merge_session_affinity_headers(params, "openai", self._base_url)
         # No OpenRouter-only fields; ``store`` is opt-in so OpenAI-compatible endpoints never receive unknown fields.
         if self.config.store is not None:
             params["store"] = self.config.store

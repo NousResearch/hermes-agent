@@ -472,13 +472,32 @@ class TestOSSBackend:
         )
 
         module = importlib.import_module("plugins.memory.mem0._openai_llm")
-        monkeypatch.setattr(
-            "agent.opencode_affinity.resolve_affinity_key",
-            lambda session_id=None: "mem0-session-sentinel",
+        from agent.portal_tags import (
+            reset_affinity_scope,
+            reset_conversation_context,
+            set_affinity_scope,
+            set_conversation_context,
         )
-        module.DirectOpenAILLM(config)
 
-        assert state.clients[0].default_headers == {
+        affinity_token = set_affinity_scope(None)
+        conversation_token = set_conversation_context(None)
+        try:
+            adapter = module.DirectOpenAILLM(config)
+
+            # Construction happens during provider initialization, outside any turn. It
+            # must not freeze the one-shot fallback into the long-lived SDK client.
+            assert state.clients[0].default_headers is None
+
+            turn_token = set_conversation_context("mem0-session-sentinel")
+            try:
+                adapter.generate_response([{"role": "user", "content": "remember tea"}])
+            finally:
+                reset_conversation_context(turn_token)
+        finally:
+            reset_conversation_context(conversation_token)
+            reset_affinity_scope(affinity_token)
+
+        assert state.requests[0]["extra_headers"] == {
             "x-opencode-session": "mem0-session-sentinel"
         }
 

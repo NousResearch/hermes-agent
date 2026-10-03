@@ -929,13 +929,43 @@ def _configured_provider_matches(
                        if isinstance(slug, str) and isinstance(cfg, dict)]
     # Callers (gateway, TUI, CLI) pass both ``providers:`` and the compat ``custom_providers`` view,
     # which re-lists every ``providers.<slug>`` row as ``custom:<name>``; a hand-migrated config may
-    # also keep the same endpoint in both sections. Either is one provider, not two (#112788) — but
-    # the duplicate is folded at the MATCH level, not dropped as a candidate: a model only the legacy
-    # row declares still routes to the shared endpoint instead of falling through to the current
-    # provider.
+    # also keep the same endpoint in both sections. Either is one provider, not two (#112788,
+    # #130100) — but the duplicate is folded at the MATCH level, not dropped as a candidate: a model
+    # only the legacy row declares still routes to the shared endpoint instead of falling through
+    # to the current provider.
     rows = {slug: _configured_provider_identity(slug, cfg) for slug, cfg in candidates}
-    entries = [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-               if isinstance(e.get("name"), str) and e["name"].strip()]
+    # #130100: every compat projection stamps ``provider_key`` with its ``providers.<slug>``. When
+    # that slug is already a ``user_providers`` row, the projection is the same declaration viewed
+    # twice (``slug`` + ``custom:<name>``) — not two providers. Pure projections are dropped here so
+    # one declaration can never match twice and trip the multiple-guard; a ``provider_key`` aimed
+    # at a different endpoint/credential (raw-list fallback) or a legacy row declaring extra models
+    # stays a candidate so genuine multi-source conflicts remain ambiguous (folded at match time via
+    # :func:`_duplicates_configured_row` as a backstop).
+    _user_keys = {slug.lower() for slug in rows}
+    _raw_entries = [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
+                    if isinstance(e.get("name"), str) and e["name"].strip()]
+
+    def _declares_extra(entry: dict, owner: str) -> bool:
+        """True when *entry* declares a model its owner ``providers.<slug>`` row does not.
+
+        Dropped projections must not take such models with them: match-level folding attributes
+        them to the shared endpoint instead of falling through (#112788).
+        """
+        owner_cfg = (user_providers or {}).get(owner, {}) if isinstance(user_providers, dict) else {}
+        if not isinstance(owner_cfg, dict):
+            return True
+        owned = {mid.lower() for key in ("models", "model", "default_model")
+                 for mid in _declared_model_ids(owner_cfg.get(key))}
+        return any(mid.lower() not in owned for key in ("models", "model", "default_model")
+                   for mid in _declared_model_ids(entry.get(key)))
+
+    def _keep(entry_slug: str, entry: dict) -> bool:
+        owner = _duplicates_configured_row(entry_slug, entry, rows)
+        if _clean(entry.get("provider_key")).lower() not in _user_keys or owner is None:
+            return True  # distinct provider (or legacy row): stays a candidate
+        return _declares_extra(entry, owner)  # pure projection drops; extras stay for folding
+
+    entries = [(slug, e) for slug, e in _raw_entries if _keep(slug, e)]
 
     matches: dict[str, str] = {}
     for slug, cfg in candidates + entries:
@@ -976,7 +1006,20 @@ def _duplicates_configured_row(
     at another endpoint or another key stays a candidate) or a legacy duplicate with the same
     provider identity."""
     identity = _configured_provider_identity(slug, entry)
-    provider_key = _clean(entry.get("provider_key")).lower()
+    raw_key = _clean(entry.get("provider_key"))
+    provider_key = raw_key.lower()
+    if provider_key:
+        # #130100 fast path: the compat view stamps every ``providers.<slug>`` projection with
+        # ``provider_key=<slug>``. A case-insensitive hit on a user row with the same endpoint +
+        # credential is one declaration counted twice (``slug`` vs ``custom:<name>``) — fold it
+        # before the multiple-guard. Any difference in endpoint or credential keeps it distinct.
+        # Resolve the exact slug first, then fall back to case-insensitive: a plain
+        # ``{slug.lower(): ...}`` dict collapses case-variant siblings (``a`` vs ``A``),
+        # last-wins, so key ``a`` would resolve to row ``A``.
+        hit = next(((s, r) for s, r in rows.items() if s == raw_key), None) or \
+            next(((s, r) for s, r in rows.items() if s.lower() == provider_key), None)
+        if hit is not None and identity[1:3] == hit[1][1:3]:
+            return hit[0]
     return next((row_slug for row_slug, row in rows.items()
                  if identity == row or (provider_key == row_slug.lower() and identity[1:3] == row[1:3])), None)
 

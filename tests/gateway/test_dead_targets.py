@@ -105,6 +105,76 @@ async def test_shared_registry_is_used_when_injected(isolate):
     assert adapter.calls == []
 
 
+@pytest.mark.asyncio
+async def test_filtered_silence_result_does_not_clear_dead_flag(isolate, monkeypatch):
+    """A silence-filtered result performs no send; it must not clear a dead flag.
+
+    The race is the real one: the flag lands mid-flight between the ``is_dead``
+    check and the result (a concurrent lane's ``mark_dead``), injected by
+    wrapping ``_deliver_to_platform`` so production code does the marking.
+    """
+    shared = DeadTargetRegistry()
+    adapter = ForbiddenThenOkAdapter(fail_times=0)
+    router = DeliveryRouter(
+        GatewayConfig(), adapters={Platform.TELEGRAM: adapter}, dead_targets=shared)
+
+    real_send = router._deliver_to_platform
+
+    async def mark_midflight(target, content, metadata=None):
+        shared.mark_dead(target.platform.value, target.chat_id, "concurrent lane: bot was kicked")
+        return await real_send(target, content, metadata)
+
+    monkeypatch.setattr(router, "_deliver_to_platform", mark_midflight)
+
+    res = await router.deliver("*(silent)*", [DeliveryTarget.parse("telegram:42")])
+
+    assert res["telegram:42"]["success"] is True
+    assert res["telegram:42"]["result"].get("delivered") is False
+    assert adapter.calls == []  # filter dropped it before any send
+    assert shared.is_dead("telegram", "42") is True  # flag survives a no-send result
+    # Persistence too: a fresh instance reading the on-disk store still sees it.
+    assert DeadTargetRegistry().is_dead("telegram", "42") is True
+
+    # Marker contract: only explicit delivered=False or a missing result counts
+    # as no-send; every other shape (dict or object) counts as delivered.
+    from types import SimpleNamespace
+
+    from gateway.delivery import _send_result_delivered
+
+    assert _send_result_delivered({"success": True, "delivered": False}) is False
+    assert _send_result_delivered({"success": True}) is True
+    assert _send_result_delivered({"success": True, "delivered": True}) is True
+    assert _send_result_delivered({"success": True, "delivered": 0}) is True
+    assert _send_result_delivered({"success": True, "delivered": None}) is True
+    assert _send_result_delivered(None) is False
+    assert _send_result_delivered(SimpleNamespace(success=True)) is True
+    assert _send_result_delivered(SimpleNamespace(success=True, delivered=False)) is False
+
+
+@pytest.mark.asyncio
+async def test_real_send_still_clears_dead_flag(isolate, monkeypatch):
+    """Positive control: a real successful send clears the flag (self-healing)."""
+    shared = DeadTargetRegistry()
+    adapter = ForbiddenThenOkAdapter(fail_times=0)
+    router = DeliveryRouter(
+        GatewayConfig(), adapters={Platform.TELEGRAM: adapter}, dead_targets=shared)
+
+    real_send = router._deliver_to_platform
+
+    async def mark_midflight(target, content, metadata=None):
+        shared.mark_dead(target.platform.value, target.chat_id, "concurrent lane: bot was kicked")
+        return await real_send(target, content, metadata)
+
+    monkeypatch.setattr(router, "_deliver_to_platform", mark_midflight)
+
+    res = await router.deliver("hello", [DeliveryTarget.parse("telegram:42")])
+
+    assert adapter.calls == ["42"]
+    assert res["telegram:42"]["success"] is True
+    assert shared.is_dead("telegram", "42") is False
+    assert DeadTargetRegistry().is_dead("telegram", "42") is False
+
+
 # --------------------------------------------------------------------------
 # not_found blast radius: chat-level kills the chat, thread/message-level must not
 # --------------------------------------------------------------------------

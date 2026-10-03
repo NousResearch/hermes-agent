@@ -146,7 +146,7 @@ def _cua_permission_mode(session_id: str) -> str:
         if is_approval_bypass_active_for_session(session_id) or (
                 bool(key := get_current_session_key(default="")) and is_approval_bypass_active_for_session(key)):
             with _approval_lock:
-                warn = (key := str(session_id or "")) not in _escalation_warned
+                warn = (key := _scoped_sid(session_id)) not in _escalation_warned
                 _escalation_warned.add(key)
             if warn:
                 logger.warning(
@@ -198,20 +198,17 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
         on_error(e)
 
 def _scoped_sid(session_id: str) -> str:
-    """Cache key for one Hermes session's backend. Outside a served-profile scope it is the bare id
-    (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is appended
-    so two profiles that share a session id (or a DISPLAY) never share one cua-driver (#110032).
-    Every cache path — lookup, install, release — goes through this, so release finds what lookup made."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
-    sid = str(session_id or "")
-    return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
+    """Profile-qualified owner key shared by backend routing and approval authority."""
+    from tools.approval import _profile_session_key
+
+    return _profile_session_key(session_id)
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
+            permission_mode = _cua_permission_mode(bare_sid)
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:

@@ -1222,8 +1222,7 @@ class TestGatewaySessionDbRecovery:
 
     def test_transcript_reroute_follows_multi_hop_compression_chain(self, tmp_path):
         """A stale writer behind >=2 compression hops (root -> mid -> tip) must
-        reroute to the live tip via the transitive ``get_compression_tip`` walk
-        — the depth-1 live-child lookup found nothing here (#82001)."""
+        reroute only when the conservative resolver proves a unique live leaf."""
         import threading
         from types import SimpleNamespace
 
@@ -1296,12 +1295,9 @@ class TestGatewaySessionDbRecovery:
         from hermes_state_errors import CompressionSessionClosedError
 
         class FakeDb:
-            def get_compression_tip(self, session_id):
+            def find_live_compression_child(self, session_id):
                 assert session_id == "parent"
-                return "child"
-
-            def get_session(self, session_id):
-                return {"id": session_id, "ended_at": None}
+                return {"id": "child"}
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()

@@ -937,6 +937,29 @@ class TestSpawnEnvSanitization:
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
 
+    def test_env_temp_dir_fallback_is_posix(self, registry):
+        """The temp-dir fallback must stay POSIX: a Windows host path is
+        meaningless inside a remote shell; a Windows env's own forward-slash
+        drive answer is authoritative and kept."""
+        class WindowsEnv:
+            is_local = True
+
+            def get_temp_dir(self):
+                return "C:/Users/x/.hermes/cache/terminal"
+
+        class BareEnv:
+            def execute(self, command, **kwargs):
+                return {"output": ""}
+
+        class RaisingEnv:
+            def get_temp_dir(self):
+                raise RuntimeError("no temp")
+
+        resolve = type(registry)._env_temp_dir
+        assert resolve(WindowsEnv()) == "C:/Users/x/.hermes/cache/terminal"
+        assert resolve(BareEnv()) == "/tmp"
+        assert resolve(RaisingEnv()) == "/tmp"
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False

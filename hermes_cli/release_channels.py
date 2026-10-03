@@ -290,7 +290,7 @@ class ChannelReader:
         from pm.network import retry_network
 
         def read() -> bytes:
-            with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
+            with self.opener(Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Cache-Control": "no-cache", "Accept": "application/json, */*;q=0.8"}), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
                 return response.read(MAX_METADATA + 1)
@@ -300,6 +300,8 @@ class ChannelReader:
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
+            if exc.code == 403:
+                raise ChannelError(f"Channel read unavailable: HTTP 403 (Cloudflare WAF — see #128295)") from exc
             raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
         except (OSError, URLError) as exc:
             raise ChannelError("Channel read unavailable") from exc

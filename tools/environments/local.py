@@ -1184,6 +1184,17 @@ class LocalEnvironment(BaseEnvironment):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()
+        unit = getattr(proc, "_hermes_scope_unit", None)
+        systemctl = shutil.which("systemctl") if unit else None
+        if systemctl:
+            # A setsid escapee lives in the scope, not the gateway cgroup, so the gateway
+            # unit's KillMode no longer reaps it. Fire-and-forget: no wait before os._exit().
+            from tools.process_registry import systemd_user_bus_env
+            with contextlib.suppress(OSError):
+                subprocess.Popen(
+                    [systemctl, "--user", "--no-block", "kill", "--signal=SIGKILL", unit],
+                    env=systemd_user_bus_env(), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

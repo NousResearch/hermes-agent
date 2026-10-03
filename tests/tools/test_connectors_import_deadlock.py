@@ -21,7 +21,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _NO_EAGER_SUBMODULE = """
 import sys
-sys.path.insert(0, REPO_ROOT)
 import tools.connectors  # noqa: F401
 loaded = sorted(k for k in sys.modules if k.startswith("tools.connectors."))
 print("\\n".join(loaded))
@@ -29,7 +28,6 @@ print("\\n".join(loaded))
 
 _RACE = """
 import importlib, sys, threading
-sys.path.insert(0, REPO_ROOT)
 errors = []
 ITER = 25
 
@@ -60,7 +58,7 @@ def _run_snippet(snippet: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
     return subprocess.run(
-        [sys.executable, "-c", snippet.replace("REPO_ROOT", repr(str(REPO_ROOT)))],
+        [sys.executable, "-c", snippet],
         capture_output=True,
         text=True,
         timeout=180,

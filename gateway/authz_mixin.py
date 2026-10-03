@@ -628,6 +628,9 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
+        if getattr(source, "telegram_business_connection_id", None):
+            return True
+
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True

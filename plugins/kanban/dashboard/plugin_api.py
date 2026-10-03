@@ -1295,6 +1295,8 @@ class CreateBoardBody(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     default_workdir: Optional[str] = None
+    # Declared kind tasks are born with when no explicit workspace is set (#123288).
+    default_workspace_kind: Optional[str] = None
     # Project (id or slug) scoping the board: default_workdir mirrors its primary repo, tasks inherit it.
     project_id: Optional[str] = None
     switch: bool = False
@@ -1308,6 +1310,9 @@ class RenameBoardBody(BaseModel):
     # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    # Declared kind tasks are born with when no explicit workspace is set (#123288):
+    # ``None`` = leave unchanged; "" = clear; value = validated + set.
+    default_workspace_kind: Optional[str] = None
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):
@@ -1367,7 +1372,11 @@ def _board_counts(slug: str) -> dict[str, int]:
 
 
 def _default_workspace_kind(board: dict[str, Any]) -> str:
-    """Recommend a non-destructive task workspace from board metadata."""
+    """Task default workspace: the board's declared kind when set (#123288),
+    else a non-destructive recommendation from board metadata."""
+    declared = str(board.get("default_workspace_kind") or "").strip()
+    if declared:
+        return declared
     workdir = str(board.get("default_workdir") or "").strip()
     if not workdir:
         return "scratch"
@@ -1378,7 +1387,13 @@ def _default_workspace_kind(board: dict[str, Any]) -> str:
 
 
 def _annotate_board_meta(meta: dict) -> dict:
-    meta["default_workspace_kind"] = _default_workspace_kind(meta)
+    # The declared kind is returned as-is (None = nothing declared); the
+    # non-destructive recommendation derived from default_workdir travels
+    # under its own key. Overwriting the declared field made GET /boards
+    # unable to distinguish "declared" from "undeclared, but the workdir is
+    # a repo", and a read-modify-write of that payload minted a real
+    # declaration (rb/123543, rb/121149).
+    meta["recommended_workspace_kind"] = _default_workspace_kind(meta)
     _, meta["project_name"], _ = _resolve_project(meta.get("project_id"))
     return meta
 
@@ -1408,7 +1423,10 @@ def list_boards(include_archived: bool = Query(False)):
         # Live cards only — archived tasks are hidden from every default board view,
         # so counting them in the switcher badge would visibly disagree.
         b["total"] = sum(n for status, n in b["counts"].items() if status != "archived")
-        b["default_workspace_kind"] = _default_workspace_kind(b)
+        # Declared kind as-is; the derived recommendation under its own key —
+        # see _annotate_board_meta.
+        b["recommended_workspace_kind"] = _default_workspace_kind(b)
+        b["default_workspace_kind"] = (str(b.get("default_workspace_kind") or "").strip() or None)
         pid = b["project_id"] = b.get("project_id") or None
         proj = proj_map.get(pid) if pid else None
         b["project_name"] = proj.name if proj else None
@@ -1435,7 +1453,9 @@ def create_board_endpoint(payload: CreateBoardBody):
         default_workdir = primary_path
     with _value_error_400():
         meta = kanban_db.create_board(
-            payload.slug, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+            payload.slug, default_workdir=default_workdir, project_id=project_id,
+            default_workspace_kind=payload.default_workspace_kind,
+            **_board_display_kwargs(payload))
     if payload.switch:
         with _value_error_400():
             kanban_db.set_current_board(meta["slug"])
@@ -1460,8 +1480,13 @@ def rename_board(slug: str, payload: RenameBoardBody):
                 default_workdir = primary_path
         else:
             project_id = ""  # clear the scope
-    meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+    default_workspace_kind: Optional[str] = None
+    if payload.default_workspace_kind is not None:
+        default_workspace_kind = payload.default_workspace_kind.strip()  # "" = clear
+    with _value_error_400():
+        meta = kanban_db.write_board_metadata(
+            normed, default_workdir=default_workdir, project_id=project_id,
+            default_workspace_kind=default_workspace_kind, **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
 
 

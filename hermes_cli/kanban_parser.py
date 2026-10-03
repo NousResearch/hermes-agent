@@ -107,6 +107,10 @@ _BOARD_SPECS = [
         _arg("--color", help="Optional hex color (e.g. '#8b5cf6') for the dashboard"),
         _arg("--switch", action="store_true", help="Switch to the new board after creating it"),
         _arg("--default-workdir", help="Default workspace path for tasks created on this board"),
+        _arg("--default-workspace",
+             help="Workspace kind tasks are born with when --workspace is omitted: "
+                  "scratch | worktree | dir. 'worktree' requires --default-workdir "
+                  "to name a git repo."),
     ], aliases=["new"], help="Create a new board"),
     _cmd("rm", [
         _SLUG,
@@ -122,6 +126,11 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-default-workspace", [
+        _SLUG,
+        _arg("kind", nargs="?", help="scratch | worktree | dir. Omit to clear. "
+             "'worktree' requires a board default workdir (a git repo)."),
+    ], help="Set the workspace kind tasks on a board get when --workspace is omitted"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

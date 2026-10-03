@@ -76,10 +76,14 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
     if rc:
         return rc
     already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
-    meta = kb.create_board(
-        normed, name=args.name, description=args.description, icon=args.icon, color=args.color,
-        default_workdir=args.default_workdir,
-    )
+    try:
+        meta = kb.create_board(
+            normed, name=args.name, description=args.description, icon=args.icon, color=args.color,
+            default_workdir=args.default_workdir,
+            default_workspace_kind=getattr(args, "default_workspace", None),
+        )
+    except ValueError as exc:
+        return _err(f"kanban boards create: {exc}", 2)
     print(f"Board {meta['slug']!r} {'already exists' if already else 'created'}.\n"
           f"  Display name: {meta.get('name', '')}\n"
           f"  DB path:      {meta['db_path']}")
@@ -155,6 +159,25 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_set_default_workspace(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-default-workspace", must_exist=True)
+    if rc:
+        return rc
+    try:
+        # nargs="?" omits to None; the metadata contract treats None as
+        # "unchanged", but this command documents omit-to-clear — map it.
+        new_val = kb.write_board_metadata(
+            normed, default_workspace_kind=args.kind if args.kind is not None else ""
+        ).get("default_workspace_kind")
+    except ValueError as exc:
+        return _err(f"kanban boards set-default-workspace: {exc}", 2)
+    if new_val:
+        print(f"Board {normed!r} default workspace set to {new_val!r}.")
+    else:
+        print(f"Board {normed!r} default workspace cleared (tasks default to scratch).")
+    return 0
+
+
 def _cmd_boards_export(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_transfer
     from hermes_cli.sizefmt import format_bytes
@@ -209,6 +232,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-default-workspace": _cmd_boards_set_default_workspace,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

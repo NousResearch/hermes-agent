@@ -6,7 +6,9 @@ intercepting the moved code.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 import contextlib
 import json
 import os
@@ -15,6 +17,30 @@ import subprocess
 import sys
 import time
 from xml.sax.saxutils import escape
+
+LAUNCHD_IDENTITY_OSASCRIPT = "osascript"
+LAUNCHD_IDENTITY_DIRECT = "direct"
+
+
+def configured_launchd_identity(config: Mapping[str, Any] | None = None) -> str:
+    """``gateway.launchd_network_identity`` from a loaded config: which executable the launchd job
+    root runs. :data:`LAUNCHD_IDENTITY_OSASCRIPT` (default) or :data:`LAUNCHD_IDENTITY_DIRECT`
+    (#123118). A missing key, an unloadable config, or any other value fails safe to the osascript
+    wrapper — only the exact string ``direct`` opts out of the platform-binary LAN identity."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except Exception:
+            return LAUNCHD_IDENTITY_OSASCRIPT
+    if not isinstance(config, Mapping):
+        return LAUNCHD_IDENTITY_OSASCRIPT
+    gateway_cfg = config.get("gateway")
+    if not isinstance(gateway_cfg, Mapping):
+        return LAUNCHD_IDENTITY_OSASCRIPT
+    return (LAUNCHD_IDENTITY_DIRECT
+            if gateway_cfg.get("launchd_network_identity") == LAUNCHD_IDENTITY_DIRECT
+            else LAUNCHD_IDENTITY_OSASCRIPT)
 
 
 def _gw():
@@ -214,7 +240,10 @@ def _gateway_run_command() -> list[str]:
 
 
 def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
-    """launchd ``ProgramArguments`` that run ``command`` with a Local Network identity macOS accepts (#71206).
+    """launchd ``ProgramArguments`` that run ``command``; shape picked by ``gateway.launchd_network_identity``.
+
+    Default (``osascript``): wrapped in a JXA ``/usr/bin/osascript`` invocation to run with a Local
+    Network identity macOS accepts (#71206).
 
     macOS Local Network Privacy attributes a socket to the process launchd spawned for the job. A bare
     venv Python has no application ID and is not platform-entitled, so every LAN connect from the
@@ -233,7 +262,18 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     bootout`` / ``kickstart -k`` still deliver SIGTERM to it. stdout/stderr are appended inside the shell
     command because ``system()`` otherwise inherits osascript's plist log handles. The encoded wait status
     is translated back to a process exit code so KeepAlive's ``SuccessfulExit`` semantics are preserved.
+
+    ``direct`` (#123118): ``command`` is the ProgramArguments itself, so TCC/Privacy & Security
+    attributes the job (Calendar/EventKit probes, OneDrive File Provider, the "Background App Activity"
+    entry) to an identifiable Hermes launcher instead of a generic ``osascript``. The trade-off is the
+    #71206 platform-binary LAN identity: launchd-spawned LAN connects may die with ``EHOSTUNREACH``
+    again — pick per host which property matters. The stderr-timestamp wrapper stays the job root:
+    launchd signals it, its forwarders pass SIGTERM/SIGUSR1/SIGUSR2 to the gateway child, stdout lands
+    in the plist's ``StandardOutPath`` (same file the osascript shell appended to) and the wrapper's
+    ``--error-log`` file stays the timestamped stderr sink, so no shell redirection is appended.
     """
+    if configured_launchd_identity() == LAUNCHD_IDENTITY_DIRECT:
+        return list(command)
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
     javascript = (
         'ObjC.import("stdlib"); '

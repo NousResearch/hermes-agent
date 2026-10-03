@@ -100,3 +100,70 @@ def test_rewrite_of_missing_row_is_still_a_noop(tmp_path):
     assert db.set_user_message_content("s1", 99999, REWRITTEN_TURN) == 0
     assert db.set_user_message_content("", 1, REWRITTEN_TURN) == 0
     assert all(slot["display_order"] is not None for slot in _display_slots(db, "s1"))
+
+
+def test_rewrite_survives_a_dropped_session_index(tmp_path):
+    """``_reconcile_display_orders`` now sits on every turn's write path, so a store
+    without ``idx_messages_session_id`` (pre-index schema, or dropped the way the
+    migration tests do) must degrade to ``NOT INDEXED`` instead of failing the whole
+    content rewrite with ``no such index``."""
+    import sqlite3
+
+    db = SessionDB(tmp_path / "state.db")
+    row_id = _persist_session(db, "s1")
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("DROP INDEX idx_messages_session_id")
+    conn.commit()
+    conn.close()
+
+    assert db.set_user_message_content("s1", row_id, REWRITTEN_TURN) == 1
+
+    slots = {r["id"]: r for r in _display_slots(db, "s1")}
+    assert slots[row_id]["display_order"] == row_id
+    assert slots[row_id]["ident_null"] == 0
+
+
+def test_display_kind_stamp_rebuilds_the_display_slot(tmp_path):
+    """``set_latest_matching_message_display_kind`` writes ``display_kind`` — one of the
+    identity trigger's columns — so the stamp nulls the freshly persisted row's slot the
+    same way a content rewrite does; it must re-fold in the same write too."""
+    db = SessionDB(tmp_path / "state.db")
+    ts = 1727000000.0
+    db.create_session("s1", source="desktop")
+    db.append_message("s1", "user", "check my config", timestamp=ts)
+    db.append_message("s1", "assistant", "looks fine", timestamp=ts + 1)
+    assistant_id = db._read_one(
+        "SELECT id FROM messages WHERE session_id = ? AND role = 'assistant'", ("s1",))[0]
+    assert _display_slots(db, "s1")[-1]["display_order"] is not None, "insert trigger stamps a slot"
+
+    assert db.set_latest_matching_message_display_kind(
+        "s1", role="assistant", content="looks fine", display_kind="commentary") is True
+
+    slots = {r["id"]: r for r in _display_slots(db, "s1")}
+    assert slots[assistant_id]["display_order"] is not None
+    assert slots[assistant_id]["ident_null"] == 0
+
+
+def test_marker_purge_rebuilds_the_display_slot(tmp_path):
+    """``purge_stale_tool_call_markers`` blanks ``content`` — the identity trigger's
+    biggest-hammer column — across sessions; every touched session needs its slots
+    re-folded in the same transaction, not left NULL for a reader to backfill."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    db.append_message("s1", role="user", content="do the full task")
+    db.append_message(
+        "s1", role="assistant", content="[memory]",
+        tool_calls=[{"id": "1", "function": {"name": "skill_manage", "arguments": "{}"}}],
+    )
+    db.append_message("s1", role="tool", content="ok", tool_call_id="1")
+    marker_id = db._read_one(
+        "SELECT id FROM messages WHERE session_id = ? AND role = 'assistant' "
+        "AND content = '[memory]'", ("s1",))[0]
+    assert {r["id"]: r for r in _display_slots(db, "s1")}[marker_id]["display_order"] is not None
+
+    report = db.purge_stale_tool_call_markers(dry_run=False, backup=False)
+    assert report["rows_affected"] == 1
+
+    slots = {r["id"]: r for r in _display_slots(db, "s1")}
+    assert all(slot["display_order"] is not None for slot in slots.values())
+    assert all(slot["ident_null"] == 0 for slot in slots.values())

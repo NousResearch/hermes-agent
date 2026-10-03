@@ -526,6 +526,12 @@ class SessionMessagesMixin:
                 return False
             conn.execute("UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
                 (_scrub_surrogates(display_kind), self._encode_display_metadata(display_metadata), row[0]))
+            # ``display_kind`` is one of the identity trigger's columns: the stamp nulls the row's
+            # display slot (and any twin's), so re-fold in the same transaction like the content
+            # rewrite does — otherwise the row stays out of the indexed projections until a
+            # reader backfills the session (#128468).
+            if {"display_order", "display_identity"} <= set(self._message_column_names(conn)):
+                self._reconcile_display_orders(conn, session_id)
             return True
         return self._execute_write(_do)
 
@@ -1335,13 +1341,22 @@ class SessionMessagesMixin:
         recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
         on one definition of a logical message; the live copy wins its group via the read
         path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        # The index is the query plan hint, not a precondition: a store that predates it (or had
+        # it dropped, as the migration tests do) must not fail the whole write with
+        # ``no such index`` — probe once and fall back to ``NOT INDEXED`` like
+        # ``_legacy_display_page`` does.
+        has_session_index = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            ("idx_messages_session_id",),
+        ).fetchone() is not None
+        index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
         first_id: Dict[bytes, int] = {}
         last_id = 0
         while True:
             rows = conn.execute(
                 "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
                 "display_kind, display_metadata, display_order, display_identity "
-                "FROM messages INDEXED BY idx_messages_session_id "
+                f"FROM messages {index_hint} "
                 "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                 "ORDER BY id LIMIT 1000",
                 (session_id, last_id))
@@ -2078,6 +2093,15 @@ class SessionMessagesMixin:
             ids = _find_affected(conn)
             if ids:
                 conn.execute(f"UPDATE messages SET content = '' WHERE id IN ({_placeholders(ids)})", ids)
+                # Blanked ``content`` re-keys the identity (the trigger's biggest-hammer column),
+                # so the affected sessions need their display slots re-folded in the same
+                # transaction — the purge is cross-session, fold each touched one (#128468).
+                if {"display_order", "display_identity"} <= set(self._message_column_names(conn)):
+                    touched = [row["session_id"] for row in conn.execute(
+                        f"SELECT DISTINCT session_id FROM messages WHERE id IN ({_placeholders(ids)})",
+                        ids).fetchall()]
+                    for sid in touched:
+                        self._reconcile_display_orders(conn, sid)
             return ids
         affected_ids = self._execute_write(_do)
         if affected_ids:

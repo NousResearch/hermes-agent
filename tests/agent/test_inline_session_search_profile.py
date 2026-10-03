@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from hermes_state import SessionDB
+import tools.session_search_tool  # noqa: F401  (register built-in before override)
+from tools.registry import registry
 
 
 def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):
@@ -43,3 +45,42 @@ def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):
 
     assert [r["session_id"] for r in routed["results"]] == ["profile-session"]
     assert missing["success"] is False and "default-session" not in json.dumps(missing)
+
+
+def test_inline_session_search_uses_scoped_registry_override_with_live_db(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = SessionDB(home / "state.db")
+    db.create_session("history", source="cli")
+    db.append_message("history", role="user", content="orchid retrospective")
+    assert db._conn is not None
+    db._conn.commit()
+    agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+    ctx = InlineToolContext(effective_task_id="task")
+    builtin = registry.get_entry("session_search")
+    assert builtin is not None
+    builtin_handler = builtin.handler
+    observed = {}
+
+    def enriched_handler(args, **kwargs):
+        observed.update(kwargs)
+        result = json.loads(builtin_handler(args, **kwargs))
+        result["override_ran"] = True
+        return json.dumps(result)
+
+    registry.register(
+        name="session_search", toolset="history-plugin", schema=builtin.schema,
+        handler=enriched_handler, override=True, scope=str(home),
+    )
+    try:
+        assert registry.get_entry("session_search").handler is enriched_handler
+        result = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
+            agent, {"query": "orchid"}, ctx))
+        assert result["override_ran"] is True
+        assert [hit["session_id"] for hit in result["results"]] == ["history"]
+        assert observed == {"db": db, "current_session_id": "current"}
+    finally:
+        registry.deregister("session_search", scope=str(home))
+        db.close()
+    assert registry.get_entry("session_search") is builtin

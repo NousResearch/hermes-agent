@@ -67,14 +67,16 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     hermes_state_registry.acquire = lambda db_path=None: sentinel_db
     monkeypatch.setitem(sys.modules, "hermes_state_registry", hermes_state_registry)
 
-    session_search_mod = ModuleType("tools.session_search_tool")
+    # Inline search dispatches the registered handler, not the module function.
+    import tools.session_search_tool  # noqa: F401  (register the built-in)
+    from tools.registry import registry
 
-    def fake_session_search(**kwargs):
+    def fake_handler(args, **kwargs):
+        captured.update(args)
         captured.update(kwargs)
         return json.dumps({"success": True, "results": []})
 
-    session_search_mod.session_search = fake_session_search
-    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+    monkeypatch.setattr(registry.get_entry("session_search"), "handler", fake_handler)
 
     agent = _make_agent(None, platform="acp")
     result = json.loads(agent._invoke_tool(

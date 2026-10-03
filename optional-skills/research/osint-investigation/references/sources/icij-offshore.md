@@ -68,19 +68,19 @@ Path: `scripts/fetch_icij_offshore.py`
 
 ```bash
 # Search by entity name (case-insensitive substring across the bulk DB)
-python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 
 # Search by officer (individual person)
-python3 SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH JOHN" \
+python SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH JOHN" \
     --out data/icij.csv
 
 # Search by jurisdiction (filter on cached results)
-python3 SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH" \
+python SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH" \
     --jurisdiction "BRITISH VIRGIN ISLANDS" --out data/icij_bvi.csv
 
 # Force a fresh download (default refresh window is 30 days)
-python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --force-refresh --out data/icij.csv
 ```
 

@@ -145,16 +145,16 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
             "broker_id": bid, "broker_name": row.get("broker_name"), "tier": tier,
             "confirm_first": confirm_first, "send_via": via,
             "to": email_addr, "kind": kind, "why": lane_why,
-            "command": f"python3 scripts/pdd.py send-email {subject_id} {bid} --kind {kind} "
+            "command": f"python scripts/pdd.py send-email {subject_id} {bid} --kind {kind} "
                        f"--to {email_addr} --listing <confirmed-url>",
             "then": then,
         }, None
     if row.get("method") == "email":
         return None, _digest(row, "email opt-out (draft mode: a human must hit send)",
                              ["Send the rendered draft from your own mail client",
-                              f"Then: python3 scripts/pdd.py record {subject_id} {bid} submitted "
+                              f"Then: python scripts/pdd.py record {subject_id} {bid} submitted "
                               f"--disclosed contact_email --channel email"],
-                             prep=[f"python3 scripts/pdd.py render-email {subject_id} {bid} --listing <confirmed-url>"])
+                             prep=[f"python scripts/pdd.py render-email {subject_id} {bid} --listing <confirmed-url>"])
 
     # 2) Genuinely human-only work goes to the digest (no email lane could rescue it).
     if tier == "T3":
@@ -165,7 +165,7 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
         return None, _digest(row, "phone-callback verification (operator must be on the phone)",
                              [f"Open {row.get('optout_url')} and submit with only the planned fields",
                               "Answer the automated call and enter the 4-digit code to finish"],
-                             prep=[f"python3 scripts/pdd.py plan {subject_id} --batch  # confirm fields first"])
+                             prep=[f"python scripts/pdd.py plan {subject_id} --batch  # confirm fields first"])
     if req.get("account"):
         return None, _digest(row, "requires creating/holding an account with the broker",
                              [f"Create/log in at {row.get('optout_url')} and submit the opt-out",
@@ -181,7 +181,7 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
         "optout_url": row.get("optout_url"),
         "clears_children": row.get("clears_children") or [],
         "steps": steps,
-        "after": f"python3 scripts/pdd.py record {subject_id} {bid} submitted "
+        "after": f"python scripts/pdd.py record {subject_id} {bid} submitted "
                  f"--disclosed <field>... --channel web_form",
     }
     if deletion:
@@ -228,7 +228,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
         actions.append({
             "type": "refresh_brokers",
             "why": "live broker cache missing" if age is None else f"cache is {age:.0f} days old",
-            "command": "python3 scripts/pdd.py refresh-brokers",
+            "command": "python scripts/pdd.py refresh-brokers",
         })
 
     # 0b) DROP one-shot: for a CA resident, ONE request deletes from every registered
@@ -242,10 +242,10 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
             "one_shot": True,
             "registry_count": len(registry_recs),
             "url": registry.DROP_URL,
-            "command": f"python3 scripts/pdd.py drop {subject_id}",
+            "command": f"python scripts/pdd.py drop {subject_id}",
             "why": f"CA resident: one DROP request deletes from all {len(registry_recs)} registered "
                    "data brokers at once (superset of what commercial services cover).",
-            "after": f"python3 scripts/pdd.py drop {subject_id} --filed",
+            "after": f"python scripts/pdd.py drop {subject_id} --filed",
         })
 
     # 1) Phase 1 crawl: everything unscanned (read-only, parallel-safe)
@@ -256,7 +256,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
             actions.append({
                 "type": "fanout_scan",
                 "broker_ids": ids,
-                "command": f"python3 scripts/pdd.py fanout {subject_id}",
+                "command": f"python scripts/pdd.py fanout {subject_id}",
                 "how": "spawn ONE delegate_task subagent per batch IN PARALLEL with each batch's brief; "
                        "parent re-verifies key `found` claims before trusting them",
             })
@@ -264,7 +264,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
             actions.append({
                 "type": "scan_inline",
                 "broker_ids": ids,
-                "command": f"python3 scripts/pdd.py plan {subject_id}",
+                "command": f"python scripts/pdd.py plan {subject_id}",
                 "how": "run every search_vector per broker via the methods.md ladder "
                        "(web_extract -> site: probe -> browser), record a verdict per broker",
             })
@@ -281,7 +281,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                 actions.append({
                     "type": "poll_verification", "via": "imap",
                     "broker_id": bid,
-                    "command": f"python3 scripts/pdd.py poll-verification {subject_id} --broker {bid}",
+                    "command": f"python scripts/pdd.py poll-verification {subject_id} --broker {bid}",
                     "then": "browser_navigate the returned link IN THE SAME AGENT BROWSER (sessions are "
                             "browser-bound), complete the flow, then record: awaiting_processing",
                 })
@@ -289,7 +289,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                 actions.append({
                     "type": "poll_verification", "via": "browser", "broker_id": bid,
                     "how": "open the broker's confirmation email in the operator's logged-in webmail "
-                           f"(browser_*), then `python3 scripts/pdd.py verify-link {subject_id} {bid} "
+                           f"(browser_*), then `python scripts/pdd.py verify-link {subject_id} {bid} "
                            "--text '<email body>'` to score the link, browser_navigate it in the SAME "
                            "browser, then record awaiting_processing",
                 })
@@ -298,7 +298,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                     {"broker_id": bid, "broker_name": (broker.get("name") or bid)},
                     "verification email must be opened by a human (draft mode, no inbox access)",
                     ["Open the broker's verification email in the subject's inbox and click the link",
-                     f"Then: python3 scripts/pdd.py record {subject_id} {bid} awaiting_processing"]))
+                     f"Then: python scripts/pdd.py record {subject_id} {bid} awaiting_processing"]))
 
     # 3) due rechecks: processing windows elapsed / reappearance sweeps
     for case in ledger_mod.due(subject_id, at=at, ledger=ledger):
@@ -339,22 +339,22 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                           "submit ONLY the subject's own identifiers (the fields the form requires) to "
                           "remove them from the third party's record; disclose nothing extra",
                           "confirm the success state, screenshot into evidence/"],
-                "after": f"python3 scripts/pdd.py record {subject_id} {bid} submitted --channel web_form",
+                "after": f"python scripts/pdd.py record {subject_id} {bid} submitted --channel web_form",
             })
         elif (email_mode in ("programmatic", "alias") and mail["smtp"]) or email_mode == "browser":
             actions.append({
                 "type": "indirect_email_send",
                 "broker_id": bid, "confirm_first": confirm_first,
                 "send_via": "browser" if email_mode == "browser" else "smtp",
-                "command": f"python3 scripts/pdd.py send-email {subject_id} {bid} --kind ccpa_indirect "
+                "command": f"python scripts/pdd.py send-email {subject_id} {bid} --kind ccpa_indirect "
                            f"--listing <third-party-listing-url>",
             })
         else:
             digest.append(_digest(row, "indirect-exposure request (draft mode: a human must hit send)",
                                   ["Send the rendered ccpa_indirect draft",
-                                   f"Then: python3 scripts/pdd.py record {subject_id} {bid} submitted "
+                                   f"Then: python scripts/pdd.py record {subject_id} {bid} submitted "
                                    f"--disclosed contact_email --channel email"],
-                                  prep=[f"python3 scripts/pdd.py render-email {subject_id} {bid} "
+                                  prep=[f"python scripts/pdd.py render-email {subject_id} {bid} "
                                         f"--kind ccpa_indirect --listing <url>"]))
 
     # 6) blocked sites: stealth pass if we have one, else the operator-browser path
@@ -372,7 +372,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                 digest.append(_digest(r, "site blocks automated access (anti-bot); a human browser gets through",
                                       ["Open the paste-ready search URL from `plan` in your everyday browser",
                                        "Report the verdict (or a screenshot) back to the agent",
-                                       f"Agent records: python3 scripts/pdd.py record {subject_id} "
+                                       f"Agent records: python scripts/pdd.py record {subject_id} "
                                        f"{r['broker_id']} <found|not_found|indirect_exposure>"]))
 
     # 7) anything already parked as a human task

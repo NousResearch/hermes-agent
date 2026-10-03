@@ -63,13 +63,13 @@ Path: `scripts/fetch_nyc_acris.py`
 
 ```bash
 # By party name
-python3 SKILL_DIR/scripts/fetch_nyc_acris.py --name "ROLNICK" --out data/acris.csv
+python SKILL_DIR/scripts/fetch_nyc_acris.py --name "ROLNICK" --out data/acris.csv
 
 # By address (useful when you know the property but not the names)
-python3 SKILL_DIR/scripts/fetch_nyc_acris.py --address "571 HUDSON" --out data/acris.csv
+python SKILL_DIR/scripts/fetch_nyc_acris.py --address "571 HUDSON" --out data/acris.csv
 
 # Restrict to grantees (buyers / mortgagees)
-python3 SKILL_DIR/scripts/fetch_nyc_acris.py --name "ROLNICK" --party-type 2 \
+python SKILL_DIR/scripts/fetch_nyc_acris.py --name "ROLNICK" --party-type 2 \
     --out data/acris_buyers.csv
 ```
 

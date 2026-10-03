@@ -65,11 +65,11 @@ Path: `scripts/fetch_senate_ld.py`
 
 ```bash
 # By client
-python3 SKILL_DIR/scripts/fetch_senate_ld.py --client "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_senate_ld.py --client "EXAMPLE CORP" \
     --year 2024 --out data/lobbying.csv
 
 # By registrant (lobbying firm)
-python3 SKILL_DIR/scripts/fetch_senate_ld.py --registrant "BIG K STREET LLP" \
+python SKILL_DIR/scripts/fetch_senate_ld.py --registrant "BIG K STREET LLP" \
     --year 2024 --out data/lobbying.csv
 ```
 

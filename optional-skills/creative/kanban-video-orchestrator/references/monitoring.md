@@ -92,7 +92,7 @@ NEW_TASK_ID=$(hermes kanban create "Generate SRT captions from voiceover" \
     --assignee captioner \
     --workspace dir:"$HOME/projects/video-pipeline/<slug>" \
     --tenant <slug> \
-    --json | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+    --json | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 
 # 2. Wire it as a parent of the editor's task with `kanban link`
 hermes kanban link "$NEW_TASK_ID" <editor-task-id>

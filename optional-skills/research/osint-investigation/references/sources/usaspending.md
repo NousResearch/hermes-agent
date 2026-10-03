@@ -70,15 +70,15 @@ Path: `scripts/fetch_usaspending.py`
 
 ```bash
 # By recipient name
-python3 SKILL_DIR/scripts/fetch_usaspending.py --recipient "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_usaspending.py --recipient "EXAMPLE CORP" \
     --fy 2024 --out data/contracts.csv
 
 # By awarding agency
-python3 SKILL_DIR/scripts/fetch_usaspending.py --agency "Department of Defense" \
+python SKILL_DIR/scripts/fetch_usaspending.py --agency "Department of Defense" \
     --fy 2024 --out data/contracts.csv
 
 # Filter to sole-source only
-python3 SKILL_DIR/scripts/fetch_usaspending.py --recipient "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_usaspending.py --recipient "EXAMPLE CORP" \
     --fy 2024 --sole-source-only --out data/contracts.csv
 ```
 

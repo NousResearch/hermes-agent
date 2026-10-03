@@ -4,6 +4,7 @@ import json
 import sys
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -60,6 +61,9 @@ def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death)
         """
 import json, os, sys, time
 from pathlib import Path
+# The stub below swaps the install recipe for this bare script, so do what the
+# recipe's bootstrap does: put the checkout first on sys.path.
+sys.path.insert(0, REPO_ROOT)
 import cron.scheduler as scheduler
 import cron.executions as executions
 args = sys.argv
@@ -80,7 +84,9 @@ else:
     sys.stderr.write("worker-probe-startup-sentinel\\n")
     sys.stderr.flush()
     os._exit(9)
-""".replace("DEATH", repr(death.removeprefix("timeout_"))),
+""".replace("DEATH", repr(death.removeprefix("timeout_"))).replace(
+            "REPO_ROOT", repr(str(Path(scheduler.__file__).resolve().parents[1]))
+        ),
         encoding="utf-8",
     )
 

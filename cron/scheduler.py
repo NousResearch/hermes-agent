@@ -3639,15 +3639,18 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
-    command = [
-        sys.executable,
-        "-m",
+    from cron.scheduler_worker_env import installation_runtime_command
+    profile_home = _get_hermes_home().resolve()
+    command = installation_runtime_command(
         "cron.scheduler",
+        [
         "--external-worker-file",
         str(payload_path),
         "--ack-file",
         str(ack_path),
-    ]
+        ],
+        profile_home=profile_home,
+    )
 
     from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
@@ -3704,7 +3707,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
         payload_path.unlink(missing_ok=True)
         raise
 
-    profile_home = _get_hermes_home().resolve()
     # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
     # the env build; the helper's reset order keeps the context from outliving its scope.
     fire_scope_tokens = _install_fire_secret_scope()
@@ -3729,13 +3731,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
-    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
-    # (PYTHONSAFEPATH / stale editable mapping, #112729), hand the child the committed
-    # dependency generation (#122222), and mark it so its own entry runs the PM dependency
-    # boot. See cron/scheduler_worker_env.py and cron/worker_bootstrap.py.
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    # Replay the install-bound launcher recipe rather than reconstructing a Python import path
+    # from the gateway's ambient interpreter/environment. The child bootstrap selects and leases
+    # the committed dependency generation; this marker enables the worker-specific boot checks.
     repo_root = Path(__file__).resolve().parent.parent
-    worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

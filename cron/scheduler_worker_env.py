@@ -27,6 +27,23 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def installation_runtime_command(
+    module: str, args: list[str], *, profile_home: Path
+) -> list[str]:
+    """Replay this install's sealed launcher recipe for a Hermes child.
+
+    The long-running scheduler must not substitute its ambient interpreter for
+    the runtime selected by the installer/PM.  ``runtime_command`` binds the
+    source tree and store Python and lets the child bootstrap the committed
+    dependency generation.  ``home`` is explicit so a routed profile never
+    inherits the launch profile while the recipe is replayed.
+    """
+    from hermes_cli._launchers import runtime_command
+
+    repo_root = Path(__file__).resolve().parents[1]
+    return runtime_command(repo_root, args, module=module, home=profile_home)
+
+
 def _installed_purelib() -> Path | None:
     try:
         return Path(sysconfig.get_paths()["purelib"]).resolve()

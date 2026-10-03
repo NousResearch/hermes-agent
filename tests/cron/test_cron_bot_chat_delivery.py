@@ -114,23 +114,28 @@ def _completed(returncode=0, stdout="", stderr=""):
 
 
 def test_deliver_runs_canonical_bot_chat_lane():
-    """The subprocess must use the Bot Mode agent-to-agent chat lane:
-    chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>."""
+    """The child replays the install recipe while retaining the target profile."""
     calls = {}
 
     def fake_run(argv, env, report_path, timeout):
         calls["argv"], calls["env"], calls["report_path"] = argv, env, report_path
         return _completed()
 
+    def fake_recipe(module, args, *, profile_home):
+        calls["recipe"] = (module, args, profile_home)
+        return ["/sealed/store/python", "-I", "-c", "sealed-bootstrap"]
+
     with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+         mock.patch("cron.scheduler_worker_env.installation_runtime_command", side_effect=fake_recipe):
         err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
 
     assert err is None
     argv = calls["argv"]
-    # The running install's interpreter, not whatever `hermes` PATH names (same order as /update).
-    assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
-    assert argv[3:5] == ["-p", "default"]  # do not follow active_profile
+    assert argv[:4] == ["/sealed/store/python", "-I", "-c", "sealed-bootstrap"]
+    assert argv[4:6] == ["-p", "default"]  # do not follow active_profile
+    module, args, profile_home = calls["recipe"]
+    assert (module, args) == ("hermes_cli.main", [])
+    assert str(profile_home) == os.path.realpath(calls["env"]["HERMES_HOME"])
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv

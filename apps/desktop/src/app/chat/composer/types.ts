@@ -49,6 +49,12 @@ export interface ChatBarProps {
   sessionId?: string | null
   /** The tile's routed profile: scopes the slash palette while a draft has no session yet. */
   profile?: string | null
+  /** Registry gateway that owns the displayed profile; null for legacy profile-only routes. */
+  profileOwnerConnectionId?: null | string
+  /** True when the displayed owner is immutable (stored row, started route, or session tile). */
+  profileOwnerPersisted?: boolean
+  /** True only for a persisted/resumed session, a session tile, or a session with messages. */
+  profileSessionStarted?: boolean
   cwd?: string | null
   onCancel: () => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void

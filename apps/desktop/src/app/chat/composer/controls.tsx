@@ -14,6 +14,8 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { ProfilePill, type ProfilePillOwner } from './profile-pill'
+import type { ProfileSelectionMode } from './profile-selection'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
@@ -47,6 +49,8 @@ export function ComposerControls({
   hasComposerPayload,
   hideModelPill = false,
   minimal = false,
+  profileMode,
+  profileOwner,
   state,
   voiceStatus,
   onDictate,
@@ -64,6 +68,8 @@ export function ComposerControls({
   hasComposerPayload: boolean
   hideModelPill?: boolean
   minimal?: boolean
+  profileMode?: ProfileSelectionMode
+  profileOwner?: ProfilePillOwner
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -74,8 +80,15 @@ export function ComposerControls({
   const c = t.composer
   const hudMode = useStore($hudMode)
 
+  const profilePill = profileMode && profileOwner ? <ProfilePill mode={profileMode} owner={profileOwner} /> : null
+
   if (conversation.active) {
-    return <ConversationPill {...conversation} disabled={disabled} />
+    return (
+      <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+        {minimal ? null : profilePill}
+        <ConversationPill {...conversation} disabled={disabled} />
+      </div>
+    )
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
@@ -117,6 +130,7 @@ export function ComposerControls({
     <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
+          {profilePill}
           {hideModelPill ? null : (
             <>
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />

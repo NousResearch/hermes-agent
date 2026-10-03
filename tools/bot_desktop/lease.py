@@ -217,8 +217,22 @@ def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = Non
             # agent action (a double-clicked Hand back, a stray CLI stop) look overtaken and get voided.
             return False
         lease.holder, lease.viewer_id, lease.since, lease.reason = AGENT, None, time.time(), ""
+        handed_back.append(True)
         return True
-    return _transition(profile_key, _m)
+    handed_back: list = []
+    lease = _transition(profile_key, _m)
+    if handed_back:
+        _restore_screen_size(profile_key)
+    return lease
+
+
+def _restore_screen_size(profile_key: Optional[str]) -> None:
+    """A human may have resized the screen to their window; the agent gets the configured size back."""
+    try:
+        from tools.bot_desktop import runtime
+        runtime.restore_geometry(profile_key)
+    except Exception:  # the hand-back itself already happened; the size is cosmetic for the lease
+        logger.debug("bot-desktop lease: screen size restore failed", exc_info=True)
 
 
 def human_holds(profile_key: Optional[str] = None) -> bool:

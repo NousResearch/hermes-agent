@@ -617,6 +617,15 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
+        if home is not None:
+            from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
+            if find_canonical_owner(home) is not None and find_canonical_live_owner(home) is None:
+                print(json.dumps({
+                    "error": "Delivery deferred: the target Bot Chat is open on another surface "
+                             "that has not advertised live delivery yet. Try again later.",
+                    "reason": "target_pending_live_consumer",
+                }))
+                return 1
         if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)

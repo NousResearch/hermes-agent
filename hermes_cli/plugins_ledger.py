@@ -295,6 +295,7 @@ class PluginLedgerMixin:
         ):
             container.clear()
         self._context_engine = None
+        self._session_visibility = None
         with self._hook_timeout_lock:
             self._hook_running_callbacks.clear()
             self._hook_abandoned.clear()

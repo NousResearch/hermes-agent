@@ -11391,7 +11391,10 @@
           "last_delivery_unverified": {
             "anyOf": [
               {
-                "type": "boolean"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -21964,6 +21967,7 @@
           "no_interactive_session",
           "version_too_old",
           "missing_app",
+          "unsupported_gpu",
           "unknown"
         ],
         "title": "PluginServerState",

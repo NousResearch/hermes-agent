@@ -1380,7 +1380,11 @@ export const en: Translations = {
       toolsetsWipeConfirm:
         'Remove all enabled toolsets? This disables memory, terminal, web search, delegation, and most other tools until you re-enable them.',
       keepAwakeTitle: 'Keep computer awake',
-      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      keepAwakeDesc:
+        'Stop this machine from sleeping. "While working" holds it only while a turn is in flight, so overnight runs survive without pinning the laptop awake all week. The display can still dim.',
+      keepAwakeOff: 'Off',
+      keepAwakeWhileWorking: 'While working',
+      keepAwakeAlways: 'Always',
       disableF12Title: 'Disable F12 DevTools',
       disableF12Desc: 'Block F12 from opening Developer Tools. Ctrl+Shift+I (or Cmd+Opt+I on Mac) still works.',
       alwaysExternalLinksTitle: 'Always open links in external browser',
@@ -2512,6 +2516,7 @@ export const en: Translations = {
         no_interactive_session: 'no interactive session',
         version_too_old: 'version too old',
         missing_app: 'app missing',
+        unsupported_gpu: 'GPU not supported',
         unknown: 'status unknown'
       },
       catalogTitle: 'Plugin catalog',

@@ -1694,7 +1694,10 @@ export const deOverrides = {
         'Alle aktivierten Toolsets entfernen? Das deaktiviert Speicher, Terminal, Websuche, Delegation und die meisten anderen Tools, bis Sie sie wieder aktivieren.',
       keepAwakeTitle: 'Computer wach halten',
       keepAwakeDesc:
-        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt, damit Läufe über Nacht oder länger weiterlaufen. Der Bildschirm kann trotzdem abdunkeln.',
+        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt. „Während der Arbeit“ gilt nur, solange ein Durchlauf läuft: Läufe über Nacht laufen weiter, ohne den Laptop die ganze Woche wach zu halten. Der Bildschirm kann trotzdem abdunkeln.',
+      keepAwakeOff: 'Aus',
+      keepAwakeWhileWorking: 'Während der Arbeit',
+      keepAwakeAlways: 'Immer',
       disableF12Title: 'F12-DevTools deaktivieren',
       disableF12Desc:
         'Verhindert, dass F12 die Entwicklertools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',
@@ -2862,6 +2865,7 @@ export const deOverrides = {
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
         missing_app: 'App fehlt',
+        unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
       catalogTitle: 'Plugin-Katalog',

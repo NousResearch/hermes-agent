@@ -105,9 +105,11 @@ TASK_END_REASONS = frozenset({
     "system_aborted", "timed_out", "unknown", "user_cancelled",
 })
 TASK_TERMINATIONS = frozenset({"none", "system_aborted", "timed_out", "unknown", "user_cancelled"})
+# ``one_shot``: a finite CLI run (``hermes -z``, ``hermes chat -q`` off a TTY, ``-Q``, ``--oneshot``) that
+# answers one prompt and exits — a person's shell line or their script, never the REPL.
 TASK_ENTRYPOINTS = frozenset({
-    "api", "background", "batch", "delegated", "gateway_message", "interactive", "other", "python",
-    "scheduled_task", "unknown",
+    "api", "background", "batch", "delegated", "gateway_message", "interactive", "one_shot", "other",
+    "python", "scheduled_task", "unknown",
 })
 DURATION_BUCKETS = frozenset({
     "1s_to_5s", "2m_to_10m", "30s_to_2m", "5s_to_30s", "gte_10m", "lt_1s",

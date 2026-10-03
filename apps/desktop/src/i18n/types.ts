@@ -1144,6 +1144,9 @@ export interface Translations {
       toolsetsWipeConfirm: string
       keepAwakeTitle: string
       keepAwakeDesc: string
+      keepAwakeOff: string
+      keepAwakeWhileWorking: string
+      keepAwakeAlways: string
       disableF12Title: string
       disableF12Desc: string
       alwaysExternalLinksTitle: string
@@ -2122,6 +2125,7 @@ export interface Translations {
         no_interactive_session: string
         version_too_old: string
         missing_app: string
+        unsupported_gpu: string
         unknown: string
       }
       catalogTitle: string

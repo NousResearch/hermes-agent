@@ -1052,7 +1052,11 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      keepAwakeDesc:
+        '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
+      keepAwakeOff: 'オフ',
+      keepAwakeWhileWorking: '実行中のみ',
+      keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
         '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'

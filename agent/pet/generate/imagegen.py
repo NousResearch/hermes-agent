@@ -1,14 +1,9 @@
 """Thin image-generation layer for pet sprites.
 
-Wraps the active :class:`~agent.image_gen_provider.ImageGenProvider` with the
-two things sprite generation needs that the agent-facing ``image_generate`` tool
-doesn't expose: **N variants** (loop) and **reference-image grounding** (so each
-animation row stays the same character as the chosen base).
-
-Reference grounding only works on providers that support it — currently OpenAI
-``gpt-image-2`` (image edits) and Krea (style references). We resolve to one of
-those and surface a clear, actionable error otherwise rather than silently
-producing an ungrounded, drifting pet.
+Wraps the active ``ImageGenProvider`` with what the ``image_generate`` tool
+doesn't expose: N variants and reference-image grounding (each animation row
+stays the same character as the chosen base). Grounding needs a ref-capable
+provider; we resolve to one or raise an actionable error rather than drift.
 """
 
 from __future__ import annotations
@@ -20,32 +15,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Providers that can ground generation on a reference image, in preference order
-# (Nous Portal → OpenAI → OpenRouter → …). OpenRouter/Nous run a quality-first
-# model chain and may fall back depending on account access and endpoint behavior,
-# so fidelity can vary by configured backend + model availability.
+# Providers that can ground generation on a reference image, in preference order.
+# OpenRouter/Nous run a quality-first model chain and may fall back depending on
+# account access, so fidelity can vary by configured backend.
 _REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea")
-
-# Friendly display label per reference-capable provider, surfaced in the desktop
-# pet-gen picker.
-_PROVIDER_LABELS: dict[str, str] = {
-    "nous": "Nous Portal",
-    "openrouter": "OpenRouter",
-    "openai": "OpenAI",
-    "openai-codex": "OpenAI (Codex)",
-    "krea": "Krea",
-}
-
-
-def _forced_provider_from_env() -> str | None:
-    """Optional QA override to force a pet-gen backend.
-
-    `HERMES_PET_IMAGE_PROVIDER=<name>` (e.g. `openrouter`) bypasses the normal
-    active/default provider resolution for pet generation only. Unknown values are
-    ignored so existing users are unaffected.
-    """
-    forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
-    return forced if forced in _REF_CAPABLE else None
+# Friendly display label per reference-capable provider (desktop pet-gen picker).
+_PROVIDER_LABELS = {"nous": "Nous Portal", "openrouter": "OpenRouter", "openai": "OpenAI", "openai-codex": "OpenAI (Codex)", "krea": "Krea"}
 
 
 class GenerationError(RuntimeError):
@@ -70,55 +45,41 @@ def _discover() -> None:
         logger.debug("image-gen plugin discovery failed: %s", exc)
 
 
-def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
-    """Pick the image provider to use for sprite work.
+def _available(name: str):
+    """The registered provider *name* if it exists and has credentials, else ``None``."""
+    from agent.image_gen_registry import get_provider
 
-    Preference: an explicit *prefer* choice (the desktop pet-gen picker) when it's
-    reference-capable and configured, then the configured/active provider when
-    it's reference-capable, else the first available reference-capable provider.
-    With *require_references* off we fall back to any available provider (used for
-    prompt-only base drafts).
+    provider = get_provider(name)
+    return provider if provider is not None and provider.is_available() else None
+
+
+def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
+    """Pick the image provider for sprite work.
+
+    Preference: ``HERMES_PET_IMAGE_PROVIDER`` (QA override, unknown values ignored),
+    then *prefer* (desktop picker), then the active provider, then the first available
+    — each only if ref-capable and configured. With *require_references* off, any
+    available active provider is accepted (prompt-only base drafts).
     """
     _discover()
-    from agent.image_gen_registry import get_active_provider, get_provider
+    from agent.image_gen_registry import get_active_provider
 
-    # QA override: force one provider for pet-gen iteration regardless of the
-    # globally active image_gen backend.
-    forced = _forced_provider_from_env()
-    if forced:
-        chosen = get_provider(forced)
-        if chosen is not None and chosen.is_available():
-            return SpriteProvider(name=forced, provider=chosen, supports_references=True)
-
-    # An explicit user pick wins when it's reference-capable and has credentials;
-    # otherwise we ignore it and fall through to the normal resolution.
-    if prefer:
-        chosen = get_provider(prefer)
-        if prefer in _REF_CAPABLE and chosen is not None and chosen.is_available():
-            return SpriteProvider(name=prefer, provider=chosen, supports_references=True)
-
-    # Configured / active provider first.
-    active = None
+    forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
+    for name in (forced, prefer):
+        if name in _REF_CAPABLE and (chosen := _available(name)) is not None:
+            return SpriteProvider(name=name, provider=chosen, supports_references=True)
     try:
         active = get_active_provider()
     except Exception:  # noqa: BLE001
         active = None
-    if active is not None:
-        name = getattr(active, "name", "")
-        if name in _REF_CAPABLE and active.is_available():
-            return SpriteProvider(name=name, provider=active, supports_references=True)
-
-    # Any available reference-capable provider.
+    active_name = getattr(active, "name", "") if active is not None else ""
+    if active_name in _REF_CAPABLE and active.is_available():
+        return SpriteProvider(name=active_name, provider=active, supports_references=True)
     for name in _REF_CAPABLE:
-        provider = get_provider(name)
-        if provider is not None and provider.is_available():
+        if (provider := _available(name)) is not None:
             return SpriteProvider(name=name, provider=provider, supports_references=True)
-
     if not require_references and active is not None and active.is_available():
-        return SpriteProvider(
-            name=getattr(active, "name", "unknown"), provider=active, supports_references=False
-        )
-
+        return SpriteProvider(name=getattr(active, "name", "unknown"), provider=active, supports_references=False)
     raise GenerationError(
         "Pet generation needs an image backend that supports reference images. "
         "Open `hermes tools` → Image Generation and configure Nous Portal, "
@@ -127,35 +88,17 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
 
 
 def list_sprite_providers() -> list[dict]:
-    """The reference-capable providers available to pick for pet generation.
-
-    Returns ``[{name, label, default}]`` for every ref-capable provider the user
-    actually has credentials for, in preference order, marking the one
-    :func:`resolve_provider` would choose with no explicit preference. Empty when
-    none is configured (the picker hides itself). Best-effort: discovery hiccups
-    yield an empty list.
-    """
+    """``[{name, label, default}]`` per configured ref-capable provider, in preference order; empty hides the picker."""
     _discover()
-    from agent.image_gen_registry import get_provider
-
     try:
         default_name = resolve_provider(require_references=True).name
     except GenerationError:
         default_name = ""
-
-    out: list[dict] = []
-    for name in _REF_CAPABLE:
-        provider = get_provider(name)
-        if provider is None or not provider.is_available():
-            continue
-        out.append(
-            {
-                "name": name,
-                "label": _PROVIDER_LABELS.get(name, name),
-                "default": name == default_name,
-            }
-        )
-    return out
+    return [
+        {"name": name, "label": _PROVIDER_LABELS.get(name, name), "default": name == default_name}
+        for name in _REF_CAPABLE
+        if _available(name) is not None
+    ]
 
 
 def _save_local(image_ref: str, *, prefix: str) -> Path:
@@ -168,13 +111,7 @@ def _save_local(image_ref: str, *, prefix: str) -> Path:
 
 
 def _rejected_background(error: str) -> bool:
-    """True when a provider error is specifically about the ``background`` param.
-
-    Transparent backgrounds are a per-model capability (e.g. some gpt-image tiers
-    reject ``background=transparent`` outright). We detect that one rejection so
-    we can retry without the flag rather than failing the whole pet — our chroma
-    key pass makes the result transparent regardless.
-    """
+    """True when a provider error is specifically about ``background=transparent`` (a per-model capability; we retry without it)."""
     lowered = (error or "").lower()
     return "background" in lowered and ("not supported" in lowered or "transparent" in lowered)
 
@@ -191,13 +128,10 @@ def generate(
     """Generate *n* sprite images and return their local paths.
 
     *reference_images* grounds the output on a base image (required for rows).
-    *aspect_ratio* picks the canvas: ``"square"`` for single-character base
-    drafts, ``"landscape"`` for multi-frame row strips (the wider 1536px canvas
-    gives every frame real horizontal room so winged poses don't have to be
-    shrunk to avoid touching their neighbors).
-    We *ask* for a transparent background, but fall back to an opaque generation
-    (cleaned up downstream by the chroma-key pass) on models that reject the
-    flag. Raises :class:`GenerationError` if nothing usable comes back.
+    *aspect_ratio* ``"landscape"`` (row strips) gives every frame horizontal room so
+    winged poses needn't shrink. We *ask* for a transparent background but fall
+    back to opaque on models that reject the flag. Raises :class:`GenerationError`
+    if nothing usable comes back.
     """
     sprite = provider or resolve_provider(require_references=bool(reference_images))
     if reference_images and not sprite.supports_references:
@@ -208,23 +142,22 @@ def generate(
 
     refs = [str(p) for p in (reference_images or [])]
 
+    # Providers disagree on the ref kwarg name: our OpenRouter/Nous backends read
+    # ``reference_images``, OpenAI's gpt-image-2 reads ``reference_image_urls``.
+    # Send both; each ignores the other.
+    ref_kwargs = {"reference_images": refs, "reference_image_urls": refs} if refs else {}
+
     def _run(extra: dict) -> tuple[Path | None, str]:
-        kwargs: dict = {"aspect_ratio": aspect_ratio, **extra}
-        if refs:
-            # Providers disagree on the ref kwarg name: our OpenRouter/Nous
-            # backends read ``reference_images``, OpenAI's gpt-image-2 reads
-            # ``reference_image_urls``. Send both; each ignores the other.
-            kwargs["reference_images"] = refs
-            kwargs["reference_image_urls"] = refs
         try:
-            result = sprite.provider.generate(prompt, **kwargs)
+            result = sprite.provider.generate(prompt, aspect_ratio=aspect_ratio, **extra, **ref_kwargs)
         except Exception as exc:  # noqa: BLE001 - normalize provider crashes
             logger.debug("provider.generate crashed: %s", exc)
             return None, str(exc)
-        if not isinstance(result, dict) or not result.get("success"):
-            return None, (result or {}).get("error", "unknown error") if isinstance(result, dict) else "no result"
-        image_ref = result.get("image")
-        if not image_ref:
+        if not isinstance(result, dict):
+            return None, "no result"
+        if not result.get("success"):
+            return None, result.get("error", "unknown error")
+        if not (image_ref := result.get("image")):
             return None, "provider returned no image"
         try:
             return _save_local(str(image_ref), prefix=prefix), ""

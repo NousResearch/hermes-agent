@@ -1,4 +1,4 @@
-import { fuzzyScoreMulti } from "@/lib/fuzzy";
+import { fuzzyScoreMulti } from "@hermes/shared";
 
 /**
  * True when `trimmedQuery` located the selected provider by name/slug but

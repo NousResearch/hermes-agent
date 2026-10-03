@@ -1,0 +1,205 @@
+"""#76129: post-update Windows cold-start must not steal Desktop-owned lifecycle.
+
+A vestigial Startup/Scheduled-Task autostart is not proof the user wants a
+standalone ``gateway run``. When Desktop currently supervises this install's
+control plane, the updater must not spawn a competing messaging daemon.
+
+Serve/dashboard are the control plane, not the messaging gateway (#92091).
+``looks_like_gateway_command_line`` stays strict; ownership is a separate
+predicate.
+
+#109538: ownership alone must not hide a gateway that *died*. The Desktop
+hand-off exits the app before the updater starts and can kill the running
+gateway in those same seconds, so discovery finds no live PID while a start
+attestation still vouches for the dead one. In that case the cold-start
+survives both the plan-time and the spawn-time ownership check — the Desktop
+does not restart the messaging gateway itself.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from hermes_cli import gateway as hermes_gateway
+from hermes_cli import gateway_windows
+from hermes_cli import main as cli_main
+from hermes_cli import process_identity
+from hermes_cli import update_cmd
+import hermes_cli.update_cmd_windows as update_cmd_windows
+
+
+def _live_serve_ledger_entry() -> dict:
+    return {
+        "pid": 111,
+        "create_time": 1.0,
+        "purpose": "serve",
+        "install": "abc",
+        "spawner_pid": 99,
+        "spawner_create": 0.5,
+    }
+
+def test_control_plane_argv_is_not_a_gateway():
+    from gateway.status import looks_like_gateway_command_line
+
+    serve = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main serve --host 127.0.0.1"
+    run = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main gateway run"
+
+    assert update_cmd._looks_like_desktop_control_plane(serve) is True
+    assert looks_like_gateway_command_line(serve) is False
+    assert update_cmd._looks_like_desktop_control_plane(run) is False
+    assert looks_like_gateway_command_line(run) is True
+
+def test_control_plane_classifier_is_token_based_not_substring():
+    """#90778/#91869 class: flag values and lookalike tokens must not read
+    as a control plane. The salvage swapped the original substring check
+    for the parser-derived subcommand classifier."""
+    py = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main"
+    # "dashboard" as a FLAG VALUE, real subcommand is chat
+    assert update_cmd._looks_like_desktop_control_plane(f"{py} -m dashboard chat") is False
+    # "--preserve-cache" contains "serve"; real subcommand is kanban
+    assert (
+        update_cmd._looks_like_desktop_control_plane(f"{py} kanban --preserve-cache")
+        is False
+    )
+    # profile selector before the real subcommand still classifies correctly
+    assert (
+        update_cmd._looks_like_desktop_control_plane(f"{py} --profile serve dashboard")
+        is True
+    )
+    # dashboard as the real subcommand
+    assert update_cmd._looks_like_desktop_control_plane(f"{py} dashboard") is True
+    # undeterminable subcommand → NOT a control plane (never guess ownership)
+    assert update_cmd._looks_like_desktop_control_plane("python.exe -c import time") is False
+
+def test_ledger_live_serve_with_live_spawner_owns_lifecycle(monkeypatch):
+    monkeypatch.setattr(
+        process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
+    )
+    monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: False)
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
+
+    assert update_cmd._desktop_owns_gateway_lifecycle() is True
+
+def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
+    monkeypatch.setattr(
+        process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
+    )
+    monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: True)
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
+
+    assert update_cmd._desktop_owns_gateway_lifecycle() is False
+
+
+def _running_beta_pause_fixture(monkeypatch, tmp_path):
+    """Windows update with ``beta`` (PID 777) running and the default profile home at ``tmp_path``."""
+    from types import SimpleNamespace
+    import hermes_cli.profiles as profiles_mod
+
+    homes = {"default": tmp_path, "beta": tmp_path / "profiles" / "beta"}
+    homes["beta"].mkdir(parents=True)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
+    beta = SimpleNamespace(pid=777, profile="beta")
+    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({777: beta}, [], set(), [777]))
+    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({"beta": 777}, [777], []))
+    monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])
+    monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, timeout: set())
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **_kw: [(n, h) for n, h in homes.items() if n in ("default", "beta")])
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: homes[name])
+    # Resume side.
+    monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
+    monkeypatch.setattr(hermes_gateway, "launch_detached_profile_gateway_restart", lambda p, o: True)
+    ready_probes: list = []
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: ready_probes.append(k) or [4242])
+    homes["_ready_probes"] = ready_probes
+    return homes
+
+
+@pytest.mark.platforms("windows")
+def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, tmp_path, capsys):
+    """#110959: the all-or-nothing plan never ran while ``beta`` was alive, so a default gateway
+    that died after a ✓ stayed down after the update. Its dead attestation must become a per-profile
+    cold-start obligation on the token; resume spawns it under the default home and consumes only
+    that generation, while ``beta`` still goes through the ordinary relaunch."""
+    homes = _running_beta_pause_fixture(monkeypatch, tmp_path)
+    gateway_windows._write_start_attestation([555], "direct spawn (PID 555)")
+    marker = tmp_path / "state" / "gateway.start-attestation.json"
+    generation = json.loads(marker.read_text(encoding="utf-8"))["generation"]
+
+    token = update_cmd._pause_windows_gateways_for_update()
+
+    assert token["profiles"] == {"beta": 777}
+    assert token["cold_start_profiles"] == {"default": generation}
+    assert marker.exists()  # plan-time probe is read-only
+
+    spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: spawned.append(k) or 4242)
+    update_cmd._resume_windows_gateways_after_update(token)
+
+    assert spawned == [{"home": homes["default"]}]
+    # Readiness is probed in the default profile's own home: live ``beta`` must not vouch for it.
+    assert {"home": homes["default"]} in homes["_ready_probes"]
+    # The authorizing generation is consumed and the NEW PID is attested in the same profile home,
+    # so a death after this CLI exits stays visible to the next update.
+    reattested = json.loads(marker.read_text(encoding="utf-8"))
+    assert (reattested["pids"], reattested["generation"] != generation) == ([4242], True)
+    assert "cold_start_profiles" not in token
+    assert token["relaunched_profiles"] == ["beta"]
+    assert token["resume_needed"] is False
+    out = capsys.readouterr().out
+    assert "Gateway profile default started via cold-start after update (PID: 4242)" in out
+
+
+@pytest.mark.platforms("windows")
+def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypatch, tmp_path):
+    """Nothing running, active profile exited cleanly (plan → None), ``beta`` dead-attested: beta still
+    gets a token and a spawn. And when BOTH owe a spawn, the fleet-wide active cold-start runs FIRST —
+    a beta spawned earlier would satisfy its any-live-gateway guard and the active profile would stay down."""
+    homes = _running_beta_pause_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({}, [], set(), []))
+    monkeypatch.setattr(update_cmd_windows, "_windows_cold_start_plan", lambda: None)
+    gateway_windows._write_start_attestation([556], "direct spawn (PID 556)", home=homes["beta"])
+    beta_marker = homes["beta"] / "state" / "gateway.start-attestation.json"
+    beta_generation = json.loads(beta_marker.read_text(encoding="utf-8"))["generation"]
+
+    token = update_cmd._pause_windows_gateways_for_update()
+    assert token["cold_start_profiles"] == {"beta": beta_generation}
+    assert token["profiles"] == {}
+
+    order = []
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: order.append(k.get("home")) or 4242)
+    monkeypatch.setattr(
+        cli_main, "_cold_start_windows_gateway_after_update", lambda token=None: order.append("active") or True)
+    token["cold_start_if_installed"] = True  # both owe a spawn
+    update_cmd._resume_windows_gateways_after_update(token)
+    assert order == ["active", homes["beta"]]
+    assert json.loads(beta_marker.read_text(encoding="utf-8"))["generation"] != beta_generation
+    assert token["resume_needed"] is False
+
+
+@pytest.mark.platforms("windows")
+def test_service_supervised_running_profile_is_not_cold_started(monkeypatch, tmp_path):
+    """A profile whose gateway is alive under an SCM service is skipped by the socket pause, so it is
+    absent from ``token["profiles"]``; it must still count as RUNNING for the per-profile probe or its
+    live attestation reads as dead and resume spawns a second, unsupervised gateway beside the
+    restarted service."""
+    from types import SimpleNamespace
+
+    homes = _running_beta_pause_fixture(monkeypatch, tmp_path)
+    svc_proc = SimpleNamespace(pid=900, profile="beta", path=homes["beta"])
+    service = SimpleNamespace(name="HermesGw-beta", profile="beta", service_pid=800, gateway_pid=900,
+                              descendant_identities=(), service_create_time=1.0, gateway_create_time=2.0)
+    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({900: svc_proc}, [service], {900}, [900]))
+    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({}, [], []))
+    monkeypatch.setattr(update_cmd, "_stop_windows_gateway_service", lambda *a, **k: None)
+    gateway_windows._write_start_attestation([900], "direct spawn (PID 900)", home=homes["beta"])
+
+    token = update_cmd._pause_windows_gateways_for_update()
+
+    assert token["services"] == ["HermesGw-beta"]
+    assert token["profiles"] == {}
+    assert "cold_start_profiles" not in token

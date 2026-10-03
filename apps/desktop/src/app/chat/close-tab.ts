@@ -67,6 +67,12 @@ export function closeWorkspaceTab(loadSessionIntoWorkspace?: (storedSessionId: s
  * with its own tab strip closes ITS tab instead of main's.
  */
 export function closeActiveTab(loadSessionIntoWorkspace?: (storedSessionId: string) => void): boolean {
+  // A remote bot screen borrows the terminal's keyboard ownership marker so bare keys reach it; ⌘W
+  // there belongs to the remote desktop, never to a local terminal tab or the session tab behind it.
+  if (isFocusWithin('[data-remote-screen]')) {
+    return true
+  }
+
   if (isFocusWithin('[data-terminal]')) {
     closeActiveTerminal()
 

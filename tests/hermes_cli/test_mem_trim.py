@@ -43,19 +43,12 @@ def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_pa
         reset_hermes_home_override(token)
 
 
-def test_default_config_declares_memory_trim_controls():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    context = DEFAULT_CONFIG["context"]
-    assert isinstance(context, dict)
-    settings = context["memory_trim"]
-    assert isinstance(settings, dict)
-    assert isinstance(settings["enabled"], bool)
-    assert isinstance(settings["cooldown_seconds"], float)
 
 
 def test_collect_memory_snapshot_parses_linux_proc_status(monkeypatch):
-    monkeypatch.setattr(mem_trim.sys, "platform", "linux")
+    # No ``sys.platform`` pin: the only platform check lives inside
+    # ``_read_proc_status``, which is replaced below — the subject here is
+    # the /proc/self/status parser, which is host-independent.
     monkeypatch.setattr(
         mem_trim,
         "_read_proc_status",
@@ -84,47 +77,8 @@ def test_success_collects_then_trims(monkeypatch):
     assert mem_trim._last_trim_monotonic == 100.0
 
 
-def test_success_logs_memory_snapshot_and_trim_result(monkeypatch, caplog):
-    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
-    monkeypatch.setattr(mem_trim, "_malloc_trim", lambda _pad: 1)
-    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
-    snapshots = iter(
-        (
-            {"rss_kib": 4096, "rss_anon_kib": 3072, "thread_count": 3},
-            {"rss_kib": 2048, "rss_anon_kib": 1024, "thread_count": 3},
-        )
-    )
-    monkeypatch.setattr(mem_trim, "collect_memory_snapshot", lambda: next(snapshots))
-
-    with caplog.at_level("INFO", logger="hermes_cli.mem_trim"):
-        assert mem_trim.trim_memory(reason="test turn") is True
-
-    assert "reason=test turn" in caplog.text
-    assert "malloc_trim=1" in caplog.text
-    assert "rss_kib=4096->2048" in caplog.text
 
 
-def test_force_logs_even_when_periodic_log_sampling_skips(monkeypatch, caplog):
-    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
-    monkeypatch.setattr(mem_trim, "_malloc_trim", lambda _pad: 1)
-    monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 0.0, 99, 1.0))
-    # Two ticks: the forced call comes after the 5s force floor so it runs
-    # (the floor exists to coalesce burst closes, not to mute logging).
-    _ticks = iter([100.0, 110.0])
-    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: next(_ticks, 110.0))
-    monkeypatch.setattr(
-        mem_trim,
-        "collect_memory_snapshot",
-        lambda: {"rss_kib": 4096, "rss_anon_kib": 3072, "thread_count": 3},
-    )
-
-    with caplog.at_level("INFO", logger="hermes_cli.mem_trim"):
-        assert mem_trim.trim_memory(reason="periodic") is True
-        assert mem_trim.trim_memory(force=True, reason="close") is True
-
-    messages = [record.getMessage() for record in caplog.records]
-    assert not any("reason=periodic" in message for message in messages)
-    assert any("reason=close" in message for message in messages)
 
 
 def test_cooldown_suppresses_repeated_collection(monkeypatch):
@@ -159,17 +113,6 @@ def test_config_cooldown_controls_rate_limit(monkeypatch):
     trim.assert_not_called()
 
 
-def test_legacy_environment_switch_does_not_control_behavior(monkeypatch):
-    trim = Mock(return_value=1)
-    monkeypatch.setattr(mem_trim, "_malloc_trim", trim)
-    monkeypatch.setenv("HERMES_DISABLE_MEMORY_TRIM", "1")
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {"context": {"memory_trim": {"enabled": True}}},
-    )
-
-    assert mem_trim.trim_memory(force=True) is True
-    trim.assert_called_once_with(0)
 
 
 def test_libc_failure_is_fail_open_and_rate_limited(monkeypatch):

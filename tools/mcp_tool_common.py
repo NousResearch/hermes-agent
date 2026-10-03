@@ -144,6 +144,20 @@ def mcp_server_enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
+def mcp_feature_config(config: dict, key: str) -> tuple:
+    """``(enabled, block)`` for a per-server feature block (``sampling``, ``elicitation``). The
+    ``enabled`` flag goes through the same ``_parse_boolish`` as :func:`mcp_server_enabled`, so
+    ``enabled: "false"`` turns the feature off rather than reading as a truthy string. An empty
+    block (``sampling:`` with every key commented out loads as ``None``) means the defaults; a bare
+    scalar (``sampling: false``) is the flag itself. Absent or unparseable = on."""
+    block = config.get(key)
+    if block is None:
+        return True, {}
+    if not isinstance(block, dict):
+        return _parse_boolish(block, default=True), {}
+    return _parse_boolish(block.get("enabled", True), default=True), block
+
+
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     """Optional positive lifecycle timeout from top-level/nested ``lifecycle`` config (``0``
     disables; negatives and non-numbers are warned about and ignored)."""

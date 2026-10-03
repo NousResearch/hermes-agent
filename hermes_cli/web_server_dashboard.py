@@ -5,6 +5,7 @@ import logging
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -504,7 +505,69 @@ def _dashboard_plugin_search_dirs() -> List[tuple]:
     return search_dirs
 
 
+def _dashboard_plugin_metadata(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate declarations before caching; discovery logs and skips invalid manifests.
+
+    This validates metadata, not served bytes or admission against the running SDK.
+    Absence is legacy-compatible; an explicitly invalid declaration is not absence.
+    """
+    metadata: Dict[str, Any] = {}
+    if "integrity" in data:
+        value = data["integrity"]
+        # SRI hash-with-options uses CSP's base64 alphabet. Enforce digest
+        # lengths and correct optional padding, rather than ignoring bad tokens
+        # as a browser may. Validate the whole list without rewriting its value.
+        # Require lowercase algorithms: Chromium ignores case variants despite
+        # the SRI spec permitting them, potentially leaving no effective hash.
+        alphabet = r"[A-Za-z0-9+/_-]"
+        digest = rf"(?:sha256-{alphabet}{{43}}=?|sha384-{alphabet}{{64}}|sha512-{alphabet}{{86}}(?:==)?)"
+        token = rf"{digest}(?:\?[\x21-\x7e]*)?"
+        whitespace = r"[ \t\n\f\r]"
+        if not isinstance(value, str) or not re.fullmatch(
+            rf"{whitespace}*{token}(?:{whitespace}+{token})*{whitespace}*",
+            value, flags=re.ASCII,
+        ):
+            raise ValueError(
+                "integrity must contain whitespace-separated lowercase sha256/sha384/sha512 "
+                "digests with the correct base64 length and padding"
+            )
+        metadata["integrity"] = value
+
+    if "css_integrity" in data:
+        value = data["css_integrity"]
+        # CSS retains its separate single-token policy; do not widen it with JS.
+        # SHA-384 is 48 bytes: exactly 64 standard base64 characters, no padding.
+        if not isinstance(value, str) or not re.fullmatch(r"sha384-[A-Za-z0-9+/]{64}", value):
+            raise ValueError("css_integrity must be a single sha384- digest with 64 base64 characters")
+        metadata["css_integrity"] = value
+
+    if "sdk" in data:
+        sdk = data["sdk"]
+        if not isinstance(sdk, dict) or set(sdk) != {"min", "max"}:
+            raise ValueError("sdk must be an object containing exactly min and max")
+        component = r"(?:0|[1-9][0-9]*)"
+        version = rf"{component}\.{component}(?:\.{component})?"
+        minimum, maximum = sdk["min"], sdk["max"]
+        if not isinstance(minimum, str) or not re.fullmatch(version, minimum):
+            raise ValueError("sdk.min must be M.m or M.m.p (non-negative integers, no leading zeros)")
+        if not isinstance(maximum, str) or not re.fullmatch(rf"(?:{version}|{component}\.x)", maximum):
+            raise ValueError("sdk.max must be M.m, M.m.p or M.x (non-negative integers, no leading zeros)")
+        lower = tuple(int(part) for part in minimum.split("."))
+        lower += (0,) * (3 - len(lower))
+        if maximum.endswith(".x"):
+            reversed_range = lower[0] > int(maximum.split(".")[0])
+        else:
+            upper = tuple(int(part) for part in maximum.split("."))
+            upper += (0,) * (3 - len(upper))
+            reversed_range = lower > upper
+        if reversed_range:
+            raise ValueError("sdk.min must not exceed sdk.max")
+        metadata["sdk"] = {"min": minimum, "max": maximum}
+    return metadata
+
+
 def _dashboard_plugin_entry(data: Dict[str, Any], name: str, dashboard_dir: Path, source: str) -> Dict[str, Any]:
+    metadata = _dashboard_plugin_metadata(data)
     # Tab options: ``path`` + ``position`` for a new tab, optional ``override`` to replace a
     # built-in route, and ``hidden`` to register component/slots without adding a tab.
     raw_tab = data.get("tab", {}) if isinstance(data.get("tab"), dict) else {}
@@ -542,6 +605,7 @@ def _dashboard_plugin_entry(data: Dict[str, Any], name: str, dashboard_dir: Path
         "source": source,
         "_dir": str(dashboard_dir),
         "_api_file": safe_api,
+        **metadata,
     }
 
 

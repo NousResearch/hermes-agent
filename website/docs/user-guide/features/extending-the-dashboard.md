@@ -483,6 +483,58 @@ None of them are required; include only the layers you need.
 | `entry` | Yes | Path to the JS bundle relative to `dashboard/`. Defaults to `dist/index.js`. |
 | `css` | No | Path to a CSS file to inject as a `<link>` tag. |
 | `api` | No | Path to a Python file with FastAPI routes. Mounted at `/api/plugins/<name>/`. |
+| `integrity` | No | JS SRI using SHA-256, SHA-384 or SHA-512, including whitespace-delimited digest lists (grammar below). Preserved literally unchanged for the existing script SRI consumer. |
+| `css_integrity` | No | A single `sha384-` CSS digest followed by exactly 64 standard base64 characters (no padding, whitespace or digest list). Applied to the stylesheet link with anonymous CORS. |
+| `sdk` | No | An object containing exactly `min` and `max` strings, using the range grammar below. The loader checks compatibility with its canonical SDK contract version before inserting assets. |
+
+#### Declared integrity and SDK metadata
+
+Optional declarations are validated during discovery, before caching or returning the
+manifest. A supplied invalid declaration (including `null`, an empty string or the wrong
+JSON type) rejects the entire dashboard manifest; the server logs its manifest path,
+offending field and expected format. An absent declaration remains absent so legacy
+plugins continue to work. Unknown top-level metadata is not forwarded.
+
+JS `integrity` accepts one or more lowercase `sha256-`, `sha384-` or `sha512-`
+tokens. Although the SRI specification permits case-insensitive algorithm names,
+the host requires these browser-effective lowercase spellings: the
+[inspected Chromium parser](https://github.com/chromium/chromium/blob/13b52743e6214d40a7eddf7d099616116f4c7954/third_party/blink/renderer/platform/loader/subresource_integrity.cc)
+ignores uppercase/mixed-case algorithms, potentially leaving no effective hash
+or silently dropping the strongest assertion in a list. This restriction is based
+on source inspection, not browser execution. Digests use the
+[SRI/CSP base64 alphabet](https://www.w3.org/TR/CSP3/#grammardef-base64-value),
+including URL-safe `-` and `_`, with algorithm-specific lengths: 43 characters
+and an optional `=` for SHA-256, 64 without padding for SHA-384, or 86 and
+optional `==` for SHA-512. Tokens may have the
+[SRI reserved `?` options](https://www.w3.org/TR/SRI/#the-integrity-attribute)
+(visible ASCII only; no option semantics are implemented). ASCII space, tab,
+LF, FF and CR may separate tokens or surround the list. The entire declaration,
+including whitespace, case, padding and options, is retained without normalization.
+This host policy rejects empty/whitespace-only declarations, unknown algorithms,
+unsupported algorithm casing, bad digest lengths/padding and any malformed list
+member rather than silently discarding tokens or repairing casing. One unsupported
+member rejects the entire declaration. CSS retains the separate narrower grammar above.
+
+`sdk.min` accepts `M.m` or `M.m.p`; `sdk.max` accepts either form or `M.x`.
+Components are non-negative decimal integers without leading zeros, prerelease/build
+suffixes or whitespace. A missing patch means zero; numeric bounds are inclusive.
+`M.x` covers that major's minor/patch versions. The minimum must not exceed the maximum.
+For example, `"sdk": {"min": "1.1", "max": "1.x"}` declares SDK 1.1.0 or later
+within major 1. Both keys are required when `sdk` is supplied; no other keys are accepted.
+
+The loader revalidates these declarations and checks the SDK range against
+`SDK_CONTRACT_VERSION` before inserting either asset. It applies JS and CSS integrity
+literally with anonymous CORS; digest enforcement is the browser's responsibility.
+Session storage seeds route display only: every hook mount requires a fresh successful
+host response, even when asset URLs are unchanged. A failed request never executes
+cached assets. Registrations are tied to the current script and metadata, not just its URL.
+
+Call `register()` and `registerSlot()` synchronously from the entry bundle. Components
+and slots become visible only after JS and CSS have loaded. Errors or the two-second
+asset deadline fail closed; late registration cannot replace a mounted fallback `/chat`.
+Unmount removes owned assets, callbacks and registrations. This cannot undo arbitrary
+side effects from already-executed trusted plugin code: declarations are not signatures
+or a plugin sandbox. DOM tests verify loader policy, not real-browser digest enforcement.
 
 #### Available icons
 

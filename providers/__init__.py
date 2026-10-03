@@ -230,8 +230,80 @@ def list_providers() -> list[ProviderProfile]:
         _PROVIDER_LIST_CACHE = cache
     result = [p for p in _PROVIDER_LIST_CACHE if p.name not in layer.registry]
     result.extend({id(p): p for p in layer.registry.values()}.values())
+    # Hidden profiles are excluded unless their enable gate / credential check
+    # surfaces them; the filter runs per call so a gate flip needs no cache reset.
+    if any(getattr(p, "hidden", False) for p in result):
+        result = [p for p in result
+                  if not getattr(p, "hidden", False) or _hidden_provider_enabled(p.name)]
     return result
 
+
+def _hidden_provider_enabled(name: str) -> bool:
+    """Return True when a hidden provider should be surfaced after all.
+
+    A hidden provider stays hidden unless something explicitly enables it.
+    The default enable predicate is credential presence: if any of the
+    provider's ``env_vars`` resolves to a usable value in the environment
+    (or ``~/.hermes/.env``), the provider is considered enabled.  Providers
+    can register a richer predicate via ``register_hidden_provider_gate``.
+
+    This mirrors the house "feature registers when configured" pattern
+    (relay_url / proxy_url): absence = invisible + inert, presence = active.
+    """
+    try:
+        gate = _HIDDEN_GATES.get(name)
+        if gate is not None:
+            return bool(gate())
+    except Exception:
+        logger.debug("hidden gate %s raised; treating as disabled", name, exc_info=True)
+        return False
+
+    profile = _REGISTRY.get(name)
+    if profile is None:
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+
+        for var in profile.env_vars or ():
+            if var and has_usable_secret(_resolve_env_var(var)):
+                return True
+    except Exception:
+        logger.debug(
+            "hidden env check for %s failed; staying hidden", name, exc_info=True
+        )
+    return False
+
+
+def _resolve_env_var(var: str) -> str:
+    """Resolve an env var using the canonical Hermes credential resolver.
+
+    ``get_env_value_prefer_dotenv`` prefers ``~/.hermes/.env`` (honoring the
+    documented ``export VAR=`` forms) then falls back to ``os.environ`` — so
+    hidden-provider enable checks read the same source a user is told to
+    configure.
+    """
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+
+        return get_env_value_prefer_dotenv(var) or ""
+    except Exception:
+        import os
+
+        return os.getenv(var, "")
+
+
+_HIDDEN_GATES: dict[str, Any] = {}
+
+
+def register_hidden_provider_gate(name: str, predicate) -> None:
+    """Register a callable predicate that decides when *name* is surfaced.
+
+    ``predicate`` takes no args and returns a truthy value when the hidden
+    provider should appear in ``list_providers()`` output.  Useful when
+    credential presence isn't the right signal (e.g. a config flag or a
+    combination of settings).  Overrides the default env-var check.
+    """
+    _HIDDEN_GATES[name] = predicate
 
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""

@@ -52,6 +52,14 @@ class ProviderProfile:
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
+    # True when the provider is pre-release / not for public listing.
+    # list_providers() excludes hidden profiles unless the provider's own
+    # enable predicate passes (see providers/__init__._hidden_provider_enabled).
+    # The provider still resolves by name via get_provider_profile() when the
+    # user configures it explicitly — hiding is about *discovery surfaces*
+    # (picker, setup, auth lists), not about blocking direct config.
+    hidden: bool = False
+
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
     base_url: str = ""

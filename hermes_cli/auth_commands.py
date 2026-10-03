@@ -33,6 +33,8 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "q
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
 # Providers whose sibling CLI login Hermes may borrow (``auth.adopt_external_logins``).
 EXTERNAL_LOGIN_PROVIDERS = {"anthropic", "openai-codex"}
+# OAuth-only, but hidden: adding to the set above would advertise it in the interactive type prompt.
+_OAUTH_ONLY_HIDDEN_PROVIDERS = {"solstice"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -81,7 +83,13 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 _PROVIDER_ALIASES = {
     "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
+    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+    "solstice": "solstice",
+    "solstice-oauth": "solstice"}
+
+# Pre-release OAuth providers kept OUT of PROVIDER_REGISTRY so they never surface in pickers,
+# `hermes auth list`, or doctor. They remain addable by explicit name (see _is_known_provider).
+_HIDDEN_OAUTH_PROVIDERS = {"solstice"}
 
 
 def _normalize_provider(provider: str) -> str:
@@ -134,7 +142,8 @@ def _provider_base_url(provider: str) -> str:
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
     return (provider in PROVIDER_REGISTRY or provider == "openrouter"
-            or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+            or provider.startswith(CUSTOM_POOL_PREFIX) or provider in _HIDDEN_OAUTH_PROVIDERS
+            or configured_provider is not None)
 
 
 def _unknown_provider_exit(provider: str) -> SystemExit:
@@ -242,6 +251,24 @@ def _codex_pool_source(creds: dict) -> str:
     return SOURCE_MANUAL_DEVICE_CODE
 
 
+def _solstice_login(args) -> dict:
+    """Run the Solstice PKCE loopback login and return its token bundle for the pool entry.
+
+    The full OAuth handshake (NAS-brokered exchange, PKCE verifier, loopback callback) lives in
+    ``hermes_cli.solstice``; this only adapts its result to the ``_OAuthAddSpec`` shape.
+    """
+    from hermes_cli.solstice import SOLSTICE_INFERENCE_BASE_URL, _login_solstice
+
+    _login_solstice(args, None)
+    state = auth_mod._load_provider_state(auth_mod._load_auth_store(), "solstice") or {}
+    tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+    return {
+        "access_token": str(tokens.get("access_token") or "").strip(),
+        "refresh_token": str(tokens.get("refresh_token") or "").strip(),
+        "base_url": SOLSTICE_INFERENCE_BASE_URL,
+    }
+
+
 _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
     "anthropic": _OAuthAddSpec(
         login=_anthropic_oauth_login,
@@ -292,6 +319,13 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         source=f"{SOURCE_MANUAL}:openrouter_pkce",
         fields=lambda creds, provider: {"base_url": _provider_base_url(provider)},
         auth_type=AUTH_TYPE_API_KEY),
+    "solstice": _OAuthAddSpec(
+        login=_solstice_login,
+        token=lambda creds: creds["access_token"],
+        source=f"{SOURCE_MANUAL}:solstice_oauth",
+        fields=lambda creds, provider: {
+            "refresh_token": creds.get("refresh_token") or None,
+            "base_url": creds.get("base_url") or _provider_base_url(provider)}),
 }
 
 
@@ -392,7 +426,8 @@ def auth_add_command(args) -> None:
     if requested_type == "api-key":
         requested_type = AUTH_TYPE_API_KEY
     elif not requested_type:
-        oauth_default = provider in _OAUTH_DEFAULT_PROVIDERS and not is_custom
+        oauth_default = (provider in _OAUTH_DEFAULT_PROVIDERS
+                         or provider in _OAUTH_ONLY_HIDDEN_PROVIDERS) and not is_custom
         requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)

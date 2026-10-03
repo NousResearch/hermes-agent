@@ -3,19 +3,19 @@ repo: https://github.com/moonlight-lupin/agent-skills
 sha: 79801c69e797f5f8efd619f8f451ca89d18c7240
 subdir: plugins/skill-retrieval
 description: >-
-  BM25-based skill retrieval for large skill libraries — rewrites the outgoing request's
-  <available_skills> block to names-only via an llm_request middleware and injects top-K
-  full skill descriptions per turn via the pre_llm_call hook, so the system prompt stays
-  compact and prompt caching is unaffected. Extends Hermes only through public surfaces
-  (register_middleware, register hook, register_system_prompt_section) — no core overrides.
-  Reads SKILL.md frontmatter from the profile's skill roots; pyyaml is the only base
-  dependency. Optional Jev rerank (SKILL_RETRIEVAL_RERANK=jev): reranks the BM25 top-N
-  shortlist via the typesafe.ai systemone API (model jev-latest) — an outbound HTTPS call,
-  off by default, fail-soft with 3.0s timeout and no retries (BM25 order stands on error),
-  sending at most 12 descriptions (400 chars each) plus the neutralized query (2000 chars).
-  Key TYPESAFE_API_KEY (legacy TYPESAFE_KEY) read from os.environ only; writes only the
-  A/B log JSONL under $HERMES_HOME/data/jev-trial/ (rotates past 5 MB). BM25 corpus also
-  scores frontmatter triggers/tags.
+  BM25-based skill retrieval for large skill libraries. An llm_request middleware rewrites
+  the outgoing request's <available_skills> block to names only (the same bytes every turn,
+  so prompt caching is unaffected), and a pre_llm_call hook appends the top-K matching
+  skill descriptions to the current user message. Uses public plugin surfaces only
+  (register_middleware, register_hook); reads SKILL.md frontmatter from the profile's skill
+  roots and imports a few agent.prompt_builder / agent.skill_utils helpers read-only.
+  pyyaml is the only dependency. Disclosure — optional Jev rerank, off by default: with
+  SKILL_RETRIEVAL_RERANK=jev and TYPESAFE_API_KEY set (read from the environment only), each
+  turn POSTs the user message (injection patterns stripped, capped at 2000 chars) and up to
+  12 shortlisted skill descriptions (400 chars each) to api.typesafe.ai (3 s timeout, no
+  retries, BM25 order kept on error), and appends a local JSONL log (timestamp, session id,
+  200-char query excerpt, both orders) under $HERMES_HOME/data/jev-trial/, rotated past 5 MB.
+  With the rerank off it makes no network calls and writes no files.
 maintainer: moonlight-lupin
 tier: community
 category: tools

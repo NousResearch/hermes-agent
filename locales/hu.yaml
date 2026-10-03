@@ -438,6 +438,7 @@ gateway:
     last_activity: "**Utolsó tevékenység:** {timestamp}"
     model: "**Modell:** `{model}`"
     model_provider: "**Modell:** `{model}` ({provider})"
+    route_source: "**Útvonal forrása:** {source}"
     free_tier: "Nous · ingyenes csomag · nous/welcome · /login a bejelentkezéshez"
     context: "**Kontextus:** {used} / {total} ({pct}%)"
     context_used: "**Kontextus:** ~{used} token"

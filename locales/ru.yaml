@@ -435,6 +435,7 @@ gateway:
     last_activity: "**Последняя активность:** {timestamp}"
     model: "**Модель:** `{model}`"
     model_provider: "**Модель:** `{model}` ({provider})"
+    route_source: "**Источник маршрута:** {source}"
     free_tier: "Nous · бесплатный тариф · nous/welcome · /login для входа"
     context: "**Контекст:** {used} / {total} ({pct}%)"
     context_used: "**Контекст:** ~{used} токенов"

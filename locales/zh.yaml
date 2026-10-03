@@ -435,6 +435,7 @@ gateway:
     last_activity: "**最近活动：** {timestamp}"
     model: "**模型：** `{model}`"
     model_provider: "**模型：** `{model}`（{provider}）"
+    route_source: "**路由来源：** {source}"
     free_tier: "Nous · 免费套餐 · nous/welcome · /login 登录"
     context: "**上下文：** {used} / {total}（{pct}%）"
     context_used: "**上下文：** 约 {used} tokens"

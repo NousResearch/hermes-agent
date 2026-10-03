@@ -13,6 +13,10 @@ export interface CanonicalGroupPendingActionsProps {
   actions: CanonicalPendingAction[]
   members: CanonicalRoomMember[]
   busy?: boolean
+  /** After the group moved: inherited work whose outcome is unknown says where it may have finished. */
+  unknownTitle?: string
+  /** Work that needs a Bot or file only the previous host has. Information only. */
+  waiting?: { task_id: string; member_id: string; text: string }[]
   onAction: (action: CanonicalPendingAction, choice?: Choice) => Promise<void> | void
   onDiscard: (action: CanonicalPendingAction) => Promise<void> | void
   onRefresh?: () => Promise<void> | void
@@ -25,8 +29,9 @@ const validAttempt = (action: CanonicalPendingAction) => Boolean(text(action.mem
   Number.isSafeInteger(action.execution_generation) && action.execution_generation > 0)
 const snapshot = (action: CanonicalPendingAction): CanonicalPendingAction => ({ ...action })
 
-function PendingActionRow({ action, member, memberName, canSkip, busy, labels, onAction, onSkip, onRefresh }: {
+function PendingActionRow({ action, member, memberName, canSkip, busy, labels, unknownTitle, onAction, onSkip, onRefresh }: {
   action: CanonicalPendingAction; member?: CanonicalRoomMember; memberName: string; canSkip: boolean; busy: boolean; labels: Labels
+  unknownTitle?: string
   onAction: CanonicalGroupPendingActionsProps['onAction']; onSkip: () => void
   onRefresh?: CanonicalGroupPendingActionsProps['onRefresh']
 }) {
@@ -46,12 +51,14 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
   const filePending = isPendingFileAction(action)
   const title = fileOutput ? (!filePending ? labels.pendingFilesBlockedTitle : action.operation === 'discard' ? labels.pendingFilesCleanupTitle : labels.pendingFilesTitle)
     : action.kind === 'approval' ? labels.pendingApprovalTitle : action.kind === 'retry' ? labels.pendingRetryTitle
-    : action.kind === 'stopping' ? labels.pendingStoppingTitle : labels.pendingUnknownTitle
+    : action.kind === 'stopping' ? labels.pendingStoppingTitle : unknownTitle ?? labels.pendingUnknownTitle
   return <article aria-busy={submitting || undefined} className="grid min-w-0 gap-3 border-t border-(--ui-stroke-secondary) py-3"
     data-member-id={action.member_id} data-request-id={action.request_id} data-task-id={action.task_id} data-testid="group-chat-pending-action">
     <div className="flex items-center gap-2">
       <CanonicalMemberFace member={member} name={memberName} seed={action.member_id} />
-      <p className="text-sm font-medium"><bdi>{title.replace('{name}', memberName)}</bdi></p>
+      {unknownTitle && title === unknownTitle ? <p className="grid min-w-0 gap-0.5 text-sm"><bdi className="font-medium">{memberName}</bdi>
+        <span className="text-(--ui-text-secondary)">{unknownTitle}</span></p>
+        : <p className="text-sm font-medium"><bdi>{title.replace('{name}', memberName)}</bdi></p>}
     </div>
     {approval?.content}
     {fileOutput && !filePending && <p className="text-sm text-(--ui-text-secondary)" role="status">{labels.pendingFilesBlockedHelp}</p>}
@@ -78,7 +85,7 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
 
 /** A room's exact pending actions, presented without exposing task IDs or
  * borrowing the normal-session approval queue/response handler. */
-export function CanonicalGroupPendingActions({ actions, members, busy = false, onAction, onDiscard, onRefresh }: CanonicalGroupPendingActionsProps) {
+export function CanonicalGroupPendingActions({ actions, members, busy = false, unknownTitle, waiting = [], onAction, onDiscard, onRefresh }: CanonicalGroupPendingActionsProps) {
   const labels = useCanonicalGroupLabels()
   const [discard, setDiscard] = useState<{ action: CanonicalPendingAction; name: string; notStarted: boolean } | null>(null)
   const stopping = new Set(actions.filter(action => action.kind === 'stopping').map(attemptKey))
@@ -92,7 +99,18 @@ export function CanonicalGroupPendingActions({ actions, members, busy = false, o
       const skip = actions.find(candidate => candidate.kind === 'discard' && attemptKey(candidate) === attemptKey(action))
       return <PendingActionRow action={action} busy={busy} canSkip={Boolean(skip) && ['retry', 'discard'].includes(action.kind)} key={actionKey(action)}
         labels={labels} member={member} memberName={name} onAction={onAction} onRefresh={onRefresh}
-        onSkip={() => {if (skip) {setDiscard({ action: snapshot(skip), name, notStarted: retry.has(attemptKey(skip)) })}}} />
+        onSkip={() => {if (skip) {setDiscard({ action: snapshot(skip), name, notStarted: retry.has(attemptKey(skip)) })}}} unknownTitle={unknownTitle} />
+    })}
+    {waiting.map(task => {
+      const member = members.find(candidate => candidate.member_id === task.member_id)
+      const name = canonicalMemberName(member, labels.pendingBot)
+
+      return <article className="flex min-w-0 items-start gap-2 border-t border-(--ui-stroke-secondary) py-3" data-member-id={task.member_id}
+        data-task-id={task.task_id} data-testid="group-chat-waiting-task" key={JSON.stringify([task.member_id, task.task_id])}>
+        <CanonicalMemberFace member={member} name={name} seed={task.member_id} />
+        <p className="grid min-w-0 gap-0.5 text-sm"><bdi className="font-medium">{name}</bdi>
+          <span className="text-(--ui-text-secondary)">{task.text}</span></p>
+      </article>
     })}
     <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={labels.confirmDiscard} description={discard?.notStarted ? labels.skipUnstartedWarning : labels.discardWarning}
       destructive

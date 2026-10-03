@@ -9,8 +9,10 @@ export class RoomSetupError extends Error {
   constructor(readonly reason: string) {super(reason)}
 }
 export interface SetupRecord {
-  id: string; setupId: string; kind: 'home' | 'peer'; route: SetupRoute; installationId: string
+  id: string; setupId: string; kind: 'home' | 'peer' | 'custody'; route: SetupRoute; installationId: string
   roomId: string; committed?: boolean; creation?: Record<string, unknown>; invitation?: Record<string, unknown>; grant?: string
+  /** A backup computer's obligation also names the host that may hold its grant. */
+  home?: SetupRoute; homeInstallationId?: string
 }
 const ID = /^[0-9a-f-]{36}$/
 
@@ -46,8 +48,9 @@ export function roomSetupStore(options: {
   }
   const decode = (plaintext: string, id: string): SetupRecord => {
     const result = JSON.parse(plaintext)
-    if (result?.id !== id || !ID.test(result.setupId) || !['home', 'peer'].includes(result.kind) ||
-        !result.route?.connectionId || !result.route.profile || !result.installationId || !result.roomId) {throw new Error()}
+    if (result?.id !== id || !ID.test(result.setupId) || !['home', 'peer', 'custody'].includes(result.kind) ||
+        !result.route?.connectionId || !result.route.profile || !result.installationId || !result.roomId ||
+        (result.kind === 'custody' && (!result.home?.connectionId || !result.home.profile || !result.homeInstallationId))) {throw new Error()}
     return result
   }
   const get = async (id: string): Promise<SetupRecord> => {

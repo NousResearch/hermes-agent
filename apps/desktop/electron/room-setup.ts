@@ -3,12 +3,19 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { RoomSetupError } from './room-setup-store'
 import type { roomSetupStore, SetupRecord } from './room-setup-store'
-import type { RoomSetupInput, RoomSetupMember, SetupRoute } from './room-setup-types'
+import type { RoomBackupInput, RoomSetupInput, RoomSetupMember, SetupRoute } from './room-setup-types'
 
 interface Client { request(method: string, params?: Record<string, unknown>): Promise<any>; close(): void }
 const routeKey = (route: SetupRoute) => JSON.stringify([route.connectionId, route.profile])
 const validRoute = (route: SetupRoute) => route && typeof route.connectionId === 'string' && route.connectionId.length > 0 &&
   route.connectionId.length <= 256 && typeof route.profile === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(route.profile)
+/** A computer that can keep and continue a group advertises the succession surface. */
+const continues = (capability: { methods?: unknown }) => Array.isArray(capability?.methods) && capability.methods.includes('groups.succession.status')
+const peerReady = (capability: any) => {
+  const link = capability?.room_link
+  return capability?.features?.includes('peer_setup_recovery') && link?.enabled && link.authentication === 'proof-v2' &&
+    link.endpoint?.available && link.catalog?.persistent_process && link.catalog.installation_id === capability.authority_gateway_id
+}
 
 /** Setup only. The gateway remains the sole owner of execution and history. */
 export function roomSetupCoordinator(options: {
@@ -93,13 +100,104 @@ export function roomSetupCoordinator(options: {
         try {await options.store.remove(home.id)} catch {pending++}
       }
     }
+    for (const record of records.filter(record => record.kind === 'custody')) {
+      if (record.committed) {
+        try {await options.store.remove(record.id)} catch {pending++}
+        continue
+      }
+      let client = live.get(record.id), host: Client | undefined
+      const retained = Boolean(client)
+      try {
+        let grant = record.grant
+        if (!grant) {
+          client ||= (await open(record.route, record.installationId)).client
+          try {grant = (await client.request('groups.peer.invite', record.invitation)).grant}
+          catch (error) {if (!(error instanceof RoomSetupError) || error.reason !== 'invitation_request_expired') {throw error}}
+        }
+        if (grant) {
+          // An add whose reply was lost may have reached the host: withdraw it there before the grant.
+          host = (await open(record.home!, record.homeInstallationId)).client
+          try {await host.request('groups.custody.remove', { room_id: record.roomId, install_id: record.installationId })}
+          catch (error) {if (!(error instanceof RoomSetupError) || !['room_custody_invalid', 'room_not_found'].includes(error.reason)) {throw error}}
+          client ||= (await open(record.route, record.installationId)).client
+          const receipt = await client.request('groups.peer.revoke', { grant })
+          if (receipt?.revoked !== true) {throw new RoomSetupError('cleanup_pending')}
+        }
+        await options.store.remove(record.id)
+      } catch {pending++}
+      finally {if (!retained) {client?.close()}; host?.close()}
+    }
     // Orphans are unknown obligations, never dropped as an empty journal.
     pending += records.filter(record => record.kind === 'peer' && !records.some(home => home.kind === 'home' && home.setupId === record.setupId)).length
     return { pending, reason: unreadable.length ? 'setup_journal_unreadable' : pending ? 'cleanup_pending' : undefined }
   }
 
+  /** The owner's designation, after the group exists. It never undoes a created group: a failure is reported. */
+  const designate = async (input: RoomSetupInput, roomId: string, home: { client: Client; capability: any },
+    prepared: Array<{ record: SetupRecord; capability: any }>) => {
+    const peers = [...new Set(prepared.filter(peer => peer.record.invitation?.successor === true).map(peer => peer.record.installationId))]
+    if (input.successor !== true || !peers.length || !home.capability.methods?.includes('groups.custody.designate')) {return {}}
+    try {
+      for (const installId of peers) {
+        const receipt = await home.client.request('groups.custody.designate', { room_id: roomId, install_id: installId, successor: true })
+        if (receipt?.install_id !== installId || receipt.successor !== true) {throw new RoomSetupError('invalid_registration')}
+      }
+      return { successors: 'designated' as const }
+    } catch {return { successors: 'failed' as const }}
+  }
+
   return {
     recover: () => exclusive(() => recover()),
+    /** A custodian-only grant from the backup computer, enrolled by the host. Grants never leave this process. */
+    addBackup: (input: RoomBackupInput, assertCurrent: () => void) => exclusive(async () => {
+      if (!validRoute(input?.home) || !validRoute(input?.backup) || routeKey(input.home) === routeKey(input.backup) ||
+          typeof input.roomId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.roomId) || typeof input.successor !== 'boolean') {
+        throw new RoomSetupError('invalid_setup')
+      }
+      assertCurrent()
+      if ((await recover()).pending) {throw new RoomSetupError('cleanup_pending')}
+      const live = new Map<string, Client>(), memory = new Map<string, SetupRecord>()
+      let home: Awaited<ReturnType<typeof open>> | undefined, backup: Awaited<ReturnType<typeof open>> | undefined
+      try {
+        home = await open(input.home)
+        if (!home.capability.methods?.includes('groups.custody.add')) {throw new RoomSetupError('custody_unavailable')}
+        backup = await open(input.backup)
+        if (!continues(backup.capability) || !peerReady(backup.capability)) {throw new RoomSetupError('backup_gateway_unsupported')}
+        if (backup.capability.authority_gateway_id === home.capability.authority_gateway_id) {throw new RoomSetupError('invalid_setup')}
+        const epoch = (await home.client.request('groups.state', { room_id: input.roomId }))?.room?.authority_epoch
+        if (!Number.isSafeInteger(epoch) || epoch < 1) {throw new RoomSetupError('original_gateway_required')}
+        const link = backup.capability.room_link, homeInstall = home.capability.authority_gateway_id
+        const setupId = randomUUID()
+        const record: SetupRecord = { id: setupId, setupId, kind: 'custody', route: input.backup, roomId: input.roomId,
+          installationId: backup.capability.authority_gateway_id, home: input.home, homeInstallationId: homeInstall, invitation: {
+            request_id: randomUUID(), requested_at: backup.capability.server_time, room_id: input.roomId,
+            home_install_id: homeInstall, authority_gateway_id: homeInstall, authority_epoch: epoch, custody_only: true,
+            ttl_seconds: 3600, status_ttl_seconds: 2592000, ...input.successor ? { successor: true } : {}
+          } }
+        assertCurrent()
+        await options.store.put(record)
+        memory.set(record.id, record)
+        live.set(record.id, backup.client)
+        const invitation = await backup.client.request('groups.peer.invite', record.invitation)
+        if (typeof invitation?.grant !== 'string' || !invitation.grant) {throw new RoomSetupError('invalid_invitation')}
+        record.grant = invitation.grant
+        await options.store.put(record)
+        assertCurrent()
+        if (!isDeepStrictEqual(invitation.catalog, link.catalog) || invitation.endpoint?.url !== link.endpoint.url) {throw new RoomSetupError('peer_gateway_changed')}
+        const receipt = await home.client.request('groups.custody.add', { room_id: input.roomId, target_url: invitation.endpoint.url,
+          catalog: invitation.catalog, grant: invitation.grant, successor: input.successor })
+        if (receipt?.room_id !== input.roomId || receipt.install_id !== record.installationId) {throw new RoomSetupError('invalid_registration')}
+        // The host now holds the grant; the journal entry was only the obligation to undo it.
+        const committed = { ...record, committed: true }
+        await options.store.put(committed)
+        memory.set(record.id, committed)
+        await recover(live, memory)
+        return { install_id: record.installationId }
+      } catch (error) {
+        await recover(live, memory).catch(() => undefined)
+        throw error
+      } finally {home?.client.close(); backup?.client.close()}
+    }),
     changeStoragePolicy: (apply: () => unknown) => exclusive(async () => apply()),
     create: (input: RoomSetupInput, assertCurrent: () => void) => exclusive(async () => {
       if (!validRoute(input?.home) || typeof input.name !== 'string' || !input.name.trim() || input.name.length > 128 ||
@@ -133,17 +231,17 @@ export function roomSetupCoordinator(options: {
           if (route.profile !== 'default') {throw new RoomSetupError('default_peer_profile_required')}
           if (!connections.has(routeKey(route))) {connections.set(routeKey(route), await open(route))}
           const peer = connections.get(routeKey(route))!, link = peer.capability.room_link
-          if (!peer.capability.features?.includes('peer_setup_recovery') || !link?.enabled ||
-              link.authentication !== 'proof-v2' || !link.endpoint?.available || !link.catalog?.persistent_process ||
-              !link.catalog.text || link.catalog.attachments || link.catalog.installation_id !== peer.capability.authority_gateway_id) {
+          if (!peerReady(peer.capability) || !link.catalog.text || link.catalog.attachments) {
             throw new RoomSetupError('peer_gateway_not_ready')
           }
+          // Your own computer's consent travels in its grant; only one that can continue a group is asked.
+          const successor = input.successor === true && continues(peer.capability)
           const record: SetupRecord = { id: randomUUID(), setupId, kind: 'peer', route,
             installationId: peer.capability.authority_gateway_id, roomId, invitation: {
               request_id: randomUUID(), requested_at: peer.capability.server_time,
               room_id: roomId, member_id: member.member_id, home_install_id: homeRecord.installationId,
               authority_gateway_id: homeRecord.installationId, authority_epoch: 1,
-              ttl_seconds: 3600, status_ttl_seconds: 2592000
+              ttl_seconds: 3600, status_ttl_seconds: 2592000, ...successor ? { successor: true } : {}
             } }
           roster.push({ ...descriptor, target: { kind: 'peer', peer_id: record.installationId,
             installation_id: record.installationId, profile: member.profile, capability_digest: link.catalog.catalog_digest } })
@@ -183,7 +281,7 @@ export function roomSetupCoordinator(options: {
         memory.set(homeRecord.id, { ...homeRecord, committed: true })
         // A deletion failure keeps the sealed successful receipt for the next cleanup pass.
         await recover(live, memory)
-        return { room: created.room }
+        return { room: created.room, ...await designate(input, roomId, home, prepared) }
       } catch (error) {
         await recover(live, memory).catch(() => undefined)
         throw error

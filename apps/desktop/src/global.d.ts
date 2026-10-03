@@ -6,7 +6,7 @@ import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
-import type { RoomSetupInput } from '../electron/room-setup-types'
+import type { RoomBackupInput, RoomSetupInput } from '../electron/room-setup-types'
 import type { GrowRequest } from '../electron/window-growth'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -399,8 +399,9 @@ declare global {
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
       roomSetup?: {
-        create: (input: RoomSetupInput) => Promise<{ ok: boolean; reason?: string; room?: CanonicalRoom }>
+        create: (input: RoomSetupInput) => Promise<{ ok: boolean; reason?: string; room?: CanonicalRoom; successors?: 'designated' | 'failed' }>
         recover: () => Promise<{ ok: boolean; pending?: number; reason?: string }>
+        addBackup?: (input: RoomBackupInput) => Promise<{ ok: boolean; reason?: string; install_id?: string }>
       }
       preparedSubmissions?: {
         owner?: () => Promise<string>

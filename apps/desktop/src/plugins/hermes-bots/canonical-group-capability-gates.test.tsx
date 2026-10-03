@@ -463,3 +463,50 @@ it('keeps the existing classic transcript and composer when explicitly starting 
   expect(Object.keys($canonicalGroupBindings.get())[0]).not.toBe('Existing')
   expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
 })
+
+it('lets your other computers continue a new group in one step, on by default, only when the host can designate them', async () => {
+  const desktop = window.hermesDesktop
+  const room = { room_id: 'harbor', name: 'Harbor launch', members: [] }
+  const create = vi.fn().mockResolvedValue({ ok: true, room, successors: 'failed' })
+  window.hermesDesktop = { roomSetup: { recover: vi.fn().mockResolvedValue({ ok: true }), create } } as unknown as typeof window.hermesDesktop
+  vi.mocked(host.connections).mockResolvedValue([{ id: 'local', label: 'Mac mini', installId: 'a'.repeat(32) }] as never)
+
+  const peers = [{ name: 'default', handle: 'atlas', connectionId: 'local', display_name: 'Atlas Bot' },
+    { name: 'default', handle: 'mira', connectionId: 'laptop', display_name: 'Mira Bot' }]
+
+  const layer7 = { ...CANONICAL_GROUP_CAPABILITIES, methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 'groups.succession.status', 'groups.custody.designate'] }
+
+  try {
+    answer(CANONICAL_GROUP_CAPABILITIES)
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={peers} />)})
+
+    for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+    await act(async () => {await Promise.resolve()})
+    expect(screen.queryByRole('switch', { name: 'Let my computers continue this group' })).toBeNull()
+    cleanup()
+
+    activation.epoch++
+    answer(layer7)
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={peers} />)})
+    expect(screen.queryByRole('switch')).toBeNull()
+
+    for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+    const toggle = await screen.findByRole('switch', { name: 'Let my computers continue this group' })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByText('Your other computers keep a full copy of this group and can continue it if Mac mini goes offline.')).toBeTruthy()
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create.mock.calls[0][0]).toMatchObject({ successor: true })
+    expect(notify).toHaveBeenCalledWith({ kind: 'info', message: '“Harbor launch” is ready, but your other computers can’t continue it yet. You can turn this on in Backup copies.' })
+    cleanup()
+
+    create.mockResolvedValue({ ok: true, room, successors: undefined })
+    notify.mockReset()
+    await act(async () => {render(<CreateGroupChatDialog onClose={vi.fn()} open roster={peers} />)})
+
+    for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
+    fireEvent.click(await screen.findByRole('switch', { name: 'Let my computers continue this group' }))
+    await act(async () => {fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.createGroup }))})
+    expect(create.mock.calls[1][0]).not.toHaveProperty('successor')
+    expect(notify).not.toHaveBeenCalled()
+  } finally {window.hermesDesktop = desktop}
+})

@@ -14469,7 +14469,7 @@ const nativeRoomSetup = roomSetupCoordinator({
   }),
   connect: async route => nativeRoomClient(await ensureRegistryBackend(route.connectionId, route.profile), route.profile)
 })
-for (const operation of ['create', 'recover'] as const) {
+for (const operation of ['create', 'recover', 'addBackup'] as const) {
   ipcMain.handle(`hermes:room-setup:${operation}`, async (event, input) => {
     const frame = event.senderFrame
     const expected = new URL(DEV_SERVER || pathToFileURL(resolveRendererIndex()).href)
@@ -14487,7 +14487,8 @@ for (const operation of ['create', 'recover'] as const) {
     }
     try {
       assertCurrent()
-      const result = operation === 'create' ? await nativeRoomSetup.create(input, assertCurrent) : await nativeRoomSetup.recover()
+      const result = operation === 'create' ? await nativeRoomSetup.create(input, assertCurrent)
+        : operation === 'addBackup' ? await nativeRoomSetup.addBackup(input, assertCurrent) : await nativeRoomSetup.recover()
       assertCurrent()
       return { ok: true, ...result }
     } catch (error) {

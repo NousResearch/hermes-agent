@@ -32,7 +32,12 @@ export const GROUP_METHODS = {
   'groups.attachment.upload': 'session:submit', 'groups.attachment.download': 'session:read',
   'groups.attachment.list': 'session:read',
   'groups.stop': 'session:control', 'groups.retry': 'session:control', 'groups.discard': 'session:control',
-  'groups.approve': 'session:approve'
+  'groups.approve': 'session:approve',
+  // Continuing a group on another computer: groups.succession.* (#105197) and groups.custody.* (#104601).
+  'groups.succession.status': 'session:read', 'groups.succession.prepare': 'session:control',
+  'groups.succession.promote': 'session:control', 'groups.succession.keep': 'session:control',
+  'groups.succession.branch_log': 'session:read', 'groups.custody.designate': 'session:control',
+  'groups.custody.allow': 'session:control', 'groups.custody.remove': 'session:control'
 }
 export const _FIELDS: Record<string, readonly string[]> = {
   'groups.capabilities': [],
@@ -50,6 +55,14 @@ export const _FIELDS: Record<string, readonly string[]> = {
   'groups.retry': ['room_id', 'member_id', 'task_id', 'execution_generation'],
   'groups.discard': ['room_id', 'member_id', 'task_id', 'execution_generation'],
   'groups.approve': ['room_id', 'member_id', 'task_id', 'execution_generation', 'choice', 'request_id'],
+  'groups.succession.status': ['room_id'],
+  'groups.succession.prepare': ['room_id', 'target_install_id'],
+  'groups.succession.promote': ['room_id', 'target_install_id', 'preview_id', 'confirm'],
+  'groups.succession.keep': ['room_id', 'install_id'],
+  'groups.succession.branch_log': ['room_id', 'branch_id', 'after_seq', 'limit'],
+  'groups.custody.designate': ['room_id', 'install_id', 'successor'],
+  'groups.custody.allow': ['room_id', 'successor'],
+  'groups.custody.remove': ['room_id', 'install_id'],
   'profiles.list': ['include_sessions']
 }
 export const CANONICAL_GROUP_CAPABILITIES = {

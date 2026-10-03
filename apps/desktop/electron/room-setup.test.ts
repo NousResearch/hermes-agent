@@ -159,3 +159,95 @@ test('a real blocked first intent write prevents the corresponding remote setup 
     } finally {await fs.rm(directory, { recursive: true, force: true })}
   }
 })
+
+const LAYER7 = ['groups.discard', 'groups.succession.status', 'groups.custody.designate', 'groups.custody.add', 'groups.custody.remove']
+
+function linkedGateway(install: string, effects: string[], methods: Record<string, (params: any) => any>, layer7 = true) {
+  const catalog = { installation_id: install, persistent_process: true, text: true, attachments: false, catalog_digest: `digest-${install}` }
+  return { catalog, client: { close() {}, async request(method: string, params?: any): Promise<any> {
+    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true, authority_gateway_id: install,
+      methods: layer7 ? LAYER7 : ['groups.discard'], server_time: Date.now() / 1000, features: ['peer_setup_recovery'],
+      room_link: { enabled: true, authentication: 'proof-v2', endpoint: { available: true, url: `https://${install}.invalid` }, catalog } }}
+    effects.push(`${install}:${method}`)
+    if (methods[method]) {return methods[method](params)}
+    throw new Error(`Unexpected ${method} on ${install}`)
+  } } }
+}
+
+test('your own computers allow and are designated in one step, and a designation that fails keeps the group', async () => {
+  for (const designation of ['works', 'fails'] as const) {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'room-successor-'))
+    const store = roomSetupStore({ directory, ...encryption() })
+    const effects: string[] = [], invites: any[] = []
+    const home = linkedGateway('home', effects, {
+      'groups.create': params => ({ room: { ...params, authority_gateway_id: 'home', authority_epoch: 1 } }),
+      'groups.peer.register': params => ({ registered: true, target_install_id: params.catalog.installation_id, target_profile: 'default' }),
+      'groups.custody.designate': params => {
+        if (designation === 'fails') {throw new RoomSetupError('room_custody_invalid')}
+        return { room_id: params.room_id, install_id: params.install_id, successor: params.successor, configuration_seq: 3 }
+      }
+    })
+    const peers = Object.fromEntries(['laptop', 'older'].map(install => [install, linkedGateway(install, effects, {
+      'groups.peer.invite': params => {
+        invites.push(params)
+        const gateway = peers[install]
+        return { grant: `grant-${install}`, catalog: gateway.catalog, target_profile: 'default', endpoint: { url: `https://${install}.invalid` } }
+      },
+      'groups.peer.revoke': () => ({ revoked: true })
+    }, install === 'laptop')]))
+    const coordinator = roomSetupCoordinator({ store, connect: async route => route.connectionId === 'home' ? home.client : peers[route.connectionId].client })
+    try {
+      const result = await coordinator.create({ home: { connectionId: 'home', profile: 'default' }, name: 'Harbor launch', successor: true, members: [
+        { member_id: 'one', handle: 'atlas', profile: 'default', connectionId: 'home' },
+        { member_id: 'two', handle: 'mira', profile: 'default', connectionId: 'laptop' },
+        { member_id: 'three', handle: 'iris', profile: 'default', connectionId: 'older' }
+      ] }, () => undefined)
+      // Consent only where the computer can continue a group; designation only for those.
+      expect(invites.map(invite => [invite.member_id, invite.successor])).toEqual([['two', true], ['three', undefined]])
+      expect(effects.filter(effect => effect.endsWith('groups.custody.designate'))).toEqual(['home:groups.custody.designate'])
+      expect(result).toMatchObject({ room: { name: 'Harbor launch' }, successors: designation === 'works' ? 'designated' : 'failed' })
+      expect(effects).not.toContain('home:groups.disband')
+      expect(effects.filter(effect => effect.endsWith('groups.peer.revoke'))).toEqual([])
+      expect(await store.list()).toEqual({ records: [], unreadable: [] })
+    } finally {await fs.rm(directory, { recursive: true, force: true })}
+  }
+})
+
+test('adds a backup computer with a custodian-only grant and undoes both sides when the host refuses', async () => {
+  for (const outcome of ['added', 'refused', 'unsupported'] as const) {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'room-backup-'))
+    const store = roomSetupStore({ directory, ...encryption() })
+    const effects: string[] = []
+    let invitation: any
+    const home = linkedGateway('home', effects, {
+      'groups.state': () => ({ room: { name: 'Harbor launch', authority_epoch: 4 } }),
+      'groups.custody.add': async params => {
+        expect((await store.list()).records.find(record => record.kind === 'custody')?.grant).toBe(params.grant)
+        if (outcome === 'refused') {throw new RoomSetupError('peer_target_mismatch')}
+        return { room_id: params.room_id, install_id: 'vps', configuration_seq: 6 }
+      },
+      'groups.custody.remove': params => ({ room_id: params.room_id, install_id: params.install_id, configuration_seq: 7 })
+    })
+    const vps = linkedGateway('vps', effects, {
+      'groups.peer.invite': params => {invitation = params; return { grant: 'custodian-grant', catalog: vps.catalog, endpoint: { url: 'https://vps.invalid' } }},
+      'groups.peer.revoke': params => {expect(params.grant).toBe('custodian-grant'); return { revoked: true }}
+    }, outcome !== 'unsupported')
+    const coordinator = roomSetupCoordinator({ store, connect: async route => route.connectionId === 'home' ? home.client : vps.client })
+    try {
+      const attempt = coordinator.addBackup({ home: { connectionId: 'home', profile: 'default' }, roomId: 'room-harbor',
+        backup: { connectionId: 'vps', profile: 'default' }, successor: true }, () => undefined)
+      if (outcome === 'added') {
+        expect(await attempt).toEqual({ install_id: 'vps' })
+        expect(invitation).toMatchObject({ room_id: 'room-harbor', home_install_id: 'home', authority_gateway_id: 'home', authority_epoch: 4,
+          custody_only: true, successor: true })
+        expect(invitation).not.toHaveProperty('member_id')
+        expect(effects).toEqual(['home:groups.state', 'vps:groups.peer.invite', 'home:groups.custody.add'])
+      } else {
+        await expect(attempt).rejects.toMatchObject({ reason: outcome === 'refused' ? 'peer_target_mismatch' : 'backup_gateway_unsupported' })
+        expect(effects).toEqual(outcome === 'refused'
+          ? ['home:groups.state', 'vps:groups.peer.invite', 'home:groups.custody.add', 'home:groups.custody.remove', 'vps:groups.peer.revoke'] : [])
+      }
+      expect(await store.list()).toEqual({ records: [], unreadable: [] })
+    } finally {await fs.rm(directory, { recursive: true, force: true })}
+  }
+})

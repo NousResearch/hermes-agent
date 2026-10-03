@@ -193,6 +193,45 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     console.print()
 
 
+def _orchestrator_warning_text(manifest: dict) -> Optional[str]:
+    """The gateway/dispatch warning for an orchestrator-capable plugin, or None.
+
+    Text-only so every install entry point can surface the same message: the
+    CLI prints it, the dashboard/TUI appends it to its ``warnings`` list.
+    ``_install_plugin_core`` is shared by both, but only ``cmd_install`` called
+    the display helper, so dashboard installs stayed silent (#87287 follow-up).
+    """
+    is_orchestrator = str(manifest.get("kind", "")).strip().lower() == "orchestrator"
+    auto_dispatches = bool(manifest.get("auto_dispatches"))
+    spawns_workers = bool(manifest.get("spawns_workers"))
+    if not (is_orchestrator or auto_dispatches or spawns_workers):
+        return None
+    plugin_name = manifest.get("name", "this plugin")
+    # ponytail: text only — no structured metadata, no abort. The fix is the
+    # warning; if we ever need automation, gate on the same flags and add a
+    # config knob instead of more text.
+    return (
+        f"⚠ {plugin_name} is an orchestrator plugin — it auto-spawns worker "
+        "processes via the gateway.\n  Install the gateway and enable dispatch "
+        f"before activating {plugin_name}, or it may silently fan out workers."
+    )
+
+
+def _display_orchestrator_warning(manifest: dict, console) -> None:
+    """Warn when the installed plugin auto-spawns worker processes.
+
+    Plugins that orchestrate other workers (kind: orchestrator) or that
+    explicitly declare ``auto_dispatches`` / ``spawns_workers`` look identical
+    to a passive skill in the install summary, so agents (and humans) can
+    accidentally turn them on without a running gateway and end up fanning out
+    processes unbounded. Surface a brief warning naming both gateway and
+    dispatch so the user knows to install + enable them first. #87287
+    """
+    text = _orchestrator_warning_text(manifest)
+    if text:
+        console.print(f"\n[yellow]{text}[/yellow]")
+
+
 def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     """Show after-install.md if it exists, otherwise a default message."""
     from rich.markdown import Markdown
@@ -529,7 +568,8 @@ def cmd_install(
     if not _pc()._looks_like_plugin_dir(target):
         console.print(
             f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
-            f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
+            "plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
+    _display_orchestrator_warning(installed_manifest, console)
     _prompt_plugin_env_vars(installed_manifest, console)
 
     from pm.workspace import enabled_plugin_dirs
@@ -659,6 +699,11 @@ def dashboard_install_plugin(
                 "ok": False, "error": f"enable refused: {exc}",
                 "plugin_name": installed_name, "enabled": False,
             }
+    # ``cmd_install`` prints this via the display helper; the dashboard has no
+    # console, so the same message rides out in ``warnings`` (#87287 follow-up).
+    orchestrator_warning = _orchestrator_warning_text(installed_manifest or {})
+    if orchestrator_warning:
+        warnings.append(orchestrator_warning)
     deps = _pc()._python_dependency_summary(target, warnings)
     ap = target / "after-install.md"
     # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)

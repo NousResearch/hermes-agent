@@ -89,3 +89,47 @@ def test_request_review_shares_the_live_worker_fence(conn):
     ok, reason = kb.request_review(conn, tid2, summary="steal", with_reason=True)
     assert ok is False and "live claim" in reason
     assert kb.request_review(conn, tid2, summary="own", expected_run_id=run2) is True
+
+
+def test_request_changes_refuses_live_reviewer_until_forced(conn):
+    tid, implementation_run = _claimed_running_task(conn, live_worker=False)
+    assert kb.request_review(
+        conn,
+        tid,
+        summary="handoff",
+        reviewer="reviewer",
+        expected_run_id=implementation_run,
+    ) is True
+    assert kb.claim_review_task(conn, tid, claimer=kb._claimer_id()) is not None
+    kbd._set_worker_pid(conn, tid, os.getpid())
+    review_run = kb._current_run_id(conn, tid)
+    before_events = kb.list_events(conn, tid)
+
+    ok, reason = kb.request_changes(conn, tid, reason="unbound verdict")
+
+    assert ok is False and "live review claim" in reason
+    task = kb.get_task(conn, tid)
+    assert (task.status, task.assignee, task.current_run_id) == (
+        "running",
+        "reviewer",
+        review_run,
+    )
+    assert kb.list_events(conn, tid) == before_events
+    run = conn.execute(
+        "SELECT ended_at FROM task_runs WHERE id = ?", (review_run,)
+    ).fetchone()
+    assert run["ended_at"] is None
+
+    ok, implementer = kb.request_changes(
+        conn,
+        tid,
+        reason="operator override",
+        force=True,
+    )
+    assert ok is True and implementer == "coder"
+    task = kb.get_task(conn, tid)
+    assert (task.status, task.assignee) == ("ready", "coder")
+    run = conn.execute(
+        "SELECT ended_at, outcome FROM task_runs WHERE id = ?", (review_run,)
+    ).fetchone()
+    assert run["ended_at"] is not None and run["outcome"] == "changes_requested"

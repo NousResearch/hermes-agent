@@ -12,10 +12,12 @@ import {
   applyZoomLevel,
   clampZoomLevel,
   DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnDisplayMetrics,
   installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
   isDebouncedReassertEvent,
   percentToZoomLevel,
+  ZOOM_DISPLAY_METRICS_REASSERT_DELAY_MS,
   ZOOM_REASSERT_MAX_SETTLE_CHECKS,
   ZOOM_REASSERT_SETTLE_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
@@ -162,6 +164,63 @@ test('installZoomReassertOnWindowEvents debounces Linux resize, move, and focus 
   } finally {
     vi.useRealTimers()
   }
+})
+
+test('installZoomReassertOnDisplayMetrics re-applies zoom on a debounced display-metrics change (#84274)', () => {
+  vi.useFakeTimers()
+
+  try {
+    const handlers = new Map()
+
+    const screen = {
+      on(event, listener) {
+        handlers.set(event, listener)
+      },
+      removeListener(event) {
+        handlers.delete(event)
+      }
+    }
+
+    let calls = 0
+
+    const dispose = installZoomReassertOnDisplayMetrics(screen, () => {
+      calls += 1
+    })
+
+    // An RDP reconnect / dock-undock fires both display-level signals, none of
+    // the per-window ones.
+    assert.deepEqual([...handlers.keys()], ['display-metrics-changed', 'display-added'])
+
+    // A reconnect emits a burst of metric changes — coalesce to one reassert.
+    handlers.get('display-metrics-changed')()
+    handlers.get('display-metrics-changed')()
+    assert.equal(calls, 0)
+    vi.advanceTimersByTime(ZOOM_DISPLAY_METRICS_REASSERT_DELAY_MS)
+    assert.equal(calls, 1)
+
+    // display-added (a new virtual display on reconnect) also reasserts.
+    handlers.get('display-added')()
+    vi.advanceTimersByTime(ZOOM_DISPLAY_METRICS_REASSERT_DELAY_MS)
+    assert.equal(calls, 2)
+
+    // The disposer detaches both listeners and cancels any pending reassert.
+    handlers.get('display-metrics-changed')()
+    dispose()
+    vi.advanceTimersByTime(ZOOM_DISPLAY_METRICS_REASSERT_DELAY_MS)
+    assert.equal(calls, 2)
+    assert.equal(handlers.size, 0)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('installZoomReassertOnDisplayMetrics is inert without a screen event emitter', () => {
+  const dispose = installZoomReassertOnDisplayMetrics(null, () => {
+    throw new Error('should not be called')
+  })
+
+  assert.equal(typeof dispose, 'function')
+  dispose()
 })
 
 test('installZoomReassertOnWindowEvents re-verifies Linux zoom after the debounced re-assert so a dropped re-apply is retried', () => {

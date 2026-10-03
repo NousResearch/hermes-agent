@@ -17,6 +17,17 @@ from typing import List, Optional, Tuple
 MAX_SCAN_CHARS = 65_536
 # Bounded filler between key attack words (unbounded ``(?:\w+\s+)*`` backtracks badly).
 _FILLER = r"(?:\w+\s+){0,8}"
+
+# ``rm -rf`` rooted at "/", shared by skills_guard and the cron prompt scan. Cleanup under
+# the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in test/smoke scripts,
+# CI and scheduled jobs. A parent segment inside an exempted root can escape it, so it
+# remains destructive along with every other path rooted at "/".
+DESTRUCTIVE_ROOT_RM = (
+    r'rm\s+-rf\s+/(?:'
+    r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
+    r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))'
+)
+
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.

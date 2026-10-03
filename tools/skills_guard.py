@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.threat_patterns import DESTRUCTIVE_ROOT_RM
+
 
 SCANNER_VERSION = "skills-guard-v8"
 
@@ -240,13 +242,7 @@ THREAT_PATTERNS = [
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
-    # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
-    # so it remains destructive along with every other path rooted at "/".
-    (r'rm\s+-rf\s+/(?:'
-     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
-     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
-     "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
+    (DESTRUCTIVE_ROOT_RM, "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*(?:\$HOME|~[/\s*]|~$)|\brmdir\s+.*(?:\$HOME|~[/\s*]|~$)',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory ($HOME or ~)"),
     (r'chmod\s+777', "insecure_perms", "medium", "destructive", "sets world-writable permissions"),

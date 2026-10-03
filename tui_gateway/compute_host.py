@@ -227,6 +227,7 @@ class ComputeHost:
         if not sid:
             self._reply("turn.error", sid, request_id, message="sid required")
             return
+        turn_claim = None
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
@@ -247,7 +248,8 @@ class ComputeHost:
                 if session.get("running"):
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
-                session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
+                turn_claim = server._claim_session_turn(session)
+                session.update(_turn_cancel_requested=False, last_active=time.time())
                 server._start_inflight_turn(session, inflight)
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
@@ -261,7 +263,8 @@ class ComputeHost:
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")
-                                  if isinstance(frame.get("display_metadata"), dict) else None))
+                                  if isinstance(frame.get("display_metadata"), dict) else None),
+                turn_claim=turn_claim)
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -281,10 +284,11 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 from tui_gateway import server
                 session = server._sessions.get(sid)
-                if session is not None:
-                    with session.get("history_lock", threading.Lock()):
-                        session["running"] = False
-                        server._clear_inflight_turn(session)
+                if session is not None and turn_claim is not None:
+                    with session["history_lock"]:
+                        if server._owns_turn_claim(session, turn_claim):
+                            session["running"] = False
+                            server._clear_inflight_turn(session)
             self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))
 
     def _emit_turn_activity(self, sid: str, session: dict, turn_id: str, started_at: float) -> None:

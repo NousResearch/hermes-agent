@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.config import get_env_value, load_config
@@ -114,6 +114,8 @@ class NousSubscriptionFeatures:
     provider_is_nous: bool
     features: Dict[str, NousFeatureState]
     account_info: Optional[NousPortalAccountInfo] = None
+    # Stored selection per gateway tool: "nous" (managed), a vendor name, or None (never configured).
+    selected: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def __getattr__(self, name: str) -> NousFeatureState:  # ``features.web`` -> per-key state
         if name in _FEATURE_ORDER:
@@ -273,7 +275,7 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
         "parallel": _any_env("PARALLEL_API_KEY") and not web_gw,
         "tavily": (_any_env("TAVILY_API_KEY") or "tavily" in {backend, search_backend, extract_backend}) and not web_gw,
         "perplexity": _any_env("PERPLEXITY_API_KEY") and not web_gw,
-        "searxng": _any_env("SEARXNG_URL"),
+        "searxng": _any_env("SEARXNG_URL") and not web_gw,
     }
     web_managed = backend == "firecrawl" and managed and not direct_firecrawl
     active = web_managed or direct.get(backend) or direct.get(search_backend) or (extract_backend in ("tavily", "perplexity") and direct[extract_backend])
@@ -466,7 +468,7 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
     }
     return NousSubscriptionFeatures(
         subscribed=provider_is_nous or nous_auth_present, nous_auth_present=nous_auth_present,
-        provider_is_nous=provider_is_nous, features=features, account_info=account_info,
+        provider_is_nous=provider_is_nous, features=features, account_info=account_info, selected=selected,
     )
 
 

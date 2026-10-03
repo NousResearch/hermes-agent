@@ -383,6 +383,11 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
+# Fixed-price routes: a seat subscription has no per-token invoice, so the
+# marginal cost per token is genuinely zero ("included"), not "unknown".
+# Keyed on the canonical profile name — the registry resolves config-level
+# slugs/aliases (github-copilot → copilot).
+_SUBSCRIPTION_ROUTES = frozenset({"openai-codex", "copilot", "copilot-acp", "opencode-go"})
 
 
 def resolve_billing_route(
@@ -405,8 +410,18 @@ def resolve_billing_route(
     def host(name: str) -> bool:
         return base_url_host_matches(url, name)
 
-    if provider_name == "openai-codex":
-        return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    canonical = provider_name
+    if provider_name:
+        try:
+            from providers import get_provider_profile  # same lazy import as estimate_usage_cost
+
+            profile = get_provider_profile(provider_name)
+            if profile is not None:
+                canonical = profile.name
+        except Exception:
+            pass
+    if canonical in _SUBSCRIPTION_ROUTES:
+        return BillingRoute(provider=canonical, model=model, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):

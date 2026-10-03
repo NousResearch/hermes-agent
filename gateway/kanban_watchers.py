@@ -289,7 +289,30 @@ class GatewayKanbanWatchersMixin:
                 from hermes_cli import kanban_db_dispatch as _kbd
                 pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
                 if pids:
-                    logger.info("kanban dispatcher: reaped %d zombie worker(s), pids=%s", len(pids), pids)
+                    exits = []
+                    for pid in pids:
+                        try:
+                            kind, code = _kbd._classify_worker_exit(pid)
+                        except Exception as exc:
+                            # ponytail: one bad pid must not drop the whole
+                            # batch — degrade to partial listing, log it once.
+                            logger.warning(
+                                "kanban dispatcher: classify_worker_exit(%s) "
+                                "failed (%s); logging pid as unknown",
+                                pid,
+                                exc,
+                            )
+                            kind, code = "unknown", None
+                        exits.append(
+                            {"pid": pid, "exit_kind": kind, "exit_code": code}
+                        )
+                    logger.info(
+                        "kanban dispatcher: reaped %d worker child process(es); "
+                        "per-pid exits=%s (OS cleanup only; task outcome comes "
+                        "from board state)",
+                        len(exits),
+                        exits,
+                    )
             except Exception:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 

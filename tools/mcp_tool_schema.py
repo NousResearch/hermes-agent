@@ -185,10 +185,25 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP ``Tool`` (``.input_schema``, or ``.inputSchema`` before mcp 2.0) to a
-    ``registry.register(schema=...)`` dict."""
+    ``registry.register(schema=...)`` dict.
+
+    When the provider-safe wire name must be hash-clamped, preserve the human
+    ``server.tool`` identity in the description so tool_search results and traces remain
+    understandable instead of exposing only an opaque hash-suffixed identifier.
+    """
+    wire_name = mcp_prefixed_tool_name(server_name, mcp_tool.name)
+    natural_name = (
+        f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server_name)}__"
+        f"{sanitize_mcp_name_component(mcp_tool.name)}"
+    )
+    description = strip_unicode_tags(
+        mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    )
+    if wire_name != natural_name:
+        description = f"{server_name}.{mcp_tool.name} — {description}"
     return {
-        "name": mcp_prefixed_tool_name(server_name, mcp_tool.name),
-        "description": strip_unicode_tags(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
+        "name": wire_name,
+        "description": description,
         "parameters": _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
     }
 

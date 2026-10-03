@@ -797,3 +797,27 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_file_version_does_not_compare_fstat_ctime_with_stat_ctime(tmp_path, monkeypatch):
+    """On Windows (CPython 3.12) ``os.fstat`` reports st_ctime as the change time and
+    ``os.stat`` as the creation time; a file written just after creation then read as
+    unstable, so dedup and the write baseline flaked (1-3 tests per run of this file)."""
+    import types
+    from tools import file_tools_read_tracking as tracking
+
+    target = tmp_path / "f.txt"
+    target.write_text("line one\n", encoding="utf-8")
+    real_fstat = os.fstat
+
+    def windows_like_fstat(fd):
+        st = real_fstat(fd)
+        fields = ("st_mode", "st_dev", "st_ino", "st_size", "st_mtime_ns")
+        return types.SimpleNamespace(**{f: getattr(st, f) for f in fields}, st_ctime_ns=st.st_ctime_ns + 1_000_000)
+
+    monkeypatch.setattr(tracking.os, "fstat", windows_like_fstat)
+
+    version = tracking._file_version(str(target))
+
+    assert version is not None
+    assert version[:-1] == tracking._file_metadata(str(target))

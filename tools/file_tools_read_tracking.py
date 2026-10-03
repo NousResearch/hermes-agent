@@ -253,12 +253,14 @@ def _file_metadata(resolved: str) -> tuple | None:
 def _file_version(resolved: str) -> tuple | None:
     """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
     try:
-        if not stat.S_ISREG(os.stat(resolved).st_mode):
+        before = os.stat(resolved)
+        if not stat.S_ISREG(before.st_mode):
             return None
         fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before.st_mode):
+            # fstat for the type only: on Windows (CPython 3.12) its st_ctime_ns is the
+            # change time while os.stat's is the creation time, so the two never compare.
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
             after = os.stat(resolved)

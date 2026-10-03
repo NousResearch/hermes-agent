@@ -5060,7 +5060,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # sequence (or follow an assistant). Use the _force_user_leading
             # layout instead — carrier role=user, request after its end marker.
             if len(compressed) != before and _template_visible_role(carrier) == "assistant" and (
-                _last_template_visible_role(compressed[: compressed.index(carrier)]) in {None, "system", "assistant"}
+                _last_template_visible_role(compressed[: compressed.index(carrier)]) != "user"
             ):
                 carrier["role"] = "user"
                 last_visible_role = _last_template_visible_role(compressed)

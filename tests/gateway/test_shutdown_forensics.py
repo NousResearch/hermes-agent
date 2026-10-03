@@ -165,3 +165,22 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+class TestSystemdTimeoutLookup:
+    def test_missing_user_unit_does_not_mask_system_unit(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "--user" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0, "LoadState=not-found\nTimeoutStopUSec=1min 30s\n", ""
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, "LoadState=loaded\nTimeoutStopUSec=3min 30s\n", ""
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert len(calls) == 2

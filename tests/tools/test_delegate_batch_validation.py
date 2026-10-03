@@ -177,5 +177,35 @@ class TestValidBatchStillRuns(unittest.TestCase):
         self.assertNotIn("error", result)
 
 
+class TestUnknownTaskFieldsRejected(unittest.TestCase):
+    """Undeclared per-task fields must fail loudly, not silently no-op.
+
+    Red on the silent-swallow behavior: a per-task `model` pin was accepted and the
+    child simply ran on the inherited/config model with zero signal."""
+
+    def _completed(self, idx):
+        return {"task_index": idx, "status": "completed", "summary": "ok",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None}
+
+    def test_task_level_model_pin_rejected_before_any_child_spawns(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [self._completed(0)]
+            result = _call([{"goal": GOOD_A}, {"goal": GOOD_B, "model": "openrouter/some-cheap-model"}])
+        self.assertIn("Task 1", result["error"])
+        self.assertIn("'model'", result["error"])
+        self.assertIn("delegation.model", result["error"])
+        mock_run.assert_not_called()
+
+    def test_every_schema_declared_task_field_is_accepted(self):
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        from tools.delegate_tool_tasks import _normalize_task_list
+
+        declared = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        task = {key: None for key in declared} | {"goal": GOOD_A, "role": "leaf"}
+        task_list, error = _normalize_task_list(None, None, [task], None, "leaf", 6)
+        self.assertIsNone(error)
+        self.assertEqual(task_list, [task])
+
+
 if __name__ == "__main__":
     unittest.main()

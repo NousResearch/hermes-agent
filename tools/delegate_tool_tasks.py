@@ -18,6 +18,16 @@ _TEMPLATE_MARKER_RE = re.compile(
 )
 _MIN_BATCH_GOAL_LEN = 10
 
+def _allowed_task_fields() -> frozenset:
+    """Keys a task entry may carry: the schema-declared task properties plus the unadvertised legacy
+    ``role`` (the single-goal wrapper sets it and child build reads it). Derived from the schema so a
+    new task field is accepted the moment it is declared. Anything else is dropped by child build, so
+    it is rejected instead: a per-task ``model``/``provider`` pin that silently does nothing reads as
+    a working feature (#118825)."""
+    from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+    declared = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+    return frozenset(declared) | {"role"}
+
 def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """``(parsed_list, None)`` for a JSON-array string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""
     if not isinstance(tasks, str):
@@ -95,11 +105,25 @@ def _normalize_task_list(
             "...] — one entry per subagent (a single task is a one-entry array)."
         )
 
+    allowed = _allowed_task_fields()
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+        unknown = sorted(set(task) - allowed)
+        if unknown:
+            hint = ""
+            if {"model", "provider"} & set(unknown):
+                hint = (
+                    " delegate_task has no per-task model/provider override: children run on the parent's "
+                    "model unless delegation.provider / delegation.model is set in config.yaml (the kanban "
+                    "board supports a per-task model override)."
+                )
+            return None, (
+                f"Task {i} has unknown field(s) {', '.join(map(repr, unknown))}; task entries accept only "
+                f"{', '.join(sorted(allowed - {'role'}))}.{hint} Remove the field(s) and retry."
+            )
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)

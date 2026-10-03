@@ -419,6 +419,36 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+
+def _venv_matches_running_interpreter(venv_dir: Path) -> bool:
+    """False only when ``venv_dir/pyvenv.cfg`` proves a version mismatch.
+
+    A legacy venv built for an older interpreter must never satisfy imports
+    for the running runtime (#127387: a py3.11 venv's rpds-py ships only a
+    cp311 extension, so under 3.14 the pure-Python layer imports fine and
+    the compiled part fails with ``No module named 'rpds.rpds'`` while
+    health probes pass). Unknown/missing cfg stays allowed (legacy behavior
+    for exotic layouts).
+    """
+    # ponytail: pyvenv.cfg text scan only; major.minor compare is enough.
+    try:
+        text = Path(venv_dir, "pyvenv.cfg").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return True
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "version":
+            parts = value.strip().split(".")
+            try:
+                claimed = (int(parts[0]), int(parts[1]))
+            except (ValueError, IndexError):
+                return True
+            return claimed == (sys.version_info.major, sys.version_info.minor)
+    return True
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -448,6 +478,11 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        # ponytail: skip interpreter-mismatched venvs here; ABI-tagged
+        # wheels (rpds, #127387) from a stale venv shadow the correct ones.
+        if not _venv_matches_running_interpreter(resolved_venv):
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

@@ -251,9 +251,13 @@ def _uses_hermes_python_environment(python_path: str) -> bool:
     return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
 
 
-def _resolve_child_python(mode: str) -> str:
-    """Child interpreter: ``sys.executable`` in strict mode; in project mode the active
-    VIRTUAL_ENV/CONDA_PREFIX python if it exists and passes the 3.8+ probe, else ``sys.executable``."""
+def _resolve_child_python(mode: str, cwd: str = "") -> str:
+    """Prefer explicit activation, then an operator-trusted cwd's venv; strict stays on Hermes.
+
+    Do not discover interpreters in arbitrary agent-selected directories: even the version
+    probe executes checkout code. Reuse the LSP operator-anchor boundary, not its opt-in list
+    (permission to run a language server is not permission to select a cell interpreter).
+    """
     if mode != "project":
         return sys.executable
     subdir, exe_names = ("Scripts", ("python.exe", "python3.exe")) if _IS_WINDOWS else ("bin", ("python", "python3"))
@@ -268,6 +272,22 @@ def _resolve_child_python(mode: str) -> str:
             logger.info("execute_code: skipping %s=%s (Python version < 3.8 or broken). "
                         "Using sys.executable instead.", var, candidate)
             return sys.executable
+    if cwd:
+        from agent.lsp.workspace import find_git_worktree, operator_workspace_roots
+        # LSP caches lexical roots for editor identity. Interpreter discovery instead
+        # needs fresh physical identity: a new nested clone or junction must not inherit trust.
+        cwd = os.path.realpath(cwd)
+        roots = {os.path.realpath(root) for root in operator_workspace_roots()}
+        root = find_git_worktree(cwd, use_cache=False)
+        if root is not None and root in roots:
+            for name in (".venv", "venv"):
+                env_root = os.path.realpath(os.path.join(cwd, name))
+                if find_git_worktree(env_root, use_cache=False) != root:
+                    continue
+                for exe in exe_names:
+                    candidate = os.path.join(env_root, subdir, exe)
+                    if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and _is_usable_python(candidate):
+                        return candidate
     return sys.executable
 
 

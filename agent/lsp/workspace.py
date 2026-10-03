@@ -55,12 +55,12 @@ def _walk_up(start: Path) -> Iterator[Path]:
         cur = parent
 
 
-def find_git_worktree(start: str) -> Optional[str]:
+def find_git_worktree(start: str, *, use_cache: bool = True) -> Optional[str]:
     """Return the nearest ancestor dir containing ``.git`` (file or dir — worktrees count), else ``None``."""
     start_path = _start_dir(start)
     if start_path is None:
         return None
-    cached = _workspace_cache.get(str(start_path))
+    cached = _workspace_cache.get(str(start_path)) if use_cache else None
     if cached is not None:
         return cached[0]
     resolved = None

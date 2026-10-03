@@ -72,6 +72,35 @@ def test_remove_launchd_gateway_returns_false_when_no_plists(launch_agents, monk
     assert calls == []
 
 
+def test_remove_launchd_gateway_keeps_another_installs_agents(launch_agents, fake_home, tmp_path, monkeypatch):
+    """A side-by-side install (or a test harness) with its own HERMES_HOME removes only its own
+    gateways: agents pinned to another install's home are never booted out or deleted."""
+    import plistlib
+
+    staging = tmp_path / "staging"
+    monkeypatch.setenv("HERMES_HOME", str(staging))
+
+    def _agent(label, hermes_home):
+        path = launch_agents / f"{label}.plist"
+        path.write_bytes(plistlib.dumps({"Label": label, "EnvironmentVariables": {"HERMES_HOME": str(hermes_home)}}))
+        return path
+
+    prod = _agent("ai.hermes.gateway", fake_home / ".hermes")
+    prod_profile = _agent("ai.hermes.gateway-work", fake_home / ".hermes" / "profiles" / "work")
+    own = _agent("ai.hermes.gateway-1a2b3c4d", staging)
+    calls: list[list[str]] = []
+    _fake_launchctl(monkeypatch, calls)
+
+    assert uninstall._remove_launchd_gateway() is True
+    assert prod.exists() and prod_profile.exists() and not own.exists()
+    assert {c[-1].rsplit("/", 1)[-1] for c in calls if c[1] == "bootout"} == {"ai.hermes.gateway-1a2b3c4d"}
+
+    # The production install's own uninstall still removes its root and profile agents.
+    monkeypatch.delenv("HERMES_HOME")
+    assert uninstall._remove_launchd_gateway() is True
+    assert not prod.exists() and not prod_profile.exists()
+
+
 # ── macOS Library + XDG leftovers ────────────────────────────────────────
 
 

@@ -194,6 +194,113 @@ def test_bad_bounded_value_warns_once_per_distinct_value(curator_env, monkeypatc
     assert "got 0" in msgs[0] and "got -1" in msgs[1]
 
 
+def test_an_inverted_lifecycle_pair_never_archives_before_the_stale_threshold(curator_env, monkeypatch):
+    """``stale_after_days: 60`` with ``archive_after_days: 30`` is two counts each valid on its own that
+    apply_automatic_transitions() cannot honour together: it tests the archive branch first, so a used
+    skill idle 40 days was archived — moved out of ``skills/`` on an unconfirmed pass, 20 days before
+    the staleness its owner configured, and without ever passing through ``stale``."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "still-wanted")
+    _backdate(u, "still-wanted", 40)
+    monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": 60, "archive_after_days": 30})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert u.load_usage()["still-wanted"]["state"] == u.STATE_ACTIVE
+    assert (skills_dir / "still-wanted").is_dir()
+
+
+def test_an_inverted_pair_still_goes_stale_at_the_configured_threshold(curator_env, monkeypatch):
+    """Deferring the archive must not disable the lifecycle: ``stale_after_days`` is honoured verbatim,
+    so the same skill idle 60 days is marked stale — the repair moves archival, not staleness."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_skill(curator_env["home"] / "skills", "aging")
+    _backdate(u, "aging", 60)
+    monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": 60, "archive_after_days": 30})
+
+    counts = c.apply_automatic_transitions()
+
+    assert (counts["marked_stale"], counts["archived"]) == (1, 0)
+    assert u.load_usage()["aging"]["state"] == u.STATE_STALE
+
+
+def test_equal_stale_and_archive_days_leave_stale_reachable(curator_env, monkeypatch):
+    """With both keys at 30 the archive branch fires at the same instant the stale branch would, so
+    ``stale`` was unreachable at every age — a skill idle exactly 30 days went straight to archived."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_skill(curator_env["home"] / "skills", "exactly-thirty")
+    _backdate(u, "exactly-thirty", 30)
+    monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": 30, "archive_after_days": 30})
+
+    counts = c.apply_automatic_transitions()
+
+    assert (counts["marked_stale"], counts["archived"]) == (1, 0)
+    assert u.load_usage()["exactly-thirty"]["state"] == u.STATE_STALE
+
+
+def test_ordering_repair_warns_once_and_leaves_a_usable_pair_alone(curator_env, monkeypatch, caplog):
+    """Both getters are polled by the dashboard status endpoint, so an inverted pair warns once across
+    repeated reads — and a correctly ordered pair is returned verbatim with nothing logged, so
+    ``hermes curator status`` keeps reporting the user's own numbers."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": 60, "archive_after_days": 30})
+    with caplog.at_level("WARNING", logger=c.logger.name):
+        for _ in range(3):
+            assert (c.get_stale_after_days(), c.get_archive_after_days()) == (60, 61)
+        assert len([r for r in caplog.records if "archiving after" in r.getMessage()]) == 1
+        caplog.clear()
+        monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": 30, "archive_after_days": 90})
+        assert (c.get_stale_after_days(), c.get_archive_after_days()) == (30, 90)
+    assert caplog.records == []
+
+
+def test_a_lone_configured_archive_threshold_is_honoured_not_doubled(curator_env, monkeypatch):
+    """Only ``archive_after_days`` is written. The other half of the pair is the *default*, and a
+    default must not override a number the user typed: deferring the archive here would resolve
+    ``stale_after_days`` to the unconfigured 14 and archive at 15 — more than doubling the 7 days
+    the user asked for, under a warning naming a pair they never wrote. Staleness yields instead."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "short-lived")
+    _backdate(u, "short-lived", 8)
+    monkeypatch.setattr(c, "_load_config", lambda: {"archive_after_days": 7})
+
+    assert (c.get_stale_after_days(), c.get_archive_after_days()) == (6, 7)
+
+    counts = c.apply_automatic_transitions()
+
+    # 8 days idle is past the archive threshold the user configured, so it archives — at 7, not 15.
+    assert counts["archived"] == 1
+    assert not (skills_dir / "short-lived").is_dir()
+
+
+def test_a_rejected_archive_value_does_not_count_as_configured(curator_env, monkeypatch):
+    """``archive_after_days: 0`` is rejected by ``_bounded_count`` and resolves to the default, so it
+    carries no intent and must not be read as the user having asked for that default — otherwise a
+    bad value would decide which half of the pair yields."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": 60, "archive_after_days": 0})
+
+    # archive falls back to 30, which is <= the configured 60: the archive is the half that moves.
+    assert (c.get_stale_after_days(), c.get_archive_after_days()) == (60, 61)
+
+
+def test_an_archive_threshold_of_one_day_leaves_no_room_for_a_stale_stage(curator_env, monkeypatch):
+    """The pulled staleness is floored at 1 like every other count, so ``archive_after_days: 1``
+    resolves to 1/1 rather than 0/1. There is no distinct stale stage at day resolution here, and
+    the configured archival still wins."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"archive_after_days": 1})
+
+    assert (c.get_stale_after_days(), c.get_archive_after_days()) == (1, 1)
+
+
 def test_pinned_skill_is_never_touched(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]

@@ -221,6 +221,152 @@ async def test_debounce_resets_timer_on_new_arrival():
 
 
 @pytest.mark.asyncio
+async def test_pending_synthetic_and_human_text_keep_prompt_identity_separate():
+    """A human text must wait behind, not merge into, a pin-preserving synthetic turn."""
+    adapter = _make_adapter()
+    synthetic = _make_event("synthetic")
+    synthetic.message_id = None
+    synthetic.preserve_prompt_pins = True
+    session_key = build_session_key(synthetic.source)
+    adapter._pending_messages[session_key] = synthetic
+
+    human = _make_event("human")
+    await adapter._queue_text_debounce(session_key, human)
+
+    assert await adapter._flush_text_debounce_now(session_key) is False
+    assert adapter._pending_messages[session_key] is synthetic
+    buffered = _debounced_event(adapter, session_key)
+    assert buffered is human
+    assert buffered.preserve_prompt_pins is False
+    assert buffered.message_id == human.message_id
+
+    adapter._pending_messages.pop(session_key)
+    assert await adapter._flush_text_debounce_now(session_key) is True
+    assert adapter._pending_messages[session_key] is human
+
+
+@pytest.mark.asyncio
+async def test_three_incompatible_busy_text_arrivals_remain_lossless_and_fifo():
+    """Pending A -> debounce B -> incoming C must retain all three in admission order."""
+    adapter = _make_adapter()
+    overflow: list[MessageEvent] = []
+
+    class _FifoOwner:
+        def _try_enqueue_fifo_event(self, session_key, event, adapter):
+            overflow.append(event)
+            event._gateway_accepted = True
+            return True
+
+    adapter.gateway_runner = _FifoOwner()
+
+    synthetic = _make_event("synthetic-head", chat_type="group", user_id="alice")
+    synthetic.message_id = None
+    synthetic.preserve_prompt_pins = True
+    session_key = build_session_key(synthetic.source)
+    adapter._pending_messages[session_key] = synthetic
+
+    bob = _make_event("bob-buffered", chat_type="group", user_id="bob")
+    alice = _make_event("alice-must-survive", chat_type="group", user_id="alice")
+    await adapter._queue_text_debounce(session_key, bob)
+    await adapter._queue_text_debounce(session_key, alice)
+
+    assert adapter._pending_messages[session_key] is synthetic
+    assert overflow == [bob]
+    assert _debounced_event(adapter, session_key) is alice
+    assert bob._gateway_accepted is True
+    assert alice._gateway_accepted is True
+
+    drain_order = [adapter._pending_messages.pop(session_key).text]
+    adapter._pending_messages[session_key] = overflow.pop(0)
+    assert await adapter._flush_text_debounce_now(session_key) is False
+    drain_order.append(adapter._pending_messages.pop(session_key).text)
+    assert await adapter._flush_text_debounce_now(session_key) is True
+    drain_order.append(adapter._pending_messages.pop(session_key).text)
+
+    assert drain_order == ["synthetic-head", "bob-buffered", "alice-must-survive"]
+    assert [synthetic.preserve_prompt_pins, bob.preserve_prompt_pins, alice.preserve_prompt_pins] == [
+        True, False, False,
+    ]
+
+@pytest.mark.asyncio
+async def test_debounce_spill_refusal_keeps_older_buffer_and_rejects_new_arrival():
+    """A full FIFO must not treat the buffer old acceptance flag as a transfer receipt."""
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._queued_events = {}
+    runner._BUSY_QUEUE_MAX_PENDING = 1
+    adapter.gateway_runner = runner
+
+    head = _make_event("head", chat_type="group", user_id="alice")
+    head.preserve_prompt_pins = True
+    session_key = build_session_key(head.source)
+    adapter._pending_messages[session_key] = head
+
+    buffered = _make_event("buffered", chat_type="group", user_id="bob")
+    incoming = _make_event("incoming", chat_type="group", user_id="carol")
+    await adapter._queue_text_debounce(session_key, buffered)
+    assert buffered._gateway_accepted is True
+
+    await adapter._queue_text_debounce(session_key, incoming)
+
+    assert adapter._pending_messages[session_key] is head
+    assert _debounced_event(adapter, session_key) is buffered
+    assert runner._queued_events.get(session_key, []) == []
+    assert incoming._gateway_accepted is False
+
+
+@pytest.mark.asyncio
+async def test_sender_separated_debounce_spill_bypasses_photo_coalescing():
+    """Alice PHOTO -> Bob TEXT -> Carol TEXT preserves three distinct owners in FIFO order."""
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    adapter.config.extra["group_sessions_per_user"] = False
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._queued_events = {}
+    runner._BUSY_QUEUE_MAX_PENDING = 32
+    adapter.gateway_runner = runner
+
+    alice = MessageEvent(
+        text="alice-first",
+        message_type=MessageType.PHOTO,
+        source=SessionSource(
+            platform=Platform.TELEGRAM, chat_id="group-1", chat_type="group",
+            user_id="101", user_name="alice",
+        ),
+        message_id="201",
+        media_urls=["/tmp/alice.jpg"],
+        media_types=["image/jpeg"],
+    )
+    bob = _make_event(
+        "bob-second", chat_id="group-1", chat_type="group", user_id="102", user_name="bob",
+    )
+    bob.message_id = "202"
+    carol = _make_event(
+        "carol-third", chat_id="group-1", chat_type="group", user_id="103", user_name="carol",
+    )
+    carol.message_id = "203"
+    session_key = adapter._event_session_key(alice)
+    assert session_key == adapter._event_session_key(bob) == adapter._event_session_key(carol)
+    adapter._pending_messages[session_key] = alice
+
+    await adapter._queue_text_debounce(session_key, bob)
+    await adapter._queue_text_debounce(session_key, carol)
+
+    assert adapter._pending_messages[session_key] is alice
+    assert [
+        (event.text, event.source.user_id, event.message_id)
+        for event in runner._queued_events[session_key]
+    ] == [("bob-second", "102", "202")]
+    assert _debounced_event(adapter, session_key) is carol
+    assert alice.text == "alice-first"
+    assert alice.source.user_id == "101"
+    assert alice.message_id == "201"
+
+
+@pytest.mark.asyncio
 async def test_control_and_clarify_messages_bypass_text_debounce():
     adapter = _make_adapter()
     started: list[str] = []

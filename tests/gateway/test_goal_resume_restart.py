@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import queue
 import uuid
+import weakref
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from gateway.session_identity import RoutingIdentity
 from hermes_cli import goals
 
 
@@ -178,8 +180,25 @@ class TestGatewayResumeRestartsWork:
     ):
         runner, adapter = _make_runner()
         _exhaust_budget(_GW_SID)
+        event = _resume_event()
+        event.source.message_id = "source-msg-goal-resume"
+        event.source.profile = "team_b"
+        authorization_home = hermes_home / "transport-default"
+        runtime_home = hermes_home / "profiles" / "team_b"
+        identity = RoutingIdentity(
+            transport_profile="default",
+            runtime_profile="team_b",
+            authorization_home=authorization_home,
+            runtime_home=runtime_home,
+            multiplexed=True,
+            transport=weakref.ref(adapter),
+        )
+        transport_ref = weakref.ref(adapter)
+        event.source._transport_adapter_ref = transport_ref
+        event.source._authorization_profile_home = authorization_home
+        event.source._identity = identity
 
-        response = await GatewayRunner._handle_goal_command(runner, _resume_event())
+        response = await GatewayRunner._handle_goal_command(runner, event)
 
         assert "resume" in response.lower() or "Goal" in response
         pending = adapter._pending_messages.get(_GW_KEY)
@@ -188,6 +207,15 @@ class TestGatewayResumeRestartsWork:
             "— otherwise the goal sits idle until the next real user message"
         )
         assert pending.text.startswith("[Continuing toward your standing goal]")
+        assert pending.source.message_id is None
+        assert pending.source.profile == "team_b"
+        assert pending.source._transport_adapter_ref is transport_ref
+        assert pending.source._authorization_profile_home == authorization_home
+        assert pending.source._identity is identity
+        assert (pending.source._identity.transport_profile, pending.source._identity.runtime_profile) == (
+            "default", "team_b",
+        )
+        assert pending.source._identity.adapter() is adapter
         # The pause/clear stale-work guard must recognize the queued turn as
         # a synthetic goal continuation so it can be cleaned up on /goal pause.
         assert GatewayRunner._is_goal_continuation_event(pending)

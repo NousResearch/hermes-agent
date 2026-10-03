@@ -25,6 +25,7 @@ def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
     redact_pii = pin.get("redact_pii")
     channel_prompt = pin.get("channel_prompt")
     parent_chat_id = pin.get("parent_chat_id")
+    source = pin.get("source")
     if not isinstance(context_key, str) or not context_key or not isinstance(context_prompt, str):
         return None
     if not isinstance(redact_pii, bool):
@@ -33,7 +34,13 @@ def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
         return None
     if parent_chat_id is not None and not isinstance(parent_chat_id, str):
         return None
-    return {
+    if source is not None:
+        if not isinstance(source, dict):
+            return None
+        if not isinstance(source.get("platform"), str) or not isinstance(source.get("chat_id"), str):
+            return None
+        source = dict(source)
+    cleaned = {
         "version": PROMPT_PIN_VERSION,
         "context_key": context_key,
         "context_prompt": context_prompt,
@@ -41,6 +48,9 @@ def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
         "channel_prompt": channel_prompt,
         "parent_chat_id": parent_chat_id,
     }
+    if source is not None:
+        cleaned["source"] = source
+    return cleaned
 
 
 class SessionPromptPinMixin:

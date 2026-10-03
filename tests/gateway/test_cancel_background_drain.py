@@ -9,13 +9,15 @@ untracked against a disconnecting adapter.
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 class _StubAdapter(BasePlatformAdapter):
@@ -113,3 +115,67 @@ async def test_cancel_background_tasks_drains_late_arrivals():
         "the re-drain loop is missing and the task leaked"
     )
     assert adapter._background_tasks == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("synthetic_head", [False, True], ids=("human-control", "synthetic-head"))
+async def test_cancel_background_tasks_persists_incompatible_debounce(
+    tmp_path, monkeypatch, synthetic_head
+):
+    """Shutdown must persist an accepted debounce event even when prompt identity blocks its flush."""
+    import gateway.shutdown_flush as shutdown_flush
+
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir()
+    monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+    monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
+
+    adapter = _make_adapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=False)
+    runner.adapters, runner._profile_adapters = {Platform.TELEGRAM: adapter}, {}
+    runner._primary_profile_name, runner._sessions, runner._draining = "default", {}, False
+    runner._busy_input_mode = runner._busy_text_mode = adapter._busy_text_mode = "queue"
+    adapter.gateway_runner = runner
+    adapter._busy_session_handler = runner._handle_active_session_busy_message
+
+    async def held_turn(_event):
+        raise AssertionError("the pre-existing active turn remains held")
+
+    adapter.set_message_handler(held_turn)
+    source = adapter.build_source(
+        chat_id="1001", chat_type="dm", user_id="101", message_id="201",
+    )
+    head = (
+        runner._synthetic_prompt_event(source, "pending-continuation")
+        if synthetic_head
+        else MessageEvent(text="pending-human", source=source, message_id="201")
+    )
+    key = adapter._event_session_key(head)
+    adapter._active_sessions[key] = asyncio.Event()
+    runner._enqueue_fifo(key, head, adapter)
+    adapter._spawn_drain_task(head, key, delay=adapter._REQUEUE_BACKOFF_MAX_SECONDS)
+
+    human = MessageEvent(
+        text="human-must-survive-shutdown",
+        source=adapter.build_source(
+            chat_id="1001", chat_type="dm", user_id="101", message_id="202",
+        ),
+        message_id="202",
+    )
+    await adapter.handle_message(human)
+    assert key in adapter._text_debounce
+
+    await asyncio.wait_for(adapter._text_debounce[key].task, timeout=5)
+    assert human._gateway_accepted is True
+    assert not adapter._session_tasks[key].done()
+
+    await adapter.cancel_background_tasks()
+
+    payloads = [json.loads(path.read_text()) for path in flush_dir.glob("*.json")]
+    persisted_text = "\n".join(
+        str((payload.get("data") or {}).get("text", "")) for payload in payloads
+    )
+    assert "human-must-survive-shutdown" in persisted_text
+    if synthetic_head:
+        assert "pending-continuation" in persisted_text

@@ -113,6 +113,41 @@ class GatewayBusySessionMixin:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
 
+    def _try_enqueue_fifo_event(
+        self, session_key: str, queued_event: "MessageEvent", adapter: Any,
+    ) -> bool:
+        """Append queued_event without coalescing and report this transfer result.
+
+        Debounce uses this after it already decided two events must stay separate. Re-entering
+        the generic busy queue there would allow photo coalescing to undo the sender/prompt-identity
+        boundary. The boolean is a fresh receipt: an event may already carry an old
+        _gateway_accepted=True from its original debounce admission.
+        """
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if not isinstance(pending_slot, dict):
+            return False
+        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+            logger.warning(
+                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
+                session_key, self._BUSY_QUEUE_MAX_PENDING,
+            )
+            return False
+        self._enqueue_fifo(session_key, queued_event, adapter)
+        return True
+
+    def _requeue_before_pending_slot(
+        self, session_key: str, queued_event: "MessageEvent", adapter: Any
+    ) -> None:
+        """Put an already-dequeued older event back ahead of the current FIFO slot."""
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if pending_slot is None:
+            return
+        existing = pending_slot.get(session_key)
+        pending_slot[session_key] = queued_event
+        queued_event._gateway_accepted = True
+        if existing is not None and existing is not queued_event:
+            self._session_state(session_key).conversation.queued_events.insert(0, existing)
+
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
     ) -> Optional["MessageEvent"]:
@@ -386,6 +421,8 @@ class GatewayBusySessionMixin:
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         same_security_context = existing is not None and (
             getattr(existing, "internal", False) == getattr(event, "internal", False)
+            and getattr(existing, "preserve_prompt_pins", False)
+            == getattr(event, "preserve_prompt_pins", False)
             and getattr(existing, "allow_gateway_control", True)
             == getattr(event, "allow_gateway_control", True)
             and all(
@@ -415,14 +452,7 @@ class GatewayBusySessionMixin:
             event._gateway_accepted = True
             return
 
-        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
-            logger.warning(
-                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key, self._BUSY_QUEUE_MAX_PENDING,
-            )
-            return
-
-        self._enqueue_fifo(session_key, event, adapter)
+        self._try_enqueue_fifo_event(session_key, event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.

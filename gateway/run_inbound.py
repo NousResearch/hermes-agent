@@ -621,11 +621,20 @@ class GatewayInboundMixin:
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Merge compatible events; queue across prompt-identity boundaries."""
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return
+        existing = getattr(adapter, "_pending_messages", {}).get(_quick_key)
+        if (
+            existing is not None
+            and self._event_preserves_prompt_pins(existing)
+            != self._event_preserves_prompt_pins(event)
+        ):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str

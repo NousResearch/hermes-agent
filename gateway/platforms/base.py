@@ -3824,7 +3824,7 @@ class BasePlatformAdapter(ABC):
         return result
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
+        """Return True when text debounce events share sender and prompt identity."""
 
         def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
             source = getattr(candidate, "source", None)
@@ -3837,6 +3837,15 @@ class BasePlatformAdapter(ABC):
             if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
                 return (platform, "dm", str(source.chat_id))
             return None
+
+        def _preserves_prompt_pins(candidate: MessageEvent) -> bool:
+            return bool(
+                getattr(candidate, "internal", False)
+                or getattr(candidate, "preserve_prompt_pins", False)
+            )
+
+        if _preserves_prompt_pins(existing) != _preserves_prompt_pins(event):
+            return False
         existing_sender = _identity(existing)
         return existing_sender is not None and existing_sender == _identity(event)
 
@@ -3862,7 +3871,27 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
+                    event._gateway_accepted = True
+                    return
+
+                # Both storage positions are incompatible. Preserve admission order by moving the
+                # OLDER debounce event behind the pending head in the runner FIFO, then let the new
+                # arrival become the fresh debounce state. Returning here used to silently drop the
+                # third event (pending A -> debounce B -> incoming C).
+                transfer_pending = getattr(
+                    getattr(self, "gateway_runner", None), "_try_enqueue_fifo_event", None
+                )
+                buffered = state.event
+                if not callable(transfer_pending):
+                    return
+                # The debounce admission receipt on buffered may already be True. Use this
+                # transfer own result, and bypass the generic photo merge path because the event
+                # was explicitly separated from both the pending head and the new arrival.
+                if not transfer_pending(session_key, buffered, self):
+                    return
+                state.cancel_timer()
+                store.pop(session_key, None)
+                state = None
         now = time.monotonic()
         if state is None:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
@@ -3878,6 +3907,7 @@ class BasePlatformAdapter(ABC):
             if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
                 state.event.reply_to_message_id = str(latest_anchor)
             state.last_ts = now
+        event._gateway_accepted = True
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
@@ -4793,14 +4823,26 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
-        with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
+        # Freeze debounce ownership before taking shutdown snapshots. A timer that could still
+        # move its event into the pending slot must not race the two durability writes below.
+        debounce_store = self._text_debounce_store()
+        for state in debounce_store.values():
+            state.cancel_timer()
+        with contextlib.suppress(Exception):  # flush the live queue head before clearing
             from gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
-        for state in self._text_debounce_store().values():
-            state.cancel_timer()
+        # An accepted debounce event can remain intentionally separate from an incompatible
+        # pending head after its timer fires. Persist that owner independently: another arrival
+        # is not guaranteed to spill it into the bounded runner FIFO before teardown.
+        with contextlib.suppress(Exception):
+            from gateway.shutdown_flush import flush_pending_to_file
+            flush_pending_to_file(
+                {session_key: state.event for session_key, state in debounce_store.items()},
+                reason="adapter_shutdown_debounce",
+            )
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
                        self._pending_messages, self._active_sessions, self._requeue_counts,
-                       self._text_debounce_store()):
+                       debounce_store):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

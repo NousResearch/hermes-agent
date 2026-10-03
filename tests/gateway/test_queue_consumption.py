@@ -199,6 +199,22 @@ class TestBusyInputModeQueueFifo:
             message_id=f"m-{text}",
         )
 
+    def test_requeue_before_pending_slot_preserves_fifo_order(self):
+        """An older dequeued event stays ahead of the current slot and existing overflow."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:requeue-order"
+        older = self._text_event("older")
+        newer = self._text_event("newer")
+        newest = self._text_event("newest")
+
+        runner._enqueue_fifo(session_key, newer, adapter)
+        runner._enqueue_fifo(session_key, newest, adapter)
+        runner._requeue_before_pending_slot(session_key, older, adapter)
+
+        assert adapter._pending_messages[session_key] is older
+        assert runner._queued_events[session_key] == [newer, newest]
+
+
     def test_rapid_text_followups_are_queued_in_fifo_order(self):
         """Five rapid texts in queue mode must all survive (none silently dropped)."""
         runner, adapter = self._make_runner_and_adapter()
@@ -226,6 +242,28 @@ class TestBusyInputModeQueueFifo:
             text=text, message_type=message_type, source=source,
             media_urls=[path], media_types=[mime], message_id=f"m-{path}",
         )
+
+    def test_prompt_pin_identity_separates_synthetic_from_human_photo(self):
+        """Human photos must not be absorbed by a queued synthetic turn on either merge path."""
+        for merge_path in ("busy_queue", "inbound_photo"):
+            runner, adapter = self._make_runner_and_adapter()
+            session_key = f"telegram:user:prompt-boundary:{merge_path}"
+            synthetic = self._text_event("synthetic")
+            synthetic.message_id = None
+            synthetic.preserve_prompt_pins = True
+            runner._queue_or_replace_pending_event(session_key, synthetic)
+
+            photo = self._media_event("/tmp/human.jpg", "image/jpeg", MessageType.PHOTO)
+            if merge_path == "busy_queue":
+                runner._queue_or_replace_pending_event(session_key, photo)
+            else:
+                runner._hm_merge_pending_for_source(photo.source, session_key, photo)
+
+            assert adapter._pending_messages[session_key] is synthetic
+            assert synthetic.text == "synthetic"
+            assert synthetic.preserve_prompt_pins is True
+            assert runner._queued_events[session_key] == [photo]
+            assert photo.preserve_prompt_pins is False
 
     def test_non_photo_media_followups_each_keep_their_own_fifo_turn(self):
         """Three voice notes are three deliveries — head + two overflow items, never one merged

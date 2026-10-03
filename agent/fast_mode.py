@@ -64,16 +64,26 @@ def begin_turn(agent: Any, conversation_history: Any) -> None:
 
 
 def effective_request_overrides(agent: Any) -> dict[str, Any]:
-    """``agent.request_overrides`` plus the fast override while the window is open, minus
-    ``speed`` for a model this session learned has no fast capacity."""
+    """``agent.request_overrides`` plus the fast override while the window is open (or for a
+    static tier its builder did not pin), minus ``speed`` for a model this session learned has
+    no fast capacity."""
     overrides = dict(getattr(agent, "request_overrides", None) or {})
-    if getattr(agent, "service_tier", None) in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0):
+    tier = getattr(agent, "service_tier", None)
+    window_open = tier in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0)
+    # A static tier whose builder did not pin it (serve/TUI, `-z`, api_server set only
+    # agent.service_tier) is resolved here, route-gated, so it still reaches the wire. A
+    # pinned value (CLI / gateway turn route, TUI config.set) is left untouched.
+    static_unpinned = tier in STATIC_TIERS and not ({"service_tier", "speed"} & overrides.keys())
+    if window_open or static_unpinned:
         from hermes_cli.models import resolve_fast_mode_overrides
         base_url = getattr(agent, "base_url", None)
         if getattr(agent, "api_mode", None) == "anthropic_messages":
             base_url = getattr(agent, "_anthropic_base_url", None) or base_url
         overrides.update(
-            resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url) or {}
+            resolve_fast_mode_overrides(
+                getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url,
+                tier=tier if static_unpinned else None,
+            ) or {}
         )
     if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)

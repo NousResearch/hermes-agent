@@ -511,6 +511,7 @@ def _run_agent(
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
     ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
+    from agent.fast_mode import parse_service_tier
     from hermes_cli.config import load_config
     from hermes_cli.runtime_provider import resolve_runtime_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
@@ -589,6 +590,8 @@ def _run_agent(
             request_overrides=runtime.get("request_overrides"),
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
+            # agent.service_tier, as `hermes chat` reads it (route-gated onto the wire by agent.fast_mode).
+            service_tier=parse_service_tier((cfg.get("agent") or {}).get("service_tier")),
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.

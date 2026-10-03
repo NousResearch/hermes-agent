@@ -180,6 +180,7 @@ class LSPClient:
         }
 
         self._docs: Dict[str, _DocState] = {}  # keyed by absolute path (NOT URI)
+        self._docs_need_evict: bool = False  # a sync insert site asked for a cap pass
         self._state: str = "stopped"
         self._sync_kind: int = 1  # 1=Full, 2=Incremental
         self._stopping: bool = False
@@ -337,6 +338,7 @@ class LSPClient:
         try:
             while (msg := await read_message(self._proc.stdout)) is not None:
                 self._dispatch(msg)
+                await self._drain_docs_evict()
             logger.debug("[%s] server closed stdout cleanly", self.server_id)
         except LSPProtocolError as e:
             logger.warning("[%s] protocol error in reader loop: %s", self.server_id, e)
@@ -563,7 +565,7 @@ class LSPClient:
             return
         diagnostics = params.get("diagnostics") or []
         version = params.get("version")
-        doc = self._docs.setdefault(uri_to_path(params["uri"]), _DocState(version=-1))
+        doc = self._track_doc(uri_to_path(params["uri"]))
         is_seed = self._seed_first_push and not doc.seed_seen
         doc.seed_seen = True
         doc.push = diagnostics if isinstance(diagnostics, list) else []
@@ -627,13 +629,32 @@ class LSPClient:
         )
         return new_version
 
+    def _track_doc(self, path: str) -> "_DocState":
+        """Return the ``_DocState`` for ``path``, creating it (under the cap) if absent.
+
+        Shared by every diagnostic-insert site so none can bypass ``MAX_TRACKED_FILES``.  The
+        creation is synchronous (the caller is a notification handler), so the cap pass it may
+        require is requested here and run by ``_drain_docs_evict`` at the next await point.
+        """
+        doc = self._docs.get(path)
+        if doc is None:
+            doc = self._docs[path] = _DocState(version=-1)
+            self._docs_need_evict = True
+        return doc
+
+    async def _drain_docs_evict(self) -> None:
+        """Run the cap pass a synchronous insert site requested via ``_track_doc``."""
+        if self._docs_need_evict:
+            self._docs_need_evict = False
+            await self._evict_lru_docs()
+
     async def _evict_lru_docs(self) -> None:
         """Drop least-recently-touched documents beyond MAX_TRACKED_FILES; didClose the ones the server
         has open so it releases its mirror too (version -1 entries were never opened)."""
         while len(self._docs) > MAX_TRACKED_FILES:
             old_path, old = next(iter(self._docs.items()))
             del self._docs[old_path]
-            if old.version >= 0:
+            if old.version >= 0 and self.is_running:
                 await self._send_notification("textDocument/didClose", {"textDocument": {"uri": file_uri(old_path)}})
 
     async def save_file(self, path: str) -> None:
@@ -670,9 +691,10 @@ class LSPClient:
         for doc_path, report, tag in reports:
             items = report.get("items") if isinstance(report, dict) else None
             if isinstance(items, list):
-                d = self._docs.setdefault(doc_path, _DocState(version=-1))
+                d = self._track_doc(doc_path)
                 d.pull = items
                 d.pull_version = d.version if tag is None else tag
+        await self._drain_docs_evict()
 
     async def wait_for_diagnostics(self, path: str, version: int, *, mode: str = "document",
                                    timeout: Optional[float] = None) -> bool:

@@ -34,6 +34,7 @@ from hermes_cli.web_server_files import (
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
 )
+from utils import atomic_write_text
 
 router = APIRouter()
 
@@ -830,6 +831,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     ``_fs_path``, the parent must already exist (never build trees), only
     regular files may be replaced, payload size-capped, staged to a sibling
     temp file and ``os.replace``-d so a crash can't truncate the original.
+    Electron writes in place, so the file keeps its mode and owner; the
+    replace must carry them across too, or a saved script loses its exec bit
+    and a 0600 credential file comes back world-readable.
     Stale-on-disk detection is the client's job (re-read before save).
     """
     text = payload.content or ""
@@ -866,15 +870,11 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
 
-    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
     try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
+        atomic_write_text(target, text, preserve_mode=True, create_parent=False)
     except PermissionError:
-        tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=403, detail="File is not writable")
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 

@@ -287,7 +287,8 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  create_parent: bool = True) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -298,7 +299,9 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
     wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
-    also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
+    also fsyncs the resolved target's parent so the rename itself is durable. ``create_parent=False``
+    never builds a missing parent (``mkstemp`` then raises ``FileNotFoundError``) for callers whose
+    contract is "the directory must already exist". The temp file is
     removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
     clean up.
     """
@@ -307,7 +310,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     # would resurrect the profile before the write can fail.
     from hermes_constants import mkdir_under_hermes_home
 
-    mkdir_under_hermes_home(path.parent)
+    if create_parent:
+        mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -337,7 +341,7 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
                       preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
-                      fsync_dir: bool = False) -> None:
+                      fsync_dir: bool = False, create_parent: bool = True) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
@@ -348,7 +352,7 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
                   mode=mode if mode is not None else _mode_for_write(path, create_mode, preserve=preserve_mode),
-                  preserve_owner=preserve_mode, fsync_dir=fsync_dir)
+                  preserve_owner=preserve_mode, fsync_dir=fsync_dir, create_parent=create_parent)
 
 
 def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",

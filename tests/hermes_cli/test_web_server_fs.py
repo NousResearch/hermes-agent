@@ -1,4 +1,5 @@
 import base64
+import stat
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -304,3 +305,36 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("name, mode", [("deploy.sh", 0o755), ("pgpass.conf", 0o600)])
+def test_fs_write_text_keeps_the_saved_file_mode(client, tmp_path, name, mode):
+    """A spot-editor save edits the file; it must not reset its permission bits
+    (a script losing its exec bit, a 0600 credential file turning world-readable)."""
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / name
+    target.write_text("before\n")
+    target.chmod(mode)
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "after\n"})
+
+    assert response.status_code == 200
+    assert target.read_text() == "after\n"
+    assert stat.S_IMODE(target.stat().st_mode) == mode
+    assert [p.name for p in project.iterdir()] == [name]
+
+
+def test_fs_write_text_never_rebuilds_a_parent_deleted_after_the_check(client, tmp_path, monkeypatch):
+    """The save's contract is "the parent must already exist": a directory removed between the
+    existence check and the write fails the save instead of being recreated."""
+    gone = tmp_path / "deleted" / "tree"
+    real_is_dir = Path.is_dir
+    # The check still sees the directory; it is gone by the time the write runs.
+    monkeypatch.setattr(Path, "is_dir", lambda self: self == gone or real_is_dir(self))
+
+    response = client.post("/api/fs/write-text", json={"path": str(gone / "notes.txt"), "content": "x"})
+
+    assert response.status_code >= 400
+    assert not (tmp_path / "deleted").exists()

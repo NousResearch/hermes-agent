@@ -178,6 +178,7 @@ class GatewaySessionCommandsMixin:
             from tools.async_delegation import interrupt_for_session
             interrupt_for_session(session_key=session_key, reason="session_reset",
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
+        await self._interrupt_adapter_activity(session_key, source)
         _reset_process_scoped_tool_state()
 
         new_entry = await self.async_session_store.reset_session(session_key)

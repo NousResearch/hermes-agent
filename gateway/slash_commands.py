@@ -466,14 +466,17 @@ class GatewaySlashCommandsMixin(
         # No running agent anywhere for this scope. Background delegations the session dispatched in an
         # earlier turn still count as "active": stop them; each returns as an interrupted completion.
         from tools.async_delegation import interrupt_for_session
-        if interrupt_for_session(session_key=session_key, reason="stop_command",
-                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
+        interrupted = interrupt_for_session(
+            session_key=session_key, reason="stop_command",
+            parent_session_id=str(getattr(session_entry, "session_id", "") or ""))
+        await self._interrupt_adapter_activity(session_key, source)
+        if interrupted:
             return EphemeralReply(t("gateway.stop.stopped"))
         # A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send.
         # Best-effort clear so /stop always dismisses a phantom "is thinking...". See #32295.
-        adapter = getattr(self, "adapters", {}).get(source.platform)
+        adapter = self._delivery_adapter_for(source)
         try:
             if adapter and hasattr(adapter, "_stop_typing_with_metadata"):
                 await adapter._stop_typing_with_metadata(source.chat_id, self._reply_metadata(event))

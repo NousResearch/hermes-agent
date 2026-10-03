@@ -169,6 +169,37 @@ def test_normalize_rejects_bracket_failures_outside_the_repair_class():
     assert "not valid JSON" in (err or "")
 
 
+def test_normalize_repairs_single_surplus_close_bracket():
+    """Measured on the 0.7.28 upgrade turn (mupgen9imqqtbu, 3/3 attempts): the
+    model emitted a valid batch plus one surplus close bracket before the final
+    close, so bracket counts are off by +1. Dropping the first unmatched closer
+    recovers the payload."""
+    good = json.dumps([
+        {"name": "session_search",
+         "arguments": {"plan": [{"id": "a", "step": "s", "status": "pending"}]}}
+    ])
+    # Measured shape: replace the final "..." with one extra closer pair, so the
+    # tail reads "...}]}]}" — a stray `]` before the batch's closing `]`.
+    mupgen_shape = good[:-1] + "]}"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(mupgen_shape)
+    entries, err = normalize_tool_call_entries({"calls": mupgen_shape})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_does_not_rescue_genuinely_corrupt_payload():
+    """The semantic guard: a payload that parses to a valid list but whose entries
+    are NOT real calls (missing names) must be rejected even though a bracket repair
+    would make it 'valid' as JSON — repairs only accept a real calls batch."""
+    # structurally fine JSON, but entries lack 'name' -> not a calls batch
+    bad = json.dumps([{"arguments": {"x": 1}}])
+    entries, err = normalize_tool_call_entries({"calls": bad})
+    assert entries == []
+    assert "requires a 'name'" in (err or "")
+
+
+
 @pytest.mark.parametrize(
     "bad,expected_fragment",
     [

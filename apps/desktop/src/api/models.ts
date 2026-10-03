@@ -17,9 +17,9 @@ import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_
 // side of that budget).
 const MODEL_INFO_REQUEST_TIMEOUT_MS = 5_000
 
-export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(profile?: ProfileScope): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/model/info',
     timeoutMs: MODEL_INFO_REQUEST_TIMEOUT_MS
   })

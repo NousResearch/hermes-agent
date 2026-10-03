@@ -248,10 +248,13 @@ if [ "$os" != win32 ]; then
 
             if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
                 if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
-                    echo "" >> "$SHELL_CONFIG"
-                    echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
-                    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"
-                    echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                    if { printf '\n# Hermes Agent — ensure ~/.local/bin is on PATH\n%s\n' 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"; } 2>/dev/null; then
+                        echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                    else
+                        # Read-only managed rc (home-manager, nix-darwin): the user adds it.
+                        echo -e "${YELLOW}⚠${NC} Cannot write $SHELL_CONFIG; add ~/.local/bin to PATH in your shell config yourself:"
+                        echo '    export PATH="$HOME/.local/bin:$PATH"'
+                    fi
                 else
                     echo -e "${GREEN}✓${NC} ~/.local/bin already in $SHELL_CONFIG"
                 fi

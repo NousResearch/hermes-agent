@@ -51,14 +51,15 @@ fi
 """
 
 
-def _wire(home: Path, runs: int = 1) -> None:
+def _wire(home: Path, runs: int = 1, shell: str = "/bin/bash") -> str:
     env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS")}
-    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL="/bin/bash",
+    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL=shell,
                NO_COLOR="1", TERM="dumb", CI="true")
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\n" + "wire_shell_path\n" * runs
     result = subprocess.run(["bash", "-c", script], env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
 
 
 def _login_path(home: Path) -> list[str]:
@@ -96,3 +97,27 @@ def test_bash_login_only_user_gets_local_bin(tmp_path):
     home = _home(tmp_path, **{".bash_login": "# mine\n"})
     _wire(home)
     assert str(home / ".local" / "bin") in _login_path(home)
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores file permissions")
+@pytest.mark.parametrize("shell, rc, line", [
+    ("/usr/bin/fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin"'),
+    ("/bin/zsh", ".zshrc", "export PATH="),
+])
+def test_read_only_managed_rc_is_left_alone_and_install_continues(tmp_path, shell, rc, line):
+    """Regression for #15016: home-manager/nix-darwin link the rc to a read-only store file."""
+    store = tmp_path / "store"
+    store.mkdir()
+    managed = store / "rc"
+    managed.write_text("# managed by home-manager\n", encoding="utf-8")
+    managed.chmod(0o444)
+    store.chmod(0o555)
+    home = _home(tmp_path / "home")
+    (home / rc).parent.mkdir(parents=True, exist_ok=True)
+    (home / rc).symlink_to(managed)
+    try:
+        out = _wire(home, shell=shell)
+    finally:
+        store.chmod(0o755)
+    assert managed.read_text(encoding="utf-8") == "# managed by home-manager\n"
+    assert line in out

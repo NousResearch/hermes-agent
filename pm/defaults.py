@@ -3,11 +3,17 @@
 A ``default`` package (see ``Package.default``) joins the installers' PM stage,
 a bare ``hermes pm install`` and ``hermes update`` on every target it builds
 for. The user can decline one (``install.sh --skip-browser`` /
-``--skip-computer-use``, ``install.ps1 -SkipBrowser`` / ``-SkipComputerUse``,
+``--skip-computer-use`` / ``--skip-node``, ``install.ps1 -SkipBrowser`` /
+``-SkipComputerUse`` / ``-SkipNode``,
 ``hermes pm install --without NAME``). The choice
 is recorded per installation beside PM's other install state, so a later
 update or bare install never re-adds it. An explicit
 ``hermes pm install NAME`` clears it.
+
+The Node runtime is a declinable default as one ecosystem: declining ``node``
+also leaves the managed ``npm`` out, because a host that brings its own Node
+(nvm/fnm/system package) runs its own npm too. Resolvers then use the host
+PATH instead of the managed entry (see hermes_constants).
 
 Stdlib-only apart from PM's own modules: the installers run this before any
 application dependency exists.
@@ -20,6 +26,26 @@ from collections.abc import Iterable
 from pathlib import Path
 
 DECLINED_FILENAME = "declined-packages.json"
+
+# The managed Node ecosystem travels as one: a host that brings its own Node
+# runs its own npm too. Declining ``node`` therefore also leaves ``npm`` out.
+NODE_ECOSYSTEM = ("node", "npm")
+
+
+def expand_declined(names: Iterable[str]) -> list[str]:
+    """``--without node`` implies ``--without npm`` (one ecosystem)."""
+    selected = list(dict.fromkeys(names))
+    if "node" in selected and "npm" not in selected:
+        selected.append("npm")
+    return selected
+
+
+def expand_opt_in(names: Iterable[str]) -> list[str]:
+    """Naming either half of the Node ecosystem opts the whole thing back in."""
+    selected = set(names)
+    if selected & set(NODE_ECOSYSTEM):
+        selected |= set(NODE_ECOSYSTEM)
+    return sorted(selected)
 
 
 def declined_path(project_root: Path | None = None) -> Path:
@@ -77,6 +103,9 @@ def default_packages(names: list[str], *, target: str | None = None,
 
     target = current_target() if target is None else target
     refused = declined() if declined_names is None else declined_names
+    # Older records may hold only "node": the ecosystem still travels as one.
+    if "node" in refused and "npm" not in refused:
+        refused = frozenset({*refused, "npm"})
     selected = []
     for name in names:
         try:

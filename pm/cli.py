@@ -356,8 +356,19 @@ def cmd_install(args) -> int:
     names = args.names if args.names or extras else source_install_packages(_lockfile().names())
     without = list(dict.fromkeys(getattr(args, "without", None) or ()))
     if without:
-        from pm.defaults import record_declined
+        from pm.defaults import expand_declined, record_declined
 
+        without = expand_declined(without)
+        if "node" in without:
+            from hermes_constants import verify_host_node
+
+            ok, detail = verify_host_node()
+            if not ok:
+                print(f"✗ --without node needs a usable host Node: {detail}")
+                print("  Install Node via nvm/fnm/system package, then retry; or omit --without node "
+                      "to keep the managed runtime")
+                return 1
+            print(f"✓ using host Node ({detail})", flush=True)
         # Persisted before anything installs: later bare installs and
         # `hermes update` read the same record, so the opt-out sticks.
         record_declined(add=without)
@@ -380,10 +391,19 @@ def cmd_install(args) -> int:
     if _install_names(tool_names, target=cross_target, verify=not trust_recorded):
         return 1
     if args.names and not cross_target:
-        from pm.defaults import record_declined
+        from pm.defaults import expand_opt_in, record_declined
 
         # Naming a declined default is the opt-back-in: updates carry it again.
-        record_declined(remove=args.names)
+        # Naming either half of the Node ecosystem restores both.
+        record_declined(remove=expand_opt_in(args.names))
+    # The Node ecosystem stays fatal when carried: hosts without a host Node
+    # keep the managed runtime exactly as today. Only the browser/computer-use
+    # defaults are warn-only (large, optional, never block the install).
+    node_defaults = [n for n in defaults if n in ("node", "npm")]
+    defaults = [n for n in defaults if n not in ("node", "npm")]
+    if node_defaults and not cross_target and not args.names:
+        if _install_names(node_defaults, verify=not trust_recorded):
+            return 1
     if not cross_target and (not args.names or tools_only):
         from pm.install import activate
 
@@ -797,8 +817,9 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (agent-browser, cua-driver) out of this and every later "
-                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
+                   help="leave an optional default package (agent-browser, cua-driver, node) out of this and every later "
+                        "default install and update; `--without node` also leaves npm out (host provides both); "
+                        "`hermes pm install NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",

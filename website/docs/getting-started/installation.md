@@ -78,9 +78,14 @@ Other optional tools use their feature-specific installation paths.
 
 To leave the browser tools out, pass `--skip-browser` on POSIX or `-SkipBrowser`
 on Windows; for the computer-use driver, `--skip-computer-use` /
-`-SkipComputerUse`. Hermes remembers these choices: later installs and
-`hermes update` do not add them back. Run `hermes pm install agent-browser` or
-`hermes pm install cua-driver` to install them and undo the choice.
+`-SkipComputerUse`; for the managed Node runtime (node + npm),
+`--skip-node` / `-SkipNode` — for hosts that already maintain Node via
+nvm/fnm/system packages. Hermes verifies the host node/npm against the
+checkout's `package.json` engines and resolves node-ecosystem commands
+through your PATH instead of the managed entry. Hermes remembers these
+choices: later installs and `hermes update` do not add them back. Run
+`hermes pm install agent-browser`, `hermes pm install cua-driver`, or
+`hermes pm install node` to install them and undo the choice.
 
 The scripts create a launcher and prepare the data directory. Interactive runs
 also invoke setup and gateway configuration. `--non-interactive` on POSIX, or
@@ -159,7 +164,9 @@ Current first-party installations run on **Python 3.14**. The broader
 run the updater before PM switches them to 3.14; it does not promise current
 runtime support on 3.11–3.13. PM selects the managed tool versions from
 `pm/lock.json`; it does not adopt arbitrary system Node versions as the
-installed runtime.
+installed runtime — unless you opt out with `--skip-node` / `-SkipNode` /
+`hermes pm install --without node`, in which case your host Node (checked
+against `package.json` engines) becomes the runtime.
 
 Source builds can require a native compiler and platform development libraries.
 Building Electron from source adds Node native-module requirements. These

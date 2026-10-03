@@ -649,11 +649,14 @@ def _managed_runtime_path_entries() -> list[str]:
     """
     try:
         import pm
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home, is_node_host_mode
 
-        env = pm.env_for("npm", base_env={"PATH": ""})
-        managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
-        candidates = [*managed, get_hermes_home() / "bin"]
+        if is_node_host_mode():
+            candidates = [get_hermes_home() / "bin"]
+        else:
+            env = pm.env_for("npm", base_env={"PATH": ""})
+            managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
+            candidates = [*managed, get_hermes_home() / "bin"]
         return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []

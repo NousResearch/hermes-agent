@@ -243,7 +243,14 @@ def _finish_oss(hermes_home: str, config: dict, oss_config: dict, env_writes: di
         _write_env(Path(hermes_home) / ".env", env_writes)
     config_path = Path(hermes_home) / "mem0.json"  # merge-write, plain text (platform path uses save_config's 0600 atomic write)
     config_path.write_text(json.dumps({**read_json_or_empty(config_path), "mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config}, indent=2) + "\n", encoding="utf-8")
-    _install_provider_deps(oss_config["llm"]["provider"], oss_config["embedder"]["provider"], oss_config["vector_store"]["provider"])
+    missing = _install_provider_deps(oss_config["llm"]["provider"], oss_config["embedder"]["provider"], oss_config["vector_store"]["provider"])
+    if missing:
+        # Never declare success without the provider SDKs: mem0 prompts
+        # interactively on import failure, which hangs or dies in any
+        # TTY-less process and leaves memory silently disabled (#125234).
+        print(f"\n  Error: provider SDKs missing: {', '.join(missing)}", file=sys.stderr)
+        print("  Install them (`hermes pm install mem0`), then re-run `hermes memory setup`.", file=sys.stderr)
+        raise SystemExit(1)
     if pgvector_config:
         _ensure_pgvector_extension(pgvector_config)
     _activate_provider(config)
@@ -428,12 +435,16 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     _finish_oss(hermes_home, config, oss_config, env_writes, user_id, agent_id, pgvector_config)
 
 
-def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> None:
-    """Point at the pip deps the selected OSS backends need.
+def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> list[str]:
+    """Check the pip deps the selected OSS backends need.
 
     These are third-party backend SDKs (ollama, qdrant-client, ...), not
     hermes dependencies — pm does not install arbitrary specs into the
-    hermes venv. Print the exact command instead."""
+    hermes venv. Returns the missing dist names so the caller can refuse
+    to declare success without them: mem0's factory prompts
+    interactively (``input()``) on import failure, which hangs or dies
+    in any TTY-less process (#125234).
+    """
     deps: set[str] = set()
     for registry, pid in [(LLM_PROVIDERS, llm_id), (EMBEDDER_PROVIDERS, embedder_id),
                           (VECTOR_PROVIDERS, vector_id)]:
@@ -446,10 +457,7 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
 
         if importlib.util.find_spec(dep.replace("-", "_").split("[")[0]) is None:
             missing.append(dep)
-    if missing:
-        print("\n  The selected backends need extra packages:")
-        print(f"    Missing: {', '.join(missing)}")
-        print("  Declare these requirements in the plugin's pyproject.toml, then run `hermes pm install` and restart Hermes.")
+    return missing
 
 
 def _probe(fn, ok: str, fail: str, exc=Exception) -> tuple[bool, str]:

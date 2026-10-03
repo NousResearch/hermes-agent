@@ -280,6 +280,62 @@ class TestContentStructuredArbitration:
         session.call_tool = AsyncMock(return_value=_FakeCallToolResult(content=[_FakeContentBlock("just text")]))
         assert handler({}) == '{"result": "just text"}'
 
+    def test_python_sdk_wrapped_results_forward_one_typed_copy(self, _patch_mcp_server):
+        """Real MCPServer wrappers dedupe without losing scalar types or list boundaries."""
+        from mcp.server import MCPServer
+
+        sdk = MCPServer("wrapped-results")
+
+        @sdk.tool()
+        def text() -> str:
+            return "hi"
+
+        @sdk.tool()
+        def count() -> int:
+            return 42
+
+        @sdk.tool()
+        def names() -> list[str]:
+            return ["ann\nbob", "carol"]
+
+        @sdk.tool()
+        def blob() -> bytes:
+            return b"abc"
+
+        @sdk.tool()
+        def blobs() -> list[bytes]:
+            return [b"a", b"b"]
+
+        expected = {
+            "text": "hi",
+            "count": 42,
+            "names": ["ann\nbob", "carol"],
+            "blob": "abc",
+            "blobs": ["a", "b"],
+        }
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        for tool, value in expected.items():
+            session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool(tool, {})))
+            assert json.loads(handler({})) == {"result": value}
+
+    def test_wrapper_projection_keeps_distinct_or_type_different_data(self, _patch_mcp_server):
+        """Status text, extra blocks, and JSON type mismatches never trigger wrapper collapse."""
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        cases = (
+            ([_FakeContentBlock("2 names")], {"result": ["ann", "bob"]}),
+            ([_FakeContentBlock('{"enabled": 1}')], {"enabled": True}),
+            ([_FakeContentBlock("0")], {"result": False}),
+            ([_FakeContentBlock("ann"), _FakeContentBlock("status")], {"result": "ann"}),
+        )
+        for content, structured in cases:
+            session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
+                content=content, structuredContent=structured,
+            ))
+            data = json.loads(handler({}))
+            assert data["structuredContent"] == structured
+
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""
         session = _patch_mcp_server

@@ -233,3 +233,42 @@ class TestCatalogIngestValidation:
             ],
         )
         assert profile.fetch_models() == ["b", "a", "c"]
+
+
+class TestDiskMirror:
+    """First lookup after a restart: memory cold, the per-home disk mirror present."""
+
+    def _restart_with_mirror(self, monkeypatch, tmp_path, payload):
+        import json
+
+        profile, mod = _router_plugin_module()
+        path = tmp_path / "router_catalog.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        warms = []
+        monkeypatch.setattr(mod, "_disk_path", lambda: path)
+        monkeypatch.setattr(mod, "_efforts_cache", None)
+        monkeypatch.setattr(mod, "_disk_checked", False)
+        monkeypatch.setattr(mod, "_warm_efforts_async", lambda: warms.append(True))
+        return profile, warms
+
+    def test_fresh_mirror_serves_the_clamp_without_a_refresh(self, monkeypatch, tmp_path):
+        import time
+
+        profile, warms = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": time.time(), "efforts": {"grok-4.6": ["low", "high"]}})
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low", "high")
+        assert warms == []
+
+    def test_stale_mirror_is_served_and_refreshed_in_the_background(self, monkeypatch, tmp_path):
+        import time
+
+        profile, warms = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": time.time() - 3 * 24 * 3600, "efforts": {"grok-4.6": ["low"]}})
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low",)
+        assert warms == [True]
+
+    def test_unparseable_timestamp_counts_as_stale(self, monkeypatch, tmp_path):
+        profile, warms = self._restart_with_mirror(
+            monkeypatch, tmp_path, {"ts": "not-a-number", "efforts": {"grok-4.6": ["low"]}})
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low",)
+        assert warms == [True]

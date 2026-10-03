@@ -3212,6 +3212,10 @@ class _StreamingCall(StreamingWaitMonitor):
                     self.agent._abort_request_openai_client(self._attempt_request_client, reason=reason)
 
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
+            # Some OpenAI-compatible relays emit ``data: null`` SSE keepalives.
+            # The SDK exposes those frames as None rather than a chunk object.
+            if chunk is None:
+                continue
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
                 _close_half_read_stream("interrupt_stream_close_failed")

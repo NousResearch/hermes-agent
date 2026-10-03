@@ -89,7 +89,7 @@ class TestFallbackChainAdvancement:
 
 
     @patch("time.monotonic", return_value=1000.0)
-    def test_records_sequential_switches_in_order(self, _clock):
+    def test_emits_sequential_switches_in_order(self, _clock):
         agent = _make_agent(
             fallback_model=[
                 {"provider": "zai", "model": "glm-5.2"},
@@ -98,6 +98,8 @@ class TestFallbackChainAdvancement:
         )
         agent.model = "gpt-5.6-sol"
         agent.provider = "openai-codex"
+        emitted = []
+        agent._emit_status = emitted.append
         clients = [
             _mock_client(base_url="https://api.z.ai/v1"),
             _mock_client(base_url="https://api.deepseek.com/v1"),
@@ -109,12 +111,12 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
             assert agent._try_activate_fallback(FailoverReason.overloaded) is True
 
-        # One user-visible notice per switch, in order, each naming from/to.
-        notices = agent._pending_fallback_notice
-        assert len(notices) == 2
-        assert "gpt-5.6-sol" in notices[0] and "glm-5.2" in notices[0]
-        assert "glm-5.2" in notices[1] and "deepseek-v4-flash" in notices[1]
-        assert agent._retry_status_buffer[-1] == ("status", notices[1])
+        # One user-visible notice per switch, in order, each naming from/to — emitted at the
+        # switch, with nothing left pending for after the answer.
+        assert len(emitted) == 2
+        assert "gpt-5.6-sol" in emitted[0] and "glm-5.2" in emitted[0]
+        assert "glm-5.2" in emitted[1] and "deepseek-v4-flash" in emitted[1]
+        assert not getattr(agent, "_pending_fallback_notice", None)
 
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""

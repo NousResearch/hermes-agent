@@ -249,6 +249,24 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_id, extra, dispatched", [
+        ("C999", {"allowed_channels": "C123"}, False),   # outside allowed_channels
+        ("G123", {"allowed_channels": "C123"}, False),   # an MPIM obeys channel gating too
+        ("D123", {"allowed_channels": "C123"}, True),    # a 1:1 DM is exempt
+        ("C123", {"allowed_channels": "C123"}, True),
+        ("C123", {"ignored_channels": "C123"}, False),   # ignored channels are never touched
+    ])
+    async def test_slash_command_obeys_message_channel_gates(
+            self, adapter, channel_id, extra, dispatched):
+        """allowed_channels / ignored_channels gate a slash command like a message in the same
+        conversation: every conversation but a 1:1 DM."""
+        adapter.config.extra.update(extra)
+        await adapter._handle_slash_command(
+            {"text": "hello", "user_id": "U123", "channel_id": channel_id, "team_id": "T123"})
+
+        assert adapter.handle_message.await_count == (1 if dispatched else 0)
+
 
 class TestSlackWorkspaceCollisionIsolation:
     @pytest.mark.asyncio

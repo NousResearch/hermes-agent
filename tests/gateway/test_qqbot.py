@@ -1253,3 +1253,144 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+class TestListenLoopExtendedReconnect:
+    """Regression: ``_listen_loop`` must NOT exit permanently after
+    ``MAX_RECONNECT_ATTEMPTS`` close events.  Previously the three branches
+    at ``adapter.py:378/396/408`` called ``self._mark_disconnected(); return``,
+    which silently killed the bot after 100 consecutive failures and required
+    a manual restart (#21851).
+
+    The fix caps ``backoff_idx`` at ``MAX_RECONNECT_ATTEMPTS`` and ``continue``s
+    the loop instead of returning.  These tests pin the new behaviour on all
+    three branches."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def _drive_loop_until_cancelled(self, adapter, close_code, *, max_iterations):
+        """Run ``_listen_loop`` with every blocking call stubbed out.  Mock
+        ``_read_events`` to raise ``QQCloseError(close_code)`` ``max_iterations``
+        times then ``asyncio.CancelledError`` so the loop exits cleanly.  Returns
+        ``(iterations_seen, reconnect_args)`` where ``reconnect_args`` is the
+        list of ``backoff_idx`` values passed to ``_reconnect`` (a probe for
+        whether the cap actually fires)."""
+        from gateway.platforms.qqbot.adapter import QQCloseError
+
+        seen = {"n": 0, "reconnect_args": []}
+
+        async def fake_read_events():
+            seen["n"] += 1
+            if seen["n"] > max_iterations:
+                raise asyncio.CancelledError()
+            raise QQCloseError(close_code, "stub")
+
+        async def fake_reconnect(backoff_idx):
+            seen["reconnect_args"].append(backoff_idx)
+            # Returning False bumps backoff_idx in the outer loop; True would
+            # reset it.  Stay in the failure path so backoff_idx keeps growing
+            # toward MAX_RECONNECT_ATTEMPTS and beyond.
+            return False
+
+        async def fake_sleep(_delay):
+            return None
+
+        # QQBot's _listen_loop also reaches for _mark_transport_disconnected,
+        # _fail_pending, _set_fatal_error on the close-error path.  Stub them
+        # so the test does not need a real gateway socket.
+        adapter._read_events = fake_read_events
+        adapter._reconnect = fake_reconnect
+        adapter._mark_transport_disconnected = lambda: None
+        adapter._fail_pending = lambda _reason: None
+        # 4008 has a special branch; stub asyncio.sleep at module level so
+        # the rate-limit wait is also a no-op.
+        # Patch QUICK_DISCONNECT_THRESHOLD to 0 so the quick-disconnect counter
+        # (which would otherwise return after 3 iterations and mask the bug
+        # we're testing) never fires.
+        with mock.patch("asyncio.sleep", fake_sleep), \
+             mock.patch("gateway.platforms.qqbot.adapter.QUICK_DISCONNECT_THRESHOLD", 0):
+            try:
+                asyncio.run(adapter._listen_loop())
+            except asyncio.CancelledError:
+                pass
+
+        return seen["n"], seen["reconnect_args"]
+
+    def test_listen_loop_continues_past_max_attempts_on_4008(self):
+        """The 4008 (rate-limited) branch used to ``return`` after MAX
+        attempts.  After the fix, the loop must keep running and the cap must
+        fire so the bot survives long outages."""
+        from gateway.platforms.qqbot.constants import MAX_RECONNECT_ATTEMPTS
+
+        adapter = self._make_adapter()
+        adapter._running = True
+        iterations, reconnect_args = self._drive_loop_until_cancelled(
+            adapter, close_code=4008, max_iterations=MAX_RECONNECT_ATTEMPTS + 5,
+        )
+        # We did NOT exit early -- the loop only stopped because _read_events
+        # raised CancelledError after ``max_iterations``.
+        assert iterations >= MAX_RECONNECT_ATTEMPTS + 5
+        # Once backoff_idx reaches MAX, every subsequent reconnect call must
+        # see ``MAX_RECONNECT_ATTEMPTS`` (the cap), not a growing value.
+        later = [b for b in reconnect_args if b >= MAX_RECONNECT_ATTEMPTS]
+        assert later, "expected at least one reconnect call past the cap"
+        assert max(later) == MAX_RECONNECT_ATTEMPTS
+
+    def test_listen_loop_continues_past_max_attempts_on_generic_close(self):
+        """The generic QQCloseError branch (after the 4004/4006/4008 special
+        cases) had the same ``return`` bug.  Cover it with close code 4003
+        (not in any special set: not fatal, not rate-limited, not an invalid
+        token, not a session-reset code) so the generic branch is exercised."""
+        from gateway.platforms.qqbot.constants import MAX_RECONNECT_ATTEMPTS
+
+        adapter = self._make_adapter()
+        adapter._running = True
+        iterations, reconnect_args = self._drive_loop_until_cancelled(
+            adapter, close_code=4003, max_iterations=MAX_RECONNECT_ATTEMPTS + 5,
+        )
+        assert iterations >= MAX_RECONNECT_ATTEMPTS + 5
+        later = [b for b in reconnect_args if b >= MAX_RECONNECT_ATTEMPTS]
+        assert later, "expected at least one reconnect call past the cap"
+        assert max(later) == MAX_RECONNECT_ATTEMPTS
+
+    def test_listen_loop_continues_past_max_attempts_on_exception(self):
+        """The bare-``Exception`` handler had the same ``return`` bug for
+        non-QQCloseError failures (network blips, JSON decode errors, ...)."""
+        from gateway.platforms.qqbot.constants import MAX_RECONNECT_ATTEMPTS
+
+        adapter = self._make_adapter()
+
+        async def fake_read_events():
+            fake_read_events.n += 1
+            if fake_read_events.n > MAX_RECONNECT_ATTEMPTS + 5:
+                raise asyncio.CancelledError()
+            raise RuntimeError("stub network blip")
+        fake_read_events.n = 0
+
+        async def fake_reconnect(backoff_idx):
+            fake_reconnect.calls.append(backoff_idx)
+            return False
+        fake_reconnect.calls = []
+
+        async def fake_sleep(_delay):
+            return None
+
+        adapter._read_events = fake_read_events
+        adapter._reconnect = fake_reconnect
+        adapter._mark_transport_disconnected = lambda: None
+        adapter._fail_pending = lambda _reason: None
+        adapter._running = True
+
+        with mock.patch("asyncio.sleep", fake_sleep), \
+             mock.patch("gateway.platforms.qqbot.adapter.QUICK_DISCONNECT_THRESHOLD", 0):
+            try:
+                asyncio.run(adapter._listen_loop())
+            except asyncio.CancelledError:
+                pass
+
+        assert fake_read_events.n >= MAX_RECONNECT_ATTEMPTS + 5
+        later = [b for b in fake_reconnect.calls if b >= MAX_RECONNECT_ATTEMPTS]
+        assert later, "expected at least one reconnect call past the cap"
+        assert max(later) == MAX_RECONNECT_ATTEMPTS
+

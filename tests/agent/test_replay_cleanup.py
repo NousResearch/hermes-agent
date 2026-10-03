@@ -85,13 +85,22 @@ def test_sanitize_replay_history_combines_both():
     assert out[-1] == _user("second")
 
 
-def test_confirmation_expiry_preserves_mixed_summary_context():
-    content = "Reference: the docs mention confirm reboot. Live request: inspect the logs."
-    out = strip_stale_dangerous_confirmations(
-        [{"role": "user", "content": content, "timestamp": 1_000.0}],
-        now=1_120.0,
+def _summary_carrier(reference, live="", *, force_user_leading=True):
+    from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+
+    compressor = object.__new__(ContextCompressor)
+    compressor._summary_has_user_turn = True
+    row = {"role": "user", "content": live, "timestamp": 1_000.0}
+    compressor._merge_summary_into_tail_row(
+        row, SUMMARY_PREFIX + reference, "user", force_user_leading,
     )
-    assert "Reference:" in out[0]["content"]
+    return row
+
+
+def test_confirmation_expiry_preserves_mixed_summary_context():
+    row = _summary_carrier("the docs mention confirm reboot.", "Live request: inspect the logs.")
+    out = strip_stale_dangerous_confirmations([row], now=1_120.0)
+    assert "the docs mention" in out[0]["content"]
     assert "Live request: inspect the logs." in out[0]["content"]
     assert "confirm reboot" not in out[0]["content"]
     assert "EXPIRED" in out[0]["content"]
@@ -132,10 +141,9 @@ def test_confirmation_expiry_preserves_benign_reference_and_live_context():
         "Reference: the docs mention confirm reboot. Budget is 25000. Live request: do not restart anything; summarize the logs.",
     ]
     for content in cases:
-        out = strip_stale_dangerous_confirmations(
-            [{"role": "user", "content": content, "timestamp": 1_000.0}],
-            now=1_120.0,
-        )[0]["content"]
+        reference, live = content.split(" Live request: ", 1)
+        row = _summary_carrier(reference, "Live request: " + live)
+        out = strip_stale_dangerous_confirmations([row], now=1_120.0)[0]["content"]
         assert "EXPIRED" in out
         assert "Budget is 25000." in out
         assert "Live request:" in out

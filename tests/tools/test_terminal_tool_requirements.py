@@ -113,6 +113,35 @@ class TestCheckFnTransientFailureSuppression:
         # Different fn so last-good for `good` doesn't apply; bad has no success.
         assert reg._check_fn_cached(bad) is False
 
+    def test_grace_verdict_is_cached_for_a_short_reprobe_interval(self, monkeypatch):
+        """#128836: a failing probe inside the grace window is re-probed on a short
+        interval, not once per lookup; the cached True never outlives the window."""
+        import tools.registry as reg
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            return calls["n"] == 1  # healthy once, then failing
+
+        t = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
+
+        assert reg._check_fn_cached(flaky) is True  # success, cached for the TTL
+        t["now"] += reg._CHECK_FN_TTL_SECONDS + 1  # expire the success row
+        assert reg._check_fn_cached(flaky) is True  # first failure -> grace, cached briefly
+        for _ in range(10):
+            assert reg._check_fn_cached(flaky) is True  # served from the re-probe cache
+        assert calls["n"] == 2  # the initial success probe + one grace probe
+        # Just past the re-probe interval the probe runs again (bounded rate).
+        t["now"] += reg._CHECK_FN_REPROBE_SECONDS + 1
+        assert reg._check_fn_cached(flaky) is True
+        assert calls["n"] == 3
+        # Past the grace window the failure is honored: no stale True survives.
+        t["now"] = 1000.0 + reg._CHECK_FN_TTL_SECONDS + 1 + reg._CHECK_FN_FAILURE_GRACE_SECONDS + 1
+        assert reg._check_fn_cached(flaky) is False
+
+
 
 
     def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):

@@ -29,7 +29,8 @@ from tools.approval_context import (
     _tirith_fail_open, get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_dangerous_commands,
+    detect_hardline_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -634,6 +635,16 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
+def _dangerous_matches(command: str) -> list:
+    """Every ``(pattern_key, description)`` the command trips. Approvals are keyed per pattern, so
+    each one has to be approved on its own; the first comes from ``detect_dangerous_command``."""
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous:
+        return []
+    return [(pattern_key, description)] + [
+        match for match in detect_dangerous_commands(command) if match[0] != pattern_key]
+
+
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow.
 
@@ -650,8 +661,9 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if is_dangerous and not _is_permanently_approved(pattern_key):
+    unapproved = [m for m in _dangerous_matches(command) if not _is_permanently_approved(m[0])]
+    if unapproved:
+        pattern_key, description = unapproved[0]
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
             result.update(pattern_key=pattern_key, description=description)
@@ -1090,9 +1102,11 @@ def check_dangerous_command(command: str, env_type: str,
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if not is_dangerous:
+    session_key = get_current_session_key()
+    unapproved = [m for m in _dangerous_matches(command) if not is_approved(session_key, m[0])]
+    if not unapproved:
         return _approved()
+    pattern_key, description = unapproved[0]
     return _run_approval_gate(
         pattern_key=pattern_key, description=description, display_target=command, approval_callback=approval_callback,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
@@ -1203,7 +1217,6 @@ def check_all_command_guards(command: str, env_type: str,
     # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
     # approval flow (block used to be a hard stop) so users can inspect the findings and approve.
     tirith_result = _tirith_scan(command)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     warnings = []
     session_key = get_current_session_key()
     if tirith_result["action"] in {"block", "warn"}:
@@ -1212,8 +1225,9 @@ def check_all_command_guards(command: str, env_type: str,
         tirith_key = f"tirith:{rule_id}"
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
-    if is_dangerous and not is_approved(session_key, pattern_key):
-        warnings.append((pattern_key, description, False))
+    for pattern_key, description in _dangerous_matches(command):
+        if not is_approved(session_key, pattern_key):
+            warnings.append((pattern_key, description, False))
     if not warnings:
         return _approved()
 

@@ -277,7 +277,8 @@ def _external_read_only_message(skill_name: str) -> str:
 
 def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> bool:
     """Agent-created: yes. Bundled: only with ``curator.prune_builtins``. Hub / external-dir / protected built-ins:
-    never (external owner). Org-shared skills are eligible here but protected from ARCHIVE/DELETE elsewhere."""
+    never (external owner). Org-shared mirror skills (``skills/_org``) get no special treatment in core: they are
+    eligible like any other local skill (an installed Skill Sync plugin may add its own protection)."""
     if ((skill_path is not None and is_external_skill_path(skill_path)) or is_protected_builtin(skill_name)
             or is_hub_installed(skill_name)):
         return False

@@ -437,9 +437,9 @@ All four skills appear in your skill index. If you create a new skill called `my
 
 ## Organisation-shared skills (`skills/_org/`)
 
-Skills an organisation shares live in a read-only-by-convention mirror at `~/.hermes/skills/_org/<org_id>/`. Core only reads it: skills there load under their bare names, are labelled `[org-shared]` in the skills index (a name that clashes with a personal skill lists both sides), open in `skill_view` with a provenance note, and can be edited in place like any other skill. A mirror loads only while `skills/_org/.active_org` names its org, so a stale mirror from another organisation never resolves.
+Skills an organisation shares live in a mirror at `~/.hermes/skills/_org/<org_id>/`. Core gives the mirror no special protection: skills there load under their bare names, are labelled `[org-shared]` in the skills index (a name that clashes with a personal skill lists both sides), open in `skill_view` with a provenance note, and can be edited in place like any other local skill. A mirror loads only while `skills/_org/.active_org` names its org, so a stale mirror from another organisation never resolves.
 
-Core never writes the mirror. **Skill Sync** (`hermes sync`: personal sync across your devices, plus pulling and proposing your organisation's shared skills) is a separately installed private plugin, not part of Hermes core: `hermes plugins install https://github.com/NousResearch/hermes-skill-sync` (needs GitHub access to that repository), then `hermes plugins enable skill-sync`. It keeps reading the same `sync:` config keys and `HERMES_SYNC_*` variables, and pulls on the plugin `on_maintenance_tick` hook ([Hooks](hooks.md#on_maintenance_tick)).
+Core never writes the mirror. **Skill Sync** (`hermes sync`: personal sync across your devices, plus pulling and proposing your organisation's shared skills) is a separate plugin, not part of Hermes core. It is available to Nous organization accounts: install it with the install command you are given, then `hermes plugins enable skill-sync`. It keeps reading the same `sync:` config keys and `HERMES_SYNC_*` variables, and pulls on the plugin `on_maintenance_tick` hook ([Hooks](hooks.md#on_maintenance_tick)).
 
 ## Redirecting Skill Creation (`skills.create_dir`)
 

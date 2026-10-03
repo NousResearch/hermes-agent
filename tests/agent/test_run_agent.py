@@ -2257,6 +2257,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("manage_catalog", {"action": "search", "query": "blender"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
+        ("delegate_tool_reply", {"content": "Explicit child result"}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)

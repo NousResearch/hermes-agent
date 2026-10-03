@@ -277,6 +277,11 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    # Registry dispatch has no executing-agent reference; both tool paths use this table.
+    "delegate_tool_reply": _tool(
+        "tools.delegate_tool_reply", "delegate_tool_reply", ("content", "content", ""),
+        parent_agent=lambda agent, ctx: agent,
+    ),
 }
 
 

@@ -324,6 +324,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return failed(f"command {spec.command!r} cannot be parsed: {exc}")
     if not argv:
         return failed("empty command")
+    missing_script = _missing_script(argv)
+    if missing_script is not None:
+        return failed(f"hook script missing: {missing_script}")
     t0 = time.monotonic()
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
@@ -607,6 +610,65 @@ def revoke(command: str) -> int:
 
 
 _SCRIPT_EXTENSIONS: Tuple[str, ...] = (".sh", ".bash", ".zsh", ".fish", ".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts")
+_INTERPRETER_NAMES = {"bash", "dash", "fish", "ksh", "lua", "node", "perl", "pypy", "pypy3", "python", "ruby", "sh", "zsh"}
+# Options whose following token is an option value rather than the interpreter script.
+_INTERPRETER_OPTIONS_WITH_VALUES = {
+    "bash": {"--debugger", "--init-file", "--rcfile", "-O", "-o"},
+    "node": {"--import", "--loader", "--require", "-e", "-r"},
+    "python": {"--check-hash-based-pycs", "-W", "-X"},
+}
+_CODE_OPTIONS = {"bash": {"-c", "--command"}, "node": {"--eval", "-e"}, "python": {"-c"}}
+
+
+def _interpreter_script_argument(argv: List[str]) -> Optional[str]:
+    """Return the interpreter's positional script, not later data/output arguments."""
+    if not argv:
+        return None
+    executable = os.path.basename(argv[0]).lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    if executable == "env":
+        index = 1
+        while index < len(argv) and (argv[index] == "-i" or argv[index].startswith("-") or "=" in argv[index]):
+            index += 1
+        return _interpreter_script_argument(argv[index:]) if index < len(argv) else None
+    if executable not in _INTERPRETER_NAMES and not executable.startswith(("python", "pypy")):
+        return None
+    family = "python" if executable.startswith(("python", "pypy")) else executable
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if arg.startswith("-"):
+            if arg in _CODE_OPTIONS.get(family, set()) or any(
+                arg.startswith(option) and arg != option for option in _CODE_OPTIONS.get(family, set())
+            ):
+                return None
+            if arg in _INTERPRETER_OPTIONS_WITH_VALUES.get(family, set()):
+                index += 2
+            else:
+                index += 1
+            continue
+        return arg
+    return None
+
+
+def _missing_script(argv: List[str]) -> Optional[str]:
+    """Return a missing absolute *interpreter script*, if the command names one.
+
+    Only the interpreter's positional script is checked.  A later flag value or
+    output path may legitimately end in ``.py``/``.sh`` and must not prevent a
+    valid command from running. Relative paths are intentionally left to the
+    child because their resolution depends on its working directory.
+    """
+    arg = _interpreter_script_argument(argv)
+    if arg is None:
+        return None
+    path = os.path.expandvars(arg)
+    if path.lower().endswith(_SCRIPT_EXTENSIONS) and os.path.isabs(path) and not os.path.exists(path):
+        return path
+    return None
 
 
 def _command_script_path(command: str) -> str:

@@ -627,6 +627,52 @@ class TestFailSemanticsEndToEnd:
             "action": "block", "message": "rm -rf is not permitted",
         }
 
+    def test_missing_interpreter_script_fails_open(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f"python {tmp_path / 'gone.py'}",
+        )
+        result = shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "ls"})
+        assert result is None
+
+    def test_script_extension_in_non_interpreter_output_path_is_ignored(self, tmp_path):
+        output = tmp_path / "result.py"
+        assert shell_hooks._missing_script(["curl", "-s", "-o", str(output), "https://example.test"]) is None
+
+    @pytest.mark.platforms("linux")
+    def test_script_extension_in_later_flag_argument_does_not_skip_hook(self, tmp_path):
+        marker = tmp_path / "ran"
+        script = _write_script(
+            tmp_path, "hook.sh",
+            f"#!/usr/bin/env bash\ntouch {marker}\nprintf '{{}}\\n'\n",
+        )
+        output = tmp_path / "result.py"
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f"bash {script} --out {output}",
+        )
+        assert shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "ls"}) is None
+        assert marker.exists()
+
+    def test_missing_interpreter_script_still_detected_before_later_path(self, tmp_path):
+        missing = tmp_path / "gone.py"
+        output = tmp_path / "result.py"
+        assert shell_hooks._missing_script(["python", str(missing), "--out", str(output)]) == str(missing)
+
+    def test_node_option_value_is_not_treated_as_script(self, tmp_path):
+        preload = tmp_path / "preload.js"
+        assert shell_hooks._missing_script(["node", "--require", str(preload)]) is None
+
+    def test_missing_interpreter_script_honors_fail_closed(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f"python {tmp_path / 'gone.py'}",
+            fail_closed=True,
+        )
+        result = shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "ls"})
+        assert result is not None and result["action"] == "block"
+        assert "hook script missing" in result["message"]
+
     def test_fail_closed_missing_command_blocks(self, tmp_path):
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call",

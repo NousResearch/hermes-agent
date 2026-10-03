@@ -2,10 +2,11 @@ import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
-import { formatTimelineRange } from './timestamp'
+import { formatMessageTimestamp, formatTimelineClock, formatTimelineDuration } from './timestamp'
 
 const preciseDateTime = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
@@ -33,12 +34,15 @@ const unixDate = (value: unknown): Date | null => {
 export const TimelineTimestamp: FC<{
   className?: string
   completedAt?: number
+  /** Message rows read "Today, 1:02 PM"; event rows read as a duration. */
+  friendly?: boolean
   timestamp?: number
-}> = ({ className, completedAt, timestamp }) => {
+}> = ({ className, completedAt, friendly = false, timestamp }) => {
   // One config key everywhere (#41531): `display.timestamps` in config.yaml
   // gates transcript timestamps here exactly as it gates the classic CLI's
   // [HH:MM] labels. Display-only, so toggling never touches model context.
   const enabled = useStore($displayTimestamps)
+  const { t } = useI18n()
   const started = unixDate(timestamp)
 
   if (!enabled || !started || !validUnixSeconds(timestamp)) {
@@ -48,8 +52,16 @@ export const TimelineTimestamp: FC<{
   const completed = validUnixSeconds(completedAt) && completedAt > timestamp ? unixDate(completedAt) : null
 
   const validCompletedAt = completed && validUnixSeconds(completedAt) ? completedAt : undefined
-  const startLabel = formatTimelineRange(timestamp, undefined)
-  const completedLabel = validCompletedAt === undefined ? '' : formatTimelineRange(validCompletedAt, undefined)
+
+  // The default label, not the debug one (#103608): a friendly day+clock for a
+  // message, the duration for a settled event — `11:12:34.809 AM → 11:12:55.905
+  // AM` was a range printed at reply weight for what is one number — and a
+  // plain clock otherwise. The exact boundaries stay in the tooltip below.
+  const label = friendly
+    ? formatMessageTimestamp(started, t.assistant.thread)
+    : validCompletedAt === undefined
+      ? formatTimelineClock(timestamp)
+      : formatTimelineDuration(timestamp, validCompletedAt)
 
   const title = completed
     ? `${preciseDateTime.format(started)} → ${preciseDateTime.format(completed)}`
@@ -65,13 +77,7 @@ export const TimelineTimestamp: FC<{
       data-slot="timeline-timestamp"
       title={title}
     >
-      <time dateTime={started.toISOString()}>{startLabel}</time>
-      {completed && validCompletedAt !== undefined && (
-        <>
-          {' → '}
-          <time dateTime={completed.toISOString()}>{completedLabel}</time>
-        </>
-      )}
+      <time dateTime={started.toISOString()}>{label}</time>
     </span>
   )
 }
@@ -114,5 +120,5 @@ export const MessageTimelineTimestamp: FC<{
     return null
   }
 
-  return <TimelineTimestamp className={className} completedAt={completedAt} timestamp={timestamp} />
+  return <TimelineTimestamp className={className} completedAt={completedAt} friendly timestamp={timestamp} />
 }

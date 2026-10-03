@@ -168,6 +168,25 @@ def _child_compression_cap_tokens(raw) -> "int | None":
     return int(raw)
 
 
+# A child cannot resume after its own budget runs out (unlike a session, which keeps going after
+# the global agent.budget_warning_ratio notice), so it still gets a checkpoint notice with neither
+# knob set — mirroring the kanban-worker 0.9 default in turn_iteration_prep.py.
+_CHILD_BUDGET_WARNING_RATIO_DEFAULT = 0.8
+
+
+def _apply_child_budget_warning_ratio(child, delegation_cfg: dict) -> None:
+    """``delegation.budget_warning_ratio`` overrides the ``agent:`` knob for children; with
+    neither set, fall back to ``_CHILD_BUDGET_WARNING_RATIO_DEFAULT`` instead of leaving children
+    with no checkpoint notice at all (the common case before this knob existed)."""
+    from agent.iteration_budget import normalize_budget_warning_ratio
+
+    explicit = normalize_budget_warning_ratio((delegation_cfg or {}).get("budget_warning_ratio"))
+    if explicit is not None:
+        child.budget_warning_ratio = explicit
+    elif getattr(child, "budget_warning_ratio", None) is None:
+        child.budget_warning_ratio = _CHILD_BUDGET_WARNING_RATIO_DEFAULT
+
+
 def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
     (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
@@ -299,6 +318,7 @@ def _build_child_agent(
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
+    _apply_child_budget_warning_ratio(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:

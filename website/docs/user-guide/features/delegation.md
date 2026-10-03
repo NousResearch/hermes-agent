@@ -351,6 +351,16 @@ delegation:
 
 A child that exhausts its budget returns with `exit_reason: max_iterations` and `truncated: true`, so the parent can tell a budget stop from a completed task.
 
+### Budget Checkpoint Notice
+
+A child that is about to exhaust its iteration budget gets a one-time notice telling it to write any durable artifacts to disk and finish its summary now, since it cannot be resumed after this call returns (unlike a session, which keeps going after `agent.budget_warning_ratio`'s "checkpoint, then continue" notice). It applies at 0.8 × `max_iterations` by default; set `delegation.budget_warning_ratio` to override that ratio for children only — parent sessions and Kanban workers are unaffected:
+
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  budget_warning_ratio: 0.7   # null disables the override and falls back to the 0.8 default
+```
+
 ## Child Timeout
 
 By default there is **no wall-clock timeout** on subagents. Children fail only from what they're actually doing — API errors, tool errors, or hitting their iteration budget — never from a delegation-level stopwatch. Earlier releases shipped a hard cap (300s, later 600s), which kept killing legitimately busy children mid-task: deep code reviews, large research fan-outs, and slow reasoning models routinely need more than 10 minutes while making steady progress the whole time.
@@ -634,6 +644,7 @@ error.
 # In ~/.hermes/config.yaml
 delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
+  # budget_warning_ratio: 0.8               # Checkpoint-notice ratio for children (default: 0.8; null falls back to the default)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)

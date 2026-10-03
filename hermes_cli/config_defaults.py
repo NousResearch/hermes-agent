@@ -1362,6 +1362,11 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
+        # Iteration-budget checkpoint notice for children, as a ratio of max_iterations. Overrides
+        # agent.budget_warning_ratio for children only (parent sessions and kanban workers keep
+        # reading the agent: knob); null = no override, and children still default to 0.8 instead
+        # of getting no notice at all.
+        "budget_warning_ratio": None,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
         # summary is sized to the parent's remaining context headroom; trimmed text spills to
         # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing

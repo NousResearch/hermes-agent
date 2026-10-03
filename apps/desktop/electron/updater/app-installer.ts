@@ -135,9 +135,19 @@ export class AppInstallerStrategy {
       }
     }
 
-    if (!feedBaseUrl && !sourceUri) {
+    // Gate on `feed`, not `feedBaseUrl`: feedBaseUrl also comes from config.yaml without any channel
+    // target (createNativePackagedStrategy), so it does not mean "there is a channel to update from".
+    // Without a feed, ask the OS checker, and honour its `available: false` instead of handing off to
+    // App Installer with no update and no source URI.
+    if (!feed && !sourceUri) {
       const { code, stdout } = await this.deps.run(this.deps.python, this.deps.module)
-      sourceUri = parseCheckOutput(code, stdout).sourceUri
+      const check = parseCheckOutput(code, stdout)
+
+      if (check.available === false) {
+        return { ok: true, mechanism: this.mechanism }
+      }
+
+      sourceUri = check.sourceUri
 
       if (sourceUri) {
         channelPublicBase(sourceUri)

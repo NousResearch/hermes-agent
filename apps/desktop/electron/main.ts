@@ -4930,7 +4930,12 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // returns false so the caller falls through to its next recovery path
   // instead of quitting into nothing.
   const dwellStartedAt = Date.now()
-  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS, {
+    requireReady: () => {
+      const marker = readLiveUpdateMarker(HERMES_HOME)
+      return Boolean(marker && marker.pid !== child.pid)
+    }
+  })
 
   if (!handoffOutcome.ok) {
     rememberLog(`[bootstrap] recovery hand-off not viable, staying alive: ${handoffOutcome.message}`)

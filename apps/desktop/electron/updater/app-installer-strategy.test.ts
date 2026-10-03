@@ -57,6 +57,27 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}): StrategyFixture
 }
 
 describe('AppInstallerStrategy.apply', () => {
+  it('does not register relaunch, tear down, or quit when the checker reports no update', async () => {
+    // feedBaseUrl comes from config.yaml and is set without a channel target; only `feed` means "a
+    // channel to update from". So the winrt checker must run here, and its `available: false` ends
+    // the apply (an unpackaged or sideloaded install reports exactly that).
+    const checks: string[][] = []
+
+    const { deps, calls } = makeDeps({
+      run: async (python: string, module: string) => {
+        checks.push([python, module])
+
+        return { code: 0, stdout: '{"available":false}' }
+      }
+    })
+
+    expect(deps.feedBaseUrl).toBeTruthy()
+    expect(deps.feed).toBeUndefined()
+    expect(await new AppInstallerStrategy(deps).apply()).toEqual({ ok: true, mechanism: 'app-installer' })
+    expect(checks).toEqual([['python.exe', 'check.module']])
+    expect(calls).toEqual([])
+  })
+
   it('fails open: a marker-write failure never blocks the update', async () => {
     const progress: string[] = []
 

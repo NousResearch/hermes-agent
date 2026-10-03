@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { updateHandoffConflict, writeUpdateMarker } from '../update-marker'
+import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from '../update-marker'
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
@@ -370,7 +370,12 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // surface the error instead. The pre-written marker names the dead child
     // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
     const dwellStartedAt = Date.now()
-    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs, {
+      requireReady: () => {
+        const marker = readLiveUpdateMarker(deps.hermesHome)
+        return Boolean(marker && marker.pid !== child.pid)
+      }
+    })
 
     if (!handoffOutcome.ok) {
       const message: string = describeUpdaterHandoffFailure(handoffOutcome)
@@ -497,7 +502,12 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // child through the dwell; on spawn error or early death, stay alive and
     // surface the failure instead of quitting into nothing.
     const dwellStartedAt = Date.now()
-    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs, {
+      requireReady: () => {
+        const marker = readLiveUpdateMarker(deps.hermesHome)
+        return Boolean(marker && marker.pid !== child.pid)
+      }
+    })
 
     if (!handoffOutcome.ok) {
       const message: string = describeUpdaterHandoffFailure(handoffOutcome)

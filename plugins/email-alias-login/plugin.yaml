@@ -1,0 +1,43 @@
+name: email-alias-login
+label: Email Alias Login
+kind: standalone
+version: 0.1.0
+description: >
+  Override the bundled Email gateway adapter to authenticate IMAP/SMTP with a
+  separate account login while retaining the configured public From address.
+author: Axl Ibiza, MBA
+requires_env:
+  - name: EMAIL_ADDRESS
+    description: Public From address
+    prompt: Email alias / From address
+    password: false
+  - name: EMAIL_PASSWORD
+    description: IMAP/SMTP password or app password
+    prompt: Email password
+    password: true
+    secret: true
+  - name: EMAIL_SMTP_HOST
+    description: SMTP host
+    prompt: SMTP host
+    password: false
+  - name: EMAIL_IMAP_HOST
+    description: IMAP host
+    prompt: IMAP host
+    password: false
+optional_env:
+  - name: EMAIL_LOGIN_USER
+    description: Separate IMAP/SMTP username (defaults to EMAIL_ADDRESS)
+    prompt: Login username (leave empty to use From address)
+    password: false
+  - name: EMAIL_SMTP_PORT
+    description: SMTP port (default 587)
+    prompt: SMTP port
+    password: false
+  - name: EMAIL_ALLOWED_USERS
+    description: Comma-separated allowed sender addresses
+    prompt: Allowed users
+    password: false
+  - name: EMAIL_HOME_ADDRESS
+    description: Default cron / notification delivery address
+    prompt: Home address
+    password: false

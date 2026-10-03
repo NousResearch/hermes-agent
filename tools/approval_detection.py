@@ -70,8 +70,8 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
 _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:sudo\s+(?:-[^\s]+(?:\s+(?!-)[^\s]+)?\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+|-[^\s]+(?:\s+(?!-)[^\s]+)?\s+)*)?'  # prefixes may own option values
+    r'(?:(?:exec|nohup|setsid|time|command|builtin|nice|timeout|stdbuf|prlimit|flock|unbuffer|xargs|eval|screen|tmux)\s+(?:[^\s]+\s+)*?)?' r'\s*'  # wrapper commands
 )
 
 
@@ -919,6 +919,10 @@ def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
             index += 2
             continue
         chars = token[1:]
+        if "c" in chars and len(chars) > chars.index("c") + 1 and set(chars[:chars.index("c")]) <= _BASH_SHORT_OPTION_LETTERS:
+            return True, token[2 + chars.index("c"):]
+        if token.startswith("+c") and len(token) > 2:
+            return True, token[2:]
         # Bash option letters are case-sensitive; restricting to the documented alphabet
         # preserves invalid controls such as `-Wc`.
         if token.startswith("--") or not set(chars) <= _BASH_SHORT_OPTION_LETTERS:

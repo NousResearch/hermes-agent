@@ -1573,3 +1573,31 @@ class TestWSLAudioEnvironmentGate:
         assert any(
             "PulseAudio" in n and "WSL" in n for n in result["notices"]
         )
+
+
+def test_ensure_stream_refreshes_portaudio_snapshot_before_retry(mock_sd):
+    """#131177: the voice recorder retried InputStream against a stale Pa_Initialize
+    snapshot, so a hot-plugged mic kept failing on its dead device ID. The timed-out
+    open must terminate/re-initialize PortAudio before the single retry."""
+    from unittest.mock import MagicMock
+
+    from tools.voice_mode import AudioRecorder
+
+    attempts = []
+    good_stream = MagicMock()
+
+    def open_stream(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RuntimeError("Error opening InputStream: timed out (-9987)")
+        return good_stream
+
+    mock_sd.InputStream.side_effect = open_stream
+
+    recorder = AudioRecorder()
+    recorder._ensure_stream()
+
+    assert recorder._stream is good_stream
+    assert mock_sd.InputStream.call_count == 2
+    mock_sd._terminate.assert_called_once_with()
+    mock_sd._initialize.assert_called_once_with()

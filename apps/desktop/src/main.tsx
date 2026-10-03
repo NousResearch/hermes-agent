@@ -9,6 +9,8 @@ import './store/translucency'
 import './store/user-bubble-transparency'
 // Side-effect: restores chat typography before the first conversation paints.
 import './store/chat-text-scale'
+// Side-effect: synchronizes visible models roster with gateway backend.
+import './store/model-visibility'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen

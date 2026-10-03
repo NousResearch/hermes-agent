@@ -1,15 +1,64 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const { requests, getEventHandler, setEventHandler, getFakeGateway } = vi.hoisted(() => {
+  const requests: [string, Record<string, unknown>][] = []
+  type Handler = (event: { type: string; payload?: unknown }) => void
+  let currentHandler: Handler | null = null
+
+  const fake = {
+    request: (method: string, params: Record<string, unknown>) => {
+      requests.push([method, params])
+      return Promise.resolve({})
+    },
+    onEvent: (handler: Handler) => {
+      currentHandler = handler
+      return () => {
+        if (currentHandler === handler) {
+          currentHandler = null
+        }
+      }
+    }
+  }
+
+  return {
+    requests,
+    getEventHandler: () => currentHandler,
+    setEventHandler: (h: Handler | null) => { currentHandler = h },
+    getFakeGateway: () => fake
+  }
+})
+
+vi.mock('@/store/gateway', () => {
+  const fake = getFakeGateway()
+  return {
+    $gateway: {
+      get: () => fake,
+      listen: () => () => {},
+      subscribe: (fn: (gw: unknown) => (() => void) | void) => {
+        const cleanup = fn(fake)
+        return () => {
+          cleanup?.()
+        }
+      }
+    },
+    activeGateway: () => fake
+  }
+})
+
 import {
   collapseModelFamilies,
   defaultVisibleKeys,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
   isProviderSentinel,
+  $visibleModels,
+  adoptVisibleModels,
+  initVisibleModelsGatewaySync,
   modelVisibilityKey,
   resolveVisibleKeys,
   setProviderVisibility,
+  setVisibleModels,
   toggleModelVisibility
 } from './model-visibility'
 
@@ -482,5 +531,61 @@ describe('resetModelVisibility', () => {
 
     expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-6-mini'))).toBe(true)
     expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-5.5'))).toBe(false)
+  })
+})
+
+describe('model visibility crosses surfaces', () => {
+  beforeEach(() => {
+    requests.length = 0
+    localStorage.clear()
+    adoptVisibleModels(null)
+  })
+
+  it('pushes edits to the gateway so another surface stays in sync', () => {
+    const keys = new Set(['nous::model-fast'])
+    setVisibleModels(keys)
+
+    expect(requests).toEqual([['config.set', { key: 'visible_models', value: ['nous::model-fast'] }]])
+  })
+
+  it('adoptVisibleModels takes a roster the backend reports', () => {
+    adoptVisibleModels(['anthropic::claude-opus-5'])
+    expect($visibleModels.get()).toEqual(new Set(['anthropic::claude-opus-5']))
+    expect(localStorage.getItem('hermes.desktop.visible-models')).toBe(
+      JSON.stringify(['anthropic::claude-opus-5'])
+    )
+
+    adoptVisibleModels(null)
+    expect($visibleModels.get()).toBeNull()
+    expect(localStorage.getItem('hermes.desktop.visible-models')).toBeNull()
+  })
+
+  it('initVisibleModelsGatewaySync adopts live visible_models.changed events from other clients', () => {
+    const unbind = initVisibleModelsGatewaySync()
+    try {
+      const handler = getEventHandler()
+      expect(handler).toBeDefined()
+      // Simulate an incoming broadcast event when another client (or TUI) changes visible models
+      handler?.({
+        type: 'visible_models.changed',
+        payload: { value: ['nous::hermes-3-llama-3.1-405b'] }
+      })
+
+      expect($visibleModels.get()).toEqual(new Set(['nous::hermes-3-llama-3.1-405b']))
+      expect(localStorage.getItem('hermes.desktop.visible-models')).toBe(
+        JSON.stringify(['nous::hermes-3-llama-3.1-405b'])
+      )
+
+      // Null event clears customisation
+      handler?.({
+        type: 'visible_models.changed',
+        payload: { value: null }
+      })
+
+      expect($visibleModels.get()).toBeNull()
+      expect(localStorage.getItem('hermes.desktop.visible-models')).toBeNull()
+    } finally {
+      unbind()
+    }
   })
 })

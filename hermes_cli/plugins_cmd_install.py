@@ -369,6 +369,22 @@ def _install_plugin_core(
         except ValueError as e:
             raise _pc().PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
+        # A --force reinstall of the SAME source is an update, not a reset: carry
+        # untracked/ignored user files into the candidate tree so publication does
+        # not delete them (fixes #131126). Different sources keep clean replace.
+        if target.exists() and force and before_swap is None:
+            _prior = old_metadata.get(plugin_name)
+            if isinstance(_prior, dict) and _prior.get("source") == source:
+                from hermes_cli.plugins_cmd_catalog import (
+                    _carry_user_files, _local_changes, _stash_local_files,
+                )
+                _local, _modified = _local_changes(target)
+                if _modified:
+                    _old_sha = _prior.get("revision") if isinstance(_prior.get("revision"), str) else ""
+                    _backup = _pc()._plugins_dir().parent / "plugins-backup" / f"{target.name}-{(_old_sha[:8] or 'unknown')}"
+                    _stash_local_files(target, _modified, _backup)
+                    logger.warning("Local plugin changes stashed under %s", _backup)
+                before_swap = lambda _m, _tree, _t=target, _l=_local: _carry_user_files(_t, _tree, _l)
         # A callback may merge user-owned state into the candidate tree; run it first so one scan
         # admits the final bytes.
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None

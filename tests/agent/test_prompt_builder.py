@@ -969,20 +969,36 @@ class TestBuildSkillsSystemPromptConditional:
 
 
 
-    @pytest.mark.parametrize("in_scope, listed", [({"plugin_tool"}, True), (set(), False)])
-    def test_requires_tools_counts_tools_deferred_behind_the_bridge(self, monkeypatch, tmp_path, in_scope, listed):
-        """A skill requiring a plugin tool that tool_search defers stays listed; one whose tool is out of scope stays hidden."""
+    @pytest.mark.parametrize(
+        "requirements, in_scope, listed",
+        [
+            ("requires_tools: [plugin_tool, skill_view]", {"plugin_tool"}, True),
+            ("requires_tools: [plugin_tool, skill_view]", set(), False),
+            ("requires_toolsets: [mcp-figma]", {"mcp__figma__probe"}, True),
+        ],
+    )
+    def test_skill_requirements_count_tools_deferred_behind_the_bridge(
+            self, monkeypatch, request, tmp_path, requirements, in_scope, listed):
+        """Skills may require either a deferred tool or its toolset."""
         from types import SimpleNamespace
 
         from agent import system_prompt, tool_executor
+        from tools.registry import registry
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "vault" / "vault-housekeeper"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: vault-housekeeper\ndescription: Housekeeping\nmetadata:\n  hermes:\n"
-            "    requires_tools: [plugin_tool, skill_view]\n---\n"
+            f"    {requirements}\n---\n"
         )
+        registry.register(
+            name="mcp__figma__probe",
+            toolset="mcp-figma",
+            schema={},
+            handler=lambda args: "{}",
+        )
+        request.addfinalizer(lambda: registry.deregister("mcp__figma__probe"))
         monkeypatch.setattr(tool_executor, "_tool_search_scoped_names", lambda agent: frozenset(in_scope))
         agent = SimpleNamespace(valid_tool_names={"skill_view", "tool_search"}, platform="cli")
 

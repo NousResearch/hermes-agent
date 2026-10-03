@@ -7,14 +7,19 @@ home BEFORE anything is stopped, names its owner (pid + creation time, the updat
 identity format), is rewritten as the token changes, and is removed only after a verified
 resume. A later launch whose owner check finds the updater dead (and no update live) resumes it.
 
-Resuming is gated on a whole tree: no interrupted-pull marker, no tracked change beyond the ones
-present at pause time, and HEAD still at the pre-update commit or dependencies current for the
-moved HEAD. Otherwise the record stays for the next launch, which runs after the interrupted-pull
-restore and the dependency sync.
+Resuming is gated on a whole tree: no interrupted-pull marker; at the pre-update HEAD, no tracked
+change beyond the ones present at pause time (git died before moving HEAD); at a moved HEAD,
+dependencies current for it (a build step may rewrite tracked files there). Otherwise the record
+stays for the next launch, which runs after the interrupted-pull restore and the dependency sync.
+
+A recovering launch claims the record by renaming it to ``<record>.<pid>.<nonce>.claim`` and names
+itself inside; a claim whose claimer died (killed mid-resume) is re-adopted like a dead owner's
+record. ``write`` never overwrites another pause: an orphan's set is merged in, a live one refuses.
 """
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import subprocess
@@ -130,16 +135,17 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
     if (root / ".git").exists():
         if interrupted_pull_marker(root).exists():
             return False, "the checkout is mid-pull (interrupted-pull marker present)"
-        changes = tracked_changes(root)
-        if changes is None:
-            return False, "git cannot read the checkout state"
-        unexpected = sorted(set(changes) - set(token.get("dirty_at_pause") or []))
-        if unexpected:
-            return False, f"the checkout has {len(unexpected)} file(s) git left half-written (e.g. {unexpected[0]})"
         head = head_sha(root)
         if head is None:
             return False, "the checkout HEAD is unreadable"
         if head == token.get("pre_sha"):
+            # HEAD never moved: a new tracked change is git's half-written checkout.
+            changes = tracked_changes(root)
+            if changes is None:
+                return False, "git cannot read the checkout state"
+            unexpected = sorted(set(changes) - set(token.get("dirty_at_pause") or []))
+            if unexpected:
+                return False, f"the checkout has {len(unexpected)} file(s) git left half-written (e.g. {unexpected[0]})"
             return True, ""
     if not _venv_is_current(root):
         return False, "dependencies are not current for the updated code yet"
@@ -165,15 +171,25 @@ def read(path: Path | None = None) -> dict | None:
     return body if isinstance(body, dict) and isinstance(body.get("token"), dict) else None
 
 
+UNOWNED = {"pid": 0, "ct": None}
+
+
+class RecordConflict(OSError):
+    """The record names another pause whose owner is still live."""
+
+
 def write(token: dict, *, owner: dict | None = None, path: Path | None = None) -> None:
-    """Persist *token*; the owner of an existing record for the same pause is kept."""
+    """Persist *token*. The owner of the same pause is kept; another pause's orphaned set is merged
+    into *token* (in place, so this run's resume brings it back); a live one refuses."""
     path = path or record_path()
     existing = read(path)
+    same = existing is not None and existing["token"].get("pause_id") == token.get("pause_id")
+    if existing is not None and not same:
+        if identity_is_live(existing.get("owner")):
+            raise RecordConflict(f"{path} holds gateways paused by live process {existing['owner'].get('pid')}")
+        merge_into(token, drop_never_stopped(dict(existing["token"])))
     if owner is None:
-        if existing is not None and existing["token"].get("pause_id") == token.get("pause_id"):
-            owner = existing["owner"]
-        else:
-            owner = identity()
+        owner = existing["owner"] if same else identity()
     _atomic_write(path, {"schema": 1, "owner": owner, "install_root": str(install_root()), "token": token})
 
 
@@ -188,8 +204,8 @@ def discharge(token: dict, path: Path | None = None) -> None:
 
 def sync(token: dict) -> None:
     """Mirror the token after a resume attempt: done → delete; anything still owed → rewrite."""
-    if not token.get("pause_id"):
-        return
+    if not token.get("pause_id") or token.get("recovery"):
+        return  # a recovering launch keeps what it owes in its own claim (_resume_claimed)
     try:
         if token.get("resume_needed") or token.get("resume_deferred"):
             owed = {**token, "resume_needed": True}
@@ -202,21 +218,103 @@ def sync(token: dict) -> None:
 
 
 def _live_update_elsewhere() -> bool:
-    # TODO(LP-LOCK): switch to update_lock.update_in_progress(install_root) once it lands; the
-    # marker read below is the existing path and misses an orphaned completion child.
-    from hermes_cli.update_lock import read_live_update
-    holder = read_live_update()
-    return holder is not None and holder.pid != os.getpid()
+    """A live update other than the one this process belongs to. The update tree holding the
+    checkout lock (this process plus the partner whose marker it adopted) is not "elsewhere"."""
+    from hermes_cli import update_lock
+    root = install_root()
+    return not update_lock.holds_checkout_lock(root) and update_lock.update_in_progress(root)
+
+
+def _claims(path: Path) -> list[Path]:
+    return sorted(path.parent.glob(f"{glob.escape(path.name)}.*.claim"))
+
+
+def _claimer(claim: Path, body: dict) -> dict:
+    """Who holds a claim: the identity it wrote, else (killed before writing it) its name's pid."""
+    if isinstance(body.get("claimer"), dict):
+        return body["claimer"]
+    pid = claim.name[len(RECORD_NAME) + 1:].split(".", 1)[0]
+    return {"pid": int(pid) if pid.isdigit() else 0, "ct": None}
+
+
+def orphans(path: Path | None = None) -> list[tuple[Path, dict]]:
+    """``(file, body)`` for this install's record whose owner is dead and every claim whose claimer
+    is dead — empty while another update is live (it adopts them itself)."""
+    path = path or record_path()
+    found = []
+    body = read(path)
+    if body is not None and not identity_is_live(body.get("owner")):
+        found.append((path, body))
+    for claim in _claims(path):
+        claimed = read(claim)
+        if claimed is not None and not identity_is_live(_claimer(claim, claimed)):
+            found.append((claim, claimed))
+    found = [(src, b) for src, b in found if b.get("install_root") == str(install_root())]
+    if not found or _live_update_elsewhere():
+        return []
+    return found
 
 
 def orphaned_record(path: Path | None = None) -> dict | None:
-    """The record when its owner is dead, it belongs to this install and no other update is live."""
-    body = read(path)
-    if body is None or body.get("install_root") != str(install_root()):
+    found = orphans(path)
+    return found[0][1] if found else None
+
+
+def claim(src: Path) -> tuple[Path, dict] | None:
+    """Take *src* (an orphaned record or a dead claimer's claim) for this process; ``None`` when a
+    concurrent launch won it. The rename is the arbiter; the claimer line names our incarnation."""
+    path = record_path()
+    mine = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.claim")
+    try:
+        os.rename(src, mine)
+    except OSError:
         return None
-    if identity_is_live(body.get("owner")) or _live_update_elsewhere():
+    body = read(mine)
+    if body is None:
+        with suppress(OSError):
+            mine.unlink()
         return None
-    return body
+    body["claimer"] = identity()
+    _atomic_write(mine, body)
+    return mine, body
+
+
+def adopt_orphans() -> tuple[dict | None, list[Path]]:
+    """For ``hermes update``: claim every orphaned pause and merge their sets. The caller records the
+    merged set durably, then :func:`release_claims` — a crash in between leaves claims to re-adopt."""
+    adopted, claims = None, []
+    for src, _body in orphans():
+        won = claim(src)
+        if won is None:
+            continue
+        claims.append(won[0])
+        adopted = merge_into(adopted, drop_never_stopped(dict(won[1]["token"])))
+    return adopted, claims
+
+
+def release_claims(claims: list[Path]) -> None:
+    for path in claims:
+        with suppress(OSError):
+            path.unlink()
+
+
+def record_pause(token: dict, adopted: dict | None, claims: list[Path]) -> dict:
+    """Merge the adopted set, stamp the tree and persist under this process BEFORE the first stop."""
+    if adopted is not None:
+        merge_into(token, adopted)
+    stamp_tree(token)
+    write(token, owner=identity())
+    release_claims(claims)
+    return token
+
+
+def finish_pause(token: dict, intended: dict, adopted: dict | None) -> dict:
+    """Carry the recorded pause identity onto the final token and mirror it to disk."""
+    if adopted is not None:
+        merge_into(token, adopted)
+    token.update({key: intended[key] for key in ("pause_id", "pre_sha", "dirty_at_pause", "identities") if key in intended})
+    sync(token)
+    return token
 
 
 def drop_never_stopped(token: dict) -> dict:
@@ -235,7 +333,8 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
     profiles = token.setdefault("profiles", {})
     for name, pid in (adopted.get("profiles") or {}).items():
         profiles.setdefault(name, pid)
-    token.setdefault("unmapped", []).extend(adopted.get("unmapped") or [])
+    unmapped = token.setdefault("unmapped", [])
+    unmapped.extend(u for u in adopted.get("unmapped") or [] if u not in unmapped)
     services = token.setdefault("services", [])
     services.extend(s for s in adopted.get("services") or [] if s not in services)
     if services:
@@ -245,35 +344,38 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
     return token
 
 
+def _resume_claimed(claim_path: Path, body: dict) -> None:
+    token = drop_never_stopped(dict(body["token"]))
+    token.update(resume_needed=True, recovery=True)
+    print("→ Restarting gateway(s) paused by an interrupted `hermes update`...", file=sys.stderr)
+    try:
+        from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
+        _resume_windows_gateways_after_update(token)
+    except Exception as exc:
+        print(f"  ⚠ Could not restart every paused gateway: {exc}. Run `hermes update` or "
+              "`hermes gateway start`.", file=sys.stderr)
+    finally:
+        with suppress(OSError):
+            if token.get("resume_needed") or token.get("resume_deferred"):
+                # Still owed: hand the claim back unowned so the next launch retries at once — this
+                # launch may live for hours (a chat). A failed rewrite leaves our claimer line, which
+                # turns dead (re-adoptable) when we exit.
+                owed = {key: value for key, value in token.items() if key not in ("recovery", "resume_deferred")}
+                _atomic_write(claim_path, {**body, "token": {**owed, "resume_needed": True}, "claimer": UNOWNED})
+            else:
+                claim_path.unlink()
+
+
 def recover(argv: list[str] | None = None) -> None:
-    """Start-of-run recovery: resume an orphaned pause. Never raises."""
+    """Start-of-run recovery: resume every orphaned pause. Never raises."""
     from hermes_cli._parser import command_argv
     command = command_argv(list(sys.argv[1:] if argv is None else argv))
     if command[:1] == ["update"] or command[:2] == ["gateway", "run"]:
         return  # the update adopts it itself; a booting gateway must not block on its siblings
     try:
-        body = orphaned_record()
-        if body is None:
-            return
-        path = record_path()
-        claim = path.with_name(f"{path.name}.{os.getpid()}.claim")
-        try:
-            os.rename(path, claim)  # exactly one concurrent launch wins the record
-        except OSError:
-            return
-        token = drop_never_stopped(dict(body["token"]))
-        token["resume_needed"] = True
-        print("→ Restarting gateway(s) paused by an interrupted `hermes update`...", file=sys.stderr)
-        try:
-            # Its own finally mirrors the outcome: whatever is still owed is re-recorded
-            # under this process, so the next launch retries once we have exited.
-            from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
-            _resume_windows_gateways_after_update(token)
-        except Exception as exc:
-            print(f"  ⚠ Could not restart every paused gateway: {exc}. Run `hermes update` or "
-                  "`hermes gateway start`.", file=sys.stderr)
-        finally:
-            with suppress(OSError):
-                claim.unlink()
+        for src, _body in orphans():
+            won = claim(src)
+            if won is not None:
+                _resume_claimed(*won)
     except Exception as exc:  # never brick a launch on recovery
         print(f"  ⚠ Paused-gateway recovery skipped: {exc}", file=sys.stderr)

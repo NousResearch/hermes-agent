@@ -360,3 +360,262 @@ def test_review_budget_still_bounded_by_shared_cap(
 
     # Budget 2 total across both lanes, reservation notwithstanding.
     assert len(res.spawned) == 2
+
+
+# ---------------------------------------------------------------------------
+# 4. The host cap names what it held back (#124392)
+# ---------------------------------------------------------------------------
+
+
+def test_host_cap_buckets_deferred_ready_tasks(
+    kanban_home, all_assignees_spawnable,
+):
+    """A tick blocked by the host cap reports the deferred task ids instead
+    of returning a bare zero-spawn result.
+
+    The cap binds before the ready rows are enumerated, so it cannot
+    attribute a deferral per task at the gate the way the per-profile cap
+    does — the caller fills ``skipped_host_capped`` from the held-back rows
+    on its behalf. Deferred, not dropped: the tasks stay ``ready``.
+    """
+    spawns: list = []
+    with kbc.connect() as conn:
+        claimed = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, claimed) is not None
+        ready_ids = [
+            kb.create_task(conn, title=f"ready-{i}", assignee="alice")
+            for i in range(3)
+        ]
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert not spawns
+    assert sorted(res.skipped_host_capped) == sorted(ready_ids)
+    assert res.skipped_host_capped_deferred is True
+    with kbc.connect() as conn:
+        for task_id in ready_ids:
+            row = kb.get_task(conn, task_id)
+            assert row is not None and row.status == "ready"
+
+
+def test_host_cap_deferral_is_per_tick_not_permanent(
+    kanban_home, all_assignees_spawnable,
+):
+    """Once the running worker finishes, the deferred task dispatches."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        claimed = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, claimed) is not None
+        ready_id = kb.create_task(conn, title="ready-0", assignee="alice")
+
+        res1 = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+        assert res1.skipped_host_capped == [ready_id]
+
+        _set_task_status(conn, claimed, "done")
+        conn.execute(
+            "UPDATE tasks SET claim_lock = NULL WHERE id = ?", (claimed,)
+        )
+        res2 = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert [task_id for task_id, *_ in res2.spawned] == [ready_id]
+    assert res2.skipped_host_capped == []
+    assert res2.skipped_host_capped_deferred is False
+
+
+def test_describe_suppression_names_host_cap(
+    kanban_home, all_assignees_spawnable,
+):
+    """``describe_suppression`` feeds the "dispatcher stuck" warnings; the
+    host cap must appear there as ``host_capped=N`` so the operator is not
+    sent to check profile health for a host-wide concurrency hold."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        claimed = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, claimed) is not None
+        for i in range(2):
+            kb.create_task(conn, title=f"ready-{i}", assignee="alice")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert kbd.describe_suppression([res]) == "host_capped=2"
+
+
+def test_describe_suppression_silent_when_host_cap_not_binding(
+    kanban_home, all_assignees_spawnable,
+):
+    """A free tick contributes no entry — the stuck warnings must not grow
+    a spurious ``host_capped=0`` line."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="only", assignee="alice")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=5,
+        )
+
+    assert len(res.spawned) == 1
+    assert res.skipped_host_capped == []
+    assert kbd.describe_suppression([res]) == ""
+
+
+# ---------------------------------------------------------------------------
+# 4. #124489 follow-up: the per-tick max_spawn cap must defer VISIBLY, and the
+#    host_capped bucket must stay disjoint from the per-task buckets.
+# ---------------------------------------------------------------------------
+
+
+def test_max_spawn_cap_defers_visibly(kanban_home, all_assignees_spawnable, caplog):
+    """``--max N`` binding must bucket + log, like the host cap does.
+
+    The host-level deferral logs and buckets (#124392); the per-tick cap four
+    lines up returned a bare ``(False, None)`` with no bucket, no log line,
+    while the host branch's comment claimed to have closed the last silent
+    deferral. An operator running ``hermes kanban dispatch --max 1`` with one
+    task already running saw a zero-spawn tick with nothing to point at.
+    """
+    import logging
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        ready_ids = [
+            kb.create_task(conn, title=f"ready-{i}", assignee="alice")
+            for i in range(2)
+        ]
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            res = kbd.dispatch_once(
+                conn, spawn_fn=_fake_spawn_factory(spawns), max_spawn=1,
+            )
+
+    assert not spawns
+    assert res.skipped_max_spawn_deferred is True
+    # Rows are named: the bucket and the describe_suppression line both exist.
+    assert sorted(res.skipped_max_spawn) == sorted(ready_ids)
+    assert kbd.describe_suppression([res]) == "max_spawn_capped=2"
+    assert any("max_spawn=1" in rec.getMessage() for rec in caplog.records)
+    # Deferred, not dropped.
+    with kbc.connect() as conn:
+        for task_id in ready_ids:
+            assert kb.get_task(conn, task_id).status == "ready"
+
+
+def test_describe_suppression_reports_one_cap_not_both(
+    kanban_home, all_assignees_spawnable,
+):
+    """When the per-tick cap binds, suppress reporting is ``max_spawn_capped``
+    only — the same rows sit in ``skipped_host_capped`` and counting them under
+    both names would double-report one hold."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        for _ in range(2):
+            kb.create_task(conn, title="ready", assignee="alice")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_spawn=1,
+            max_in_progress=5,  # host cap NOT binding
+        )
+
+    out = kbd.describe_suppression([res])
+    assert "max_spawn_capped=2" in out
+    assert "host_capped" not in out
+
+
+def _kbd_prepare_probe(conn, *, unassigned=0, ghost=0, spawnable=0):
+    """Create ready tasks of the three per-task-bucket kinds plus plain ones.
+
+    Returns ``(unassigned_ids, ghost_ids, spawnable_ids)``.
+    """
+    unassigned_ids = [
+        kb.create_task(conn, title=f"unassigned-{i}") for i in range(unassigned)
+    ]
+    # A ghost profile: all_assignees_spawnable patches profile_exists to True,
+    # so this test opts out of that fixture instead (see caller) — here we just
+    # create the rows with a profile name the patched predicate will reject
+    # when the caller does NOT use the fixture.
+    ghost_ids = [
+        kb.create_task(conn, title=f"ghost-{i}", assignee="ghost-profile")
+        for i in range(ghost)
+    ]
+    spawnable_ids = [
+        kb.create_task(conn, title=f"ready-{i}", assignee="alice")
+        for i in range(spawnable)
+    ]
+    return unassigned_ids, ghost_ids, spawnable_ids
+
+
+def test_host_cap_bucket_excludes_unassigned_and_ghost_rows(
+    kanban_home, monkeypatch,
+):
+    """The host_capped bucket must not absorb rows held for other reasons.
+
+    Sweeping every ready/review row into ``skipped_host_capped`` mislabels a
+    task that needs routing as "host cap busy" — the exact misdirection
+    #124392 exists to remove. This test does NOT use
+    ``all_assignees_spawnable`` so the profile-exists guard is live: the ghost
+    profile row must land in ``skipped_nonspawnable``, the unassigned row in
+    ``skipped_unassigned``, and only the plain row in ``skipped_host_capped``.
+    """
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists",
+        lambda name: name == "alice",  # ghost-profile does not exist
+    )
+    spawns: list = []
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        unassigned_ids, ghost_ids, spawnable_ids = _kbd_prepare_probe(
+            conn, unassigned=1, ghost=1, spawnable=1,
+        )
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert not spawns
+    assert res.skipped_unassigned == unassigned_ids
+    assert res.skipped_nonspawnable == ghost_ids
+    assert res.skipped_host_capped == spawnable_ids
+    out = kbd.describe_suppression([res])
+    assert "host_capped=1" in out
+
+
+def test_host_cap_bucket_excludes_guarded_rows(kanban_home, all_assignees_spawnable):
+    """A row the respawn guard would refuse still reports its guard reason
+    while the host cap holds the tick — not ``host_capped``."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        guarded = kb.create_task(conn, title="guarded", assignee="alice")
+        plain = kb.create_task(conn, title="plain", assignee="alice")
+        # A completed run inside the guard window makes check_respawn_guard
+        # return "recent_success" for the ready lane. claim_task creates the
+        # task_runs row; release it back to ready so the host cap sees it.
+        assert kb.claim_task(conn, guarded) is not None
+        guarded_run_id = kb.get_task(conn, guarded).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET status='completed', outcome='completed', "
+            "ended_at=? WHERE id=?",
+            (int(time.time()), guarded_run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL WHERE id=?",
+            (guarded,),
+        )
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert not spawns
+    assert [tid for tid, _ in res.respawn_guarded] == [guarded]
+    assert res.skipped_host_capped == [plain]
+    out = kbd.describe_suppression([res])
+    assert "recent_success=1" in out and "host_capped=1" in out

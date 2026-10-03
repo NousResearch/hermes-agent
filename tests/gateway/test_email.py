@@ -281,14 +281,15 @@ class TestDispatchMessage(unittest.TestCase):
             "message_id": "<msg5@test.com>",
             "in_reply_to": "",
             "body": "Check this photo",
-            "attachments": [{"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"}],
+            "attachments": [{"filename": "img.jpg", "media_type": "image/jpeg", "payload": b"\xff\xd8\xff" + b"\0" * 32}],
             "date": "",
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
         self.assertEqual(len(captured_events), 1)
         self.assertEqual(captured_events[0].message_type, MessageType.PHOTO)
-        self.assertEqual(captured_events[0].media_urls, ["/tmp/img.jpg"])
+        (path,) = captured_events[0].media_urls
+        self.assertTrue(path.endswith(".jpg") and os.path.isfile(path))
 
 
     def test_empty_allowlist_denies_without_optin(self):
@@ -448,6 +449,95 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         for label, kwargs in cases.items():
             with self.subTest(label):
                 self.assertEqual(self._reached_gateway(**kwargs), [])
+
+
+class TestAttachmentsCachedAfterSenderGate(unittest.TestCase):
+    """Only mail the sender gate accepts writes attachments to the media cache: a stranger mailing the
+    inbox must not be able to put files on disk. Until that gate, attachment bytes wait in memory, so a
+    poll holds a bounded amount of them, and a cache failure costs one file, never the rest of the batch."""
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret", "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_ALLOWED_USERS": "owner@example.com",
+            "EMAIL_TRUST_FROM_HEADER": "true"})
+        self._env.start()
+        for key in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS"):
+            os.environ.pop(key, None)
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        self.adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.events = []
+
+        async def capture(event):
+            self.events.append(event)
+
+        self.adapter.handle_message = capture
+
+    def tearDown(self):
+        self._env.stop()
+
+    @staticmethod
+    def _mail(sender: str, subject: str = "invoice", doc_bytes: int = 4096) -> bytes:
+        from email.mime.application import MIMEApplication
+        msg = MIMEMultipart()
+        msg["From"], msg["To"], msg["Subject"] = sender, "hermes@test.com", subject
+        msg.attach(MIMEText("see attached", "plain"))
+        for name, data in (("invoice.bin", b"\0" * doc_bytes), ("chart.png", b"\x89PNG\r\n\x1a\n" + b"\0" * 64)):
+            part = MIMEApplication(data, Name=name)
+            part["Content-Disposition"] = f'attachment; filename="{name}"'
+            msg.attach(part)
+        return msg.as_bytes()
+
+    def _poll(self, mails: "dict[bytes, bytes]") -> None:
+        """One _check_inbox against an inbox whose UNSEEN search always lists every UID in *mails*."""
+        import asyncio
+        imap = MagicMock()
+        imap.uid.side_effect = lambda command, *args: (
+            ("OK", [b" ".join(mails)]) if command == "search"
+            else ("OK", [(args[0], mails[args[0]])]) if command == "fetch" else ("NO", []))
+        with patch("imaplib.IMAP4_SSL", return_value=imap):
+            asyncio.run(self.adapter._check_inbox())
+
+    def test_only_accepted_mail_writes_attachments_to_the_cache(self):
+        import asyncio
+        from gateway.platforms.base import get_document_cache_dir, get_image_cache_dir
+
+        def cached_files():
+            return {str(p) for d in (get_document_cache_dir(), get_image_cache_dir()) for p in d.iterdir()}
+
+        adapter, before = self.adapter, cached_files()
+        asyncio.run(adapter._dispatch_message(adapter._parse_fetched_message(b"1", self._mail("spammer@evil.example"))))
+        self.assertEqual((self.events, cached_files()), ([], before))
+
+        asyncio.run(adapter._dispatch_message(adapter._parse_fetched_message(b"2", self._mail("owner@example.com"))))
+        (event,) = self.events
+        self.assertEqual(len(event.media_urls), 2)
+        self.assertEqual(set(event.media_urls), cached_files() - before)
+
+    def test_a_flood_is_fetched_in_batches_bounded_by_the_media_budget(self):
+        from hermes_constants import get_hermes_home
+        budget = 10_000
+        (get_hermes_home() / "config.yaml").write_text(f"gateway:\n  max_inbound_media_bytes: {budget}\n")
+        mails = {str(uid).encode(): self._mail("owner@example.com", f"mail {uid}", doc_bytes=6_000) for uid in range(1, 5)}
+
+        self._poll(mails)
+        first_batch = [sum(os.path.getsize(path) for path in event.media_urls) for event in self.events]
+        self.assertLess(len(first_batch), len(mails))
+        self.assertLess(sum(first_batch[:-1]), budget)  # it stopped once the held bytes reached the budget
+        for _ in mails:
+            self._poll(mails)
+        self.assertEqual(sorted(e.text for e in self.events), sorted(f"[Subject: mail {uid}]\n\nsee attached"
+                                                                     for uid in range(1, 5)))
+
+    def test_a_cache_failure_skips_the_file_not_the_rest_of_the_batch(self):
+        async def disk_full(*_args):
+            raise OSError(28, "No space left on device")
+
+        with patch("plugins.platforms.email.adapter.cache_document_from_bytes_async", disk_full):
+            self._poll({b"1": self._mail("owner@example.com", "first"), b"2": self._mail("owner@example.com", "second")})
+        self.assertEqual([e.text.split("]")[0] for e in self.events], ["[Subject: first", "[Subject: second"])
+        self.assertEqual([len(e.media_urls) for e in self.events], [1, 1])  # the image still cached
 
 
 class TestThreadContext(unittest.TestCase):

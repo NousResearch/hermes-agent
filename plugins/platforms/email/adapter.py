@@ -24,7 +24,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
-    cache_document_from_bytes, cache_image_from_bytes,
+    cache_document_from_bytes_async, cache_image_from_bytes_async, get_inbound_media_max_bytes,
+    validate_inbound_media_size,
 )
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -379,7 +380,8 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
 
 
 def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool = False) -> List[Dict[str, Any]]:
-    """Extract attachment metadata and cache files locally (nothing when *skip_attachments*)."""
+    """Extract attachment names, types and bytes (nothing when *skip_attachments*). Nothing is written
+    to disk here: the sender is not yet authorized (``_cache_attachments`` runs after the gate)."""
     attachments = []
     if not msg.is_multipart():
         return attachments
@@ -391,16 +393,30 @@ def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool 
         filename = _decode_header_value(fn) if (fn := part.get_filename()) else f"attachment.{part.get_content_subtype() or 'bin'}"
         if not (payload := part.get_payload(decode=True)):
             continue
-        if (ext := Path(filename).suffix.lower()) in _IMAGE_EXTS:
-            try:
-                cached_path, kind = cache_image_from_bytes(payload, ext), "image"
-            except ValueError:
-                logger.debug("Skipping non-image attachment %s (invalid magic bytes)", filename)
-                continue
-        else:
-            cached_path, kind = cache_document_from_bytes(payload, filename), "document"
-        attachments.append({"path": cached_path, "filename": filename, "type": kind, "media_type": content_type})
+        attachments.append({"filename": filename, "media_type": content_type, "payload": payload})
     return attachments
+
+
+async def _cache_attachments(attachments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Cache an accepted message's attachments; each kind honours the inbound media size cap, and images
+    must also pass the magic-byte check."""
+    cached = []
+    for att in attachments:
+        filename, payload = att["filename"], att["payload"]
+        try:
+            if (ext := Path(filename).suffix.lower()) in _IMAGE_EXTS:
+                cached_path, kind = await cache_image_from_bytes_async(payload, ext), "image"
+            else:
+                validate_inbound_media_size(len(payload), media_type="document")
+                cached_path, kind = await cache_document_from_bytes_async(payload, filename), "document"
+        except ValueError as exc:  # oversized, or not really an image
+            logger.debug("Skipping attachment %s: %s", filename, exc)
+            continue
+        except OSError as exc:  # full or unwritable cache: deliver the mail without this file
+            logger.warning("[Email] Could not cache attachment %s: %s", filename, exc)
+            continue
+        cached.append({"path": cached_path, "filename": filename, "type": kind, "media_type": att["media_type"]})
+    return cached
 
 
 def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
@@ -599,7 +615,9 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def _check_inbox(self) -> None:
         """Check INBOX for unseen messages and dispatch them."""
-        messages = await asyncio.get_running_loop().run_in_executor(None, self._fetch_new_messages)
+        # Resolved here: the fetch runs on an executor thread, outside the profile's scope.
+        messages = await asyncio.get_running_loop().run_in_executor(
+            None, self._fetch_new_messages, get_inbound_media_max_bytes())
         # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched (already marked seen).
         for msg_data in messages:
             await self._dispatch_message(msg_data)
@@ -612,15 +630,20 @@ class EmailAdapter(BasePlatformAdapter):
             self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
             await self._notify_fatal_error()
 
-    def _fetch_new_messages(self) -> List[Dict[str, Any]]:
-        """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
-        results = []
+    def _fetch_new_messages(self, attachment_budget: int = 0) -> List[Dict[str, Any]]:
+        """Fetch new (unseen) messages from IMAP. Runs in executor thread.
+
+        Attachment bytes stay in memory until dispatch gates the sender, so once the batch holds
+        ``attachment_budget`` bytes (<= 0 = unbounded) it ends: later UIDs stay unseen for the next poll."""
+        results, held = [], 0
         try:
             with self._inbox() as imap:
                 status, data = imap.uid("search", None, "UNSEEN")
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
+                    if 0 < attachment_budget <= held:
+                        break
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
@@ -647,6 +670,8 @@ class EmailAdapter(BasePlatformAdapter):
                         continue
                     if parsed is not None:
                         results.append(parsed)
+                        if attachment_budget > 0:
+                            held += sum(len(att["payload"]) for att in parsed["attachments"])
         except Exception as e:
             # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
             # connection (#79889).
@@ -753,7 +778,8 @@ class EmailAdapter(BasePlatformAdapter):
         sender_addr = msg_data["sender_addr"]
         if not self._sender_accepted(sender_addr, msg_data):
             return
-        subject, body, attachments = msg_data["subject"], msg_data["body"].strip(), msg_data["attachments"]
+        subject, body = msg_data["subject"], msg_data["body"].strip()
+        attachments = await _cache_attachments(msg_data["attachments"])
         text = f"[Subject: {subject}]\n\n{body}" if subject and not subject.startswith("Re:") else body  # subject unless reply
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.

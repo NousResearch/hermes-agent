@@ -155,7 +155,8 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
             WHERE target_session_id=? AND (?=0 OR status!='terminal') ORDER BY seq''', (session_id, int(pending_only)))]
 
 
-def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
+def claim_session_input(db, *, epoch: int, session_id: str, _authorize_write=None) -> dict | None:
+    """Claim the current FIFO head; an optional trusted guard shares this writer."""
     def write(conn):
         _epoch(conn, epoch)
         session = _session(conn, session_id)
@@ -169,6 +170,8 @@ def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
         row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq LIMIT 1", (session_id,)).fetchone()
         if row is None:
             return None
+        if _authorize_write is not None:
+            _authorize_write(conn, _row(row))
         generation = session['runtime_generation'] + 1
         conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, session_id))
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))

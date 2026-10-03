@@ -133,12 +133,29 @@ _RE_OTP = re.compile(
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
 )
 
+# LOCAL PATCH (2026-09-28, cw): explicit non-auth exclusions for the bare-field OTP fallback below.
+# A field whose name/label clearly says what it actually is (search, coupon, zip, quantity, ...) must
+# never be swallowed as a guess just because it happens to be the only text input on the page.
+_RE_NONAUTH_EXCLUDE = re.compile(
+    r"\b(?:search|query|promo|coupon|discount|voucher|referral|gift\s*card|zip|postal|address|quantity|qty|"
+    r"price|amount|comment|message|note|subject|name|city|country|state|province)\b"
+)
+
 
 def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
     """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
     otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
     the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
-    fill spreads the code across them."""
+    fill spreads the code across them.
+
+    LOCAL PATCH (2026-09-28, cw): fallback for bare/unlabeled OTP fields (e.g. Facebook's React-generated
+    2FA input: autocomplete="off", name="", no <label>/aria-label — id is a meaningless generated token).
+    This function is ONLY ever called from browser_vault_enter_code, i.e. the model has already identified
+    the page as a 2FA/OTP challenge before calling it — that context is the safety anchor here, not text
+    matching. If the strict rules above find nothing, and there is EXACTLY ONE visible text/tel/number
+    input on the whole page (no ambiguity, no risk of colliding with a CVV/coupon/promo field sitting next
+    to other candidates), accept it at a lower score. Multiple untagged text inputs never trigger this —
+    that stays a `no_code_field` refusal so the model doesn't guess."""
     out: List[ClassifiedLoginControl] = []
     for c in controls:
         tokens = c.autocomplete.lower().split()
@@ -149,6 +166,14 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
             continue
         if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+    if out:
+        return out
+    bare_candidates = [c for c in controls if c.type in ("text", "tel", "number")]
+    if len(bare_candidates) == 1:
+        only = bare_candidates[0]
+        searchable = _normalize_text(" ".join(p for p in (only.name, only.label) if p))
+        if not _RE_NONAUTH_EXCLUDE.search(searchable):
+            out.append(ClassifiedLoginControl(only, 55, "one-time-code"))
     return out
 
 

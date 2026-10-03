@@ -622,6 +622,10 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
+        # A backend whose Desktop app is still running hosts that app's open chats: a SIGTERM
+        # here aborts every in-flight turn. The Desktop spares it when it runs the update
+        # (HERMES_DESKTOP_CHILD_PID, #37532); a terminal ``hermes update`` must too.
+        exclude |= _desktop_supervised_serve_pids()
     pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
@@ -882,6 +886,22 @@ def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
         if root not in roots:
             roots.append(root)
     return roots
+
+
+def _desktop_supervised_serve_pids() -> set[int]:
+    """Serve/dashboard PIDs whose recorded Desktop spawner is provably alive — the update
+    inventory's ``desktop`` supervisor, which the updater never restarts (#111494). Best-effort:
+    an unreadable ledger or an unprovable spawner contributes no PID; never raises."""
+    owned: set[int] = set()
+    with contextlib.suppress(Exception):
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+
+        for entry in ledger_entries():
+            pid = entry.get("pid")
+            if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
+                    and spawner_is_dead(entry) is False):
+                owned.add(pid)
+    return owned
 
 
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:

@@ -514,6 +514,29 @@ class SessionSessionsMixin:
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
         reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
+            # Translate pre-marker scheduler history before clearing the mutable lifecycle boundary.
+            # This keeps the scheduler outcome durable while still reopening the session as live.
+            from hermes_state_common import is_scheduler_finalized_cron
+            row = conn.execute(
+                "SELECT source, end_reason, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is not None and is_scheduler_finalized_cron(dict(row)):
+                finalized_reason = row["end_reason"]
+                if finalized_reason not in {"cron_complete", "cron_incomplete_no_output"}:
+                    raw = row["model_config"]
+                    try:
+                        finalized_reason = json.loads(raw or "{}").get("_cron_finalized")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        finalized_reason = None
+                if finalized_reason in {"cron_complete", "cron_incomplete_no_output"}:
+                    conn.execute(
+                        "UPDATE sessions SET model_config = json_set("
+                        "CASE WHEN json_valid(COALESCE(model_config, '{}')) "
+                        "THEN COALESCE(model_config, '{}') ELSE '{}' END, "
+                        "'$._cron_finalized', ?) WHERE id = ?",
+                        (finalized_reason, session_id),
+                    )
             # Retire busy-queue accept rows that never drained (#125577): a restart discarded the
             # in-memory queue, so nothing re-placed/deactivated the row written at accept time and
             # alternation repair would glue the never-run prompt into the previous turn's user

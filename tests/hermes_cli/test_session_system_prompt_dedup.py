@@ -45,6 +45,28 @@ def test_finalized_cron_resume_can_publish_compression_child(db):
     assert db.get_session("cron_child") is not None
 
 
+@pytest.mark.parametrize("reason", ["cron_complete", "cron_incomplete_no_output"])
+def test_legacy_finalized_cron_resume_backfills_marker_and_allows_later_close(db, reason):
+    session_id = "cron_job_legacy_20261002_010000"
+    db.create_session(session_id, "cron", model="test-model")
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+        (time.time(), reason, session_id),
+    )
+    db._conn.commit()
+
+    db.reopen_session(session_id)
+
+    resumed = db.get_session(session_id)
+    assert resumed["ended_at"] is None
+    assert resumed["end_reason"] is None
+    assert resumed["cron_finalized"] is True
+
+    db.end_session(session_id, "tui_close")
+    closed = db.get_session(session_id)
+    assert closed["end_reason"] == "tui_close"
+
+
 def test_prompt_snapshots_are_deduplicated_and_hydrated_for_readers(db):
     prompt = "You are Hermes.\n" + ("Follow the profile policy.\n" * 5)
     db.create_session(

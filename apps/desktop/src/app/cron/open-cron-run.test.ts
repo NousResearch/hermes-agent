@@ -52,6 +52,12 @@ describe('isResumableCronRun', () => {
     expect(isResumableCronRun(run({ cron_finalized: false, scheduler_owned: false }), NOW_MS)).toBe(false)
   })
 
+  it('does not let a cleanup timestamp override an explicit negative finalization', () => {
+    expect(isResumableCronRun(run({ ended_at: NOW_S - 60, cron_finalized: false, scheduler_owned: false }), NOW_MS)).toBe(
+      false
+    )
+  })
+
   it('falls back to the activity window against a backend without scheduler_owned', () => {
     expect(isResumableCronRun(run({ is_active: true }), NOW_MS)).toBe(true)
     expect(isResumableCronRun(run({ is_active: false }), NOW_MS)).toBe(false)

@@ -811,7 +811,13 @@ DEFAULT_CONFIG = {
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
         # if you want a different effort level; a one-time warning says so when the key is set.
-        "background_review": {"enabled": True, **_aux(120)},
+        # One-shot (-q/-Q) knobs, all optional: linger_timeout_s (default 240; 0 = no linger) bounds the
+        # wait for an in-flight review at exit; oneshot_learning (default false) keeps skill_manage and
+        # reviews memory after a substantive one-shot turn (oneshot_min_tool_calls, default = the
+        # skill nudge interval) for installs that resume one session per run. focus (default unset) is
+        # a standing instruction appended to every AUTOMATIC review (/refine's own focus wins).
+        "background_review": {"enabled": True, "linger_timeout_s": 240, "oneshot_learning": False,
+                              "focus": "", **_aux(120)},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

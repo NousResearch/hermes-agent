@@ -241,6 +241,111 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
         )
         return True, {}
 
+# Bounded linger for the post-turn review at one-shot process exit. The review needs a
+# prefill of the whole conversation plus a few tool turns; 4 minutes covers that on a local
+# box while staying far short of an interactive user's patience (which is why the linger is
+# one-shot only). See _linger_for_background_review in cli.py.
+_DRAIN_DEFAULT_S = 240.0
+
+
+def drain_timeout_s() -> float:
+    """``auxiliary.background_review.linger_timeout_s`` (default 240; ``0`` disables the linger)."""
+    try:
+        _enabled, task_cfg = load_background_review_settings()
+        return max(0.0, float((task_cfg or {}).get("linger_timeout_s", _DRAIN_DEFAULT_S)))
+    except Exception:  # noqa: BLE001 — a bad knob must not break shutdown
+        return _DRAIN_DEFAULT_S
+
+
+def drain_background_review(agent: Any, *, timeout: Optional[float] = None) -> bool:
+    """Bounded linger for the in-flight post-turn memory/skill review at process exit.
+
+    The review forks on a daemon thread. A one-shot CLI (``-q``/``-Q``, a kanban worker)
+    exits as soon as the turn is delivered, which truncates the fork before it writes
+    anything: the memories and skills it were consolidating are lost with no trace beyond a
+    truncated log. Mirrors ``process_registry.wait_for_pending_completions`` for the review
+    thread. Returns True when a review was in flight and finished inside the budget.
+    """
+    if agent is None:
+        return False
+    # A deferred review is memory-only, and there is no future idle window in a dying process.
+    with suppress(Exception):
+        from agent.review_idle_queue import QUEUE
+
+        QUEUE.dispatch_now(agent)
+    run = getattr(agent, "_background_review_run", None)
+    done = getattr(run, "request_done", None)
+    if done is None:
+        return False
+    budget = drain_timeout_s() if timeout is None else float(timeout)
+    if budget <= 0:
+        return False
+    finished = done.wait(budget)
+    if not finished:
+        logger.warning(
+            "Background review still running %.0fs after exit began — abandoning it; "
+            "raise auxiliary.background_review.linger_timeout_s to let it finish", budget)
+    return bool(finished)
+
+
+def oneshot_learning_enabled(task_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """``auxiliary.background_review.oneshot_learning`` (default off).
+
+    For installs whose one-shot runs are turns of a longer-lived identity (an orchestrator that
+    resumes the same session once per wake, a kanban worker): keep ``skill_manage`` in the tool
+    surface so the skill nudge can fire and the review fork can patch skills, and review memory
+    after a substantive turn (see :func:`oneshot_memory_review_due`)."""
+    try:
+        from utils import is_truthy_value
+
+        return is_truthy_value(_background_review_task_config(task_cfg).get("oneshot_learning"), default=False)
+    except Exception:  # noqa: BLE001 — a bad knob keeps the default
+        return False
+
+
+def turn_tool_call_count(messages: Any) -> int:
+    """Tool calls the CURRENT turn made: tool results after the last user message.
+
+    Counts calls, not loop iterations, so a model that batches eleven calls into one
+    response is as "substantive" as one that makes them one at a time."""
+    count = 0
+    for message in reversed(list(messages or [])):
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "user":
+            break
+        if role == "tool":
+            count += 1
+    return count
+
+
+def oneshot_memory_review_due(agent: Any, turn_tool_calls: int,
+                              task_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when a one-shot turn should get a memory review although the turn-count nudge did not fire.
+
+    Needs ``oneshot_learning`` on, automatic reviews enabled, a single-query session, and a
+    substantive turn: at least ``oneshot_min_tool_calls`` tool calls (default: the skill nudge
+    interval, 10), so a trivial probe never pays for a fork."""
+    from agent.oneshot_footprint import is_single_query_session
+
+    if not is_single_query_session():
+        return False
+    enabled, cfg = (True, task_cfg) if task_cfg is not None else load_background_review_settings()
+    if not enabled or not oneshot_learning_enabled(cfg):
+        return False
+    default_min = getattr(agent, "_skill_nudge_interval", 10) or 10
+    try:
+        min_calls = int((cfg or {}).get("oneshot_min_tool_calls", default_min))
+    except (TypeError, ValueError):
+        min_calls = default_min
+    return int(turn_tool_calls or 0) >= max(1, min_calls)
+
+
+def automatic_review_focus(task_cfg: Optional[Dict[str, Any]] = None) -> str:
+    """``auxiliary.background_review.focus``: standing instructions appended to AUTOMATIC reviews
+    (``/refine <text>`` supplies its own focus and wins). Empty when unset."""
+    focus = _background_review_task_config(task_cfg).get("focus")
+    return focus.strip() if isinstance(focus, str) else ""
+
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
@@ -1230,7 +1335,12 @@ def _run_review_fork(
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(t("display.review.summary_cli", summary=summary))
+    # ``-Q`` promises stdout carries only the final response; with the one-shot exit linger the
+    # review now finishes while the process is still alive, so its summary goes to the log there.
+    if getattr(agent, "suppress_status_output", False):
+        logger.info("Background review: %s", summary)
+    else:
+        agent._safe_print(t("display.review.summary_cli", summary=summary))
     if agent.background_review_callback:
         with suppress(Exception):
             agent.background_review_callback(t("display.review.summary_callback", summary=summary))
@@ -1335,7 +1445,8 @@ def spawn_background_review_thread(
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
     ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
-    to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
+    to the chosen prompt; automatic reviews pass ``None`` and get ``auxiliary.background_review.focus``
+    when configured. ``task_cfg`` is the pre-loaded
     ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
     (/refine) propagates to the fork's write origin so user-requested reviews keep the full
     memory operation set."""
@@ -1348,6 +1459,14 @@ def spawn_background_review_thread(
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
             f"focus — prioritize it over the general instructions above:\n{focus}"
+        )
+    elif not explicit and (standing := automatic_review_focus(task_cfg)):
+        # auxiliary.background_review.focus: the operator's standing focus for automatic reviews.
+        # Appended after the harness prompt (the last user message), so the replayed prefix and
+        # its prompt cache are untouched.
+        prompt = (
+            f"{prompt}\n\nThe operator configured this standing focus for automatic reviews — "
+            f"apply it in addition to the instructions above:\n{standing}"
         )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)

@@ -397,19 +397,34 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    boot witness was added) compares the start time only. Start times are compared with the shared
+    drift tolerance (``START_TIME_DRIFT_TOLERANCE``, 200 centiseconds): on macOS the boot-time basis
+    can drift between the spawn-time capture and a later re-derivation (upstream #117505), and an
+    exact comparison kills live workers — a recycled PID is essentially never within 2 s of the
+    original's start time, so tolerance loses nothing."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            return True
+        current_epoch, _, current_start = current.partition("|")
+        recorded_epoch, _, recorded_start = started_at.partition("|")
+        if current_epoch != recorded_epoch:
+            return True
+        from gateway.status import start_time_fingerprints_match
+        try:
+            return not start_time_fingerprints_match(recorded_start, current_start)
+        except (TypeError, ValueError):
+            return True
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     current = get_process_start_time(int(pid))
     if current is None:
         return True
     try:
-        return not _start_times_agree(current, started_at)
+        return not start_time_fingerprints_match(started_at, current)
     except (TypeError, ValueError):
         return True
 

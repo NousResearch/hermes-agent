@@ -1499,6 +1499,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 if self._tui_multiline_shortcuts:
                     _enable_extended_enter_keys(app.output)
                 self._pet_start_anim()
+                # Keep the on_status_bar_render plugin cache warm off the repaint
+                # path (see CLIStatusBarMixin._refresh_status_bar_plugin_values).
+                self._status_bar_plugin_refresh_start()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass

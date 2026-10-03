@@ -471,6 +471,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `on_status_bar_render` | Observer | On a dedicated background refresh thread while the interactive CLI is up, never on the prompt_toolkit repaint path; each callback's return value is rendered as one status-bar fragment (falsy returns contribute nothing). | `snapshot` | `snapshot` is a copy of the CLI status-bar state — model/provider routing, context token counts, session totals. No message body. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -1058,6 +1059,39 @@ def my_callback(session_id: str, platform: str, **kwargs):
 ---
 
 See the **[Build a Plugin guide](../../developer-guide/plugins/index.md)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `on_status_bar_render`
+
+Lets a plugin contribute extra fragments to the **interactive CLI status bar** (the footer line under the input box). Fragments are appended after the built-in fields in every width tier and reach both status-bar renderers, so one implementation covers the narrow, medium, and wide layouts.
+
+**Callback signature:**
+
+```python
+def my_callback(snapshot: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `snapshot` | `dict` | A copy of the status-bar snapshot: `model_name`, `model_short`, `duration`, `context_tokens`, `context_length`, `context_percent`, `session_total_tokens`, `session_api_calls`. Mutating it does not affect the renderer. |
+
+**Fires:** on a dedicated background refresh thread while the interactive CLI runs — **never** on the prompt_toolkit repaint path, so a callback that shells out (a configured shell hook) or probes an HTTP endpoint cannot stall a frame or freeze input. The refresh thread asks the callbacks at most once per second, with a bounded 3s wait per round; a timeout or an error leaves the previous contribution in place rather than blanking the footer. The loop starts with the TUI and stops at teardown, so it does not run on the one-shot `hermes -q` path (which has no status bar).
+
+**Return value:** A string (or any scalar) becomes one status-bar fragment; `None` and other falsy values contribute nothing. Control characters are collapsed to spaces, so a contribution can never break the footer onto a second line.
+
+```python
+def on_status_bar_render(snapshot, **kwargs):
+    total = snapshot.get("session_total_tokens") or 0
+    if not total:
+        return None
+    return f"⚡ {total / 1000:.1f}k"
+
+def register(ctx):
+    ctx.register_hook("on_status_bar_render", on_status_bar_render)
+```
+
+**Use cases:** quota or rate-limit badges, CI status, git ahead/behind counters, per-session cost or timer readouts.
 
 ---
 

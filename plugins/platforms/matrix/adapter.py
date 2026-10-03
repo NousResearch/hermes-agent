@@ -33,6 +33,7 @@ from contextlib import suppress
 import logging
 import mimetypes
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -73,7 +74,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
+    SendResult, classify_send_error, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -83,6 +84,68 @@ from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
+
+# Longest a single inline rate-limit wait may be: honor retry_after_ms, but never
+# stall an approval flow longer than this. Strictly below base's
+# ``_SEND_RETRY_INLINE_WAIT_CAP_SECS`` (60s) so a longer penalty is reported
+# unclamped and the delivery ledger owns the wait instead of this coroutine
+# (#91969: a 97-minute FloodWait slept verbatim froze inbound on every platform).
+_MATRIX_RATE_LIMIT_INLINE_WAIT_CAP_SECONDS = 45.0
+
+
+def _matrix_rate_limit_delay_seconds(exc: BaseException) -> Optional[float]:
+    """Return how long the homeserver asked us to wait before retrying.
+
+    Reads the homeserver's ``retry_after_ms`` (mautrix ``MLimitExceeded``),
+    ``retry_after`` seconds, or a ``Retry-After`` header; ``None`` when *exc*
+    is not a rate limit. Duck-typed (no mautrix import) so tests and
+    mautrix-free installs work. Falls back to 1s when limited with no value.
+    Unclamped — callers bound only what they sleep, so a long penalty still
+    reaches ``SendResult.retry_after`` and the outer inline-wait guard.
+    """
+    if exc is None:
+        return None
+    if getattr(exc, "errcode", "") == "M_LIMIT_EXCEEDED":
+        limited = True
+    else:
+        name = type(exc).__name__.lower()
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status", None)
+        limited = (
+            status == 429
+            or "limitexceeded" in name
+            or "rate_limit" in name
+            or "ratelimit" in name
+        )
+        if not limited:
+            try:
+                limited = classify_send_error(exc) == "rate_limited"
+            except Exception:
+                limited = False
+    if not limited:
+        return None
+    for attr, scale in (("retry_after_ms", 0.001), ("retry_after", 1.0)):
+        try:
+            raw = getattr(exc, attr, None)
+            if raw is not None:
+                return max(0.0, float(raw) * scale)
+        except (TypeError, ValueError):
+            continue
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is not None:
+        for key in ("Retry-After", "retry-after"):
+            try:
+                raw = headers.get(key)
+            except Exception:
+                raw = None
+            if raw is None:
+                continue
+            try:
+                return max(0.0, float(raw))
+            except (TypeError, ValueError):
+                continue
+    return 1.0
 
 
 def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
@@ -1433,6 +1496,37 @@ class MatrixAdapter(BasePlatformAdapter):
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
+                retry_after = _matrix_rate_limit_delay_seconds(exc)
+                if retry_after is not None:
+                    # ponytail: single retry honoring the homeserver delay, inline-bounded; the
+                    # failure carries the unclamped delay so outer _send_with_retry hands a long
+                    # penalty to the delivery ledger instead of sleeping it here.
+                    inline_wait = min(retry_after, _MATRIX_RATE_LIMIT_INLINE_WAIT_CAP_SECONDS)
+                    logger.warning(
+                        "Matrix: rate limited sending to %s, retrying in %.1fs: %s",
+                        chat_id, inline_wait, exc)
+                    await asyncio.sleep(inline_wait + random.uniform(0, 1))
+                    try:
+                        last_event_id = await self._send_room_message(chat_id, msg_content)
+                        logger.info(
+                            "Matrix: sent event %s to %s (after rate-limit backoff)",
+                            last_event_id, chat_id)
+                        continue
+                    except Exception as retry_exc:
+                        retry_after2 = _matrix_rate_limit_delay_seconds(retry_exc)
+                        # Only a still-rate-limited retry is transient: a permanent error raised by
+                        # the retry (MForbidden, room gone) must not be reported as rate_limited nor
+                        # re-advertise the first attempt's delay, or base backs off into a send
+                        # that can never succeed.
+                        error_kind = ("rate_limited" if retry_after2 is not None
+                                      else classify_send_error(retry_exc))
+                        logger.error(
+                            "Matrix: failed to send to %s after rate-limit backoff: %s",
+                            chat_id, retry_exc)
+                        return SendResult(
+                            success=False, error=str(retry_exc),
+                            retryable=error_kind in ("rate_limited", "transient"),
+                            retry_after=retry_after2, error_kind=error_kind)
                 if not (self._encryption and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
                     return SendResult(success=False, error=str(exc))
@@ -2712,9 +2806,29 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     async def redact_message(self, room_id: str, event_id: str, reason: str = "") -> bool:
-        return await self._client_op(
-            lambda: self._client.redact(RoomID(room_id), EventID(event_id), reason=reason or None),
-            ("Matrix: redacted %s in %s", event_id, room_id), "Matrix: redact error: %s")
+        if not self._client:
+            return False
+        try:
+            await self._client.redact(RoomID(room_id), EventID(event_id), reason=reason or None)
+            logger.info("Matrix: redacted %s in %s", event_id, room_id)
+            return True
+        except Exception as exc:
+            retry_after = _matrix_rate_limit_delay_seconds(exc)
+            if retry_after is not None:
+                # ponytail: single retry honoring the homeserver delay, inline-bounded (redact has
+                # no retry_after channel, so an over-cap wait is slept at the cap), no coalescing.
+                logger.warning("Matrix: redact rate limited, retrying in %.1fs: %s", retry_after, exc)
+                await asyncio.sleep(
+                    min(retry_after, _MATRIX_RATE_LIMIT_INLINE_WAIT_CAP_SECONDS) + random.uniform(0, 1))
+                try:
+                    await self._client.redact(RoomID(room_id), EventID(event_id), reason=reason or None)
+                    logger.info("Matrix: redacted %s in %s (after rate-limit backoff)", event_id, room_id)
+                    return True
+                except Exception as retry_exc:
+                    logger.warning("Matrix: redact retry failed: %s", retry_exc)
+                    return False
+            logger.warning("Matrix: redact error: %s", exc)
+            return False
 
     async def create_room(
         self, name: str = "", topic: str = "", invite: Optional[list] = None, is_direct: bool = False,

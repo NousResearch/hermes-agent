@@ -190,6 +190,10 @@ _SPECS = [
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
                   "translation --skill github-code-review"),
+        _arg("--declared-file", action="append", default=[], dest="declared_files", metavar="PATH",
+             help="File path this card's run will write (repeatable). The dispatcher "
+                  "holds any second card whose declared files overlap a running card's, "
+                  "so a colliding card queues instead of clobbering in-flight work."),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "

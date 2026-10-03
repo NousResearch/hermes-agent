@@ -492,6 +492,18 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "assignee's profile."
             ),
         },
+        "declared_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional list of filesystem paths this card's run "
+                "will write. The dispatcher holds back (queues, never "
+                "spawns) any second card whose declared files overlap "
+                "a running card's, so a colliding card waits instead "
+                "of clobbering in-flight work. Use for cards that "
+                "touch shared files (a hot repo, a config file)."
+            ),
+        },
         "goal_mode": _prop("boolean", (
                 "Run the dispatched worker in a goal loop. When true, "
                 "after each turn an auxiliary judge checks the worker's "

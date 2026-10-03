@@ -148,6 +148,11 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    skipped_file_claimed: list[str] = field(default_factory=list)
+    """Ready task ids held back (NOT claimed/spawned) because their declared
+    files overlap a currently-running card's declared files. Picked up on a
+    later tick once the holder completes; the deferral is what keeps a
+    colliding card from clobbering a sibling's in-flight work."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -175,6 +180,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.skipped_file_claimed:
+            counts["file_claimed"] = counts.get("file_claimed", 0) + len(res.skipped_file_claimed)
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
@@ -2022,6 +2029,40 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _normalize_claim_path(path: str) -> str:
+    """Canonical form for file-claim overlap comparison.
+
+    Collapses separators/``.`` via ``normpath`` and case-folds on Windows via
+    ``normcase`` (identity elsewhere) so ``C:\\repo\\x`` and ``c:/repo/x`` read
+    as the same claim. Blank inputs normalise to ``""`` (never matches).
+    """
+    p = (path or "").strip()
+    if not p:
+        return ""
+    return os.path.normcase(os.path.normpath(p))
+
+
+def _declared_paths(value: Any) -> set[str]:
+    """Normalised path set from a ``declared_files`` JSON column value."""
+    parsed = _kb._json_or(value)
+    if not isinstance(parsed, list):
+        return set()
+    return {_normalize_claim_path(str(p)) for p in parsed if p and str(p).strip()}
+
+
+def _running_file_claims(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """``task_id -> normalized declared-path set`` for every running card with claims."""
+    claims: dict[str, set[str]] = {}
+    for r in conn.execute(
+        "SELECT id, declared_files FROM tasks "
+        "WHERE status = 'running' AND declared_files IS NOT NULL"
+    ):
+        paths = _declared_paths(r["declared_files"])
+        if paths:
+            claims[r["id"]] = paths
+    return claims
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2084,6 +2125,27 @@ def _dispatch_lane_task(
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+
+    # File-claim guard: a card whose declared files overlap a running card's is
+    # held in 'ready' (queued), not claimed/spawned, so it can never clobber the
+    # running card's in-flight files. Released on a later tick once the holder
+    # completes (status leaves 'running'). Cards with no declared files skip the
+    # lookup entirely (the common case) so dispatch cost is unchanged.
+    declared = _declared_paths(_kb._row_get(row, "declared_files"))
+    if declared:
+        blocker = next(
+            (tid for tid, held in _running_file_claims(conn).items()
+             if tid != task_id and (declared & held)),
+            None,
+        )
+        if blocker is not None:
+            result.skipped_file_claimed.append(task_id)
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    _kb._append_event(
+                        conn, task_id, "skipped_file_claimed", {"blocked_by": blocker},
+                    )
+            return False
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
@@ -2269,7 +2331,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, declared_files FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()

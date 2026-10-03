@@ -311,6 +311,63 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         server._sessions.pop("iso-sid", None)
 
 
+def test_session_create_then_prompt_submit_routes_to_compute_host(monkeypatch):
+    """Regression for #107924: a real UI's session.create → prompt.submit path must keep
+    routing to the compute host under dashboard.turn_isolation. The existing
+    test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled seeds
+    agent=None directly without going through session.create, so it never exercises
+    the eager _schedule_agent_build (50ms timer) that defeats the lazy-session gate
+    in _session_uses_compute_host for any real client."""
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.frames = []
+            self.callback = None
+
+        def submit_turn(self, frame, *, on_complete=None):
+            self.frames.append(frame)
+            self.callback = on_complete
+            return frame["request_id"]
+
+    fake_supervisor = FakeSupervisor()
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
+
+    # Mirror what the real 50ms threading.Timer does — populate agent + signal agent_ready —
+    # without running the heavy AIAgent construction that would require a working provider.
+    def _fake_schedule(sid, delay=0.05):
+        sess = server._sessions.get(sid)
+        if sess is None:
+            return
+        sess["agent"] = types.SimpleNamespace()
+        sess["agent_ready"].set()
+
+    monkeypatch.setattr(server, "_schedule_agent_build", _fake_schedule)
+
+    try:
+        create_resp = server.handle_request(
+            {"id": "create", "method": "session.create", "params": {"messages": []}}
+        )
+        assert "error" not in create_resp, create_resp
+        sid = create_resp["result"]["session_id"]
+        # Real session.create arms a 50ms timer; any real UI (or iso-certify) takes longer
+        # than 50ms between create and submit, so by prompt time agent is already set.
+        assert server._sessions[sid]["agent"] is not None, "timer did not fire (test setup wrong)"
+        resp = server.handle_request(
+            {"id": "submit", "method": "prompt.submit",
+             "params": {"session_id": sid, "text": "hello"}}
+        )
+        assert "error" not in resp, resp
+        assert resp["result"].get("turn_isolation") is True, (
+            "prompt.submit fell back to the in-process path; the lazy-session gate was "
+            "defeated by the eager _start_agent_build scheduled at session.create time"
+        )
+        assert fake_supervisor.frames, "compute host supervisor never received the turn frame"
+    finally:
+        for sid in list(server._sessions):
+            server._sessions.pop(sid, None)
+
+
 def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
     class _Supervisor:
         def submit_turn(self, _frame, *, on_complete=None):

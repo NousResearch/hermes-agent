@@ -4,7 +4,7 @@ Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
 ``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
 (``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
 runs sync httpx connects through the process-wide Happy Eyeballs racer
-(``hermes_bootstrap``).
+(``hermes_network``).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sys
 import threading
 from typing import Any, Optional
 
-from hermes_bootstrap import _happy_eyeballs_create_connection
+from hermes_network import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 

@@ -48,6 +48,7 @@ class _BoundedOutputCollector:
         self._spill_fh: IO[str] | None = None
         self._spill_chars = 0
         self._spill_capped = False
+        self.render_truncated = False
 
     def _maybe_spill(self, text: str) -> None:
         """Tee ``text`` to the spill file (opened lazily on first overflow)."""
@@ -141,6 +142,7 @@ class _BoundedOutputCollector:
     def render(self, *, suffix: str = "") -> str:
         """Render within ``max_chars``, preserving a required status suffix."""
         with self._lock:
+            self.render_truncated = self._total_chars + len(suffix) > self.max_chars
             if len(suffix) >= self.max_chars:
                 return suffix[-self.max_chars :]
 
@@ -199,6 +201,9 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
 def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, returncode: int | None) -> dict:
     """Assemble a wait result, attaching spill metadata when overflow occurred."""
     result = {"output": rendered, "returncode": returncode}
+    if collector.render_truncated:
+        result["output_truncated"] = True
+        result["output_total_chars"] = collector.total_chars
     spill = collector.close_spill()
     if spill:
         result["output_total_chars"] = collector.total_chars

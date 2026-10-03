@@ -139,7 +139,7 @@ _TOOL_STUBS = {
         '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}'),
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
+        '"""Run a shell command (foreground only). Returns output and exit_code; output_truncated marks an incomplete preview. Pass the whole result to json_parse. For large data, process a file in terminal; full_output_path may hold saved output."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}'),
 }
 
@@ -210,11 +210,33 @@ _COMMON_HELPERS = '''\
 # Convenience helpers (avoid common scripting pitfalls)
 # ---------------------------------------------------------------------------
 
-def json_parse(text: str):
+def json_parse(text):
     """Parse JSON tolerant of control characters and UTF-8 BOM (strict=False).
     Use this instead of json.loads() when parsing output from terminal()
     or web_extract() that may contain raw tabs/newlines in strings,
-    or from tools/files that prepend a UTF-8 BOM (salvage #57870, credit @woxinwuhen713-bit)."""
+    or from tools/files that prepend a UTF-8 BOM (salvage #57870, credit @woxinwuhen713-bit).
+    Pass a whole terminal result dict to reject truncated previews before parsing.
+    A bare result["output"] string is rejected too when it carries the head/tail
+    truncation notice (raw newlines around it: never inside valid strict JSON).
+    For large JSON, redirect the command to a file and parse it on the same
+    backend; read_file content includes line numbers."""
+    import re as _re
+    if isinstance(text, dict):
+        if text.get("output_truncated") or text.get("full_output_path"):
+            raise ValueError(
+                "Terminal output is truncated; cannot parse the display preview as JSON. "
+                "Retrieve complete output when available, or redirect "
+                "the command to a file and parse it there."
+            )
+        text = text["output"]
+    if isinstance(text, str) and _re.search(
+            r"\\n\\n\\.\\.\\. \\[[A-Z][A-Z ]* TRUNCATED - [0-9,]+ [a-z]+ omitted out of [0-9,]+ total\\] \\.\\.\\.\\n\\n",
+            text):
+        raise ValueError(
+            "Text contains a terminal truncation notice; it is a display preview, not complete JSON. "
+            "Retrieve complete output when available, or redirect "
+            "the command to a file and parse it there."
+        )
     if isinstance(text, str) and text.startswith("\ufeff"):
         text = text[1:]
     return json.loads(text, strict=False)
@@ -870,7 +892,7 @@ _TOOL_DOC_LINES = [
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "    Foreground only (no background/pty). Returns output, exit_code; output_truncated marks incomplete previews. Use json_parse(result). For large JSON, process a file in terminal; full_output_path may hold saved output."),
 ]
 
 
@@ -919,8 +941,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
         "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "
-        "json_parse(text) — tolerant "
-        "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
+        "json_parse(text_or_result) — tolerant JSON parsing; pass the whole terminal() "
+        "result to reject truncated previews (a bare output string carrying the truncation "
+        "notice is rejected too); shell_quote(s) — shlex.quote for "
         "dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff."
     )
     return {

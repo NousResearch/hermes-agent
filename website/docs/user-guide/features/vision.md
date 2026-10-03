@@ -215,6 +215,10 @@ To override the automatic choice, set `agent.image_input_mode` in `config.yaml`:
 
 This is the knob to reach for when a backend accepts text but rejects native image input (for example an `openai-codex` account whose backend answers image requests with `server_error`): keep your main model and point `auxiliary.vision` at a different vision-capable provider and model (with `auxiliary.vision.provider: auto` the describer would auto-detect the same main model again). That alone switches images to the description path in `auto` mode; `agent.image_input_mode: text` makes the same choice explicit.
 
+:::note[My model has vision, but Telegram still runs vision_analyze on every photo]
+`auxiliary.vision.provider: main` counts as an explicit backend too. It does not mean "let the main model see the pixels" — it pins the *describer* to the main model, so `auto` mode still takes the text path and the main model ends up describing an image to itself. Set `auxiliary.vision.provider: auto` (and clear `model` / `base_url`) to get pixels back into the context, or force it with `agent.image_input_mode: native`. Each profile resolves this from its own `config.yaml`, which is why a Desktop session and a gateway bot on the same machine can behave differently: check `hermes config get auxiliary.vision` under the profile the bot runs as.
+:::
+
 Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](../configuration.md#auxiliary-models).
 
 ### `vision_analyze` has the same dual behavior

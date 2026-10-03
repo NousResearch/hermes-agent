@@ -400,6 +400,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    worker_records: Optional[list] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -428,6 +429,9 @@ def _build_children(
             )
         except ValueError as exc:
             return [], str(exc)
+        if worker_records is not None:
+            from tools.worker_roster import bind
+            bind(worker_records[i], child)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -566,18 +570,34 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
+    from tools import worker_roster
+    records = worker_roster.admit(parent_agent, task_list, live_deleg_id)
+    try:
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+            worker_records=records,
+        )
+    except BaseException:
+        for record in records:
+            worker_roster.finish(record, "failed")
+        raise
     if err:
+        for record in records:
+            worker_roster.finish(record, "failed")
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
         live_home=_live_home,
     )
-    return _run_batch(batch, background)
+    try:
+        return _run_batch(batch, background)
+    except BaseException:
+        for record in records:
+            if record.get("status") == "queued":
+                worker_roster.finish(record, "failed")
+        raise
 
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────

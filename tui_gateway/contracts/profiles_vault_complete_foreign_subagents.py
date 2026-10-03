@@ -643,6 +643,34 @@ method("subagent.list", params=SessionParams, result=SubagentListResult,
        doc="Live children owned by this session (other sessions' children never leak).")
 
 
+class WorkerObservation(Result):
+    run_id: str
+    owner_id: str
+    subagent_id: str
+    status: Literal["queued", "running", "waiting", "completed", "failed", "cancelled", "ended", "unknown"]
+    version: int
+    goal: str | None = None
+    parent_id: str | None = None
+    delegation_id: str | None = None
+    started_at: float | None = None
+    parent_run_id: str | None = None
+
+
+class WorkerSnapshotResult(Result):
+    schema_version: Literal[1]
+    snapshot_epoch: str
+    snapshot_seq: int
+    session_key: str
+    scope: Literal["native_delegate_task"]
+    coverage: Literal["admitted_since_upgrade"]
+    owner_available: bool
+    workers: list[WorkerObservation]
+
+
+method("subagent.snapshot", params=SessionParams, result=WorkerSnapshotResult,
+       doc="Profile and compression-lineage scoped durable delegate observations. Partial coverage never proves zero workers.")
+
+
 class SubagentIdParams(SessionParams):
     subagent_id: str
 

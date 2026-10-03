@@ -52,6 +52,19 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     if not sid:
         return
     record.setdefault("accepting_steer", True)
+    from hermes_constants import get_hermes_home
+    from tools.worker_roster import register
+    child = record.get("agent")
+    admission = getattr(child, "_worker_record", None)
+    if isinstance(admission, dict):
+        admission.update({k: v for k, v in record.items() if k != "status"})
+        record = admission
+        from tools.worker_roster import transition
+        transition(record, "running")
+    else:
+        register(record, get_hermes_home())
+        if child is not None:
+            child._worker_record = record
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
@@ -61,6 +74,8 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         record = _active_subagents.get(subagent_id)
         if record is None or not (agent is None or record.get("agent") is agent):
             return
+        from tools.worker_roster import finish
+        finish(record, "ended")
         _active_subagents.pop(subagent_id, None)
         sid = record.get("subagent_id")
         if not sid:
@@ -168,7 +183,7 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer", "_roster", "root_session_id", "parent_run_id", "_waiters"})
 
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,

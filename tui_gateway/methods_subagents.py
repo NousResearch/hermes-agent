@@ -50,6 +50,21 @@ def _visible_subagent_records(session_id, transport, owner):
             or _owns_subagent_record(r, agent)]
 
 
+@method("subagent.snapshot")
+def _(rid, params):
+    from tui_gateway import server
+    from tui_gateway.worker_snapshot import snapshot
+    session_id = _str_param(params, "session_id")
+    transport, owner = _current_session_steer_authority(session_id)
+    if transport is None or owner is None:
+        return _err(rid, 4001, "session not found or not owned by this transport")
+    try:
+        return _ok(rid, snapshot(server, owner))
+    except Exception:
+        logger.exception("worker snapshot unavailable")
+        return _err(rid, 5036, "worker snapshot unavailable")
+
+
 @method("subagent.list")
 def _(rid, params):
     session_id = _str_param(params, "session_id")

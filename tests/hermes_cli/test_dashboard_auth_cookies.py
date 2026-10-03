@@ -542,9 +542,11 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
     """uvicorn without ``proxy_headers`` leaves ``request.url.scheme`` "http"
     even though the browser-facing origin is HTTPS. The operator-declared
     public URL is the trusted statement of the public scheme (it already
-    drives the OAuth redirect_uri) — cookie hardening must key off it too,
-    or the PKCE cookie degrades to SameSite=Lax and Chromium's cross-site
-    302 drop bug (#56750, crbug 40508226) resurfaces behind such proxies."""
+    drives the OAuth redirect_uri) — but it certifies only its own origin:
+    hardening applies when the request's Host matches the declared hostname,
+    while a loopback/LAN bind alongside an https declaration keeps plain
+    cookies a browser would otherwise refuse (Secure over plaintext → the
+    PKCE cookie never arrives → /auth/callback 400s)."""
 
     @pytest.fixture
     def probe_app(self):
@@ -573,7 +575,9 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
 
     def test_https_public_url_env_declaration_counts_as_https(self, probe_app, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
-        assert self._client(probe_app).get("/probe").json()["https"] is True
+        # Proxy-fronted request: plain-HTTP backend, Host is the public name.
+        r = self._client(probe_app).get("/probe", headers={"Host": "dash.example.com"})
+        assert r.json()["https"] is True
 
     def test_https_public_url_config_declaration_counts_as_https(self, probe_app, monkeypatch):
         monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
@@ -581,17 +585,55 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
             "hermes_cli.config.load_config",
             lambda: {"dashboard": {"public_url": "https://from-config.example"}},
         )
-        assert self._client(probe_app).get("/probe").json()["https"] is True
+        r = self._client(probe_app).get("/probe", headers={"Host": "from-config.example"})
+        assert r.json()["https"] is True
 
     def test_https_declaration_hardens_pkce_cookie(self, probe_app, monkeypatch):
         """End-to-end pin: behind the proxy the PKCE cookie still gets the
         HTTPS shape (__Host- + SameSite=None + Secure), not bare Lax."""
         monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
-        cookies = self._client(probe_app).get("/set-pkce").headers.get_list("set-cookie")
+        cookies = self._client(probe_app).get(
+            "/set-pkce", headers={"Host": "dash.example.com"}
+        ).headers.get_list("set-cookie")
         pkce = next(c for c in cookies if c.startswith(f"__Host-{PKCE_COOKIE}="))
         assert "samesite=none" in pkce.lower()
         assert "; Secure" in pkce
         assert "HttpOnly" in pkce
+
+    def test_https_declaration_host_with_port_still_matches(self, probe_app, monkeypatch):
+        """A public URL without a port still certifies a Host that carries one
+        (non-default TLS termination port) — the port is not part of the
+        hostname the declaration vouches for."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
+        r = self._client(probe_app).get("/probe", headers={"Host": "dash.example.com:8443"})
+        assert r.json()["https"] is True
+
+    def test_https_declaration_host_is_case_insensitive(self, probe_app, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
+        r = self._client(probe_app).get("/probe", headers={"Host": "Dash.Example.COM"})
+        assert r.json()["https"] is True
+
+    @pytest.mark.parametrize("host", ["127.0.0.1:8080", "box.lan:8080", "backend:8080"])
+    def test_https_declaration_ignored_for_non_public_hosts(
+        self, probe_app, monkeypatch, host
+    ):
+        """The regression the global reading would cause: a loopback/LAN bind
+        alongside an https public_url must keep plain cookies — browsers
+        refuse Secure cookies on plaintext origins (RFC 6265bis §5.5), so the
+        PKCE cookie would never arrive and /auth/callback would 400."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.com")
+        client = self._client(probe_app)
+        assert client.get("/probe", headers={"Host": host}).json()["https"] is False
+        cookies = client.get(
+            "/set-pkce", headers={"Host": host}
+        ).headers.get_list("set-cookie")
+        pkce = next(
+            c for c in cookies
+            if c.startswith(f"{PKCE_COOKIE}=") and not c.startswith("__")
+        )
+        assert "samesite=lax" in pkce.lower()
+        assert "; Secure" not in pkce
 
     def test_http_public_url_declaration_stays_plain(self, probe_app, monkeypatch):
         """An http:// declaration (or plain loopback dev) must not mint
@@ -599,8 +641,10 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
         monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "http://dash.local")
         client = self._client(probe_app)
-        assert client.get("/probe").json()["https"] is False
-        cookies = client.get("/set-pkce").headers.get_list("set-cookie")
+        assert client.get("/probe", headers={"Host": "dash.local"}).json()["https"] is False
+        cookies = client.get(
+            "/set-pkce", headers={"Host": "dash.local"}
+        ).headers.get_list("set-cookie")
         pkce = next(
             c for c in cookies
             if c.startswith(f"{PKCE_COOKIE}=") and not c.startswith("__")
@@ -614,3 +658,11 @@ class TestDetectHttpsBehindTlsTerminatingProxy:
         monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
         assert self._client(probe_app).get("/probe").json()["https"] is False
+
+    def test_direct_tls_short_circuits_without_declaration(self, probe_app, monkeypatch):
+        """request.url.scheme == https decides on its own — no declaration
+        needed (unchanged pre-existing behaviour)."""
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        client = TestClient(probe_app, base_url="https://testserver")
+        assert client.get("/probe").json()["https"] is True

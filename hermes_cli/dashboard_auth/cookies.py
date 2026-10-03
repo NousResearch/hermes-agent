@@ -8,8 +8,10 @@ when the provider returned one, always cleared on logout/expiry), ``hermes_sessi
 is set on the /auth/login 302 and must survive the cross-site redirect chain — Chromium drops Lax
 cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s).
 ``Secure`` when ``request.url.scheme`` is https, or when the operator-declared public URL
-(``HERMES_DASHBOARD_PUBLIC_URL`` / ``dashboard.public_url``) is https — a TLS-terminating proxy in
-front of a plain-HTTP backend leaves the scheme "http" unless uvicorn runs with ``proxy_headers``.
+(``HERMES_DASHBOARD_PUBLIC_URL`` / ``dashboard.public_url``) is https AND the request's Host
+matches its hostname — a TLS-terminating proxy in front of a plain-HTTP backend leaves the
+scheme "http" unless uvicorn runs with ``proxy_headers``, but the declaration only certifies
+its own origin (a same-host loopback/LAN bind must keep plain cookies).
 Cookie-prefix hardening per
 draft-west-cookie-prefixes: bare name over HTTP; ``__Host-`` on gated HTTPS with Path=/;
 ``__Secure-`` behind a proxy prefix (``__Host-`` forbids Path != /). Setters and readers BOTH
@@ -226,10 +228,15 @@ def detect_https(request: Request) -> bool:
     Behind a TLS-terminating proxy with a plain-HTTP backend the scheme stays ``http`` unless
     uvicorn was started with ``proxy_headers``; the operator-declared public URL is then the
     trusted statement that the browser-facing origin is HTTPS (it already drives the OAuth
-    ``redirect_uri``), so cookie hardening keys off it too (#56750, #127100).
+    ``redirect_uri``). That statement certifies only *its own* origin, so it is honoured solely
+    for requests whose Host matches the declared hostname — a loopback/LAN bind alongside an
+    ``https`` declaration keeps plain cookies a browser would otherwise refuse (#56750, #127100).
     """
     if request.url.scheme == "https":
         return True
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
-    public_url = resolve_public_url()
-    return bool(public_url) and urlparse(public_url).scheme == "https"
+    parsed = urlparse(resolve_public_url())
+    if parsed.scheme != "https":
+        return False
+    host = request.headers.get("host", "").split(":")[0].lower()
+    return bool(host) and host == (parsed.hostname or "").lower()

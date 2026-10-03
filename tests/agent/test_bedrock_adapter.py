@@ -1686,3 +1686,72 @@ class TestSealedReasoningResendOnce:
             with pytest.raises(Exception, match="ValidationException"):
                 call_converse(region="us-east-1", model="m", messages=[{"role": "user", "content": "hi"}])
         assert client.converse.call_count == 1
+
+
+class TestResumeRebuildsSignedReasoning:
+    """``bedrock_content_blocks`` is memory-only, so after ``--resume`` the only route back to the signed
+    ``reasoningContent`` is the persisted ``reasoning_details`` column (#121293)."""
+
+    @staticmethod
+    def _resumed(history):
+        """The same history minus the sidecar: exactly what survives a process restart."""
+        return [{k: v for k, v in m.items() if k != "bedrock_content_blocks"} for m in history]
+
+    def test_streamed_signed_thinking_is_recorded_in_reasoning_details(self):
+        import base64
+        assert _kimi_turn_history()[1]["reasoning_details"] == [
+            {"type": "thinking", "thinking": "let me think", "signature": "sig-1"},
+            {"type": "redacted_thinking", "data": base64.b64encode(b"sealed").decode()},
+        ]
+
+    def test_sync_signed_thinking_is_recorded_in_reasoning_details(self):
+        from agent.bedrock_adapter import normalize_converse_response
+        msg = normalize_converse_response({
+            "output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {"text": "hmm", "signature": "s"}}}, {"text": "hi"}]}},
+            "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1},
+        }).choices[0].message
+        assert msg.reasoning_details == [{"type": "thinking", "thinking": "hmm", "signature": "s"}]
+
+    def test_resumed_history_replays_signed_reasoning_botocore_accepts(self):
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
+        import botocore.session
+        from botocore.validate import validate_parameters
+        from agent.bedrock_adapter import call_converse
+        shape = botocore.session.get_session().get_service_model("bedrock-runtime").operation_model("Converse").input_shape
+        client = MagicMock()
+
+        def converse(**kwargs):
+            validate_parameters(kwargs, shape)  # the real client-side validation
+            return _ok_converse_response()
+        client.converse.side_effect = converse
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            call_converse(region="us-east-1", model="global.moonshotai.kimi-k3",
+                          messages=self._resumed(_kimi_turn_history()))
+        replayed = client.converse.call_args.kwargs["messages"][1]["content"]
+        # Byte-for-byte what the in-process sidecar replay emits, in the order the blocks arrived.
+        assert replayed[0] == {"reasoningContent": {"reasoningText": {"text": "let me think", "signature": "sig-1"}}}
+        assert replayed[1] == {"reasoningContent": {"redactedContent": b"sealed"}}
+        assert "toolUse" in replayed[2]
+
+    def test_unsigned_thinking_is_neither_recorded_nor_replayed(self):
+        """A model that does not sign its thinking: the text is still displayed from ``reasoning_content``,
+        but an unsigned reasoning block is the one thing signing models reject, so none is replayed."""
+        from agent.bedrock_adapter import call_converse, normalize_converse_stream_events
+        msg = normalize_converse_stream_events({"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "open thought"}}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"text": "hello"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+        ]}).choices[0].message
+        assert msg.reasoning_content == "open thought" and msg.reasoning_details is None
+        client = MagicMock()
+        client.converse.return_value = _ok_converse_response()
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            call_converse(region="us-east-1", model="m", messages=[
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": "hello", "reasoning_content": msg.reasoning_content,
+                 "reasoning_details": msg.reasoning_details},
+                {"role": "user", "content": "again"}])
+        assert client.converse.call_args.kwargs["messages"][1]["content"] == [{"text": "hello"}]

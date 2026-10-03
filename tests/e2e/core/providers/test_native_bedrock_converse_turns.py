@@ -34,8 +34,6 @@ MODEL = "deepseek.v3-v1:0"
 KNOWN: dict[str, tuple[str, str]] = {
     "reasoning_shredded": (r"^persisted reasoning has blank lines between streamed deltas: ",
                            "#98468 streamed reasoning is persisted with '\\n\\n' between every delta"),
-    "resume_drops_reasoning": (r"^resumed assistant tool-use turn replayed without signed reasoningContent: ",
-                               "#121293 --resume replays Bedrock assistant turns without their signed reasoningContent"),
 }
 
 SEED_TEXT = "codeword PELICAN-5501"

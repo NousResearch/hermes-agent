@@ -115,12 +115,19 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Run History on the dashboard and in downstream "
                 "workers' context."
         )),
-        "metadata": _prop("object", (
+        "metadata": {
+            "type": "object",
+            "description": (
                 "Free-form dict of structured facts about this "
                 "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                 "\"findings\": [...]}. Surfaced to downstream "
                 "workers alongside ``summary``."
-        )),
+            ),
+            # Without this the sanitizer's ``properties: {}`` reads as a closed
+            # object and constrained models emit only ``{}``, dropping keys such
+            # as ``published_pr`` that PR acceptance requires.
+            "additionalProperties": True,
+        },
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
                 "task.result). Use ``summary`` instead when "

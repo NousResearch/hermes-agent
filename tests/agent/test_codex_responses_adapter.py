@@ -933,6 +933,61 @@ def test_normalize_codex_response_keeps_legitimate_cmd_json_answer(text):
     assert assistant_message.codex_message_items
 
 
+def _commentary_leak_response():
+    return SimpleNamespace(
+        status="completed", incomplete_details=None, output_text="",
+        output=[
+            SimpleNamespace(
+                type="message", role="assistant", status="completed", id="msg_1", phase="commentary",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='{"code":"import subprocess\\nr=subprocess.run(...)"}'
+                         "to=functions.execute_code 大发游戏官网 code",
+                )],
+            ),
+            SimpleNamespace(
+                type="function_call", id="fc_1", status="completed", name="execute_code",
+                arguments='{"code":"print(1)"}', call_id="call_1",
+            ),
+        ],
+    )
+
+
+def test_normalize_codex_response_strips_commentary_leak_alongside_structured_tool_call():
+    """#125458: a commentary/analysis message carrying leaked Harmony tool-call markup (arguments JSON +
+    ``to=functions.<name>`` + junk in the control slots) next to a REAL structured function_call never met
+    the ``not tool_calls`` recovery guard, so the junk was routed to the reasoning channel verbatim and
+    previewed to messaging users. The commentary channel never carries final answers, so strip it there
+    regardless of tool_calls; the structured call and the finish reason must be untouched."""
+    assistant_message, finish_reason = _normalize_codex_response(_commentary_leak_response(), issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert not (assistant_message.reasoning or "").strip()
+    assert not (assistant_message.content or "").strip()
+
+
+def test_normalize_codex_response_preserves_clean_commentary_narration():
+    """Clean commentary narration beside a structured call still reaches the reasoning channel."""
+    response = SimpleNamespace(
+        status="completed", incomplete_details=None, output_text="",
+        output=[
+            SimpleNamespace(
+                type="message", role="assistant", status="completed", id="msg_1", phase="commentary",
+                content=[SimpleNamespace(type="output_text", text="Reading the config first.")],
+            ),
+            SimpleNamespace(
+                type="function_call", id="fc_1", status="completed", name="read_file",
+                arguments='{"path":"x"}', call_id="call_1",
+            ),
+        ],
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.reasoning == "Reading the config first."
+
+
 def test_normalize_codex_response_failed_includes_code_in_error():
     """Regression: response_status == 'failed' should surface the error
     code, not just the message. Used to leak a bare 'Slow down' string

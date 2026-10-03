@@ -3956,11 +3956,15 @@ export interface Translations {
       toggleSessionTimer: string
       toggleTerminal: string
       toggleTokensPerSecond: string
+      toggleStreamTps: string
+      toggleTokenCounters: string
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
+      streamTpsTitle: string
+      tokenCountersTitle: string
       agents: string
       closeAgents: string
       openAgents: string

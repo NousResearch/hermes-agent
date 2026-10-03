@@ -123,6 +123,17 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
+def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
+    """Extract conditional activation fields from parsed frontmatter.
+
+    Delegates to ``agent.skill_utils.extract_skill_conditions`` — the same
+    helper the system-prompt builder uses — so listing and prompt always
+    parse conditions identically.
+    """
+    from agent.skill_utils import extract_skill_conditions
+    return extract_skill_conditions(frontmatter)
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
     (respects test monkeypatching), then skills.external_dirs."""
@@ -214,8 +225,13 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
+                # Conditional-activation fields ride along so callers (e.g.
+                # `skills list --enabled-only`) can apply the same gate the
+                # system-prompt builder uses.
+                conditions = _extract_conditions(frontmatter)
                 skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                               "category": _get_category_from_path(skill_md),
+                               "conditions": conditions})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

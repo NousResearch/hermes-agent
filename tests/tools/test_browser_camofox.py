@@ -140,6 +140,27 @@ class TestCamofoxSnapshot:
         assert "[e1]" in result["snapshot"]
         assert result["element_count"] == 2
 
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox.requests.get")
+    def test_snapshot_redacts_secrets(self, mock_get, mock_post, monkeypatch):
+        """Page-rendered secrets must not leak through the snapshot (cf. #122174)."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        fake_key = "sk-" + "FAKECamoFOXSNAPSHOTSECRET1234567890"
+        # Create session
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab-redact", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t-redact")
+
+        # Return snapshot containing a page-rendered secret
+        mock_get.return_value = _mock_response(json_data={
+            "snapshot": f'- heading "Settings" [e1]\n- text "API Key: {fake_key}" [e2]',
+            "refsCount": 2,
+        })
+        result = json.loads(camofox_snapshot(task_id="t-redact"))
+        assert result["success"] is True
+        assert "FAKECamoFOXSNAPSHOTSECRET" not in result["snapshot"]
+        # Non-secret content should survive
+        assert "[e1]" in result["snapshot"]
+
 
 # ---------------------------------------------------------------------------
 # Click / Type / Scroll / Back / Press

@@ -15,6 +15,7 @@ _EXPORTS = {
     "build_session_context_prompt": ".session",
     "DeliveryRouter": ".delivery",
     "DeliveryTarget": ".delivery",
+    "AuthenticatedPlatformContext": ".platform_context",
 }
 
 __all__ = list(_EXPORTS)

@@ -523,12 +523,24 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return cmd.name in overrides
 
 
-def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
+def help_query_matches(query: str, *fields: str) -> bool:
+    """Whether *query* occurs in one of *fields*, ignoring case. ``_`` and ``-`` compare equal
+    because Telegram shows ``/reload-mcp`` as ``/reload_mcp``."""
+    def fold(text: str) -> str:
+        return text.lower().replace("_", "-")
+
+    needle = fold(query)
+    return any(needle in fold(field) for field in fields if field)
+
+
+def gateway_help_lines(allowed: Optional[Iterable[str]] = None, query: str = "") -> list[str]:
     """Generate gateway help text lines from the registry.
 
     ``allowed`` (canonical names) restricts the catalog to what the caller may run -- the
     gateway passes a non-admin's slash-access floor + ``user_allowed_commands`` so /help never
-    advertises admin-only commands the dispatcher would then refuse.
+    advertises admin-only commands the dispatcher would then refuse. A non-empty ``query`` keeps
+    the commands whose name, alias, argument hint or description contains it
+    (``help_query_matches``).
     """
     overrides = _resolve_config_gates()
     allowed_set = None if allowed is None else set(allowed)
@@ -537,6 +549,9 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
         if not _is_gateway_available(cmd, overrides):
             continue
         if allowed_set is not None and cmd.name not in allowed_set:
+            continue
+        names = [f"/{cmd.name}", *(f"/{alias}" for alias in cmd.aliases)]
+        if query and not help_query_matches(query, *names, cmd.args_hint or "", cmd.describe()):
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         # Skip internal aliases like reload_mcp (underscore variant of the name).

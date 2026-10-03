@@ -41,7 +41,7 @@ def _stub_rpc(return_value):
     """Return an async mock for SignalAdapter._rpc that captures call params."""
     captured = []
 
-    async def mock_rpc(method, params, rpc_id=None):
+    async def mock_rpc(method, params, rpc_id=None, **kwargs):
         captured.append({"method": method, "params": dict(params)})
         return return_value
 

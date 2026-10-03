@@ -368,8 +368,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
-        last = SendResult(success=True)
-        for chunk in chunks:
+        return await self._send_chunks(chat_id, chunks, [], reply_to)
+
+    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[str],
+                           reply_to: Optional[str]) -> SendResult:
+        """Send ``chunks`` (one bubble each) after the ``delivered`` message GUIDs; a failure after one landed
+        is a partial result (see :meth:`_split_send_failed`), so the visible head is never sent again."""
+        for i, chunk in enumerate(chunks):
             guid = await self._resolve_chat_guid(chat_id)
             if not guid:
                 if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
@@ -378,9 +383,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
             if reply_to and self._private_api_enabled and self._helper_connected:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
-            if not (last := await self._post_message("/api/v1/message/text", payload)).success:
-                return last
-        return last
+            try:
+                data = (await self._api_post("/api/v1/message/text", payload)).get("data") or {}
+            except Exception as exc:
+                return self._split_send_failed(
+                    SendResult(success=False, error=str(exc) or type(exc).__name__), chunks[i:], delivered,
+                    unsent=self._send_never_landed(exc))
+            delivered.append(str(data.get("guid") or data.get("messageGuid") or "ok"))
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None)
+
+    async def _resume_partial_send(self, chat_id: str, result: SendResult, *, reply_to: Optional[str],
+                                   metadata: Optional[Dict[str, Any]]) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not self.client:
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to)
 
     # --- Media sending (outbound) ---
 

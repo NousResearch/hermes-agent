@@ -1026,10 +1026,15 @@ def direct_api_call(agent, api_kwargs: dict):
     # (fail-closed), and a leaked heartbeat thread would mask real stalls forever.
     call_start = time.time()
     stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
-    # Never override an explicit per-call timeout; otherwise pin read=stale_timeout so a
-    # no-op abort can't leave the read=None socket hanging until TCP dies (#85252).
+    # Never override a finite explicit per-call timeout. For timeout=None or an
+    # httpx.Timeout with read=None, replace the whole timeout object: the missing
+    # read bound leaves the request unbounded, so the hard backstop must cover it.
     hard_timeout = _inline_nonstream_hard_timeout(stale_timeout)
-    if hard_timeout is not None and "timeout" not in api_kwargs:
+    existing_timeout = api_kwargs.get("timeout")
+    existing_read_timeout = getattr(existing_timeout, "read", object())
+    if hard_timeout is not None and (
+        "timeout" not in api_kwargs or existing_timeout is None or existing_read_timeout is None
+    ):
         api_kwargs = {**api_kwargs, "timeout": hard_timeout}
     request = _InlineRequest(agent, api_kwargs, stale_timeout, call_start)
     request.start_watchdogs()

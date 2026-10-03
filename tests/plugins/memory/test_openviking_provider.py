@@ -1517,6 +1517,32 @@ def test_queue_prefetch_is_noop_for_openviking_recall(monkeypatch):
     assert constructed_clients == []
 
 
+def test_memory_only_prefetch_bypasses_session_planner():
+    captured_calls = []
+
+    class StubClient:
+        def post(self, path, payload=None, **kwargs):
+            captured_calls.append((path, payload))
+            return {"result": {"memories": [], "resources": []}}
+
+    openviking_module.OpenVikingMemoryProvider._post_prefetch_search(
+        StubClient(), "anything", "sid-123", limit=24,
+        context_type="memory", deadline=10**30, request_timeout=1,
+    )
+
+    assert captured_calls == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "anything",
+                "limit": 24,
+                "score_threshold": 0,
+                "context_type": "memory",
+            },
+        )
+    ]
+
+
 def test_prefetch_sends_contract_safe_memory_context_payload(monkeypatch):
     provider = _make_prefetch_provider()
 

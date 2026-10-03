@@ -49,6 +49,77 @@ class TestFormatSessionInfo:
         assert "localhost:11434" in info
         assert "8K" in info
 
+    def test_free_tier_cap_note_appears_below_family_window(self, runner, tmp_path):
+        """#47247: `deepseek-v4-flash-free` resolving to 200K (its real provider cap) reads
+        as a detection failure next to the 1M family catalog entry; the info block must say
+        the cap is deliberate. Driven through the real resolver with the models.dev lookup
+        patched — no context is mocked below the resolver itself."""
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: deepseek-v4-flash-free\n  provider: opencode-zen\n",
+            "deepseek-v4-flash-free",
+            {"provider": "opencode-zen", "base_url": "", "api_key": ""})
+        with p1, p2, p3, patch(
+            "agent.models_dev.lookup_models_dev_context", return_value=200000,
+        ):
+            info = runner._format_session_info()
+        assert "200K tokens (detected)" in info
+        assert "ℹ" in info
+        assert "free tier" in info
+        assert "deepseek-v4-flash" in info
+        assert "model_overrides.opencode-zen.deepseek-v4-flash-free.context_window" in info
+
+    def test_explicit_context_pin_suppresses_free_tier_note(self, runner, tmp_path):
+        """A deliberate model.context_length pin is never second-guessed by the cap note."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: deepseek-v4-flash-free\n  provider: opencode-zen\n"
+            "  context_length: 200000\n",
+            "deepseek-v4-flash-free",
+            {"provider": "opencode-zen", "base_url": "", "api_key": ""})
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "200K tokens (config)" in info
+        assert "ℹ" not in info
+
+    def test_explicit_model_overrides_pin_suppresses_free_tier_note(self, runner, tmp_path, monkeypatch):
+        """#47247: the cap note names model_overrides.<provider>.<model>.context_window as the
+        escape hatch, so an override that is actually set must silence the note — an explicit
+        override window reads as a declared "config" window, like model.context_length. HERMES_HOME
+        is redirected at config.yaml so the models.dev override chain reads the same file the
+        gateway resolver does; only the network lookup is patched."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: deepseek-v4-flash-free\n  provider: opencode-zen\n"
+            "model_overrides:\n  opencode-zen:\n    deepseek-v4-flash-free:\n"
+            "      context_window: 524288\n",
+            "deepseek-v4-flash-free",
+            {"provider": "opencode-zen", "base_url": "", "api_key": ""})
+        with p1, p2, p3, patch(
+            "agent.models_dev.lookup_models_dev_context", return_value=200000,
+        ):
+            info = runner._format_session_info()
+        assert "524K tokens (config)" in info
+        assert "ℹ" not in info
+
+    def test_default_fill_gap_override_does_not_silence_free_tier_note(self, runner, tmp_path, monkeypatch):
+        """The complementary invariant: a ``_default`` override is fill-gap, not a declared window
+        for this model — it must NOT flip context_source to "config" and must NOT silence the note."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: deepseek-v4-flash-free\n  provider: opencode-zen\n"
+            "model_overrides:\n  opencode-zen:\n    _default:\n      context_window: 262144\n",
+            "deepseek-v4-flash-free",
+            {"provider": "opencode-zen", "base_url": "", "api_key": ""})
+        with p1, p2, p3, patch(
+            "agent.models_dev.lookup_models_dev_context", return_value=200000,
+        ):
+            info = runner._format_session_info()
+        assert "200K tokens (detected)" in info
+        assert "ℹ" in info
+        assert "free tier" in info
+
     def test_moa_preset_names_the_billed_aggregator(self, runner, tmp_path):
         """#112359: the preset name hides who pays; /model must name the acting aggregator."""
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: review\n  provider: moa\n",

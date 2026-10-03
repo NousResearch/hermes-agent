@@ -23,6 +23,7 @@ INVITE_PERMISSION_BITS = {
     "Embed Links": 14,
     "Attach Files": 15,
     "Read Message History": 16,
+    "Use External Emojis": 18,
     "Connect": 20,
     "Speak": 21,
     "Create Public Threads": 35,

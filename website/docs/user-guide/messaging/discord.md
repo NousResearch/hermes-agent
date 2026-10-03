@@ -224,7 +224,7 @@ These are the minimum permissions your bot needs:
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
 | Recommended | `309238025280` | All of the above plus Embed Links, Create Public Threads, Send Messages in Threads, Add Reactions |
-| Full (what `hermes gateway setup` prints) | `309240908864` | Recommended plus Connect and Speak (voice channels) |
+| Full (what `hermes gateway setup` prints) | `309241171008` | Recommended plus Connect and Speak (voice channels) |
 
 Existing installations do not gain newly requested permissions automatically.
 If you used an older Recommended URL, re-invite the bot with the URL above to

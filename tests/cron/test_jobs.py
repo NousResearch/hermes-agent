@@ -234,6 +234,16 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("0 9 * * FUNDAY")
 
+    @pytest.mark.parametrize("expr", ["0 0 30 2 *", "0 0 31 4 *"])
+    def test_cron_that_never_matches_a_date_is_rejected_with_its_cause(self, expr):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError, match="no calendar date ever matches"):
+            parse_schedule(expr)
+
+    def test_leap_day_cron_is_still_accepted(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("0 0 29 2 *")["kind"] == "cron"
+
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
         assert result["kind"] == "once"

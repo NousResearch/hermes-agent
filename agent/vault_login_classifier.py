@@ -247,7 +247,19 @@ def build_inspection_js(nonce: str) -> str:
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
-  const elements = Array.from(document.querySelectorAll("input, select"));
+  // Home Assistant (and other same-document component UIs) render login
+  // controls inside open shadow roots.  Walk only roots exposed by the
+  // current document: closed roots and iframe documents are deliberately
+  // unreachable, so this cannot cross an origin boundary.
+  const roots = [document];
+  const elements = [];
+  for (let cursor = 0; cursor < roots.length; cursor += 1) {
+    const root = roots[cursor];
+    for (const element of root.querySelectorAll("input, select")) elements.push(element);
+    for (const host of root.querySelectorAll("*")) {
+      if (host.shadowRoot) roots.push(host.shadowRoot);
+    }
+  }
   const forms = Array.from(document.forms);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
@@ -256,9 +268,15 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
     const style = getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden" || element.getClientRects().length === 0) return [];
     const labels = element.labels ? Array.from(element.labels, (l) => l.textContent || "") : [];
+    const elementRoot = element.getRootNode();
     const ariaText = (element.getAttribute("aria-labelledby") || "")
       .split(/\\s+/).filter(Boolean)
-      .map((id) => { const n = document.getElementById(id); return n ? (n.textContent || "") : ""; })
+      .map((id) => {
+        const n = elementRoot.getElementById
+          ? elementRoot.getElementById(id)
+          : elementRoot.querySelector("#" + CSS.escape(id));
+        return n ? (n.textContent || "") : "";
+      })
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
@@ -309,8 +327,27 @@ _FILL_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
+  const openRoots = () => {
+    const roots = [document];
+    for (let cursor = 0; cursor < roots.length; cursor += 1) {
+      for (const host of roots[cursor].querySelectorAll("*")) {
+        if (host.shadowRoot) roots.push(host.shadowRoot);
+      }
+    }
+    return roots;
+  };
+  // The slot is a random nonce stamped by this inspection. Searching open
+  // same-document roots preserves that binding without reaching closed roots
+  // or iframe documents.
+  const findStamped = (slot) => {
+    for (const root of openRoots()) {
+      const match = root.querySelector('[data-hermes-vault-slot="' + slot + '"]');
+      if (match) return match;
+    }
+    return null;
+  };
   for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    const el = findStamped(nonce + ':' + f.index);
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -328,6 +365,8 @@ _FILL_JS_TEMPLATE = """(() => {
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  for (const root of openRoots()) {
+    root.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  }
   return JSON.stringify({ filled });
 })()"""

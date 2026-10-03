@@ -110,3 +110,62 @@ def test_entry_point_reports_a_finished_batch_as_success(tmp_path):
         ["--prompts_file", str(prompts), "--output_file", str(tmp_path / "out.jsonl"),
          "--api_key", "test-key"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _prompts_file(tmp_path, count=3):
+    path = tmp_path / "prompts.jsonl"
+    path.write_text("".join('{"prompt": "p%d"}\n' % i for i in range(count)))
+    return path
+
+
+def test_entry_point_reports_a_batch_whose_tasks_did_not_complete(tmp_path):
+    prompts = _prompts_file(tmp_path)
+    stub = ("m.MiniSWERunner.run_task = lambda self, task: "
+            "{'completed': False, 'api_calls': 0, 'conversations': []}")
+    proc = _run_entry_point_with_stub(
+        tmp_path, stub,
+        ["--prompts_file", str(prompts), "--output_file", str(tmp_path / "out.jsonl"),
+         "--api_key", "test-key"])
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "did not complete" in proc.stderr
+
+
+def test_entry_point_reports_a_batch_with_one_failed_task(tmp_path):
+    prompts = _prompts_file(tmp_path)
+    stub = ("import itertools\n"
+            "_outcomes = itertools.cycle([True, False, True])\n"
+            "m.MiniSWERunner.run_task = lambda self, task: "
+            "{'completed': next(_outcomes), 'api_calls': 1, 'conversations': []}")
+    proc = _run_entry_point_with_stub(
+        tmp_path, stub,
+        ["--prompts_file", str(prompts), "--output_file", str(tmp_path / "out.jsonl"),
+         "--api_key", "test-key"])
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "1 of 3" in proc.stderr
+
+
+def test_entry_point_prefers_task_over_an_unreadable_prompts_file(tmp_path):
+    trajectory = tmp_path / "trajectory.jsonl"
+    stub = ("m.MiniSWERunner.run_task = lambda self, task: "
+            "{'completed': True, 'api_calls': 1, 'conversations': []}")
+    # A task invocation must not be made to fail by a prompts file it never uses.
+    proc = _run_entry_point_with_stub(
+        tmp_path, stub,
+        ["--task", "2+2", "--prompts_file", str(tmp_path / "missing.jsonl"),
+         "--output_file", str(trajectory), "--api_key", "test-key"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert trajectory.exists()
+
+
+def test_entry_point_prefers_task_over_an_empty_prompts_file(tmp_path):
+    trajectory = tmp_path / "trajectory.jsonl"
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    stub = ("m.MiniSWERunner.run_task = lambda self, task: "
+            "{'completed': True, 'api_calls': 1, 'conversations': []}")
+    proc = _run_entry_point_with_stub(
+        tmp_path, stub,
+        ["--task", "2+2", "--prompts_file", str(empty),
+         "--output_file", str(trajectory), "--api_key", "test-key"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert trajectory.exists()

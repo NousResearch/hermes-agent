@@ -13,7 +13,7 @@ Usage:
 
 Exit codes:
     0  task completed, or the batch finished
-    1  task ran but did not complete (iteration ceiling), or the prompts file held no prompts
+    1  a task ran but did not complete, a batch row failed, or the prompts file held no prompts
     2  usage error (neither --task nor --prompts_file given)
 """
 
@@ -391,7 +391,7 @@ def main(
         raise SystemExit(2)
 
     prompts = None
-    if prompts_file:
+    if prompts_file and not task:
         prompts = _load_prompts(prompts_file)
         if not prompts:
             print(f"❌ No prompts found in {prompts_file}", file=sys.stderr)
@@ -416,7 +416,13 @@ def main(
         # completed=False; a CI step or wrapper driving this must not read that as success.
         raise SystemExit(0 if result["completed"] else 1)
     else:
-        runner.run_batch(prompts, output_file)
+        results = runner.run_batch(prompts, output_file)
+        # A batch row carries the same completed=False the single-task arm reports on, so a
+        # wrapper driving this must see a failing task as a failing run too.
+        failed = sum(1 for row in results if not row.get("completed"))
+        if failed:
+            print(f"❌ {failed} of {len(results)} task(s) did not complete", file=sys.stderr)
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

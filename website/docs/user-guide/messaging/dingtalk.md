@@ -277,7 +277,7 @@ For more information on securing your Hermes Agent deployment, see the [Security
 - **AI Cards**: Optionally reply with rich AI Cards instead of plain markdown. Configure via `card_template_id`.
 - **Emoji Reactions**: Automatic 🤔Thinking/🥳Done reactions for processing status.
 - **Markdown responses**: Replies are formatted in DingTalk's markdown format for rich text display.
-- **Media support**: Images and files in incoming messages are automatically resolved and can be processed by vision tools.
+- **Media support**: Images, videos and files in incoming messages are automatically resolved and can be processed by vision and media tools.
 - **Message deduplication**: The adapter deduplicates messages with a 5-minute window to prevent processing the same message twice.
 - **Auto-reconnection**: If the stream connection drops, the adapter automatically reconnects with exponential backoff.
 - **Message length limit**: Responses are capped at 20,000 characters per message. Longer responses are truncated.

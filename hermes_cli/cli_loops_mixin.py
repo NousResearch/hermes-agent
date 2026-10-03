@@ -459,19 +459,19 @@ class CLILoopsMixin:
         payload = _slash_args(cmd_original)
         if not payload:
             _cprint(f"  {t('cli.steer.usage')}")
-        elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
+            return
+        if self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
             try:
                 accepted = self.agent.steer(payload)
             except Exception as exc:
                 _cprint(f"  {t('cli.steer.failed', error=exc)}")
-            else:
-                if accepted:
-                    _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
-                else:
-                    _cprint(f"  {t('cli.steer.rejected_empty')}")
-        else:
-            self._pending_input.put(payload)
-            _cprint(f"  {t('cli.steer.no_agent_queued', preview=_preview(payload))}")
+                return
+            if accepted:
+                _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
+                return
+        # No run, or the run already made its final steer drain: the next turn delivers it.
+        self._pending_input.put(payload)
+        _cprint(f"  {t('cli.steer.no_agent_queued', preview=_preview(payload))}")
 
     # ────────────────────────────────────────────────────────────────
     # Session-bound managers: /goal (Ralph-style loop), /heartbeat, /loop

@@ -1,7 +1,7 @@
 """Outer-iteration bookkeeping for the conversation turn loop, in call order:
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
-standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
+standalone user row after a tool-result tail, run-budget wrap-up notice, tool_call
 argument sanitization, interrupt-scaffold ghost-row drop, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
@@ -147,7 +147,7 @@ def prepare_iteration(
         logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
-    # standalone user row after the newest tool result (never smeared onto the tool row: that
+    # standalone user row after a tool-result tail (never smeared onto the tool row: that
     # row is already persisted append-only, so replay would diverge from the live request and
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
@@ -263,15 +263,17 @@ def _previous_tool_round(messages: Any) -> list:
 
 
 def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
-        _sm = messages[_si]
-        if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import steer_user_row
-            messages.insert(_si + 1, steer_user_row(steer_text))
-            logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
-            return
+    """Append the steer marker as a standalone user row when a tool result is the live tail;
+    otherwise put the text back for the post-tool-execution drain or the turn-end handoff.
+
+    Never spliced mid-list: rows after an older tool result belong to an earlier turn or were
+    already flushed append-only, so an insert would reorder the live request against state.db
+    (and against every replay of it) and show the note at the wrong point in the past."""
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
+        from agent.prompt_builder import steer_user_row
+        messages.append(steer_user_row(steer_text))
+        logger.debug("Pre-API-call steer drain: appended user row after the tool-result tail")
+        return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
 
@@ -350,6 +352,11 @@ def begin_iteration(
 
     _redirect_text = agent._drain_pending_redirect()
     if _redirect_text:
+        # A steer accepted while the tool result was still the tail lands there now, before the
+        # correction rows bury it (the pre-API drain appends only after a tool-result tail).
+        _steer_text = agent._drain_pending_steer()
+        if _steer_text:
+            _inject_steer_after_newest_tool_result(agent, messages, _steer_text)
         _apply_active_turn_redirect(agent, messages, _redirect_text)
         if isinstance(original_user_message, str):
             original_user_message = (

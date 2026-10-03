@@ -181,7 +181,7 @@ Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 
 `/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
 
-A `200` (and the `run.steered` event) means the text was **queued**, not that the agent consumed it. If a steer lands after the agent's final response — with no later tool boundary to deliver it at — the undelivered text is returned as `pending_steer` on the terminal event (`run.completed`, `run.failed`, or `run.cancelled`) and run status, so the client can replay it as the next user turn instead of losing it.
+A `200` (and the `run.steered` event) means the text was **queued**, not that the agent consumed it. If a steer lands after the agent's final response — with no later tool boundary to deliver it at — the undelivered text is returned as `pending_steer` on the terminal event (`run.completed`, `run.failed`, or `run.cancelled`) and run status, so the client can replay it as the next user turn instead of losing it. That hand-back closes the agent's steer acceptance in the same step, so a steer sent after it (while the status still reads `running`) returns `409 steer_not_accepted` instead of being queued where nothing would deliver it; send it as the next turn.
 
 #### Terminal run status
 

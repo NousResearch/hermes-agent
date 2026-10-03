@@ -1091,7 +1091,8 @@ class GatewayBusySessionMixin:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return t("gateway.steer.failed", error=exc)
         if not accepted:
-            return t("gateway.steer.rejected_empty")
+            # The run already made its final steer drain (the text is non-empty): queue it.
+            return _queue_fallback(t("gateway.steer.queued_no_agent"))
         self._fold_into_running_turn(running_agent, quick_key, event)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = (t("gateway.steer.target_subagents") if self._agent_has_active_subagents(running_agent)

@@ -225,7 +225,7 @@ class InterruptControlMixin:
         will no longer happen, and re-injecting the note into the post-stop turn would surprise the
         user. Every other caller (redirect rebuild, error recovery, turn-boundary hygiene) continues
         this session, so the already-accepted steer must survive: it stays buffered for the existing
-        drains — the pre-API inject, the post-batch append, or the finalizer's leftover handoff —
+        drains — the pre-API inject, the post-batch append, or the turn-end leftover handoff —
         instead of silently vanishing after the surface was told it was delivered."""
         with _ic_lock(self, "_pending_redirect_lock"):
             if preserve_redirect and not _ic_slot(self, "_pending_redirect_lock", "_pending_redirect"):
@@ -249,14 +249,32 @@ class InterruptControlMixin:
 
     def steer(self, text: str) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
-        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
+        interrupt); multiple calls concatenate with newlines. Returns False for empty text, and once the
+        turn's final drain closed acceptance (the surface then queues the text as the next message)."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
+            if getattr(self, "_steer_closed", False):
+                return False
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
         return True
+
+    def _reopen_steer(self) -> None:
+        """Turn start: accept ``steer()`` again after the previous turn's :meth:`_close_steer`."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            self._steer_closed = False
+
+    def _close_steer(self) -> Optional[str]:
+        """Turn end: drain the pending steer and stop accepting new ones in ONE critical section, so a
+        concurrent ``steer()`` either lands in the returned text or is rejected — never acknowledged
+        and then left for an unrelated later turn."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
+            self._pending_steer = None
+            self._steer_closed = True
+        return text
 
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that

@@ -2323,11 +2323,8 @@ def user_systemd_unit_dir() -> Path:
     ``enable`` failed with "Unit ... does not exist" (#98699). ``systemctl --user`` targets the login
     user's session, so the unit dir follows the account home like ``get_launchd_plist_path()`` does.
     """
-    if os.name == "posix":
-        import pwd
-
-        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "systemd" / "user"
     from hermes_constants import get_real_home
+
     config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
     base = Path(config_home) if config_home else Path(get_real_home()) / ".config"
     return base / "systemd" / "user"

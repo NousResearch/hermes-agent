@@ -1,9 +1,6 @@
 """User systemd unit location and identity: the account home owns the unit dir (#98699) and a bare
 ``hermes-gateway.service`` pinning THIS home is this home's service (#109476)."""
 
-import os
-from pathlib import Path
-
 import pytest
 
 import hermes_cli.gateway as gateway
@@ -30,16 +27,15 @@ def test_user_unit_dir_follows_the_account_home_not_a_profile_pinned_process_hom
     assert not unit_path.is_relative_to(process_home)
 
 
-def test_user_unit_dir_uses_passwd_home_when_process_home_differs(tmp_path, monkeypatch):
-    monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+def test_user_unit_dir_preserves_xdg_config_home_precedence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path / "account-home"))
     monkeypatch.setenv("HOME", str(tmp_path / "foreign-home"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "foreign-config"))
-
-    import pwd
+    config_home = tmp_path / "foreign-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
 
     unit_path = gateway.get_systemd_unit_path(system=False)
 
-    assert unit_path.parent == Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "systemd" / "user"
+    assert unit_path.parent == config_home / "systemd" / "user"
 
 
 def test_bare_user_unit_pinning_this_custom_home_is_adopted_by_lifecycle_commands(tmp_path, monkeypatch):

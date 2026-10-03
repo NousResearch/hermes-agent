@@ -17,7 +17,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { revealFile } from '@/store/file-actions'
-import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, activeGatewayConnectionId, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
@@ -340,21 +340,28 @@ function isRetryableProjectTreeReadError(error: unknown): boolean {
 }
 
 interface ActiveProjectsContext {
+  connectionId: null | string
   gateway: HermesGateway
   profile: string
 }
 
 function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && projectProfile() === context.profile
+  return stillOnWritableProjectOwner(context) && projectProfile() === context.profile
 }
 
 // Writes follow the selected gateway/profile even if the sidebar is showing
 // All profiles. That filter changes the view, not the destination.
 function stillOnWritableProjectOwner(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && normalizeProfileKey($activeGatewayProfile.get()) === context.profile
+  return (
+    activeGateway() === context.gateway &&
+    normalizeProfileKey($activeGatewayProfile.get()) === context.profile &&
+    activeGatewayConnectionId() === context.connectionId
+  )
 }
 
 async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
+  const connectionId = activeGatewayConnectionId()
+
   if (!profile || profile === ALL_PROFILES) {
     throw new Error('Projects are unavailable while viewing all profiles')
   }
@@ -365,11 +372,11 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || !stillOnWritableProjectOwner({ gateway, profile })) {
+  if (!gateway || !stillOnWritableProjectOwner({ connectionId, gateway, profile })) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
-  return { gateway, profile }
+  return { connectionId, gateway, profile }
 }
 
 function applyPayload(payload: ProjectsPayload): void {
@@ -424,12 +431,36 @@ const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
 let projectTreeRefreshGeneration = 0
 
-function applyProjectTreePayload(res: ProjectTreePayload): void {
+// Like REST session-list rows, tree-only rows need the exact registry owner.
+// Tag copies at the response boundary; never derive ownership when clicked.
+function tagProjectSessionConnection(project: SidebarProjectTree, connectionId: null | string): SidebarProjectTree {
+  if (!connectionId) {
+    return project
+  }
+
+  const tag = (session: SessionInfo): SessionInfo => ({ ...session, connection_id: connectionId })
+
+  return {
+    ...project,
+    ...(project.previewSessions ? { previewSessions: project.previewSessions.map(tag) } : {}),
+    repos: project.repos.map(repo => ({
+      ...repo,
+      groups: repo.groups.map(group => ({ ...group, sessions: group.sessions.map(tag) }))
+    }))
+  }
+}
+
+function applyProjectTreePayload(res: ProjectTreePayload, connectionId: null | string): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
   // The tree refreshes on every sessions.changed and window focus, and most of
   // those answers are unchanged. Keep unchanged nodes by reference so the
   // entered project doesn't refetch and rebuild on a no-op (#77591).
-  $projectTree.set(replaceEqualDeep($projectTree.get(), res.projects ?? []))
+  $projectTree.set(
+    replaceEqualDeep(
+      $projectTree.get(),
+      (res.projects ?? []).map(project => tagProjectSessionConnection(project, connectionId))
+    )
+  )
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 
@@ -483,7 +514,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       return
     }
 
-    applyProjectTreePayload(res)
+    applyProjectTreePayload(res, context.connectionId)
     markProjectsRpcSuccess()
   } catch (err) {
     if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
@@ -518,6 +549,7 @@ export async function refreshProjectTree(): Promise<void> {
 // the REST fan-out reads every profile's databases directly instead of asking
 // us to hold a backend open per profile just to draw lanes.
 async function refreshProjectTreeAcrossProfiles(): Promise<void> {
+  const connectionId = activeGatewayConnectionId()
   const generation = ++projectTreeRefreshGeneration
   $projectTreeLoading.set(true)
 
@@ -529,11 +561,15 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 
     // A profile switch mid-flight leaves this payload describing the wrong
     // scope; the newer refresh owns the tree.
-    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+    if (
+      generation !== projectTreeRefreshGeneration ||
+      $profileScope.get() !== ALL_PROFILES ||
+      activeGatewayConnectionId() !== connectionId
+    ) {
       return
     }
 
-    applyProjectTreePayload(res)
+    applyProjectTreePayload(res, connectionId)
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)
@@ -604,7 +640,10 @@ export async function fetchProjectSessions(
       return null
     }
 
-    return dropRemovedProjectSessions(res.project ?? null, removalSnapshot)
+    return dropRemovedProjectSessions(
+      res.project ? tagProjectSessionConnection(res.project, context.connectionId) : null,
+      removalSnapshot
+    )
   } catch (error) {
     if (
       (generation !== null && generation !== projectSessionsRefreshGeneration) ||

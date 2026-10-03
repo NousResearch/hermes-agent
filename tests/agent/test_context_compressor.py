@@ -437,14 +437,13 @@ class TestSummarizeToolResultClarify:
 
 
 def _refusals():
-    """Refused-call results from the real producers: the approval gate messages in their terminal /
-    tool_error envelopes, the workdir guard's ``status`` "blocked" envelope (its error reads
-    "Blocked:", not "BLOCKED"), a pending gateway approval, and a successful kanban_block (``status``
-    "blocked" with no error, which is not a refusal). ``expected`` lists substrings the summary must
+    """Refused-call results from the real producers: the approval gate messages in their terminal
+    envelope, the write guard's raw ``BLOCKED:`` text, the workdir guard's ``status`` "blocked"
+    envelope (its error reads "Blocked:", not "BLOCKED"), a pending gateway approval, and a
+    successful kanban_block (``status`` "blocked" with no error, which is not a refusal). ``expected`` lists substrings the summary must
     contain; empty means it must not read as refused."""
     from tools import approval
     from tools.kanban_tools import _ok
-    from tools.registry import tool_error
     from tools.terminal_tool import _error_json
     from tools.terminal_tool_guards import _validate_workdir
 
@@ -461,10 +460,9 @@ def _refusals():
                      _error_json(gate.cli_timeout.format(breaker=""), status="blocked"),
                      no_consent, id="cli_timeout"),
         pytest.param("write_file", {"path": "AGENTS.md", "content": "a\nb"},
-                     tool_error("BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was "
-                                "denied by the user. The user has NOT consented to this write. Do NOT "
-                                "retry it or attempt the same edit via another path (terminal, "
-                                "execute_code, etc.)."),
+                     "BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied "
+                     "by the user. The user has NOT consented to this write. Do NOT retry it or "
+                     "attempt the same edit via another path (terminal, execute_code, etc.).",
                      no_consent, id="write_guard"),
         pytest.param("terminal", {"command": "ls"},
                      _error_json(_validate_workdir("a;b"), status="blocked"),

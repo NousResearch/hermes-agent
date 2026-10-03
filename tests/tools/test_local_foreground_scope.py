@@ -57,6 +57,10 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         None if case == "no_wrapper" else "/usr/bin/systemd-run") if name == "systemd-run" else real_which(name, *a, **k))
     degraded: list[str] = []
     monkeypatch.setattr(local_env, "_warn_foreground_scope_degraded", degraded.append)
+    # No real snapshot bootstrap (it would wait out its timeouts against the fake Popen) and
+    # never a real `systemctl --user stop` from the kill path.
+    monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
+    monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit: True)
     env = local_env.LocalEnvironment()
 
     proc = env._run_bash("true")

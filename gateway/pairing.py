@@ -528,6 +528,7 @@ class PairingStore:
         obtainable by an authenticated admin, so a stale id is "the row expired", not an
         attack -- counting it would let a few GUI clicks lock the operator out.
         """
+        from gateway.platforms._shared import secrets_match
         with self._lock:
             self._cleanup_expired(platform)
             request_id = str(request_id or "").strip().lower()
@@ -535,7 +536,7 @@ class PairingStore:
                 return None
             pending = self._load_json(self._pending_path(platform))
             for entry_id, entry in pending.items():
-                if _is_hashed_entry(entry) and secrets.compare_digest(str(entry_id).lower(), request_id):
+                if _is_hashed_entry(entry) and secrets_match(request_id, str(entry_id).lower()):
                     return self._finish_approval(platform, pending, entry_id, entry)
             return None
 

@@ -25,7 +25,7 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, secrets_match, send_error
 )
 
 try:
@@ -207,9 +207,7 @@ class SmsAdapter(BasePlatformAdapter):
         data_to_sign = url + "".join(key + post_params[key] for key in sorted(post_params.keys()))
         mac = hmac.new(self._auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1)
         computed = base64.b64encode(mac.digest()).decode("utf-8")
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str,
-        # and the signature is a raw request header.
-        return hmac.compare_digest(computed.encode(), signature.encode())
+        return secrets_match(signature, computed)
 
     @staticmethod
     def _port_variant_url(url: str) -> str | None:

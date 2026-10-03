@@ -172,7 +172,7 @@ FEISHU_ENCRYPT_KEY=your-encrypt-key
 SHA256(timestamp + nonce + encrypt_key + body)
 ```
 
-计算出的哈希值与 `x-lark-signature` 请求头进行时序安全比较。签名无效或缺失的请求将被拒绝，返回 HTTP 401。
+计算出的哈希值与 `x-lark-signature` 请求头进行时序安全比较，且已签名的 `x-lark-request-timestamp` 必须与网关时钟相差不超过 5 分钟，因此截获的请求无法在之后被重放。签名无效或缺失、或时间戳过期的请求将被拒绝，返回 HTTP 401。
 
 :::tip
 在 WebSocket 模式下，签名验证由 SDK 自身处理，因此 `FEISHU_ENCRYPT_KEY` 是可选的。在 webhook 模式下，生产环境强烈推荐设置。
@@ -527,7 +527,7 @@ WebSocket 和按群 ACL 设置通过 `config.yaml` 的 `platforms.feishu.extra` 
 | `Another local Hermes gateway is already using this Feishu app_id` | 同一时间只能有一个 Hermes 实例使用相同的 app_id。请先停止另一个 gateway。 |
 | 机器人在群聊中不响应 | 确保机器人被 @提及，检查 `FEISHU_GROUP_POLICY`，若策略为 `allowlist` 则验证发送者是否在 `FEISHU_ALLOWED_USERS` 中 |
 | `Webhook rejected: invalid verification token` | 确保 `FEISHU_VERIFICATION_TOKEN` 与飞书应用事件订阅配置中的 token 一致 |
-| `Webhook rejected: invalid signature` | 确保 `FEISHU_ENCRYPT_KEY` 与飞书应用配置中的加密密钥一致 |
+| `Webhook rejected: invalid signature` | 确保 `FEISHU_ENCRYPT_KEY` 与飞书应用配置中的加密密钥一致，并确认网关主机时钟已同步（与当前时间相差超过 5 分钟的时间戳会被视为重放而拒绝） |
 | Post 消息显示为纯文本 | 飞书 API 拒绝了 post payload；这是正常的回退行为。查看日志了解详情。 |
 | 机器人未收到图片/文件 | 为飞书应用授予 `im:message` 和 `im:resource` 权限范围 |
 | 机器人身份未自动检测 | 通常是访问飞书机器人信息端点时的瞬时网络问题。可手动设置 `FEISHU_BOT_OPEN_ID` 和 `FEISHU_BOT_NAME` 作为临时解决方案。 |

@@ -24,7 +24,6 @@ import collections
 import concurrent.futures
 import contextvars
 import hashlib
-import hmac
 import itertools
 import json
 import logging
@@ -97,7 +96,7 @@ from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    get_scoped_secret as _get_scoped_secret, secrets_match, send_error, timestamp_fresh
 )
 
 
@@ -2841,10 +2840,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._verification_token:
             header = payload.get("header") or {}
             incoming_token = str(header.get("token") or payload.get("token") or "")
-            # compare_digest as bytes — it raises TypeError on non-ASCII str, and the token is remote input.
-            if not incoming_token or not hmac.compare_digest(
-                incoming_token.encode(), self._verification_token.encode()
-            ):
+            if not secrets_match(incoming_token, self._verification_token):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
@@ -2889,7 +2885,7 @@ class FeishuAdapter(BasePlatformAdapter):
     }
 
     def _is_webhook_signature_valid(self, headers: Any, body_bytes: bytes) -> bool:
-        """Timing-safe check of x-lark-signature == SHA256(timestamp + nonce + encrypt_key + body)."""
+        """Timing-safe check of x-lark-signature == SHA256(timestamp + nonce + encrypt_key + body), within the replay window."""
         timestamp, nonce, signature = (
             str(headers.get(name, "") or "")
             for name in ("x-lark-request-timestamp", "x-lark-request-nonce", "x-lark-signature")
@@ -2899,8 +2895,9 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             body_str = body_bytes.decode("utf-8", errors="replace")
             computed = hashlib.sha256(f"{timestamp}{nonce}{self._encrypt_key}{body_str}".encode("utf-8")).hexdigest()
-            # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the header is remote input.
-            return hmac.compare_digest(computed.encode(), signature.encode())
+            # The signature covers the timestamp, so a stale one is a captured request being replayed
+            # (the persisted message-id dedup only remembers 24 h).
+            return secrets_match(signature, computed) and timestamp_fresh(timestamp)
         except Exception:
             logger.debug("[Feishu] Signature verification raised an exception", exc_info=True)
             return False

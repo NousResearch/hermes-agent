@@ -9,7 +9,6 @@ raise. Knobs ``scope`` / ``min_secret_chars`` live under ``dashboard.drain_auth`
 """
 from __future__ import annotations
 
-import hmac
 import logging
 import math
 import os
@@ -89,7 +88,9 @@ class DrainSecretProvider(NonInteractiveMixin, DashboardAuthProvider):
     def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
         """Constant-time compare; ``drain-control`` principal on match, else
         ``None`` so the generic seam falls through / fails closed."""
-        if token and hmac.compare_digest(token.encode("utf-8"), self._secret.encode("utf-8")):
+        # Imported on use: nothing else in the dashboard loads gateway.platforms.
+        from gateway.platforms._shared import secrets_match
+        if secrets_match(token, self._secret):
             return TokenPrincipal(principal="drain-control", provider=self.name, scopes=(self._scope,))
         return None
 

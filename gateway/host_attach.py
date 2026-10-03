@@ -86,6 +86,9 @@ class HostGateway:
     #: True once the owner has said ``multiplex: False``: a per-profile gateway that cannot be asked
     #: to serve anyone else — see ``START`` in the module doc.
     standalone: bool = False
+    #: Owner's own ``identify`` ``supervisor`` (``systemd``, ``manual``, …). Empty when that answer
+    #: did not carry one. The host rendezvous record has no such field.
+    supervisor: str = ""
 
     def serves(self, profile: str) -> bool:
         if not self.served_known:
@@ -196,7 +199,12 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     while True:
         identity = _identify(home)
         if _identity_matches(identity, record, home):
-            return HostGateway(record.pid, home, _served_from_identity(identity))
+            # identity is a dict here (_identity_matches rejects anything else). supervisor is
+            # not on the host record; the live identify answer is the only place the peer states it.
+            reported = identity.get("supervisor") if isinstance(identity, dict) else ""
+            return HostGateway(
+                record.pid, home, _served_from_identity(identity),
+                supervisor=str(reported or ""))
         if time.monotonic() >= deadline:
             break
         time.sleep(_CHANNEL_POLL_S)
@@ -247,7 +255,8 @@ def request_serve_profile(profile: str, *, timeout: float = 8.0,
     rescanned = HostGateway(
         gateway.pid, gateway.home,
         tuple(str(p) for p in served) if isinstance(served, list) else (),
-        standalone=answer.get("multiplex") is False)
+        standalone=answer.get("multiplex") is False,
+        supervisor=gateway.supervisor)
     return rescanned if rescanned.standalone or rescanned.serves(profile) else None
 
 

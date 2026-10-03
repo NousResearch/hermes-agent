@@ -299,14 +299,14 @@ export function killTimedGitChildren(): void {
 export function execGit(
   gitBin: string,
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; maxBufferBytes?: number } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const spec = hiddenGitSpawnSpec(gitBin, args, {
     cwd: options.cwd,
     env: options.env,
     // Timed commands own a POSIX group so a promisor fetch cannot outlive
     // the git process. On Windows taskkill follows the Python host's tree.
-    detached: Boolean(options.timeoutMs) && process.platform !== 'win32',
+    detached: (Boolean(options.timeoutMs) || options.maxBufferBytes !== undefined) && process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -337,44 +337,71 @@ export function execGit(
       resolve({ code, stdout, stderr })
     }
 
+    const killAndFinish = () => {
+      const done = () => {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        timedChildren.delete(child)
+        finish(timeoutError)
+      }
+
+      if (!hasTreeToKill(child)) {
+        done()
+      } else if (process.platform === 'win32') {
+        execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], TASKKILL_OPTIONS, error => {
+          if (error) {
+            child.kill('SIGKILL')
+          }
+
+          done()
+        })
+      } else {
+        killGroup(child)
+        done()
+      }
+    }
+
     const timer = options.timeoutMs
       ? setTimeout(() => {
           timeoutError = Object.assign(new Error('git timed out'), { code: 'ETIMEDOUT', stderr })
-
-          const done = () => {
-            // Pipes held by descendants must not keep Electron alive after a
-            // failed tree kill. The timeout remains a failure, never exit 0.
-            child.stdout?.destroy()
-            child.stderr?.destroy()
-            timedChildren.delete(child)
-            finish(timeoutError)
-          }
-
-          if (!hasTreeToKill(child)) {
-            done()
-          } else if (process.platform === 'win32') {
-            execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], TASKKILL_OPTIONS, error => {
-              if (error) {
-                child.kill('SIGKILL')
-              }
-
-              done()
-            })
-          } else {
-            killGroup(child)
-            done()
-          }
+          killAndFinish()
         }, options.timeoutMs)
       : null
 
-    child.stdout?.on('data', chunk => {
-      stdout += chunk.toString()
-    })
-    child.stderr?.on('data', chunk => {
-      stderr += chunk.toString()
-    })
+    let stdoutBytes = 0
+    let stderrBytes = 0
 
-    if (timer) {
+    const append = (chunk: Buffer, isStdout: boolean) => {
+      if (timeoutError) {
+        return
+      }
+
+      const used = isStdout ? stdoutBytes : stderrBytes
+      const allowed = options.maxBufferBytes === undefined ? chunk.length : Math.max(0, options.maxBufferBytes - used)
+      const kept = chunk.subarray(0, allowed)
+
+      if (isStdout) {
+        stdout += kept.toString()
+        stdoutBytes += kept.length
+      } else {
+        stderr += kept.toString()
+        stderrBytes += kept.length
+      }
+
+      if (kept.length < chunk.length) {
+        timeoutError = Object.assign(new Error('git output exceeded maxBufferBytes'), {
+          code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+          stdout,
+          stderr
+        })
+        killAndFinish()
+      }
+    }
+
+    child.stdout?.on('data', chunk => append(chunk, true))
+    child.stderr?.on('data', chunk => append(chunk, false))
+
+    if (timer || options.maxBufferBytes !== undefined) {
       timedChildren.add(child)
       child.once('close', () => timedChildren.delete(child))
     }

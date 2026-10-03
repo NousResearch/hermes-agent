@@ -235,3 +235,21 @@ test('host script forwards git argv unchanged and sets CREATE_NO_WINDOW', () => 
     fs.rmSync(dir, { force: true, recursive: true })
   }
 })
+
+test('bounded git output preserves its prefix and reaps the process tree', async () => {
+  const tree = hangingTreeFixture()
+
+  try {
+    const script = tree.args[0]
+    fs.appendFileSync(script, `setTimeout(() => process.stdout.write('x'.repeat(8192)), 500);`)
+    const running = execGit(process.execPath, tree.args, { maxBufferBytes: 1024 })
+    const failed = running.catch(error => error)
+    const port = await tree.port()
+    const error = await failed
+    assert.equal(error.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+    assert.equal(Buffer.byteLength(error.stdout), 1024)
+    await vi.waitFor(async () => assert.equal(await tree.listening(port), false))
+  } finally {
+    tree.cleanup()
+  }
+})

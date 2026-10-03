@@ -61,22 +61,50 @@ def take_speech_interrupted() -> bool:
     at, _interrupted_at = _interrupted_at, None
     return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
-# Sentence boundary: after .!? followed by whitespace, or a blank line.
-SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
+# Sentence boundary: after .!? followed by whitespace, after a run of CJK
+# terminators (。！？… — which come with NO trailing space, so the English
+# "terminator + whitespace" rule never fires on Chinese/Japanese, #78477),
+# or a blank line. The CJK alternative is a zero-width lookbehind rather than
+# a consuming match so the terminator stays attached in *both* consumers:
+# SentenceChunker.feed() (search + head slice) and web_server's
+# _split_text_for_speak_stream() (re.split) — a consuming match would drop
+# 。！？ from the split() output, synthesizing sentences without their
+# terminator. The negative lookahead makes a run (……/！！) a single boundary
+# (fire only after the last terminator), avoiding a lone-punctuation piece.
+# Zero-width means feed() must walk boundaries with finditer (below) so the
+# search position always advances.
+SENTENCE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])(?:\s|\n)|(?<=[。！？…])(?![。！？…])|(?:\n\n)"
+)
 # Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
 # so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 _THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
+# Any CJK letter (Hiragana, Katakana, CJK Ext-A, CJK Unified, CJK compat,
+# Hangul). A head containing one of these is measured against the shorter CJK
+# floor: a script this dense packs a complete sentence into far fewer chars
+# than English, so the Latin ``min_len`` would merge a done Chinese clause
+# forward and re-introduce exactly the streaming latency #78477 is about.
+CJK_CHAR_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]")
 
 
 class SentenceChunker:
-    """Incremental sentence cutter for LLM token deltas, shared by the speaker pipeline and the
-    speak-stream WebSocket so every surface cuts speech identically. Strips ``<think>`` blocks (even
-    split across deltas) and merges fragments shorter than *min_len* into the following sentence."""
+    """Incremental sentence cutter for LLM token deltas.
 
-    def __init__(self, min_len: int = 20):
+    Shared by the speaker pipeline (`stream_tts_to_speaker`) and the
+    speak-stream WebSocket so every surface cuts speech identically. Strips
+    ``<think>`` blocks (even split across deltas) and merges fragments shorter
+    than the applicable floor into the following sentence, so "Ha!" rides along
+    with the sentence after it instead of stalling as a tiny clip. The floor is
+    per-head: *cjk_min_len* for a head that contains CJK, *min_len* otherwise —
+    a 6-char Chinese sentence is already complete, so holding it to the 20-char
+    Latin floor would cost one clause of latency every time (#78477).
+    """
+
+    def __init__(self, min_len: int = 20, cjk_min_len: int = 6):
         self.min_len = min_len
+        self.cjk_min_len = cjk_min_len
         self.buf = ""
 
     @classmethod
@@ -89,21 +117,31 @@ class SentenceChunker:
         except (AttributeError, TypeError, ValueError):  # non-mapping / non-numeric → default
             return cls()
 
+    def _floor(self, head: str) -> int:
+        """Minimum stripped length for *head* to cut now: the CJK floor when it
+        contains CJK, the Latin floor otherwise."""
+        return self.cjk_min_len if CJK_CHAR_RE.search(head) else self.min_len
+
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
-        start = 0  # skip boundaries that would leave the head too short
-        while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
-            head = self.buf[: m.end()]
-            if len(head.strip()) < self.min_len:
-                start = m.end()
-                continue
-            out.append(head)
-            self.buf = self.buf[m.end():]
-            start = 0
+        # Walk boundaries with finditer so zero-width CJK lookbehinds always
+        # advance the search cursor; a boundary whose head is shorter than its
+        # floor is skipped so the fragment merges into the next sentence.
+        cut = True
+        while cut:
+            cut = False
+            for m in SENTENCE_BOUNDARY_RE.finditer(self.buf):
+                head = self.buf[: m.end()]
+                if len(head.strip()) < self._floor(head):
+                    continue
+                out.append(head)
+                self.buf = self.buf[m.end():]
+                cut = True
+                break  # restart finditer on the shortened buffer
         return out
 
     def flush(self) -> List[str]:

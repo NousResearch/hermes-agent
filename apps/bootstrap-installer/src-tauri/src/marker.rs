@@ -1,8 +1,14 @@
 //! The "update in progress" marker: the Desktop launch gate and the
 //! cross-process update lock shared with `hermes_cli/update_lock.py` and the
 //! Electron gate (`apps/desktop/electron/update-marker.ts`).
+//!
+//! Parse, liveness, claim and litter rules are the LP-LOCK round-2 contract
+//! that `hermes_cli/update_lock.py` implements identically; keep them in step.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::update::UPDATE_EXIT_CONCURRENT;
 
@@ -30,21 +36,30 @@ use crate::update::UPDATE_EXIT_CONCURRENT;
 ///
 /// The marker is also the cross-process update lock: `hermes update` claims
 /// the same file so a dashboard-spawned update and this updater can't mutate
-/// one checkout at the same time. `acquire` therefore claims with an atomic
-/// exclusive create and REFUSES when a live foreign owner holds it — the
-/// pre-fix clobber is what let a dashboard `hermes update` keep running while
-/// install-mode bootstrap rewrote the tree underneath it.
+/// one checkout at the same time. `acquire` therefore publishes its claim
+/// exclusively (a fully written tmp file hard-linked onto the path) and
+/// REFUSES when a live foreign owner holds it — the pre-fix clobber is what
+/// let a dashboard `hermes update` keep running while install-mode bootstrap
+/// rewrote the tree underneath it.
 pub(crate) struct UpdateMarkerGuard {
     path: PathBuf,
-    /// Identity lines (pid, started_at, optional ct) of the claim we hold.
-    /// `None` when we hold no claim (the marker could not be written), so
-    /// release must not touch whatever is at the path.
+    /// Identity lines (pid, started_at, optional ct) of the claim we hold,
+    /// compared before release so we never delete someone else's claim.
     claim: Option<Vec<String>>,
 }
 
-/// Age ceiling for LEGACY (v1, no `ct:` line) markers only: without a
-/// creation time a live pid may be a recycled one, so age is the only bound.
-/// v2 markers have no age ceiling. Matches the v1 rule in
+/// Why `UpdateMarkerGuard::acquire` did not produce a claim.
+pub(crate) enum AcquireError {
+    /// A live update (or a claim being published right now: pid 0) holds it.
+    Busy(MarkerOwner),
+    /// The marker cannot be written at all; the user-facing message.
+    Unwritable(String),
+}
+
+/// Age ceiling for markers whose owner identity cannot be confirmed: legacy
+/// (v1, no `ct:` line) markers, and v2 markers whose live pid's creation
+/// time cannot be read. Without a creation time a live pid may be a
+/// recycled one, so age is the only bound. Matches the v1 rule in
 /// apps/desktop/electron/update-marker.ts and hermes_cli/update_lock.py.
 const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
 
@@ -52,7 +67,12 @@ const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
 /// process (Linux derives it from whole-second btime plus clock ticks).
 const MARKER_CT_TOLERANCE_SECS: f64 = 2.0;
 
-/// The pid + age of a confirmed-live update holding the marker.
+/// A 0-byte marker this young is a claim between its exclusive create and
+/// its first write (the non-hard-link fallback): live, never deleted.
+const EMPTY_MARKER_GRACE: Duration = Duration::from_secs(5);
+
+/// The pid + age of a confirmed-live update holding the marker. pid 0 is a
+/// claim still being written (a fresh 0-byte marker).
 pub(crate) struct MarkerOwner {
     pub(crate) pid: u32,
     pub(crate) age_secs: u64,
@@ -63,81 +83,123 @@ struct MarkerRecord {
     pid: u32,
     started_at: u64,
     ct: Option<f64>,
-    delegate: Option<(u32, Option<f64>)>,
+    delegate: Option<(u32, f64)>,
     /// Lines 1-2 plus the `ct:` line when present: what an owner compares
     /// before deleting (a delegate line may come and go underneath it).
     identity: Vec<String>,
 }
 
-fn parse_marker(raw: &str) -> Option<MarkerRecord> {
-    let lines: Vec<&str> = raw.lines().map(str::trim).collect();
-    let pid = lines.first()?.parse::<u32>().ok()?;
-    let started_line = lines.get(1).copied().unwrap_or("");
-    let started_at = started_line.parse().unwrap_or(0);
-    let mut identity = vec![lines[0].to_string(), started_line.to_string()];
-    let ct = lines
-        .get(2)
-        .and_then(|line| line.strip_prefix("ct:"))
-        .and_then(|value| value.trim().parse::<f64>().ok());
-    if ct.is_some() {
-        identity.push(lines[2].to_string());
+fn is_ascii_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `[0-9]+(\.[0-9]+)?` as a float; anything else is `None`.
+fn parse_ct_value(text: &str) -> Option<f64> {
+    let (whole, frac) = match text.split_once('.') {
+        Some((whole, frac)) => (whole, Some(frac)),
+        None => (text, None),
+    };
+    if !is_ascii_digits(whole) || frac.is_some_and(|frac| !is_ascii_digits(frac)) {
+        return None;
     }
-    // The delegate is line 4; a v1 body has no ct line, so accept it on the
-    // first line after the identity block.
-    let delegate = lines
-        .get(identity.len())
-        .and_then(|line| line.strip_prefix("delegate:"))
-        .and_then(|rest| {
-            let mut parts = rest.split_whitespace();
-            let pid = parts.next()?.parse::<u32>().ok()?;
-            let ct = parts
-                .next()
-                .and_then(|token| token.strip_prefix("ct:"))
-                .and_then(|value| value.parse::<f64>().ok());
-            Some((pid, ct))
-        });
+    text.parse().ok()
+}
+
+/// Line 4 only: `delegate:<pid> ct:<ct>` with exactly one space.
+fn parse_delegate(line: &str) -> Option<(u32, f64)> {
+    let (pid, ct) = line.strip_prefix("delegate:")?.split_once(' ')?;
+    if !is_ascii_digits(pid) {
+        return None;
+    }
+    Some((pid.parse().ok()?, parse_ct_value(ct.strip_prefix("ct:")?)?))
+}
+
+/// Parse a marker body (A2). `None` = malformed (dead): line 1 and line 2
+/// must be ASCII digits only after dropping one BOM, one trailing `\r` per
+/// line and surrounding spaces/tabs. A line 3 that is not a well-formed
+/// `ct:` makes a v1 marker; only line 4 can name a delegate.
+fn parse_marker(raw: &[u8]) -> Option<MarkerRecord> {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|line| {
+            line.strip_suffix('\r')
+                .unwrap_or(line)
+                .trim_matches(|c| c == ' ' || c == '\t')
+        })
+        .collect();
+    let (pid_line, started_line) = (*lines.first()?, *lines.get(1)?);
+    if !is_ascii_digits(pid_line) || !is_ascii_digits(started_line) {
+        return None;
+    }
+    let pid = pid_line.parse().ok()?;
+    let started_at = started_line.parse().ok()?;
+    let ct_line = lines.get(2).copied().unwrap_or("");
+    let ct = ct_line.strip_prefix("ct:").and_then(parse_ct_value);
+    let mut identity = vec![pid_line.to_string(), started_line.to_string()];
+    if ct.is_some() {
+        identity.push(ct_line.to_string());
+    }
     Some(MarkerRecord {
         pid,
         started_at,
         ct,
-        delegate,
+        delegate: lines.get(3).and_then(|line| parse_delegate(line)),
         identity,
     })
 }
 
 fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-/// The process `pid` is alive AND (when a creation time was recorded) is the
-/// same process that recorded it. A creation time we cannot probe counts as
-/// a match: a live pid is never declared dead on missing evidence.
-fn process_identity_alive(pid: u32, recorded_ct: Option<f64>) -> bool {
+/// The process `pid` is alive AND is the process that recorded
+/// `recorded_ct` (A1). Only a confirmed creation-time match is unbounded:
+/// a v1 record, or a live pid whose creation time `probe` cannot read, is
+/// live only while the marker is within the v1 age ceiling — unreadable
+/// evidence must not hold a possibly recycled pid's lock forever.
+fn identity_live(
+    pid: u32,
+    recorded_ct: Option<f64>,
+    age_secs: u64,
+    probe: &impl Fn(u32) -> Option<f64>,
+) -> bool {
     if !pid_is_alive(pid) {
         return false;
     }
-    match (recorded_ct, process_creation_time(pid)) {
-        (Some(recorded), Some(actual)) => (recorded - actual).abs() <= MARKER_CT_TOLERANCE_SECS,
-        _ => true,
+    let within_ceiling = age_secs <= UPDATE_MARKER_MAX_AGE_SECS;
+    let Some(recorded) = recorded_ct else {
+        return within_ceiling;
+    };
+    match probe(pid) {
+        Some(actual) => (recorded - actual).abs() <= MARKER_CT_TOLERANCE_SECS,
+        None => within_ceiling,
     }
 }
 
 /// The live holder of a parsed marker, if any: the owner (lines 1-3) or,
-/// failing that, the delegate (line 4).
-fn marker_live_holder(record: &MarkerRecord) -> Option<MarkerOwner> {
-    let age_secs = unix_now_secs().saturating_sub(record.started_at);
-    let within_v1_ceiling = record.ct.is_some() || age_secs <= UPDATE_MARKER_MAX_AGE_SECS;
-    if within_v1_ceiling && process_identity_alive(record.pid, record.ct) {
+/// failing that, the delegate (line 4), both aged by the marker's
+/// `started_at`.
+fn marker_live_holder(
+    record: &MarkerRecord,
+    now_secs: u64,
+    probe: &impl Fn(u32) -> Option<f64>,
+) -> Option<MarkerOwner> {
+    let age_secs = now_secs.saturating_sub(record.started_at);
+    if identity_live(record.pid, record.ct, age_secs, probe) {
         return Some(MarkerOwner {
             pid: record.pid,
             age_secs,
         });
     }
     match record.delegate {
-        Some((pid, ct)) if process_identity_alive(pid, ct) => Some(MarkerOwner { pid, age_secs }),
+        Some((pid, ct)) if identity_live(pid, Some(ct), age_secs, probe) => {
+            Some(MarkerOwner { pid, age_secs })
+        }
         _ => None,
     }
 }
@@ -223,65 +285,105 @@ fn process_creation_time(_pid: u32) -> Option<f64> {
 /// Delete the marker only if its bytes still equal `expected` — the bytes a
 /// verdict was reached on, or the bytes we wrote. A marker replaced since
 /// (a new claim, an added delegate line) belongs to someone else's verdict.
-/// Returns true when the file is gone afterwards because of us.
-fn compare_and_delete(path: &Path, expected: &[u8]) -> bool {
+/// `Ok(true)` when the file is gone afterwards because of us.
+fn remove_if_unchanged(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     match std::fs::read(path) {
         Ok(current) if current == expected => match std::fs::remove_file(path) {
-            Ok(()) => true,
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(err) => {
-                if err.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(?path, %err, "could not remove update marker");
-                }
-                false
+                tracing::warn!(?path, %err, "could not remove update marker");
+                Err(err)
             }
         },
-        _ => false,
+        _ => Ok(false),
     }
+}
+
+fn compare_and_delete(path: &Path, expected: &[u8]) -> bool {
+    remove_if_unchanged(path, expected).unwrap_or(false)
+}
+
+/// What is on disk at the marker path.
+enum MarkerState {
+    Absent,
+    /// A live holder, with the exact bytes judged.
+    Live(MarkerOwner, Vec<u8>),
+    /// Dead / malformed / recycled / past the ceiling, compare-and-deleted.
+    /// Carries the error when the marker could not be read or removed (it
+    /// is then still on disk).
+    Dead(Option<std::io::Error>),
+}
+
+/// Read and judge the marker. A dead verdict REMOVES the marker by
+/// compare-and-delete (only the exact bytes judged), mirroring
+/// `read_live_update` in `hermes_cli/update_lock.py`: a crashed updater
+/// whose `Drop` never ran must not wedge every later acquire (#77259).
+/// A 0-byte marker younger than `EMPTY_MARKER_GRACE` is a claim being
+/// written: live as pid 0 and never deleted.
+fn inspect_marker(path: &Path, probe: &impl Fn(u32) -> Option<f64>) -> MarkerState {
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return MarkerState::Absent,
+        // Present but unreadable: no verdict, and nothing we may delete.
+        Err(err) => return MarkerState::Dead(Some(err)),
+    };
+    let live = if raw.is_empty() {
+        empty_marker_age(path)
+            .filter(|age| *age < EMPTY_MARKER_GRACE)
+            .map(|age| MarkerOwner {
+                pid: 0,
+                age_secs: age.as_secs(),
+            })
+    } else {
+        parse_marker(&raw).and_then(|record| marker_live_holder(&record, unix_now_secs(), probe))
+    };
+    match live {
+        Some(owner) => MarkerState::Live(owner, raw),
+        None => MarkerState::Dead(remove_if_unchanged(path, &raw).err()),
+    }
+}
+
+/// Age of the marker by mtime; a future mtime counts as brand new.
+fn empty_marker_age(path: &Path) -> Option<Duration> {
+    let modified = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    Some(
+        SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default(),
+    )
 }
 
 /// Read the marker and report a live holder, if any. `None` for every "no
 /// live update" case — absent, unreadable, malformed, dead owner and
-/// delegate, a recycled pid (creation-time mismatch), or a v1 marker past the
-/// legacy age ceiling — matching `readLiveUpdateMarker` in the Electron gate.
-/// Never panics.
-///
-/// A marker judged dead is REMOVED here by compare-and-delete (only the exact
-/// bytes judged), mirroring `read_live_update` in `hermes_cli/update_lock.py`:
-/// a crashed updater whose `Drop` never ran must not wedge every later
-/// acquire (#77259).
+/// delegate, a recycled pid (creation-time mismatch), or an unconfirmed
+/// identity past the age ceiling — matching `readLiveUpdateMarker` in the
+/// Electron gate. A dead marker is removed (see `inspect_marker`).
 ///
 /// Self-PID is returned so `acquire` can adopt the desktop's pre-written claim
 /// without refreshing its acquisition time (#74761). A foreign live pid (e.g.
 /// a dashboard-spawned `hermes update`) still blocks.
+#[cfg(test)]
 fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
-    let raw = std::fs::read(path).ok()?;
-    let live = std::str::from_utf8(&raw)
-        .ok()
-        .and_then(parse_marker)
-        .and_then(|record| marker_live_holder(&record));
-    if live.is_none() {
-        compare_and_delete(path, &raw);
+    match inspect_marker(path, &process_creation_time) {
+        MarkerState::Live(owner, _) => Some(owner),
+        _ => None,
     }
-    live
 }
 
 /// True when the on-disk marker names THIS process as its owner.
 ///
-/// A raw read is used instead of `live_marker_owner` on purpose: that
-/// helper folds in age and liveness policy (and, since the #74761
-/// adoption work, self-ownership handling has changed shape more than
-/// once). The exit-2 self-heal below needs exactly one raw fact — does
-/// the marker name our PID — because a `hermes update` child that
-/// refuses over OUR marker is a handoff-recognition failure in a stale
-/// checkout, not a real concurrent update.
+/// Liveness is deliberately NOT consulted: the exit-2 self-heal below needs
+/// exactly one fact — does the marker name our PID — because a `hermes
+/// update` child that refuses over OUR marker is a handoff-recognition
+/// failure in a stale checkout, not a real concurrent update.
 fn marker_owned_by_self(path: &Path) -> bool {
-    std::fs::read_to_string(path)
+    std::fs::read(path)
         .ok()
-        .and_then(|raw| {
-            raw.lines()
-                .next()
-                .and_then(|line| line.trim().parse::<u32>().ok())
-        })
+        .and_then(|raw| parse_marker(&raw))
+        .map(|record| record.pid)
         == Some(std::process::id())
 }
 
@@ -376,92 +478,213 @@ fn pid_is_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// A unique tmp sibling `<marker name>.<own pid>.<nanos>-<seq>.tmp`. The pid
+/// is the first dot component after the marker name so `sweep_tmp_litter`
+/// can tell a dead claimant's leftovers from a live one's in-flight file.
+fn tmp_sibling(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{name}.{}.{nanos}-{seq}.tmp", std::process::id()))
+}
+
+/// Exclusively create `path` and write + fsync `body` into it.
+fn write_new_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(body)?;
+    file.sync_all()
+}
+
+/// m10: delete `<marker name>.<pid>.tmp` / `<marker name>.<pid>.<any>.tmp`
+/// siblings whose `<pid>` is no longer alive — the leftovers of a claimant
+/// that died between writing its tmp file and removing it.
+fn sweep_tmp_litter(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name();
+        let entry_name = entry_name.to_string_lossy();
+        let Some(rest) = entry_name
+            .strip_prefix(prefix.as_str())
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let pid = rest.split('.').next().unwrap_or("");
+        let dead = is_ascii_digits(pid) && !pid.parse::<u32>().is_ok_and(pid_is_alive);
+        if dead {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Outcome of one claim attempt.
+enum Publish {
+    Claimed,
+    Exists,
+}
+
+/// A3: publish `body` at `path` only if nothing is there. The body is fully
+/// written and fsynced in a tmp sibling first, then hard-linked onto the
+/// path, so a reader never sees a torn claim. A filesystem without hard
+/// links falls back to exclusive create + write + fsync (whose brief 0-byte
+/// window readers treat as live). `Err` = the marker cannot be written.
+fn publish_claim(path: &Path, body: &[u8]) -> std::io::Result<Publish> {
+    let tmp = tmp_sibling(path);
+    let linked = write_new_file(&tmp, body).and_then(|()| std::fs::hard_link(&tmp, path));
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => return Ok(Publish::Claimed),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Publish::Exists),
+        Err(err) => tracing::debug!(?path, %err, "hard-link claim unavailable; using create_new"),
+    }
+    match write_new_file(path, body) {
+        Ok(()) => Ok(Publish::Claimed),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(Publish::Exists),
+        Err(err) => {
+            // Remove our torn file only while it still holds a prefix of
+            // what we were writing (a reader may already have reaped it and
+            // someone else re-claimed the path).
+            if let Ok(current) = std::fs::read(path) {
+                if body.starts_with(&current) {
+                    compare_and_delete(path, &current);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+/// M1: `raw` is a live v1 marker naming us (Electron pre-wrote our pid).
+/// Upgrade it in place to v2 — lines 1-2 byte-identical (so `started_at`,
+/// the age, is preserved) plus our `ct:` line — via tmp + rename after
+/// re-checking the bytes are unchanged. `Ok(Some(body))` = upgraded,
+/// `Ok(None)` = the bytes changed underneath us (re-evaluate).
+fn upgrade_own_v1(path: &Path, raw: &[u8], ct: f64) -> std::io::Result<Option<Vec<u8>>> {
+    let line2_end = raw
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'\n')
+        .nth(1)
+        .map(|(index, _)| index + 1);
+    let mut body = match line2_end {
+        Some(end) => raw[..end].to_vec(),
+        None => [raw, b"\n"].concat(),
+    };
+    body.extend_from_slice(format!("ct:{ct:.3}\n").as_bytes());
+    let tmp = tmp_sibling(path);
+    let swapped = write_new_file(&tmp, &body).and_then(|()| {
+        if std::fs::read(path)? != raw {
+            return Ok(false);
+        }
+        std::fs::rename(&tmp, path).map(|()| true)
+    });
+    let _ = std::fs::remove_file(&tmp);
+    Ok(swapped?.then_some(body))
+}
+
+fn unwritable(path: &Path, err: &std::io::Error) -> AcquireError {
+    AcquireError::Unwritable(format!(
+        "Cannot lock this install for the update: {} is not writable ({err}). \
+         Run the update as the user that owns the install.",
+        path.display()
+    ))
+}
+
 impl UpdateMarkerGuard {
-    /// Claim the marker, or report the live updater that already owns it.
+    /// Claim the marker, or report why not.
     ///
-    /// The claim is an atomic exclusive create (`create_new`); an existing
+    /// The claim is an exclusive publish (`publish_claim`); an existing
     /// marker is never truncated and overwritten. If one exists and its
     /// holder is dead (or its bytes are unparseable) it is removed by
-    /// compare-and-delete and the create is retried ONCE; a live foreign
-    /// holder is a refusal. A marker naming our own live process (the
-    /// desktop pre-writes our pid, #74761) is adopted verbatim so a retry
-    /// cannot reset its age.
+    /// compare-and-delete and the claim is retried ONCE; a live foreign
+    /// holder is `Busy`. A marker naming our own live process (the desktop
+    /// pre-writes our pid, #74761) is adopted without resetting its age; a
+    /// v1 pre-write is upgraded to v2 with our creation time (M1) so a
+    /// stale copy of it can never be mistaken for a later process that
+    /// reuses our pid.
     ///
-    /// Best-effort only when the marker cannot be CREATED at all (read-only
-    /// or missing home dir): the update proceeds with no claim — the gate
-    /// degrades to "no marker => proceed", the pre-marker behaviour — and
-    /// release is a no-op. That is safe because this marker is the
-    /// Desktop-side launch gate; `hermes update` still takes the checkout
-    /// lock itself.
-    pub(crate) fn acquire(path: PathBuf) -> Result<Self, MarkerOwner> {
+    /// A marker that cannot be written at all is `Unwritable`: the update
+    /// refuses rather than run unserialized against other updaters (m8).
+    pub(crate) fn acquire(path: PathBuf) -> Result<Self, AcquireError> {
         let pid = std::process::id();
+        let own_ct = process_creation_time(pid);
         let mut body = format!("{pid}\n{}\n", unix_now_secs());
-        if let Some(ct) = process_creation_time(pid) {
+        if let Some(ct) = own_ct {
             body.push_str(&format!("ct:{ct:.3}\n"));
         }
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                return Err(unwritable(&path, &err));
+            }
         }
+        sweep_tmp_litter(&path);
         let mut retried = false;
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => return Ok(Self::write_claim(path, file, &body)),
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            match publish_claim(&path, body.as_bytes()) {
+                Ok(Publish::Claimed) => {
+                    return Ok(Self {
+                        claim: parse_marker(body.as_bytes()).map(|record| record.identity),
+                        path,
+                    })
+                }
+                Ok(Publish::Exists) => {}
                 Err(err) => {
                     tracing::warn!(?path, %err, "could not create update-in-progress marker");
-                    return Ok(Self { path, claim: None });
+                    return Err(unwritable(&path, &err));
                 }
             }
-            // A dead or unparseable marker is compare-and-deleted by the read.
-            match live_marker_owner(&path) {
-                Some(owner) if owner.pid == pid => {
-                    let claim = std::fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|raw| parse_marker(&raw))
-                        .filter(|record| record.pid == pid)
-                        .map(|record| record.identity);
-                    return Ok(Self { path, claim });
+            match inspect_marker(&path, &process_creation_time) {
+                MarkerState::Live(owner, raw) if owner.pid == pid => {
+                    let record = parse_marker(&raw).filter(|record| record.pid == pid);
+                    let upgraded = match (record.as_ref().and_then(|r| r.ct), own_ct) {
+                        (None, Some(ct)) => match upgrade_own_v1(&path, &raw, ct) {
+                            Ok(Some(upgraded)) => Some(upgraded),
+                            // Changed underneath us: judge the new bytes.
+                            Ok(None) => continue,
+                            Err(err) => {
+                                tracing::warn!(?path, %err, "could not upgrade own v1 marker");
+                                None
+                            }
+                        },
+                        _ => None,
+                    };
+                    let claim = match upgraded {
+                        Some(upgraded) => parse_marker(&upgraded),
+                        None => record,
+                    };
+                    return Ok(Self {
+                        path,
+                        claim: claim.map(|record| record.identity),
+                    });
                 }
-                Some(owner) => return Err(owner),
-                None if retried => {
+                MarkerState::Live(owner, _) => return Err(AcquireError::Busy(owner)),
+                // One retry for everything else: a read or delete can fail
+                // transiently while another process has the file open
+                // (Windows sharing rules).
+                MarkerState::Absent | MarkerState::Dead(_) if !retried => retried = true,
+                MarkerState::Dead(Some(err)) => return Err(unwritable(&path, &err)),
+                MarkerState::Absent | MarkerState::Dead(None) => {
                     // Lost the race twice: something else is claiming this
                     // path right now. Refuse rather than run unserialized.
                     tracing::warn!(?path, "update marker changed under two claim attempts");
-                    return Err(MarkerOwner {
+                    return Err(AcquireError::Busy(MarkerOwner {
                         pid: 0,
                         age_secs: 0,
-                    });
+                    }));
                 }
-                None => retried = true,
-            }
-        }
-    }
-
-    /// Write our body into the file `create_new` just made for us.
-    fn write_claim(path: PathBuf, mut file: std::fs::File, body: &str) -> Self {
-        use std::io::Write;
-        let written = file.write_all(body.as_bytes()).and_then(|()| file.sync_all());
-        drop(file);
-        match written {
-            Ok(()) => Self {
-                claim: parse_marker(body).map(|record| record.identity),
-                path,
-            },
-            Err(err) => {
-                tracing::warn!(?path, %err, "could not write update-in-progress marker");
-                // Remove our torn file only while it still holds a prefix of
-                // what we were writing (a reader may already have reaped it
-                // and someone else re-claimed the path).
-                if let Ok(current) = std::fs::read(&path) {
-                    if body.as_bytes().starts_with(&current) {
-                        compare_and_delete(&path, &current);
-                    }
-                }
-                Self { path, claim: None }
             }
         }
     }
@@ -486,14 +709,20 @@ impl UpdateMarkerGuard {
         let Ok(raw) = std::fs::read(&self.path) else {
             return;
         };
-        let Some(record) = std::str::from_utf8(&raw).ok().and_then(parse_marker) else {
+        let Some(record) = parse_marker(&raw) else {
             return;
         };
         if &record.identity != claim {
             return;
         }
         if let Some((delegate_pid, delegate_ct)) = record.delegate {
-            if process_identity_alive(delegate_pid, delegate_ct) {
+            let age_secs = unix_now_secs().saturating_sub(record.started_at);
+            if identity_live(
+                delegate_pid,
+                Some(delegate_ct),
+                age_secs,
+                &process_creation_time,
+            ) {
                 return;
             }
         }
@@ -528,9 +757,16 @@ mod tests {
                 std::process::id(),
                 "marker records our pid so the desktop can probe liveness"
             );
-            assert_eq!(body.lines().count(), 3, "marker is pid + started_at + ct lines");
-            assert!(body.ends_with('\n'), "contract C1 bodies end with a newline");
-            let ct = parse_marker(&body).and_then(|record| record.ct);
+            assert_eq!(
+                body.lines().count(),
+                3,
+                "marker is pid + started_at + ct lines"
+            );
+            assert!(
+                body.ends_with('\n'),
+                "contract C1 bodies end with a newline"
+            );
+            let ct = parse_marker(body.as_bytes()).and_then(|record| record.ct);
             assert!(ct.is_some(), "a v2 claim records the owner's creation time");
         }
 
@@ -602,13 +838,14 @@ mod tests {
             .unwrap_or(0);
         std::fs::write(&marker, format!("{foreign_pid}\n{started_at}")).unwrap();
 
-        let owner = UpdateMarkerGuard::acquire(marker.clone())
-            .err()
-            .expect("acquire must be refused while a foreign updater is live");
+        let owner = busy(UpdateMarkerGuard::acquire(marker.clone()));
         assert_eq!(owner.pid, foreign_pid);
 
         // The refused guard must not delete the live owner's marker.
-        assert!(marker.exists(), "refused acquire must leave the marker intact");
+        assert!(
+            marker.exists(),
+            "refused acquire must leave the marker intact"
+        );
         let _ = foreign.kill();
         let _ = foreign.wait();
         let _ = std::fs::remove_dir_all(&dir);
@@ -631,12 +868,8 @@ mod tests {
             .saturating_sub(2);
         std::fs::write(&marker, format!("{}\n{started_at}", std::process::id())).unwrap();
 
-        let guard = UpdateMarkerGuard::acquire(marker.clone()).unwrap_or_else(|owner| {
-            panic!(
-                "own-pid pre-write must be adoptable, got foreign owner pid={}",
-                owner.pid
-            )
-        });
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("own-pid pre-write must be adoptable"));
         assert!(marker.exists(), "adopted guard must own the marker");
         let body = std::fs::read_to_string(&marker).unwrap();
         assert_eq!(
@@ -740,7 +973,10 @@ mod tests {
 
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
-        assert!(marker.exists(), "updater holds the marker during the child run");
+        assert!(
+            marker.exists(),
+            "updater holds the marker during the child run"
+        );
 
         // Stale child refused over our claim:
         assert!(should_heal_self_marker_refusal(
@@ -1076,9 +1312,8 @@ mod tests {
         let body = v2_body(foreign.id(), now_secs() - 25 * 60, ct_of(foreign.id()));
         std::fs::write(&marker, &body).unwrap();
 
-        let owner = UpdateMarkerGuard::acquire(marker.clone())
-            .err()
-            .expect("a live v2 owner must not be reclaimed by age");
+        // a live v2 owner must not be reclaimed by age
+        let owner = busy(UpdateMarkerGuard::acquire(marker.clone()));
         assert_eq!(owner.pid, foreign.id());
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), body);
         let _ = foreign.kill();
@@ -1098,7 +1333,7 @@ mod tests {
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("a recycled-pid marker must be reclaimable"));
         let body = std::fs::read_to_string(&marker).unwrap();
-        let record = parse_marker(&body).expect("reclaimed marker must parse");
+        let record = parse_marker(body.as_bytes()).expect("reclaimed marker must parse");
         assert_eq!(record.pid, me);
         let ct = record.ct.expect("our claim records a creation time");
         assert!((ct - ct_of(me)).abs() <= MARKER_CT_TOLERANCE_SECS);
@@ -1107,10 +1342,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Child half of `second_claimant_process_is_refused_by_create_new`:
+    /// Child half of `second_claimant_process_is_refused_by_exclusive_publish`:
     /// claims the marker from a SEPARATE process and reports via exit code.
     #[test]
-    #[ignore = "spawned by second_claimant_process_is_refused_by_create_new"]
+    #[ignore = "spawned by second_claimant_process_is_refused_by_exclusive_publish"]
     fn marker_claim_child_helper() {
         let Some(path) = std::env::var_os("HERMES_TEST_MARKER_CLAIM_PATH") else {
             return;
@@ -1146,8 +1381,8 @@ mod tests {
     }
 
     #[test]
-    fn second_claimant_process_is_refused_by_create_new() {
-        // V4: the claim is an exclusive create, so a second updater process
+    fn second_claimant_process_is_refused_by_exclusive_publish() {
+        // V4: the claim is an exclusive publish, so a second updater process
         // racing a fresh claim is refused and never truncates our bytes.
         let dir = unique_tmp_dir("marker-exclusive");
         let marker = dir.join(".hermes-update-in-progress");
@@ -1156,8 +1391,15 @@ mod tests {
         let ours = std::fs::read(&marker).unwrap();
 
         let (code, _) = run_claim_child(&marker);
-        assert_eq!(code, 3, "second claimant must be refused while our claim is live");
-        assert_eq!(std::fs::read(&marker).unwrap(), ours, "refusal must not touch our bytes");
+        assert_eq!(
+            code, 3,
+            "second claimant must be refused while our claim is live"
+        );
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            ours,
+            "refusal must not touch our bytes"
+        );
 
         drop(guard);
         assert!(!marker.exists());
@@ -1177,7 +1419,10 @@ mod tests {
         let marker = dir.join(".hermes-update-in-progress");
         std::fs::write(&marker, "2147483647\n1\n").unwrap();
         assert!(!compare_and_delete(&marker, b"2147483647\n0\n"));
-        assert!(marker.exists(), "changed bytes must survive compare-and-delete");
+        assert!(
+            marker.exists(),
+            "changed bytes must survive compare-and-delete"
+        );
         assert!(compare_and_delete(&marker, b"2147483647\n1\n"));
         assert!(!marker.exists());
 
@@ -1220,12 +1465,322 @@ mod tests {
         ours.push_str(&delegate);
         std::fs::write(&marker, &ours).unwrap();
         guard.complete();
-        assert!(marker.exists(), "a live delegate owns the marker after our release");
+        assert!(
+            marker.exists(),
+            "a live delegate owns the marker after our release"
+        );
         let _ = foreign.kill();
         let _ = foreign.wait();
         guard.complete();
-        assert!(!marker.exists(), "a dead delegate's line must not strand our claim");
+        assert!(
+            !marker.exists(),
+            "a dead delegate's line must not strand our claim"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- LP-LOCK round 2: shared parse / liveness / claim / litter rules ----
+
+    #[test]
+    fn parse_matrix_follows_the_shared_contract() {
+        let parse = |body: &str| parse_marker(body.as_bytes());
+        for body in [
+            "\u{feff}123\n456\nct:1.5\n",
+            "123\r\n456\r\nct:1.5\r\n",
+            " 123\t\n\t456 \n ct:1.5 \n",
+        ] {
+            let record = parse(body).unwrap_or_else(|| panic!("{body:?} must parse"));
+            assert_eq!(
+                (record.pid, record.started_at, record.ct),
+                (123, 456, Some(1.5)),
+                "{body:?}"
+            );
+            assert_eq!(record.identity, ["123", "456", "ct:1.5"], "{body:?}");
+        }
+        for malformed in [
+            "123\n1700000000.5\n", // fractional started_at
+            "123\nabc\n",          // garbage line 2
+            "123\n\n",             // empty line 2
+            "123\n",               // missing line 2
+            "123",
+            "1_0\n456\n",
+            "+5\n456\n",
+            "\u{663}\n456\n", // non-ASCII digit
+            "",
+        ] {
+            assert!(
+                parse(malformed).is_none(),
+                "{malformed:?} must be malformed"
+            );
+        }
+        for v1 in [
+            "123\n456\nct:abc\n",
+            "123\n456\nct: 1.5\n",
+            "123\n456\nct:1.\n",
+            "123\n456\n",
+        ] {
+            let record = parse(v1).unwrap_or_else(|| panic!("{v1:?} must parse"));
+            assert_eq!(record.ct, None, "{v1:?} is a v1 marker");
+            assert_eq!(record.identity.len(), 2, "{v1:?}");
+        }
+        // A delegate is read from line 4 only, in its exact shape.
+        let line3 = parse("123\n456\ndelegate:5 ct:1.0\n").unwrap();
+        assert_eq!(
+            (line3.ct, line3.delegate),
+            (None, None),
+            "line 3 is never a delegate"
+        );
+        assert_eq!(
+            parse("123\n456\nct:1.5\ndelegate:5 ct:1.0\n")
+                .unwrap()
+                .delegate,
+            Some((5, 1.0))
+        );
+        for bad in [
+            "delegate:5  ct:1.0",
+            "delegate:5 ct:abc",
+            "delegate:5",
+            "delegate:x ct:1.0",
+        ] {
+            let body = format!("123\n456\nct:1.5\n{bad}\n");
+            assert_eq!(parse(&body).unwrap().delegate, None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_started_at_marker_is_dead_and_deleted() {
+        // Our own live pid, but a fractional line 2: malformed, so dead.
+        let dir = unique_tmp_dir("marker-fractional");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(
+            &marker,
+            format!("{}\n{}.5\n", std::process::id(), now_secs()),
+        )
+        .unwrap();
+        assert!(live_marker_owner(&marker).is_none());
+        assert!(
+            !marker.exists(),
+            "a malformed marker is compare-and-deleted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_creation_time_gets_the_v1_age_ceiling() {
+        // A1: a live pid whose creation time cannot be probed is live only
+        // within the v1 ceiling; a confirmed match has no age limit.
+        let me = std::process::id();
+        let started = now_secs() - 30 * 60;
+        let record =
+            parse_marker(format!("{me}\n{started}\nct:{:.3}\n", ct_of(me)).as_bytes()).unwrap();
+        let unreadable = |_: u32| None;
+        let at = |mins: u64| started + mins * 60;
+        assert!(
+            marker_live_holder(&record, at(5), &unreadable).is_some(),
+            "5 min, ct unreadable: live"
+        );
+        assert!(
+            marker_live_holder(&record, at(25), &unreadable).is_none(),
+            "25 min, ct unreadable: dead"
+        );
+        let matching = |pid: u32| process_creation_time(pid);
+        assert!(
+            marker_live_holder(&record, at(25), &matching).is_some(),
+            "matching ct: live at any age"
+        );
+        let mismatched = |pid: u32| process_creation_time(pid).map(|ct| ct + 100.0);
+        assert!(
+            marker_live_holder(&record, at(5), &mismatched).is_none(),
+            "ct mismatch: recycled pid"
+        );
+
+        // The delegate is aged by the same marker age.
+        let delegated = format!(
+            "2147483647\n{started}\nct:1.000\ndelegate:{me} ct:{:.3}\n",
+            ct_of(me)
+        );
+        let record = parse_marker(delegated.as_bytes()).unwrap();
+        let holder =
+            marker_live_holder(&record, at(5), &unreadable).expect("delegate live at 5 min");
+        assert_eq!(holder.pid, me);
+        assert!(marker_live_holder(&record, at(25), &unreadable).is_none());
+    }
+
+    #[test]
+    fn fresh_empty_marker_is_a_claim_in_flight() {
+        // A3: a 0-byte marker younger than 5 s is a claimant between its
+        // exclusive create and its write — live, and never deleted.
+        let dir = unique_tmp_dir("marker-empty-fresh");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, "").unwrap();
+        assert_eq!(busy(UpdateMarkerGuard::acquire(marker.clone())).pid, 0);
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            b"",
+            "a fresh empty marker is not deleted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_empty_marker_is_reclaimed_and_claim_leaves_no_tmp() {
+        let dir = unique_tmp_dir("marker-empty-old");
+        let marker = dir.join(".hermes-update-in-progress");
+        let file = std::fs::File::create(&marker).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(10))
+            .unwrap();
+        drop(file);
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("a 10 s old empty marker is dead"));
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert!(body.starts_with(&format!("{}\n", std::process::id())));
+        let litter: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            litter.is_empty(),
+            "the publish tmp file must be removed: {litter:?}"
+        );
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn own_v1_prewrite_is_upgraded_to_v2_and_released() {
+        // M1: Electron pre-writes `<our pid>\n<ts>\n`; acquire upgrades it to
+        // v2 with our creation time, keeping lines 1-2 byte-identical (the
+        // age survives), and complete() releases the upgraded claim.
+        let me = std::process::id();
+        let ts = now_secs() - 2;
+        let ct_line = format!("ct:{:.3}\n", ct_of(me));
+        for (prewrite, lines12) in [
+            (format!("{me}\n{ts}\n"), format!("{me}\n{ts}\n")),
+            (format!("{me}\r\n{ts}\r\n"), format!("{me}\r\n{ts}\r\n")),
+            (format!("{me}\n{ts}"), format!("{me}\n{ts}\n")),
+        ] {
+            let dir = unique_tmp_dir("marker-m1");
+            let marker = dir.join(".hermes-update-in-progress");
+            std::fs::write(&marker, &prewrite).unwrap();
+            let guard = UpdateMarkerGuard::acquire(marker.clone())
+                .unwrap_or_else(|_| panic!("own-pid pre-write {prewrite:?} must be adopted"));
+            assert_eq!(
+                std::fs::read_to_string(&marker).unwrap(),
+                format!("{lines12}{ct_line}")
+            );
+            guard.complete();
+            assert!(!marker.exists(), "the upgraded claim is ours to release");
+            drop(guard);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // An own-pid marker that already carries ct is adopted verbatim.
+        let dir = unique_tmp_dir("marker-m1-v2");
+        let marker = dir.join(".hermes-update-in-progress");
+        let body = v2_body(me, now_secs() - 25 * 60, ct_of(me));
+        std::fs::write(&marker, &body).unwrap();
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("own v2 marker must be adopted"));
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), body);
+        drop(guard);
+        assert!(!marker.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn unwritable_message(result: Result<UpdateMarkerGuard, AcquireError>) -> String {
+        match result {
+            Err(AcquireError::Unwritable(msg)) => msg,
+            Err(AcquireError::Busy(owner)) => {
+                panic!("expected Unwritable, got Busy pid {}", owner.pid)
+            }
+            Ok(_) => panic!("expected Unwritable, acquire succeeded"),
+        }
+    }
+
+    #[test]
+    fn marker_under_a_regular_file_is_unwritable() {
+        // m8: never proceed unclaimed.
+        let dir = unique_tmp_dir("marker-under-file");
+        let not_a_dir = dir.join("home");
+        std::fs::write(&not_a_dir, "x").unwrap();
+        let marker = not_a_dir.join(".hermes-update-in-progress");
+        let msg = unwritable_message(UpdateMarkerGuard::acquire(marker.clone()));
+        assert!(msg.starts_with(&format!(
+            "Cannot lock this install for the update: {} is not writable (",
+            marker.display()
+        )));
+        assert!(msg.ends_with("). Run the update as the user that owns the install."));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_in_a_read_only_dir_is_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores directory permissions
+        }
+        // No marker yet, and a dead marker that cannot be removed: both refuse.
+        for existing in [None, Some(format!("2147483647\n{}\n", now_secs()))] {
+            let dir = unique_tmp_dir("marker-read-only");
+            let marker = dir.join(".hermes-update-in-progress");
+            if let Some(body) = &existing {
+                std::fs::write(&marker, body).unwrap();
+            }
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let result = UpdateMarkerGuard::acquire(marker.clone());
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                unwritable_message(result).contains("is not writable"),
+                "{existing:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&marker).ok(), existing);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn claim_sweeps_dead_claimants_tmp_litter() {
+        // m10: a claimant that died mid-publish leaves its tmp sibling.
+        let dir = unique_tmp_dir("marker-litter");
+        let marker = dir.join(".hermes-update-in-progress");
+        let me = std::process::id();
+        let dead = [
+            ".hermes-update-in-progress.2147483647.123.tmp",
+            ".hermes-update-in-progress.2147483647.tmp",
+        ];
+        let kept = [
+            format!(".hermes-update-in-progress.{me}.123.tmp"),
+            "other.2147483647.123.tmp".to_string(),
+        ];
+        for name in dead
+            .iter()
+            .map(|n| n.to_string())
+            .chain(kept.iter().cloned())
+        {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("fresh acquire must succeed"));
+        for name in dead {
+            assert!(!dir.join(name).exists(), "{name} belongs to a dead pid");
+        }
+        for name in &kept {
+            assert!(dir.join(name).exists(), "{name} must be kept");
+        }
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The live owner a refused acquire reports; panics on any other outcome.
+    fn busy(result: Result<UpdateMarkerGuard, AcquireError>) -> MarkerOwner {
+        match result {
+            Err(AcquireError::Busy(owner)) => owner,
+            Err(AcquireError::Unwritable(msg)) => panic!("expected Busy, got Unwritable: {msg}"),
+            Ok(_) => panic!("expected Busy, acquire succeeded"),
+        }
     }
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {

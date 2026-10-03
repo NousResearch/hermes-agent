@@ -21,7 +21,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
-use crate::marker::{should_heal_self_marker_refusal, UpdateMarkerGuard};
+use crate::marker::{
+    should_heal_self_marker_refusal, AcquireError, MarkerOwner, UpdateMarkerGuard,
+};
 use crate::powershell::{pump_child, DRAIN_GRACE};
 
 /// `hermes update` exit code meaning "another hermes process is holding the
@@ -86,6 +88,26 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The refusal shown when a live update already holds the marker. pid 0 is
+/// a claim still being published (see `marker::inspect_marker`).
+fn busy_update_message(owner: &MarkerOwner) -> String {
+    let wait = "Wait for it to finish, or close the window or dashboard tab that \
+                started it, then try again.";
+    if owner.pid == 0 {
+        return format!("Another Hermes update is starting right now. {wait}");
+    }
+    let mins = owner.age_secs / 60;
+    let secs = owner.age_secs % 60;
+    let elapsed = if mins > 0 {
+        format!("{mins}m {secs}s")
+    } else {
+        format!("{secs}s")
+    };
+    format!(
+        "Another Hermes update is already running (PID {}, started {elapsed} ago). {wait}",
+        owner.pid
+    )
+}
 
 async fn run_update(app: AppHandle) -> Result<()> {
     let hermes_home = crate::paths::hermes_home();
@@ -102,24 +124,14 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // update_lock.py claims it too), so a live foreign owner means another
     // updater — most often a dashboard-spawned `hermes update` — is already
     // mutating this checkout. Refuse instead of running a second one over it.
-    let _update_marker = match UpdateMarkerGuard::acquire(
-        crate::paths::update_in_progress_marker(),
-    ) {
+    let _update_marker = match UpdateMarkerGuard::acquire(crate::paths::update_in_progress_marker())
+    {
         Ok(guard) => guard,
-        Err(owner) => {
-            let mins = owner.age_secs / 60;
-            let secs = owner.age_secs % 60;
-            let elapsed = if mins > 0 {
-                format!("{mins}m {secs}s")
-            } else {
-                format!("{secs}s")
+        Err(err) => {
+            let msg = match err {
+                AcquireError::Busy(owner) => busy_update_message(&owner),
+                AcquireError::Unwritable(msg) => msg,
             };
-            let msg = format!(
-                "Another Hermes update is already running (PID {}, started {} ago). \
-                 Wait for it to finish, or close the window or dashboard tab that \
-                 started it, then try again.",
-                owner.pid, elapsed
-            );
             emit(
                 &app,
                 BootstrapEvent::Failed {

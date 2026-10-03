@@ -653,12 +653,13 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     return _relocate(skill_dir, dest, skill_name, "archive", complete_package=True, skill=skill_name)
 
 
-def restore_skill(skill_name: str) -> Tuple[bool, str]:
+def restore_skill(skill_name: str, *, allow_bundled: bool = False) -> Tuple[bool, str]:
     """Move an archived skill back to the flat layout (nesting NOT reconstructed). Refuses a name now colliding with
-    a hub skill, or a bundled built-in unless ``curator.prune_builtins`` is on (restoring lifts a prune)."""
+    a hub skill, or a bundled built-in unless ``curator.prune_builtins`` is on (restoring lifts a prune), unless an explicit
+    install request passes ``allow_bundled``."""
     if is_hub_installed(skill_name):
         return False, f"skill '{skill_name}' is now hub-installed; restore would shadow the upstream version"
-    if is_bundled(skill_name) and not _prune_builtins_enabled():
+    if is_bundled(skill_name) and not _prune_builtins_enabled() and not allow_bundled:
         return False, f"skill '{skill_name}' is now bundled; restore would shadow the upstream version"
     archive_root = _archive_dir()
     if not archive_root.exists():

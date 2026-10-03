@@ -8,6 +8,7 @@ the same heavy build/test could still kill the control plane.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from typing import cast
 
@@ -50,9 +51,10 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: case != "no_scope")
     monkeypatch.setattr(process_registry, "systemd_user_bus_env",
                         lambda base: {**base, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1/bus"})
-    if case == "no_wrapper":  # probe said yes, but systemd-run is gone from PATH
-        monkeypatch.setattr(process_registry, "_build_systemd_scope_argv",
-                            lambda argv, unit_suffix, *, prefix: list(argv))
+    # Probe said yes; "no_wrapper" = systemd-run is gone from PATH by spawn time.
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: (
+        None if case == "no_wrapper" else "/usr/bin/systemd-run") if name == "systemd-run" else real_which(name, *a, **k))
     degraded: list[str] = []
     monkeypatch.setattr(local_env, "_warn_foreground_scope_degraded", degraded.append)
     env = local_env.LocalEnvironment()

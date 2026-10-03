@@ -550,10 +550,11 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             return _err(archive_msg)
         return {"success": True,
                 "message": f"Skill '{name}' archived ({archive_msg}).{absorbed_note}",
-                "_archived": True}
+                "_archived": True, "path": str(skill_dir)}
     shutil.rmtree(skill_dir)
     _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
-    return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
+    return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}",
+            "path": str(skill_dir)}
 
 
 def _rmdir_if_empty(parent: Path, stop: Path) -> None:

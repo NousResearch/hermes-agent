@@ -786,6 +786,8 @@ export interface Translations extends NoticeTranslations {
       hideThreadTimelineDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      trajectoryCollapsedTitle: string
+      trajectoryCollapsedDesc: string
       chatTextScaleTitle: string
       chatTextScaleDesc: string
       uiScaleTitle: string
@@ -3904,6 +3906,8 @@ export interface Translations extends NoticeTranslations {
       thought: string
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
+      completedSteps: (count: number) => string
+      completedStepsIn: (count: number, duration: string) => string
       turnDuration: (duration: string) => string
       today: (time: string) => string
       yesterday: (time: string) => string

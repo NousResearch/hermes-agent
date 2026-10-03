@@ -37,6 +37,7 @@ import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-gr
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { TrajectoryCollapse } from '@/components/assistant-ui/thread/trajectory-collapse'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
 import { isApprovalActivity, isCurrentTurnMessage } from '@/components/assistant-ui/tool/approval-activity'
@@ -325,7 +326,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             data-slot="aui_assistant-message-content"
           >
             {/* Todos render in the composer status stack now, not inline. */}
-            {MESSAGE_PARTS}
+            <TrajectoryCollapse>{MESSAGE_PARTS}</TrajectoryCollapse>
             <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />

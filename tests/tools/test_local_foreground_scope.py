@@ -56,7 +56,9 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         monkeypatch.delenv("INVOCATION_ID", raising=False)
     else:
         monkeypatch.setenv("INVOCATION_ID", "x")
-    # "bus_gone" = the probe verdict is cached but the user bus vanished since.
+    # "bus_gone" = the probe verdict is cached but the user bus vanished since; an address
+    # inherited from the manager must not pass for a live bus.
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus")
     bus = {} if case == "bus_gone" else {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1/bus"}
     monkeypatch.setattr(process_registry, "systemd_user_bus_env", lambda base: {**base, **bus})
     # Probe said yes; "no_wrapper" = systemd-run is gone from PATH by spawn time.

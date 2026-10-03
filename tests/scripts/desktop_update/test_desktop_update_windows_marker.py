@@ -262,3 +262,94 @@ def test_ui_profile_sweep_keeps_dirs_of_live_handoffs(tmp_path: Path, sleeper: s
     assert result.returncode == 0, result.stdout + result.stderr
     assert live.exists(), 'another live hand-off lost its browser profile'
     assert not dead.exists()
+
+
+HOLD_CLI = """
+import os, sys, time
+from pathlib import Path
+def main():
+    if '--version' in sys.argv:
+        print('Install directory: ' + str(Path(__file__).resolve().parents[1])); return 0
+    if '--help' in sys.argv:
+        print('--keep-stash'); return 0
+    if sys.argv[1:2] == ['update']:   # still starting up: report the pid, wait to be released
+        hold = Path(os.environ['HANDOFF_HOLD'])
+        Path(str(hold) + '.pid').write_text(str(os.getpid()), encoding='utf-8')
+        while not hold.exists():
+            time.sleep(0.05)
+    return 0
+if __name__ == '__main__':
+    sys.exit(main())
+"""
+
+
+def _marker_lines(path: Path) -> list[str]:
+    try:   # the script may be mid-replace (sharing violation): read again next poll
+        return path.read_bytes().decode().splitlines()
+    except OSError:
+        return []
+
+
+def _parent_pid(pid: int) -> int:
+    out = subprocess.run(
+        ['powershell', '-NoProfile', '-Command',
+         f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId"],
+        capture_output=True, text=True, timeout=60, check=True,
+    ).stdout.strip()
+    return int(out or 0)
+
+
+@pytest.mark.platforms('windows')
+def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_path: Path) -> None:
+    """C1 rule 6, written by the script itself: windows.ps1 is killed (taskkill /F, no /T) while
+    its `hermes update` child is only starting up and has not taken the update lock. The marker
+    must still read LIVE through the child named on line 4, and turn dead once that child is gone."""
+    install = tmp_path / 'checkout'
+    publish_fixture_launcher(install, HOLD_CLI)
+    home = tmp_path / 'home'; home.mkdir()
+    hold = tmp_path / 'release-update'
+    marker = home / MARKER
+    script = subprocess.Popen(
+        ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
+         '-InstallRoot', str(install), '-NoUi'],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env={**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(tmp_path / 'empty-store'),
+             'HANDOFF_HOLD': str(hold)},
+    )
+    child_pid_file = Path(str(hold) + '.pid')
+    try:
+        deadline = time.monotonic() + 120
+        while not child_pid_file.exists():
+            assert time.monotonic() < deadline and script.poll() is None, 'update child never started'
+            time.sleep(0.02)
+        # Kill the script the moment the delegate line is there (at most 3 s after the spawn).
+        settle = time.monotonic() + 3
+        while time.monotonic() < settle and len(_marker_lines(marker)) < 4:
+            time.sleep(0.01)
+        subprocess.run(['taskkill', '/F', '/PID', str(script.pid)], capture_output=True, check=True)
+        script.wait(timeout=30)
+        child = int(child_pid_file.read_text(encoding='utf-8-sig'))
+        lines = marker.read_bytes().decode().splitlines()
+        assert lines[0] == str(script.pid)
+        assert len(lines) == 4 and lines[3].startswith('delegate:'), lines
+        delegate = int(lines[3].split()[0].split(':')[1])
+        assert delegate in (child, _parent_pid(child), _parent_pid(_parent_pid(child)))  # update or its launcher
+        assert lines[3] == f'delegate:{delegate} ct:{_creation_time(delegate)}'
+
+        # A real reader (the script itself) sees an update in progress and refuses.
+        _, code, out = _run(home, '-SelfTestMarker', '-NoMarkerCleanup', install=install)
+        assert code == 2, out
+
+        hold.touch()
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and subprocess.run(
+                ['tasklist', '/FI', f'PID eq {delegate}', '/NH'], capture_output=True, text=True,
+        ).stdout.find(str(delegate)) >= 0:
+            time.sleep(0.2)
+        _, code, out = _run(home, '-SelfTestMarker', '-NoMarkerCleanup', install=install)
+        assert code == 0, out
+    finally:
+        hold.touch()
+        if script.poll() is None:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(script.pid)], capture_output=True)
+            script.wait()

@@ -203,9 +203,65 @@ def _prune_durable_records() -> None:
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
 
+def _merge_durable_batch_children(conn, event: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    """Union children recorded after the finalization snapshot into the terminal result.
+
+    ``record_unit_child`` runs concurrently with the stale monitor, so reading the partial
+    row and writing the terminal row cannot be treated as an atomic read-modify-write unless
+    the second read happens inside this transaction. Late durable entries win over the
+    snapshot's ``unknown`` placeholders; the terminal write must never erase them.
+    """
+    if not (event.get("is_batch") and isinstance(result, dict)):
+        return result
+    row = conn.execute(
+        "SELECT state, result_json FROM async_delegations WHERE delegation_id=?",
+        (event["delegation_id"],),
+    ).fetchone()
+    if row is None or row[0] not in _ACTIVE_STATES:
+        return result
+    try:
+        partial = json.loads(row[1] or "{}") or {}
+    except (TypeError, ValueError):
+        return result
+    recorded = partial.get("results") if partial.get("partial") else None
+    if not isinstance(recorded, list) or not recorded:
+        return result
+
+    merged_by_index = {
+        entry.get("task_index"): entry
+        for entry in (result.get("results") or [])
+        if isinstance(entry, dict) and isinstance(entry.get("task_index"), int)
+    }
+    for entry in recorded:
+        if isinstance(entry, dict) and isinstance(entry.get("task_index"), int):
+            merged_by_index[entry["task_index"]] = dict(entry)
+    indexes = event.get("task_indexes") or list(range(len(event.get("goals") or [])))
+    ordered = [merged_by_index[i] for i in indexes if i in merged_by_index]
+    ordered.extend(merged_by_index[i] for i in sorted(i for i in merged_by_index if isinstance(i, int)) if i not in indexes)
+
+    transcripts = event.get("task_transcripts") or {}
+    for entry in ordered:
+        idx = entry.get("task_index")
+        if isinstance(idx, int) and not entry.get("live_transcript"):
+            path = transcripts.get(str(idx))
+            if path:
+                entry["live_transcript"] = path
+    try:
+        from tools.delegate_tool_results import _apply_summary_budget
+        _apply_summary_budget(ordered, None)
+    except Exception:  # noqa: BLE001 — recovery must not block terminal delivery
+        logger.debug("Async delegation %s: recovered summary budgeting failed", event["delegation_id"], exc_info=True)
+    return {**result, "results": ordered}
+
+
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
+        result = _merge_durable_batch_children(conn, event, result)
+        if event.get("is_batch") and isinstance(result, dict):
+            event["results"] = result.get("results") or []
+            if result.get("live_transcripts") is not None:
+                event["live_transcripts"] = result["live_transcripts"]
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
@@ -241,6 +297,35 @@ def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: 
     recorded = {r["task_index"]: r for r in partial["results"] if isinstance(r.get("task_index"), int)}
     indexes = task.get("task_indexes") or list(range(len(task.get("goals") or [])))
     return [recorded.get(i) or {"task_index": i, "status": "unknown", "summary": None, "error": error} for i in indexes]
+
+
+def _merge_recorded_children(delegation_id: str, record: Dict[str, Any], result: Any) -> Any:
+    """Recover durably recorded children into a batch unit's synthetic terminal result.
+
+    A synthetic batch terminal result (stall kill, worker crash) carries ``results: []`` — but for a
+    multi-child unit ``record_unit_child`` has been durably recording finished children on the row all
+    along, exactly so a crash loses only the unfinished ones (#116000). The owner-death path
+    (``recover_abandoned_delegations`` -> ``_recovered_results``) replays that partial; the in-process
+    stall/crash path used to discard it, overwriting ``result_json`` with an empty results wall at
+    ``_persist_completion``. Merge the recorded children back in here — same semantics as owner death:
+    recorded children with their real results, unrecorded ones ``unknown``.
+    """
+    if not (isinstance(result, dict) and record.get("is_batch") and result.get("error") and not result.get("results")):
+        return result
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+                (delegation_id,)).fetchone()
+        if row is None:
+            return result
+        recovered = _recovered_results(record, row[0], result.get("error") or "")
+        if not recovered:
+            return result
+        return {**result, "results": recovered}
+    except Exception:  # noqa: BLE001 — recovery merge must never fail a terminal result
+        logger.warning("Async delegation %s: could not merge recorded children into terminal result", delegation_id, exc_info=True)
+        return result
 
 
 def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
@@ -887,7 +972,10 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    _push_completion_event(
+        snapshot,
+        _merge_recorded_children(delegation_id, snapshot, result(snapshot) if callable(result) else result),
+        status)
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status

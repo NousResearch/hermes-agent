@@ -1,0 +1,159 @@
+# Hermes trace-redaction detector configuration — packaged default.
+#
+# This file ships alongside specs/trace-v1.schema.json and
+# specs/trace-schema.md as the schema-mandated default detector set
+# (trace-schema.md S4.2). The redactor (agent/trace_redactor.py) loads,
+# in order: HERMES_TRACE_REDACTION_CONFIG, ~/.hermes/trace_redaction.yaml,
+# this packaged default. A site config may override any key; omitted keys
+# fall back to this default.
+#
+# Schema of this file:
+#   detector_reasons:  map<detector-name, "credential"|"pii">
+#   detectors:         map<detector-name, <spec>>
+#   value_key_detectors: map<detector-name, key-spec>  (whole-value redaction)
+#   luhn_max_digits / luhn_check_digit_floor: card-number detector tuning
+#
+# Regex detector spec:
+#   patterns: [regex strings, Python re syntax, applied with re.IGNORECASE
+#              for case-insensitive entries as marked inline via (?i)]
+#   span_group: optional capture-group name/index whose span is redacted
+#               instead of the whole match (e.g. basic_auth redacts only
+#               the base64 blob, preserving the "Authorization: Basic "
+#               prefix so traces keep their shape).
+#   sentinel:   optional {"check": regex, "min_len": int} — the detector
+#               only runs its patterns against a string when the sentinel
+#               regex matches (cheap pre-filter).
+#
+# Value-key detector spec (whole string value redacted when a containing
+# object's key matches):
+#   keys:     [exact key names, case-insensitive]
+#   substrings: [substrings matched against the key, case-insensitive]
+
+detector_reasons:
+  bearer_token: credential
+  api_key_prefixed: credential
+  basic_auth: credential
+  private_key_block: credential
+  password_field: credential
+  jwt: credential
+  email: pii
+  phone_e164: pii
+  card_number: pii
+
+luhn_max_digits: 19
+luhn_check_digit_floor: 4
+
+detectors:
+  # Case-insensitive per trace-schema.md S4.2. Only the token blob is
+  # redacted; the "Bearer " scheme prefix survives so traces keep shape,
+  # mirroring basic_auth handling.
+  bearer_token:
+    patterns:
+      - '(?i)bearer\s+(?P<tok>[A-Za-z0-9\-._~+/]+=*)'
+    span_group: tok
+
+  api_key_prefixed:
+    # Cheap pre-filter: only scan strings containing a known vendor prefix.
+    sentinel:
+      check: 'sk-ant-|sk-|ghp_|github_pat_|xox[baprs]-|AKIA'
+      min_len: 12
+    patterns:
+      - 'sk-ant-[A-Za-z0-9\-]{20,}'
+      # Common case: boundary-delimited sk- keys. In-word forms
+      # (e.g. inside a base64 blob with no boundary) are caught by the
+      # boundary-less fallback below.
+      - '(?<![A-Za-z0-9])sk-[A-Za-z0-9\-]{16,}'
+      # ghp_ tokens: 36 is the canonical GitHub length, but tokens issue
+      # longer payloads; bounded pattern must eat the whole run or a live
+      # suffix leaks (QA t_0b40eccc: trailing "d6" survived on disk).
+      - '(?<![A-Za-z0-9_])ghp_[A-Za-z0-9]{36,}(?![A-Za-z0-9])'
+      - 'github_pat_[A-Za-z0-9_]{22,}'
+      - 'xox[baprs]-[A-Za-z0-9\-]{10,}'
+      # Boundary-less fallback: catches boundary-adjacent vendor keys that
+      # are embedded in an identifier run (e.g. concatenated secrets).
+      # Longest-first span resolution in the redactor keeps this from
+      # double-matching the bounded pattern above.
+      - 'ghp_[A-Za-z0-9]{36,}'
+      - '(?i)AKIA[0-9A-Z]{16}'
+
+  basic_auth:
+    patterns:
+      # Only the base64 blob is redacted; the scheme prefix survives so the
+      # trace keeps its shape. Pattern per the schema's abbreviated spec:
+      # base64 alphabet, 8+ chars, optional padding, followed by a
+      # non-base64 character or end of string.
+      - '(?i)Authorization:\s*Basic\s+(?P<blob>[A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])'
+    span_group: blob
+
+  private_key_block:
+    patterns:
+      # Multiline block: header through the matching END line.
+      - '\-{5}BEGIN [A-Z ]*PRIVATE KEY\-{5}.*?\-{5}END [A-Z ]*PRIVATE KEY\-{5}'
+
+  jwt:
+    patterns:
+      - 'eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+'
+
+  # String-leaf extension of password_field (reason mapping shared with the
+  # value_key_detector of the same name below): catches key-shaped credential
+  # assignments embedded inside code strings, shell commands, connection
+  # strings, and log blobs (e.g. pw = {'password': 'hunter2'} in an
+  # execute_code `code` argument). The value-key detector only fires when
+  # the credential sits under a JSON key in the argument STRUCTURE; without
+  # this regex a password literal inside a string leaf survived to disk
+  # unmarked, and the S4.4 credential-retention rule never triggered
+  # (QA t_0b40eccc: survivors_on_disk=['password_value']).
+  #
+  # Shape: optional-quoted keyword, optional-quoted, `:` or `=`, optional
+  # quote, then the secret value. Only the VALUE is redacted (span_group);
+  # the `key =` prefix survives so the trace keeps its shape, mirroring
+  # basic_auth handling. The 4-char value floor keeps prose like
+  # "db password = none" and "reset your password here" from matching
+  # (no `:`/`=` separator before the value), and the value's character
+  # class stops at whitespace, quotes, commas, and closing
+  # braces/brackets/parens so a multi-word sentence can't be eaten as one
+  # "secret".
+  #
+  # The keyword set deliberately excludes `authorization`: the
+  # bearer_token and basic_auth detectors above already own the
+  # `Authorization:` header shape, and adding it here would double-redact
+  # the `Bearer`/`Basic` scheme word and break existing span assertions.
+  # `Authorization` as a JSON KEY is still covered by the value-key
+  # detector below.
+  #
+  # False-positive cost: any text resembling `password = <word>` (Python,
+  # YAML, INI, JDBC URLs, env dumps) will have that `<word>` span-redacted
+  # — the intended deny-by-default trade for a credential detector.
+  password_field:
+    patterns:
+      - "(?i)[\"']?(?:password|passwd|secret|token|api[_-]?key)[\"']?\\s*[:=]\\s*[\"']?(?P<val>[^\\s\"'\\,}\\]\\)]{4,})"
+    span_group: val
+
+  email:
+    # RFC5322-simplified, per trace-schema.md S4.2.
+    patterns:
+      - '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+
+  phone_e164:
+    patterns:
+      - '\+?[0-9][0-9 \-()]{7,}[0-9]'
+
+value_key_detectors:
+  # Per trace-schema.md S4.2: JSON keys named password/passwd/secret/token/
+  # api_key/apikey/authorization (case-insensitive) — the whole string value
+  # is redacted regardless of content. Key-path substrings (e.g. a `.aws_`
+  # segment in "config.aws_token") extend coverage to vendor-qualified keys;
+  # bare substrings are deliberately avoided so innocuous keys like
+  # "monkey" do not trigger.
+  password_field:
+    keys:
+      - password
+      - passwd
+      - secret
+      - token
+      - api_key
+      - apikey
+      - authorization
+    substrings:
+      - .aws_
+      - _passwd

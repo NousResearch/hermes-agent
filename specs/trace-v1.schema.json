@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/trace-v1.schema.json",
+  "title": "Hermes Agent Per-Run Structured Trace",
+  "description": "Trace schema v1.0.0. Exactly one record per dispatched run, appended as one JSONL line to the date-rotated trace root. See specs/trace-schema.md for the prose specification; this schema is normative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "session_id",
+    "profile_slug",
+    "board_slug",
+    "task_id",
+    "trace_id",
+    "model",
+    "provider",
+    "harness_version",
+    "messages",
+    "tool_calls",
+    "outcome",
+    "terminal_call",
+    "exit_code",
+    "error_class",
+    "killswitch",
+    "safety_tier_hit",
+    "token_counts",
+    "cost_usd",
+    "token_counts_complete",
+    "started_at",
+    "ended_at",
+    "wall_clock_seconds"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.",
+      "description": "Trace schema version, e.g. \"1.0.0\". Major version must be 1."
+    },
+    "run_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Dispatcher-assigned run identifier."
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Hermes session identifier."
+    },
+    "profile_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Worker profile slug; dataset-assembly partition key."
+    },
+    "board_slug": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Kanban board slug, or null for non-board runs."
+    },
+    "task_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Kanban task id (e.g. t_xxx), or null when not Kanban-backed."
+    },
+    "trace_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID4 assigned at emission; dedup key is (run_id, trace_id) first-wins."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model name exactly as passed to the provider."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider slug."
+    },
+    "harness_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_builder_sha", "config_sha256"],
+      "properties": {
+        "prompt_builder_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Git commit SHA (full 40 hex) of agent/prompt_builder.py at run start."
+        },
+        "config_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 hex of the effective run configuration (canonical JSON)."
+        }
+      }
+    },
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Full conversation in order; minimum one (system prompt).",
+      "items": { "$ref": "#/$defs/message" }
+    },
+    "tool_calls": {
+      "type": "array",
+      "description": "One entry per tool invocation, execution order. Empty array valid.",
+      "items": { "$ref": "#/$defs/toolCall" }
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["completed", "blocked", "crashed", "timeout", "review_requested"],
+      "description": "Terminal classification of the run."
+    },
+    "terminal_call": {
+      "type": ["string", "null"],
+      "description": "Name of the kanban tool that ended the run, or null.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "string",
+          "enum": ["kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes"]
+        }
+      ]
+    },
+    "exit_code": {
+      "type": ["integer", "null"],
+      "description": "Process exit code of the worker; null when unobservable."
+    },
+    "error_class": {
+      "type": ["string", "null"],
+      "description": "Sanitized failure classification for crashed/timeout outcomes; null otherwise."
+    },
+    "killswitch": {
+      "description": "Name of killswitch that fired, or null.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "env_var"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "env_var": { "type": ["string", "null"] }
+          }
+        }
+      ]
+    },
+    "safety_tier_hit": {
+      "type": ["string", "null"],
+      "description": "Highest approval gate engaged: green/yellow/red, or null.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "enum": ["green", "yellow", "red"] }
+      ]
+    },
+    "token_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output", "cache_read", "cache_write", "total"],
+      "properties": {
+        "input": { "type": "integer", "minimum": 0 },
+        "output": { "type": "integer", "minimum": 0 },
+        "cache_read": { "type": "integer", "minimum": 0 },
+        "cache_write": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cost_usd": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Aggregate USD cost; null when the provider does not expose pricing."
+    },
+    "token_counts_complete": {
+      "type": "boolean",
+      "description": "false when any provider call's usage was unobservable."
+    },
+    "started_at": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch seconds, run start."
+    },
+    "ended_at": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch seconds, terminal-state assignment."
+    },
+    "wall_clock_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "ended_at - started_at (redundant on purpose)."
+    },
+    "redaction_log": {
+      "type": "array",
+      "description": "Optional record of redaction events (path, detector reason, sha256). Present only when redaction fired.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "reason": {
+            "type": "string",
+            "enum": ["credential", "pii", "redactor_error"]
+          },
+          "sha256": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "remediation_log": {
+      "type": "array",
+      "description": "Optional log of post-hoc in-place remediation rewrites (the single permitted exception to append-only).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "detector", "reason"],
+        "properties": {
+          "at": { "type": "integer", "minimum": 0 },
+          "detector": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "redactionMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["redacted", "reason", "sha256"],
+      "properties": {
+        "redacted": { "const": true },
+        "reason": {
+          "type": "string",
+          "enum": ["credential", "pii", "redactor_error"]
+        },
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "content", "tool_call_id", "name", "index"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["system", "user", "assistant", "tool"]
+        },
+        "content": {
+          "description": "Text content, or null for tool-call-only assistant turns. A redaction-marker replaces the whole string when the entire content was redacted.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "null" },
+            { "$ref": "#/$defs/redactionMarker" }
+          ]
+        },
+        "tool_call_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Join key to tool_calls[].id on role=tool messages; null otherwise."
+        },
+        "name": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Tool name on role=tool messages; null otherwise."
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based conversation position."
+        }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "arguments", "result", "exit_code", "duration_ms", "is_terminal"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-assigned tool call id, or harness UUID when none."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tool name; always-safe, never redacted."
+        },
+        "arguments": {
+          "description": "Parsed argument object post-redaction, or the redaction marker if the whole payload was redacted.",
+          "oneOf": [
+            { "type": "object", "not": { "required": ["redacted"] } },
+            { "$ref": "#/$defs/redactionMarker" }
+          ]
+        },
+        "result": {
+          "description": "Raw tool return value post-redaction (any JSON type), null, or the redaction marker.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "object", "not": { "required": ["redacted"] } },
+            { "type": "array" },
+            { "$ref": "#/$defs/redactionMarker" }
+          ]
+        },
+        "exit_code": {
+          "type": ["integer", "null"],
+          "description": "Exit code for tools with one (terminal, execute_code); null otherwise. Always-safe."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Wall-clock duration in milliseconds. Always-safe."
+        },
+        "is_terminal": {
+          "type": "boolean",
+          "description": "true on the kanban terminal call that ended the run."
+        }
+      }
+    }
+  }
+}

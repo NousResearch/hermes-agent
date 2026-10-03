@@ -1051,6 +1051,29 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
         )
 
 
+def _extract_tool_exit_code(function_result) -> Optional[int]:
+    """Pull the integer exit code out of a tool result payload, or ``None``.
+
+    Terminal/execute-code results carry ``exit_code`` either as a ``dict`` (multimodal
+    or dict-native tools) or as a JSON string envelope (``terminal_tool_result`` /
+    ``code_execution_tool``). Anything else — plain strings, error envelopes without a
+    code, non-int values — leaves the trace field null per the schema.
+    """
+    candidate = None
+    if isinstance(function_result, dict):
+        candidate = function_result.get("exit_code")
+    elif isinstance(function_result, str):
+        try:
+            parsed = json.loads(function_result)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            candidate = parsed.get("exit_code")
+    if isinstance(candidate, bool):  # bool is an int subclass; never an exit code
+        return None
+    return candidate if isinstance(candidate, int) else None
+
+
 def _commit_tool_result(
     agent,
     messages: list,
@@ -1101,6 +1124,17 @@ def _commit_tool_result(
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
     agent._current_tool = None
+    if not blocked:
+        with contextlib.suppress(Exception):  # per-run trace (schema v1); redacted by the hook
+            from agent.run_trace import record_tool_call
+
+            record_tool_call(
+                function_name,
+                function_args,
+                function_result,
+                call_id=tool_call_id or "",
+                duration_ms=int(tool_duration * 1000),
+            )
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 

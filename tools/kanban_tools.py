@@ -798,6 +798,12 @@ def _handle_complete(args: dict, **kw) -> str:
             _check(False, (task.last_failure_error if task else None) or
                    f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
+        try:  # per-run trace: the terminal write landed; close before any os._exit path
+            from agent.run_trace import close_from_terminal_handler
+
+            close_from_terminal_handler("kanban_complete")
+        except Exception:
+            logger.debug("run trace close failed", exc_info=True)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has
         # no way to observe what its completion just registered (#117360).
@@ -836,6 +842,12 @@ def _handle_block(args: dict, **kw) -> str:
                f"the completion judge will evaluate it.")
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        try:  # per-run trace
+            from agent.run_trace import close_from_terminal_handler
+
+            close_from_terminal_handler("kanban_block")
+        except Exception:
+            logger.debug("run trace close failed", exc_info=True)
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
         if kind == "dependency" and landed_kind != kind:
@@ -913,6 +925,12 @@ def _handle_request_review(args: dict, **kw) -> str:
                 f"kanban_request_review with the same handoff.")
         _check(ok, f"could not request review for {tid}: "
                    f"{fail_reason or 'unknown id or not in running/ready'}")
+        try:  # per-run trace
+            from agent.run_trace import close_from_terminal_handler
+
+            close_from_terminal_handler("kanban_request_review")
+        except Exception:
+            logger.debug("run trace close failed", exc_info=True)
         return _ok_landed(kb, conn, tid, "review")
 
 
@@ -926,6 +944,12 @@ def _handle_request_changes(args: dict, **kw) -> str:
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
+        try:  # per-run trace
+            from agent.run_trace import close_from_terminal_handler
+
+            close_from_terminal_handler("kanban_request_changes")
+        except Exception:
+            logger.debug("run trace close failed", exc_info=True)
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 

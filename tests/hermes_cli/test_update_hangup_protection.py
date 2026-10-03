@@ -117,6 +117,25 @@ class TestInstallHangupProtection:
             assert sys.stderr is prev_err
 
 
+    def test_update_log_rolls_over_at_the_start_of_a_run_never_mid_run(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_cli.main_dashboard._UPDATE_LOG_MAX_BYTES", 64)
+        log = tmp_path / "logs" / "update.log"
+        log.parent.mkdir()
+        log.write_text("previous runs " * 10, encoding="utf-8")
+
+        monkeypatch.delenv("HERMES_UPDATE_POST_SWAP", raising=False)
+        _finalize_update_output(_install_hangup_protection(gateway_mode=True))
+        assert (tmp_path / "logs" / "update.log.1").read_text(encoding="utf-8") == "previous runs " * 10
+        assert log.read_text(encoding="utf-8").lstrip().startswith("=== hermes update started")
+
+        # The post-swap re-exec continues the SAME run: it must append, whatever the size.
+        log.write_text("this run " * 20, encoding="utf-8")
+        monkeypatch.setenv("HERMES_UPDATE_POST_SWAP", "1")
+        _finalize_update_output(_install_hangup_protection(gateway_mode=True))
+        assert log.read_text(encoding="utf-8").startswith("this run " * 20)
+        assert (tmp_path / "logs" / "update.log.1").read_text(encoding="utf-8") == "previous runs " * 10
+
     def test_non_fatal_if_log_setup_fails(self, monkeypatch):
         """If get_hermes_home() raises, stdio must be left untouched but SIGHUP still handled."""
         prev_out, prev_err = sys.stdout, sys.stderr

@@ -498,6 +498,18 @@ class _UpdateOutputStream:
         return getattr(self._original, name)
 
 
+# Every update appends its whole output (npm, vite, electron-builder) to update.log, which nothing
+# rotated. Same ceiling as the rotating agent/errors logs (hermes_logging), one previous generation.
+_UPDATE_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _roll_over_log(path: Path, max_bytes: int) -> None:
+    """Move a log at or over *max_bytes* to ``<name>.1``, replacing the previous generation."""
+    with contextlib.suppress(OSError):
+        if path.stat().st_size >= max_bytes:
+            os.replace(path, path.with_name(f"{path.name}.1"))
+
+
 def _install_hangup_protection(gateway_mode: bool = False):
     """Protect ``cmd_update`` from SIGHUP (→ SIG_IGN, inherited by pip/git children) and broken pipes
     (stdio wrapped in ``_UpdateOutputStream``). SIGINT/SIGTERM are left alone — legitimate cancels.
@@ -520,11 +532,13 @@ def _install_hangup_protection(gateway_mode: bool = False):
         from hermes_cli.config import get_hermes_home as _get_hermes_home
         logs_dir = _get_hermes_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
+        stage = "continued on the pulled code" if os.environ.get("HERMES_UPDATE_POST_SWAP") == "1" else "started"
+        if stage == "started":  # the post-swap re-exec continues this run: never split it across files
+            _roll_over_log(logs_dir / "update.log", _UPDATE_LOG_MAX_BYTES)
         log_file = open(logs_dir / "update.log", "a", buffering=1, encoding="utf-8")
 
         import datetime as _dt
 
-        stage = "continued on the pulled code" if os.environ.get("HERMES_UPDATE_POST_SWAP") == "1" else "started"
         log_file.write(f"\n=== hermes update {stage} {_dt.datetime.now().isoformat(timespec='seconds')} ===\n")
 
         state["log_file"] = log_file

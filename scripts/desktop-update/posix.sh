@@ -469,6 +469,15 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 }
 
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
+CLEAN=0   # 1 = update landed and the app came back: nothing points the user at this log
+
+# Each hand-off appends the whole `hermes update` output to $LOG. Roll it over (same 5 MiB
+# ceiling as update.log, one previous generation) only after a clean run: a failed or manual
+# run stays in this file, which is the one Desktop's "Open log" button reveals.
+roll_over_log() {
+  [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -ge 5242880 ] || return 0
+  mv -f "$LOG" "$LOG.1" 2>/dev/null || log "WARNING: could not roll over $LOG"
+}
 
 write_result() {
   printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
@@ -519,6 +528,7 @@ finish() {
     publish "manual" "$FINAL_MSG"; stop_ui leave-window
   elif launch_app; then
     publish "done" ""; stop_ui
+    CLEAN=1
   else
     # Launch was due and did not land. Downgrade: truthful result for the
     # next boot, manual state held on screen now.
@@ -528,6 +538,7 @@ finish() {
     publish "manual" "$FINAL_MSG"; stop_ui leave-window
   fi
   rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+  if [ "$CLEAN" -eq 1 ]; then roll_over_log; fi
 }
 trap finish EXIT
 

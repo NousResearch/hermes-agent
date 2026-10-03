@@ -194,9 +194,15 @@ def _finalize_anydoc_text(text: Any, path: str, pdf_note: Callable[[], str]) -> 
     return (pdf_note() if Path(path).suffix.lower() == ".pdf" else "") + text.rstrip("\n") + "\n"
 
 
-def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
+def _ocr_scanned_pdf(
+    mod: Any,
+    path: str,
+    exc: BaseException,
+    display_path: Optional[str] = None,
+) -> str:
     """anydoc >= 0.2 scanned-pages signal: hosted OCR when a route exists, else teach recovery."""
     pages = list(getattr(exc, "pages", []) or [])
+    shown_path = display_path or path
     enabled, api_key, api_url = _hosted_ocr_config()
     hosted_error = ""
     if enabled:
@@ -205,7 +211,24 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
             return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
         except Exception as hosted_exc:  # noqa: BLE001
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
-    return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
+    # anydoc can misclassify PDFs whose text layer uses a producer-specific font
+    # encoding. Verify its whole-document verdict with the same pdftotext probe
+    # used for partial scan coverage before falling back to OCR guidance.
+    page_texts = _pdf_page_texts(path)
+    if page_texts:
+        meaningful = [page for page in page_texts if len(page.strip()) >= PDF_EMPTY_PAGE_CHARS]
+        if meaningful and len(meaningful) / len(page_texts) >= PDF_COVERAGE_MIN_RATIO:
+            return (
+                _pdf_coverage_note(
+                    path,
+                    display_path=shown_path,
+                    force=True,
+                    suspect_pages=pages,
+                )
+                + "\f".join(page_texts).rstrip("\n")
+                + "\n"
+            )
+    return _needs_ocr_warning(shown_path, pages, hosted_error)  # whole doc is scans: the warning IS it
 
 
 def _extract_anydoc(path: str) -> str:
@@ -236,6 +259,12 @@ def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     try:
         text = mod.to_markdown_bytes(data)
     except Exception as exc:
+        needs_ocr = getattr(mod, "NeedsOcrError", None)
+        if needs_ocr is not None and isinstance(exc, needs_ocr):
+            # anydoc's byte API has no filename for pdftotext; use a private host
+            # copy for probing while retaining the backend path in recovery hints.
+            with _temp_copy(data, ".pdf") as temp_path:
+                return _ocr_scanned_pdf(mod, temp_path, exc, display_path=path)
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
     return _finalize_anydoc_text(text, path, lambda: _pdf_coverage_note_from_bytes(data, path))
 
@@ -288,7 +317,13 @@ def _gap_map(counts: list[int], texts: list[str], empty: list[int]) -> str:
     return "\n".join(lines)
 
 
-def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
+def _pdf_coverage_note(
+    path: str,
+    display_path: Optional[str] = None,
+    *,
+    force: bool = False,
+    suspect_pages: Optional[list[int]] = None,
+) -> str:
     """Warning header when many pages yielded no text, else ''. ``display_path`` (default ``path``,
     which may be a host temp file) is what the recovery command shows."""
     texts = _pdf_page_texts(path)
@@ -299,15 +334,28 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
     total = len(counts)
     n_empty = len(empty)
     enough = n_empty / total >= PDF_COVERAGE_MIN_RATIO or n_empty >= PDF_COVERAGE_ABSOLUTE_EMPTY
-    if n_empty < PDF_COVERAGE_MIN_EMPTY or not enough:
+    if not force and (n_empty < PDF_COVERAGE_MIN_EMPTY or not enough):
         return ""
+    if force and not n_empty:
+        if not suspect_pages:
+            return ""
+        marked = ", ".join(str(page) for page in suspect_pages)
+        return (
+            "[OCR VERDICT OVERRIDE: anydoc marked pages "
+            f"{marked} as needing OCR, but pdftotext recovered text from every page. "
+            "The recovered text is returned; verify those pages if the content looks suspect.\n"
+        )
     shown = display_path or path
+    suspect = ""
+    if suspect_pages:
+        marked = ", ".join(str(page) for page in suspect_pages)
+        suspect = f" anydoc marked pages {marked} as needing OCR."
     return (
         "[EXTRACTION COVERAGE WARNING: "
         f"{len(empty)} of {total} pages in this PDF yielded no text. "
         "Those pages are likely scanned images (or blank) — their content "
         "is MISSING from the extracted text below, even where section "
-        "headers appear with empty bodies. Unreadable gaps, each labeled "
+        f"headers appear with empty bodies.{suspect} Unreadable gaps, each labeled "
         "with the last text extracted before it:\n"
         f"{_gap_map(counts, texts, empty)}\n"
         "Decide which gaps you actually need — do NOT OCR or render "

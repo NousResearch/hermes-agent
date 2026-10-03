@@ -47,6 +47,23 @@ def _is_rate_limitish(message: str) -> bool:
     return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
+_AUTH_STATUS_RE = re.compile(
+    r"\b(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error(?:\s+code)?)"
+    r"\s*[:=']*\s*(?:401|403)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_search_failover_eligible(message: str) -> bool:
+    """Return whether another anonymous vendor may serve the search.
+
+    Rate limits and structured HTTP 401/403 provider rejections are local to
+    one free search endpoint. Free-text markers are deliberately ignored:
+    vendors may echo the query in an otherwise terminal error.
+    """
+    return _is_rate_limitish(message) or bool(_AUTH_STATUS_RE.search(message or ""))
+
+
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
     alt = " or another web backend via `hermes tools`" if other_backends else ""
@@ -369,31 +386,32 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
         if not throttled(result):
             return order, vendor, result, False
         if i + 1 < len(order):
-            logger.info("keyless %s %s throttled; failing over to %s", vendor, kind, order[i + 1])
+            logger.info("keyless %s %s unavailable; failing over to %s", vendor, kind, order[i + 1])
     return order, vendor, result, True
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
-    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
-    vendor differs from *name*."""
+    """Rate limits and anonymous-endpoint auth/policy rejections advance to the next
+    vendor, other errors stop the walk (a malformed query fails everywhere).
+    ``data.served_by`` is set when the serving vendor differs from *name*."""
 
     def _throttled(result: Dict[str, Any]) -> bool:
-        return not result.get("success") and _is_rate_limitish(result.get("error", ""))
+        return not result.get("success") and _is_search_failover_eligible(result.get("error", ""))
 
     order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:
-        result["error"] = f"{result.get('error', '')} (all keyless vendors throttled: {', '.join(order)})"
+        result["error"] = f"{result.get('error', '')} (all keyless vendors unavailable: {', '.join(order)})"
     elif result.get("success") and vendor != name:
         result.setdefault("data", {})["served_by"] = vendor
     return result
 
 
 def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
-    """Fails over only when EVERY url in a batch is rate-limit-shaped (partial failures
-    are page problems, returned as-is)."""
+    """Advances to the next ring vendor only when EVERY url in a batch comes
+    back with a rate-limit-shaped error — partial failures and HTTP 403s can
+    be page problems, not provider throttling, and return as-is."""
 
     def _all_throttled(results: List[Dict[str, Any]]) -> bool:
         return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)

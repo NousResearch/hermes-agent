@@ -22,7 +22,12 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -380,6 +385,13 @@ export function useGatewayBoot({
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    // A local backend can finish booting after the renderer's bounded initial
+    // getConnection() wait expires. The timeout intentionally does not cancel
+    // the main-process boot, so keep one narrowly-scoped chance to attach when
+    // that same local backend later publishes backend.ready (#98124).
+    let lateLocalBootRecoveryArmed = false
+    let lateLocalBootRecoveryStarted = false
+    let localPrimaryBoot: boolean | null = null
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -400,6 +412,28 @@ export function useGatewayBoot({
       } catch {
         return false
       }
+    }
+
+    const primaryBootIsLocal = async (): Promise<boolean> => {
+      if (localPrimaryBoot !== null) {
+        return localPrimaryBoot
+      }
+
+      try {
+        const config = await withTimeout(
+          desktop.getConnectionConfig(),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out resolving the desktop connection mode'
+        )
+
+        localPrimaryBoot = config.mode === 'local'
+      } catch {
+        // This check only controls an optional recovery. When IPC is unhealthy,
+        // retain the ordinary terminal boot failure instead of guessing.
+        localPrimaryBoot = false
+      }
+
+      return localPrimaryBoot
     }
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
@@ -890,10 +924,49 @@ export function useGatewayBoot({
       }
     }
 
+    const recoverLateLocalBoot = (payload: { error: string | null; phase: string; running: boolean }) => {
+      if (
+        cancelled ||
+        bootCompleted ||
+        $gatewaySwitching.get() ||
+        !lateLocalBootRecoveryArmed ||
+        lateLocalBootRecoveryStarted ||
+        payload.error !== null ||
+        payload.phase !== 'backend.ready' ||
+        !payload.running
+      ) {
+        return
+      }
+
+      lateLocalBootRecoveryArmed = false
+      lateLocalBootRecoveryStarted = true
+      // Explicitly clear the timeout overlay before retrying the same local
+      // connection. The backend is already healthy; this is an attach retry,
+      // not another spawn or an unbounded reconnect loop.
+      bootFailed = false
+      resumeDesktopBootForRetry(translateNow('boot.steps.startingDesktopConnection'))
+      void boot()
+    }
+
+    const armLateLocalBootRecovery = () => {
+      void primaryBootIsLocal().then(isLocal => {
+        if (cancelled || bootCompleted || lateLocalBootRecoveryStarted || !isLocal) {
+          return
+        }
+
+        lateLocalBootRecoveryArmed = true
+        // backend.ready can arrive before the connection-mode IPC reply above.
+        // Re-read the current snapshot so that race still gets its one attach.
+        void desktop.getBootProgress().then(recoverLateLocalBoot).catch(() => undefined)
+      })
+    }
+
     const onBootProgress = (payload: DesktopBootProgress) => {
       if (cancelled) {
         return
       }
+
+      recoverLateLocalBoot(payload)
 
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
       // cold-boot CONNECTING overlay stays down. A boot that ended in failure
@@ -1569,6 +1642,14 @@ export function useGatewayBoot({
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+
+          // A local backend can keep booting in the main process after the
+          // renderer's bounded wait above expires. Arm exactly one recovery
+          // attach for the case where that same local backend later publishes
+          // backend.ready (#98124).
+          if (isTimeoutError(err) && !lateLocalBootRecoveryStarted) {
+            armLateLocalBootRecovery()
+          }
 
           // Main's classification (#82679) still decides every failure it can
           // see. The one it cannot see is the renderer-owned WebSocket dial:

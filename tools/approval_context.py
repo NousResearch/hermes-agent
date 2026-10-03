@@ -237,6 +237,61 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
 
 
+def _get_smart_failure_threshold() -> int:
+    """``approvals.smart_failure_threshold``: default 3; 0 or negative disables degradation.
+
+    Counts consecutive times the guardian LLM could not be reached -- NOT consecutive
+    DENYs, which ``approvals.denial_breaker_threshold`` already covers. Distinct knobs
+    because they call for opposite responses: a DENY streak is the reviewer working,
+    a FAILURE streak is the reviewer absent.
+
+    Catches broad ``Exception``, not just ``ValueError``/``TypeError``: this is read from
+    the guardian's *failure* path, and a config that cannot be read must yield the default
+    rather than raise out of the code that is trying to record a failure. A guard that
+    breaks when it is needed is worse than no guard.
+    """
+    try:
+        return int(_get_approval_config().get("smart_failure_threshold", 3))
+    except Exception:
+        return 3
+
+
+def _effective_approval_mode(session_key: str = "") -> str:
+    """The mode to actually use, after degrading a failing guardian to manual.
+
+    WHY THIS EXISTS. In ``smart`` mode a flagged command is graded by an auxiliary LLM.
+    When that call fails -- 429, timeout, provider down, empty body -- the verdict is
+    'escalate', which means "ask the human". If the human is not watching the surface
+    that carries the prompt, the request sits until ``approvals.timeout`` and then fails
+    closed: the agent is blocked for minutes and the user never saw a question. A silent
+    five-minute stall is strictly worse than not asking, so after a run of failures we
+    stop asking the guardian and go straight to manual.
+
+    Degradation is per-session and self-healing: any real guardian answer clears the
+    tally, so the moment the provider recovers, smart mode comes back on its own. It is
+    deliberately one-way within a failure run -- there is no probing while failing, since
+    every probe is a flagged command delayed by a doomed LLM call.
+
+    Never raises: it is consulted on the gate path, and a broken config must not turn an
+    approval question into a crash. If the config cannot be read at all it fails toward
+    "manual", which is the same default `_get_approval_mode` uses.
+    """
+    try:
+        mode = _get_approval_mode()
+        if mode != "smart":
+            return mode
+        threshold = _get_smart_failure_threshold()
+        if threshold <= 0 or not session_key:
+            return mode
+        from tools.approval_smart import _smart_failure_count
+        if _smart_failure_count(session_key) >= threshold:
+            return "manual"
+    except Exception as e:
+        logger.debug("Smart-approval degradation check failed, falling back to manual: %s", e)
+        return "manual"
+    return mode
+
+
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).
@@ -277,6 +332,73 @@ def approval_timeout_notice_kwargs() -> dict:
     ``90 seconds``) and a tripled ``approvals.timeout`` value the user can paste into ``hermes config set``."""
     seconds = _get_approval_timeout()
     return {"waited": format_approval_window(seconds), "suggested": seconds * 3}
+
+
+# --- Smart-approval failure tally, re-exported for tools/approval_smart ---------------------------------
+# The tally lives in approval_smart (beside the call that produces the failures); these
+# re-exports let that module report without importing approval.py, which imports it. Same
+# direction as _fire_approval_hook above, for the same reason: a cycle here is a real one.
+
+def mark_smart_failure() -> None:
+    """Record that the guardian LLM could not be reached for the current session.
+
+    Never raises, and never lets a config problem escape: it is called from the guardian's
+    failure path, so an exception here would convert a recoverable "reviewer unavailable"
+    into a broken approval gate.
+    """
+    try:
+        from tools.approval_smart import _record_smart_failure
+        count = _record_smart_failure(get_current_session_key())
+        threshold = _get_smart_failure_threshold()
+        if threshold > 0 and count == threshold:
+            logger.warning(
+                "Smart approvals: guardian unreachable %d times in a row (threshold %d) — "
+                "degrading this session to manual approvals until it answers again",
+                count, threshold,
+            )
+    except Exception as e:
+        logger.debug("Smart-approval failure recording failed (ignored): %s", e)
+
+
+def mark_smart_success() -> None:
+    """Record that the guardian answered, clearing any failure run. Never raises."""
+    try:
+        from tools.approval_smart import _reset_smart_failures
+        _reset_smart_failures(get_current_session_key())
+    except Exception as e:
+        logger.debug("Smart-approval success recording failed (ignored): %s", e)
+
+
+def smart_approval_failure_notice(session_key: str = "") -> str:
+    """'' unless the guardian has failed enough to have degraded this session, else a notice.
+
+    This is the surfacing half of the degradation. The point of degrading is that the user
+    stops getting prompts they cannot see; that is only an improvement if they are TOLD the
+    security reviewer stopped working, because the alternative reading of the same event is
+    "the reviewer is fine and this command was approved". Silence would be a security-
+    relevant lie, so the notice is explicit that nothing was assessed.
+
+    Never raises: it is appended to approval messages, and a broken config must not turn a
+    denial into a crash.
+    """
+    try:
+        from tools.approval_smart import _smart_failure_count
+        threshold = _get_smart_failure_threshold()
+        key = session_key or get_current_session_key()
+        count = _smart_failure_count(key)
+        if threshold <= 0 or count < threshold:
+            return ""
+    except Exception:
+        return ""
+    return (
+        f"\n\nNOTE: the smart-approval security reviewer has been UNREACHABLE for the last "
+        f"{count} flagged commands (its model is rate-limited or down), so no automated "
+        f"assessment has run. This session has degraded to MANUAL approvals: every flagged "
+        f"command is now being asked of you directly. Nothing here was auto-approved. "
+        f"To restore automatic review, give the grader a fallback with "
+        f"`hermes config set fallback_providers '[...]'`, or set `approvals.mode` to "
+        f"`manual` to stop asking the reviewer at all."
+    )
 
 
 def _binary_approval_mode(key: str) -> str:

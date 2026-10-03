@@ -820,7 +820,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             breaker = _denial_breaker_addendum(session_key)
         deny_reason = fmt.pop("deny_reason", None)
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
-        return _denied(template.format(description=description, breaker=breaker, **fmt),
+        return _denied(template.format(description=description, breaker=breaker, **fmt)
+                       + approval_context.smart_approval_failure_notice(session_key),
                        pattern_key=pattern_key, description=description,
                        outcome=outcome, noun=spec.noun, **extra)
 
@@ -1184,7 +1185,7 @@ def check_all_command_guards(command: str, env_type: str,
     if prepared is not None:
         return prepared
 
-    approval_mode = approval_context._get_approval_mode()
+    approval_mode = approval_context._effective_approval_mode(approval_context.get_current_session_key())
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
@@ -1262,7 +1263,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         return _approved()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _approved()
-    approval_mode = approval_context._get_approval_mode()
+    approval_mode = approval_context._effective_approval_mode(approval_context.get_current_session_key())
     if _yolo_active() or approval_mode == "off":
         return _approved()
 

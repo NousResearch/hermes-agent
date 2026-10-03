@@ -858,6 +858,7 @@ export const frOverrides = {
       vaultSources: 'Gestionnaires de mots de passe',
       appUpdates: 'Version et mises à jour',
       uninstall: 'Désinstaller',
+      installs: 'Installations',
       billingOverview: "Vue d'ensemble",
       billingPlans: 'Forfaits'
     },
@@ -1618,6 +1619,41 @@ export const frOverrides = {
             'TOUT — l’interface de chat, l’agent Hermes et l’ensemble de votre configuration, de vos conversations, secrets et journaux'
         }
       }
+    },
+    installsPage: {
+      title: 'Installations',
+      description: 'Installations Hermes sur cette machine. Le premier lanceur `hermes` sur le PATH gagne.',
+      loading: 'Lecture des installations…',
+      loadFailed: 'Impossible de lire les installations. L’agent Hermes est peut-être absent.',
+      reload: 'Réessayer',
+      launcherWins: (path, owner) => `Un nouveau terminal lance \`hermes\` depuis ${path} (${owner} gagne).`,
+      launcherUnknown: 'installation inconnue',
+      idLabel: 'ID :',
+      kinds: {
+        git: 'Dépôt Git',
+        'desktop-app': 'Application de bureau',
+        docker: 'Docker',
+        nix: 'Nix',
+        'apt-termux': 'Paquet Termux',
+        unknown: 'Autre'
+      },
+      versionLabel: 'Version :',
+      running: 'En cours',
+      other: 'Autre',
+      remove: 'Supprimer',
+      confirmTitle: 'Confirmer la suppression',
+      confirmBody:
+        'Le dossier d’installation sera supprimé de cette machine. Vos données Hermes restent intactes. Action irréversible.',
+      confirmBodyPackage:
+        'Le package de l’application Hermes sera désinstallé de cette machine et arrêté s’il est en cours d’exécution. Vos données Hermes restent intactes. Action irréversible.',
+      confirmYes: 'Oui, supprimer',
+      removing: 'Suppression…',
+      removed: id => `Installation ${id} supprimée.`,
+      removeFailed: 'La suppression a échoué.',
+      noticeTitle: (count, partial) =>
+        `${partial ? 'Au moins ' : ''}${count} autre${count === 1 ? '' : 's'} installation${count === 1 ? '' : 's'} Hermes trouvée${count === 1 ? '' : 's'} sur cette machine.`,
+      openInstalls: 'Voir les installations',
+      hideNotice: 'Masquer cette notification'
     },
     poolLimits: {
       warmBotBackendsAria: 'Backends de bots maintenus actifs',

@@ -646,6 +646,15 @@ declare global {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
       }
+      installs: {
+        list: () => Promise<DesktopInstallsList | null>
+        remove: (id: string) => Promise<DesktopInstallsRemoveResult>
+        dismiss: () => Promise<{ ok: boolean }>
+        /** The boot notice, once. Main only pings `onInstallsNotice`; the renderer pulls the payload. */
+        takeNotice: () => Promise<{ count: number; partial: boolean } | null>
+      }
+      /** Fires when main found a notice. Call `installs.takeNotice()` to read it. */
+      onInstallsNotice: (callback: () => void) => () => void
       themes: {
         // Download a VS Code Marketplace extension and return the raw color
         // theme files it contributes. The renderer converts + persists them.
@@ -821,6 +830,43 @@ export interface DesktopUninstallResult {
   mode?: DesktopUninstallMode
   willRemoveAppBundle?: boolean
   scriptPath?: string
+  error?: string
+  message?: string
+}
+
+export interface DesktopInstallsEntry {
+  id: string
+  root: string
+  steward: string
+  version: null | string
+  sources: string[]
+  current: boolean
+  package_full_name: null | string
+  removable: boolean
+  action: string
+  refusal: null | string
+}
+
+export interface DesktopInstallsLauncher {
+  path: string
+  owner: null | string
+}
+
+export interface DesktopInstallsNotice {
+  count: number
+  dismissed: boolean
+  partial: boolean
+}
+
+export interface DesktopInstallsList {
+  current: string
+  installs: DesktopInstallsEntry[]
+  launchers: DesktopInstallsLauncher[]
+  notice: DesktopInstallsNotice
+}
+
+export interface DesktopInstallsRemoveResult {
+  ok: boolean
   error?: string
   message?: string
 }

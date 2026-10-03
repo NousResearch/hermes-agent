@@ -329,6 +329,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { createInstallsNotice, createInstallsRunner, registerInstallsIpc } from './installs-ipc'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -13466,6 +13467,19 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       error: null
     })
 
+    // Other-install launch notice: one background list after the backend is
+    // ready, never delaying startup. Windows are only pinged: the renderer may
+    // not have mounted yet, so it pulls the notice (taking it consumes it).
+    installsNotice.check({
+      runInstalls: runInstallsCommand,
+      signalNotice: () => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents?.send?.('hermes:installs:notice')
+        }
+      },
+      logDebug: message => rememberLog(message)
+    })
+
     // A successful boot (including a soft restart that the repair-guard
     // chose over a hard reinstall, see #74874) means any in-flight repair
     // attempt counter has been honoured — reset it so the next genuine
@@ -19154,6 +19168,25 @@ registerDesktopUninstallIpc({
   fallbackSummary: fallbackUninstallSummary,
   probeSummary: probeUninstallSummary,
   runUninstall: runDesktopUninstall
+})
+
+// hermes installs - list, remove, dismiss other installs on this machine.
+const installsNotice = createInstallsNotice()
+
+// Runs through the backend the app itself runs (bundled payload, dev checkout, Nix pin, managed
+// install), so the CLI's `current` is the install the user is looking at.
+const runInstallsCommand = createInstallsRunner({
+  resolveBackend: resolveHermesBackend,
+  spawn: (command, args, options) =>
+    spawn(command, args, hiddenWindowsChildOptions({ ...options, stdio: ['ignore', 'pipe', 'pipe'] })),
+  hermesHome: HERMES_HOME
+})
+
+registerInstallsIpc({
+  ipcMain,
+  runInstalls: runInstallsCommand,
+  notice: installsNotice,
+  logDebug: message => rememberLog(message)
 })
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON

@@ -59,6 +59,7 @@ export const arSettings = {
       vaultSources: 'مديرو كلمات المرور',
       appUpdates: 'الإصدار والتحديثات',
       uninstall: 'إلغاء التثبيت',
+      installs: 'التثبيتات',
       billingOverview: 'نظرة عامة',
       billingPlans: 'الخطط'
     },

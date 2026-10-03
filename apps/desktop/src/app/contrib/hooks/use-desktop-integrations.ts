@@ -9,6 +9,7 @@ import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-si
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -22,9 +23,11 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
+import { notify } from '@/store/notifications'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
+import { requestRoute } from '@/store/recovery-requests'
 import {
   $selectedStoredSessionId,
   getRememberedRoute,
@@ -48,6 +51,8 @@ import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionR
 import { resolveRememberedSessionId } from './remembered-session'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
+
+const INSTALLS_SETTINGS_ROUTE = '/settings?tab=about&page=installs'
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -84,6 +89,41 @@ export function useDesktopIntegrations({
   runtimeIdByStoredSessionId,
   sessions
 }: DesktopIntegrationsParams): void {
+  useEffect(() => {
+    // Other-install boot notice. Main finds it once per launch after the backend
+    // is ready, possibly before this hook mounted, so pull on mount and again on
+    // every ping. Taking consumes it. The toast offers the Installs page and a mute button.
+    const installs = window.hermesDesktop?.installs
+
+    const pull = (): void => {
+      void installs?.takeNotice?.().then(notice => {
+        if (!notice) {
+          return
+        }
+
+        notify({
+          id: 'installs.boot-notice',
+          kind: 'info',
+          message: translateNow('settings.installsPage.noticeTitle', notice.count, notice.partial),
+          action: {
+            label: translateNow('settings.installsPage.openInstalls'),
+            onClick: () => requestRoute(INSTALLS_SETTINGS_ROUTE)
+          },
+          secondaryAction: {
+            label: translateNow('settings.installsPage.hideNotice'),
+            onClick: () => void installs?.dismiss()
+          }
+        })
+      })
+    }
+
+    pull()
+
+    const unsubscribe = window.hermesDesktop?.onInstallsNotice?.(pull)
+
+    return () => unsubscribe?.()
+  }, [])
+
   // Update polling — populates $desktopVersion/$updateStatus, which feed the
   // statusbar version pill and the update toasts. Also honors the main
   // process's "open updates" menu request.

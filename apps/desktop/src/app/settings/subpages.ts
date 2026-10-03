@@ -18,6 +18,7 @@ import {
   Mic,
   Monitor,
   Network,
+  Package,
   Palette,
   PawPrint,
   Settings2,
@@ -85,7 +86,8 @@ const SUBPAGE_ICONS: Record<string, IconComponent> = {
   vaultCredentials: KeyRound,
   vaultSources: Lock,
   appUpdates: Download,
-  uninstall: Trash2
+  uninstall: Trash2,
+  installs: Package
 }
 
 export function settingsSubpageIcon(page: SettingsSubpage, fallback: IconComponent): IconComponent {

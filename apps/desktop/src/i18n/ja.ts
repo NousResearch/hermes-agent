@@ -436,6 +436,7 @@ export const ja = defineLocale({
       vaultSources: 'パスワードマネージャー',
       appUpdates: 'バージョンと更新',
       uninstall: 'アンインストール',
+      installs: 'インストール',
       billingOverview: '概要',
       billingPlans: 'プラン'
     },

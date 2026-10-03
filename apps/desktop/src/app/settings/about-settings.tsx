@@ -8,6 +8,7 @@ import { RefreshCw } from '@/lib/icons'
 import { $connection } from '@/store/session'
 import { $desktopVersion, checkBackendUpdates, refreshDesktopVersion } from '@/store/updates'
 
+import { InstallsSection } from './installs-section'
 import { SectionHeading, SettingsContent } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { UninstallSection } from './uninstall-section'
@@ -24,6 +25,14 @@ export function AboutSettings({ subpage }: AboutSettingsProps = {}): ReactElemen
     return (
       <SettingsContent>
         <UninstallSection />
+      </SettingsContent>
+    )
+  }
+
+  if (subpage === 'installs') {
+    return (
+      <SettingsContent>
+        <InstallsSection />
       </SettingsContent>
     )
   }

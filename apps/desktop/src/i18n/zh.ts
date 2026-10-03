@@ -551,6 +551,7 @@ export const zh = defineLocale({
       vaultSources: '密码管理器',
       appUpdates: '版本与更新',
       uninstall: '卸载',
+      installs: '安装',
       billingOverview: '概览',
       billingPlans: '套餐'
     },

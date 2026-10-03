@@ -858,6 +858,7 @@ export const deOverrides = {
       vaultSources: 'Passwortmanager',
       appUpdates: 'Version & Updates',
       uninstall: 'Deinstallieren',
+      installs: 'Installationen',
       billingOverview: 'Übersicht',
       billingPlans: 'Tarife'
     },
@@ -1612,6 +1613,41 @@ export const deOverrides = {
             'ALLES – die Chat-Oberfläche, den Hermes-Agent sowie Ihre gesamte Konfiguration, Chats, Geheimnisse und Logs'
         }
       }
+    },
+    installsPage: {
+      title: 'Installationen',
+      description: 'Hermes-Installationen auf diesem Rechner. Der erste `hermes`-Starter auf dem PATH gewinnt.',
+      loading: 'Installationen werden gelesen…',
+      loadFailed: 'Die Installationen konnten nicht gelesen werden. Der Hermes-Agent fehlt eventuell.',
+      reload: 'Erneut versuchen',
+      launcherWins: (path, owner) => `Ein neues Terminal startet \`hermes\` über ${path} (${owner} gewinnt).`,
+      launcherUnknown: 'keine bekannte Installation',
+      idLabel: 'ID:',
+      kinds: {
+        git: 'Git-Checkout',
+        'desktop-app': 'Desktop-App',
+        docker: 'Docker',
+        nix: 'Nix',
+        'apt-termux': 'Termux-Paket',
+        unknown: 'Andere'
+      },
+      versionLabel: 'Version:',
+      running: 'Laufend',
+      other: 'Andere',
+      remove: 'Entfernen',
+      confirmTitle: 'Entfernen bestätigen',
+      confirmBody:
+        'Der Installationsordner wird von diesem Rechner entfernt. Ihre Hermes-Daten bleiben unberührt. Dies kann nicht rückgängig gemacht werden.',
+      confirmBodyPackage:
+        'Das Hermes-App-Paket wird von diesem Rechner deinstalliert und beendet, falls es läuft. Ihre Hermes-Daten bleiben unberührt. Dies kann nicht rückgängig gemacht werden.',
+      confirmYes: 'Ja, entfernen',
+      removing: 'Wird entfernt…',
+      removed: id => `Installation ${id} entfernt.`,
+      removeFailed: 'Das Entfernen ist fehlgeschlagen.',
+      noticeTitle: (count, partial) =>
+        `${partial ? 'Mindestens ' : ''}${count} weitere Hermes-Installation${count === 1 ? '' : 'en'} auf diesem Rechner gefunden.`,
+      openInstalls: 'Installationen ansehen',
+      hideNotice: 'Diesen Hinweis ausblenden'
     },
     poolLimits: {
       warmBotBackendsAria: 'Bot-Backends vorwärmen',

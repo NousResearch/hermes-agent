@@ -13,6 +13,7 @@ import logging
 import os
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
@@ -543,6 +544,54 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             )
             holders.append((-1, f"open-file scan failed: {exc}"))
         return holders
+
+    if sys.platform == "darwin":
+        # libproc returns vnode identity and the kernel's last pathname without
+        # resolving each path.  In particular, it avoids stat() on unrelated
+        # descriptors whose filesystems may be unreachable.
+        try:
+            from hermes_state_dbfile import (
+                _DARWIN_FD_SCAN_TIMEOUT_SECONDS,
+                _iter_darwin_fd_targets,
+            )
+
+            errors: List[BaseException] = []
+
+            def scan_darwin() -> None:
+                try:
+                    for pid, _fd, target, identity in _iter_darwin_fd_targets():
+                        if pid != os.getpid() and identity in watched_ids:
+                            holders.append((pid, target))
+                except BaseException as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=scan_darwin, daemon=True)
+            worker.start()
+            worker.join(_DARWIN_FD_SCAN_TIMEOUT_SECONDS)
+            if worker.is_alive():
+                logger.warning(
+                    "state.db holder scan timed out after %.1fs for %s; "
+                    "deferring structural maintenance",
+                    _DARWIN_FD_SCAN_TIMEOUT_SECONDS,
+                    db_path,
+                )
+                holders.append((-1, "open-file scan timed out"))
+            if errors:
+                exc = errors[0]
+                logger.warning(
+                    "Could not prove state.db has no foreign holders; "
+                    "deferring structural maintenance: %s",
+                    exc,
+                )
+                return [(-1, f"open-file scan failed: {exc}")]
+            return holders
+        except Exception as exc:
+            logger.warning(
+                "Could not prove state.db has no foreign holders; "
+                "deferring structural maintenance: %s",
+                exc,
+            )
+            return [(-1, f"open-file scan failed: {exc}")]
 
     if psutil is None:
         return [(-1, "open-file scan unavailable")]

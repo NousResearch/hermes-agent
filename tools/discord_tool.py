@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -31,6 +32,21 @@ _DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
 # <100-guild variant of the same intent.
 _FLAGS_GUILD_MEMBERS = (1 << 14) | (1 << 15)
 _FLAGS_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
+
+# Discord snowflake IDs are 64-bit integers represented as decimal strings.
+# Valid range: 1–20 ASCII digits.  Anything else (empty, contains '/', '?',
+# letters, or Unicode decimal digits like '１２３') is rejected before it
+# reaches a URL path segment.  Use an explicit [0-9] class rather than \d,
+# which in Python also matches Unicode decimal digits.
+_SNOWFLAKE_RE = re.compile(r"^[0-9]{1,20}$")
+
+
+def _validate_snowflake(value: str, param_name: str) -> None:
+    """Raise ``ValueError`` if *value* is not a valid Discord snowflake ID."""
+    if not _SNOWFLAKE_RE.match(str(value)):
+        raise ValueError(
+            f"Invalid Discord {param_name}: {value!r} "
+            f"(expected 1-20 digit numeric string)")
 
 
 class DiscordAPIError(Exception):
@@ -271,6 +287,7 @@ def _list_guilds(token: str, **_kwargs: Any) -> str:
 
 
 def _server_info(token: str, guild_id: str, **_kwargs: Any) -> str:
+    _validate_snowflake(guild_id, "guild_id")
     g = _discord_request("GET", f"/guilds/{guild_id}", token, params={"with_counts": "true"})
     return json.dumps({
         "id": g["id"], "name": g["name"], "description": g.get("description"), "icon": g.get("icon"),
@@ -282,6 +299,7 @@ def _server_info(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
     """All channels grouped by category (uncategorized first), each sorted by position."""
+    _validate_snowflake(guild_id, "guild_id")
     channels = _discord_request("GET", f"/guilds/{guild_id}/channels", token)
     cats = sorted((ch for ch in channels if ch["type"] == 4), key=lambda c: c.get("position", 0))
     groups: Dict[Optional[str], List[Dict[str, Any]]] = {None: [], **{c["id"]: [] for c in cats}}
@@ -300,6 +318,7 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 
 def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
+    _validate_snowflake(channel_id, "channel_id")
     ch = _discord_request("GET", f"/channels/{channel_id}", token)
     return json.dumps({
         "id": ch["id"], "name": ch.get("name"), "type": _channel_type_name(ch["type"]),
@@ -309,6 +328,7 @@ def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 
 def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
+    _validate_snowflake(guild_id, "guild_id")
     roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
     return _listing("roles", [
         {
@@ -321,12 +341,15 @@ def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 
 def _member_info(token: str, guild_id: str, user_id: str, **_kwargs: Any) -> str:
+    _validate_snowflake(guild_id, "guild_id")
+    _validate_snowflake(user_id, "user_id")
     m = _discord_request("GET", f"/guilds/{guild_id}/members/{user_id}", token)
     return json.dumps(_member_summary(m, full=True))
 
 
 def _search_members(token: str, guild_id: str, query: str, limit: int = 20, **_kwargs: Any) -> str:
     """Name-prefix member search (requires the GUILD_MEMBERS intent)."""
+    _validate_snowflake(guild_id, "guild_id")
     params = {"query": query, "limit": _limit_param(limit, 20)}
     members = _discord_request("GET", f"/guilds/{guild_id}/members/search", token, params=params)
     return _listing("members", [_member_summary(m, full=False) for m in members])
@@ -336,6 +359,11 @@ def _fetch_messages(
     token: str, channel_id: str, limit: int = 50,
     before: Optional[str] = None, after: Optional[str] = None, **_kwargs: Any) -> str:
     """``before``/``after`` are message snowflakes for reverse/forward pagination."""
+    _validate_snowflake(channel_id, "channel_id")
+    if before:
+        _validate_snowflake(before, "before")
+    if after:
+        _validate_snowflake(after, "after")
     params: Dict[str, str] = {"limit": _limit_param(limit, 50)}
     if before:
         params["before"] = before
@@ -347,6 +375,7 @@ def _fetch_messages(
 
 def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
     """Pinned messages (content truncated for overview)."""
+    _validate_snowflake(channel_id, "channel_id")
     messages = _discord_request("GET", f"/channels/{channel_id}/pins", token)
     return _listing("pinned_messages", [
         {
@@ -359,6 +388,9 @@ def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
     auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
+    _validate_snowflake(channel_id, "channel_id")
+    if message_id:
+        _validate_snowflake(message_id, "message_id")
     body: Dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
     path = f"/channels/{channel_id}/threads"
     if message_id:
@@ -371,7 +403,11 @@ def _create_thread(
 
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
+    path_id_fields = re.findall(r"\{(\w+)\}", path)
+
     def _action(token: str, **kw: Any) -> str:
+        for field in path_id_fields:
+            _validate_snowflake(kw[field], field)
         _discord_request(method, path.format(**kw), token)
         return json.dumps({"success": True, "message": message.format(**kw)})
     return _action
@@ -605,6 +641,9 @@ def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: 
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
     try:
         return action_fn(token=token, **kwargs)
+    except ValueError as e:
+        logger.warning("Invalid parameter in %s action '%s': %s", tool_label, action, e)
+        return tool_error(str(e))
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
         return tool_error(_enrich_403(action, e.body) if e.status == 403 else str(e))

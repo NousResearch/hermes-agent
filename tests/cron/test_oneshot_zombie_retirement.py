@@ -79,6 +79,43 @@ def _spent_oneshot_zombie() -> dict:
 
 
 class TestSpentOneshotRetiresBeforeCompletedOccurrence:
+    @pytest.mark.parametrize("completed", [1, 3])
+    def test_future_oneshot_with_inherited_spent_budget_survives_until_due(
+        self, cron_store, monkeypatch, completed,
+    ):
+        """A real recurring→once edit can retain its earlier run counter."""
+        from datetime import datetime
+        from tools.cronjob_tools import _update_run_fields
+
+        job = jobs_mod.create_job(prompt="x", schedule="every 5m", name="converted")
+        for _ in range(completed):
+            assert jobs_mod.advance_next_run(job["id"])
+            jobs_mod.mark_job_run(job["id"], success=True)
+        current = jobs_mod.get_job(job["id"])
+        assert current is not None
+        updates = {}
+        arguments = {
+            "enabled_toolsets": None, "attach_to_session": None, "workdir": None,
+            "no_agent": None, "repeat": None, "schedule": "in 30m",
+        }
+        assert _update_run_fields(current, arguments, updates) is None
+        converted = jobs_mod.update_job(job["id"], updates)
+        assert converted is not None
+        assert converted["repeat"] == {"times": 1, "completed": completed}
+        slot = datetime.fromisoformat(converted["next_run_at"])
+        before = jobs_mod.load_jobs()
+
+        monkeypatch.setattr(jobs_mod, "_hermes_now", lambda: slot - timedelta(seconds=1))
+        assert jobs_mod.get_due_jobs() == []
+        assert jobs_mod.load_jobs() == before
+        assert jobs_mod.get_job(job["id"]) is not None
+
+        # Due-time budget enforcement remains intact; only early retirement
+        # is prohibited, not retirement when the converted slot arrives.
+        monkeypatch.setattr(jobs_mod, "_hermes_now", lambda: slot)
+        assert jobs_mod.get_due_jobs() == []
+        assert jobs_mod.get_job(job["id"]) is None
+
     def test_zombie_record_is_removed_not_looped_forever(self, cron_store):
         job = _spent_oneshot_zombie()
         jid = job["id"]

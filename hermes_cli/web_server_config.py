@@ -127,6 +127,18 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     # (malicious 2.4.6 release on 2026-05-12). Restore once available.
     "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),
     "stt.local.model": _select("Local faster-whisper model size", "tiny", "base", "small", "medium", "large-v3"),
+    # Voice interaction mode for the local STT path (stt_server_wrapper → CrispASR
+    # proxy). transcribe = parakeet ASR in the detected language; translate =
+    # parakeet ASR → m2m100 text translation to stt.local.target_language.
+    "stt.local.mode": _select(
+        "Voice interaction mode (local STT)", "transcribe", "translate"
+    ),
+    "stt.local.target_language": _select(
+        "Translation target language (translate mode; 25 European languages)",
+        "en", "it", "de", "fr", "es", "pt", "nl", "pl", "ru", "uk", "cs",
+        "sk", "sl", "hr", "bg", "ro", "hu", "el", "da", "sv", "fi", "et",
+        "lt", "lv", "mt",
+    ),
     "stt.groq.model": _select(
         "Groq Whisper model", "whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"
     ),

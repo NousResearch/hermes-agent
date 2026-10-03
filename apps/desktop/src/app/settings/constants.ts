@@ -249,6 +249,16 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  // Voice interaction mode: transcribe = keep the transcript in the detected
+  // language; translate = transcribe then translate to stt.local.target_language.
+  'stt.local.mode': ['transcribe', 'translate'],
+  // Translation targets: the 25 European languages the ASR backends are
+  // trained on (the source side of the two-stage parakeet → m2m100 path).
+  'stt.local.target_language': [
+    'en', 'it', 'de', 'fr', 'es', 'pt', 'nl', 'pl', 'ru', 'uk', 'cs',
+    'sk', 'sl', 'hr', 'bg', 'ro', 'hu', 'el', 'da', 'sv', 'fi', 'et',
+    'lt', 'lv', 'mt',
+  ],
   // Speech-to-text backends — kept in sync with the stt block in
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
@@ -472,7 +482,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     gptLive: {
       voice: 'GPT-Live Voice',
       instructions: 'GPT-Live Persona'
-    }
+    },
+    silenceDuration: 'End Turn After Silence'
   },
   stt: {
     enabled: 'Speech To Text',
@@ -480,7 +491,9 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     provider: 'Speech-To-Text Provider',
     local: {
       model: 'Local Transcription Model',
-      language: 'Transcription Language'
+      language: 'Transcription Language',
+      mode: 'Voice Interaction Mode',
+      targetLanguage: 'Translate To'
     },
     openai: {
       model: 'OpenAI STT Model'
@@ -654,7 +667,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
         'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
-    }
+    },
+    silenceDuration:
+      'Seconds of continuous silence after you stop speaking before the turn ends and is submitted. The same setting (voice.silence_duration) also controls CLI voice mode; 3.0s is the built-in default.'
   },
   tts: {
     xai: {
@@ -673,6 +688,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
     echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
+    local: {
+      mode: 'Transcribe keeps the transcript in the detected language. Translate first transcribes, then translates it to "Translate To".',
+      targetLanguage: 'Language to translate spoken messages into (translation mode only; 25 European languages).'
+    },
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -797,6 +816,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.deepinfra.voice',
       'stt.local.model',
       'stt.local.language',
+      'stt.local.mode',
+      'stt.local.target_language',
       'stt.openai.model',
       'stt.groq.model',
       'stt.mistral.model',
@@ -805,6 +826,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
       'voice.max_recording_seconds',
+      'voice.silence_duration',
       'voice.client_direct'
     ]
   },

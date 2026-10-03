@@ -191,9 +191,17 @@ export function voiceFieldVisible(key: string, config: HermesConfigRecord): bool
   const selected = String(getNested(config, `${domain}.provider`) ?? '')
   // Backend defaults when the key is unset: TTS → edge, STT → local.
   // An empty string used to hide every nested model field.
-  const fallback = domain === 'tts' ? 'edge' : 'local'
+  const effective = selected || (domain === 'tts' ? 'edge' : 'local')
 
-  return provider === (selected || fallback)
+  // `local` (built-in faster-whisper) and `local_command` (user STT command)
+  // are one provider family at runtime (config_migrations groups them; both
+  // read the stt.local.* section), so their shared fields are visible under
+  // either active name.
+  if (domain === 'stt' && (provider === 'local' || provider === 'local_command')) {
+    return effective === 'local' || effective === 'local_command'
+  }
+
+  return provider === effective
 }
 
 export function inferFieldSchema(value: unknown): ConfigFieldSchema {

@@ -40,12 +40,17 @@ print(outputs[0].outputs[0].text)
 
 **OpenAI-compatible server**:
 ```bash
-vllm serve meta-llama/Meta-Llama-3-8B-Instruct
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
+  --host 127.0.0.1 \
+  --api-key "replace-with-a-session-secret"
 
 # Query with OpenAI SDK
 python -c "
 from openai import OpenAI
-client = OpenAI(base_url='http://localhost:8000/v1', api_key='EMPTY')
+client = OpenAI(
+    base_url='http://localhost:8000/v1',
+    api_key='<session-key>',
+)
 print(client.chat.completions.create(
     model='meta-llama/Meta-Llama-3-8B-Instruct',
     messages=[{'role': 'user', 'content': 'Hello!'}]
@@ -92,8 +97,13 @@ vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --enable-prefix-caching \
   --port 8000 \
-  --host 0.0.0.0
+  --host 127.0.0.1 \
+  --api-key "replace-with-a-session-secret"
 ```
+
+Keep the server on loopback by default. For remote access, place it behind an
+authenticated TLS reverse proxy or private network and obtain explicit user
+approval before changing the bind address or firewall.
 
 **Step 2: Test with limited traffic**
 
@@ -368,6 +378,5 @@ Supported platforms: NVIDIA (primary), AMD ROCm, Intel GPUs, TPUs
 - GitHub: https://github.com/vllm-project/vllm
 - Paper: "Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP 2023)
 - Community: https://discuss.vllm.ai
-
 
 

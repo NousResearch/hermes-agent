@@ -248,7 +248,7 @@ class TestSafePathJoin:
 
     def test_blocks_absolute(self, tmp_path):
         with pytest.raises(ValueError):
-            safe_path_join(tmp_path, "/etc/passwd")
+            safe_path_join(tmp_path, tmp_path.anchor, "outside", "passwd")
 
     def test_subfolder_with_filename(self, tmp_path):
         p = safe_path_join(tmp_path, "outputs", "img.png")

@@ -17,9 +17,8 @@ make
 
 **Fix**:
 ```bash
-# Install CUDA toolkit
-# Ubuntu
-sudo apt install nvidia-cuda-toolkit
+# Install a CUDA toolkit version compatible with the driver and llama.cpp.
+# Ask the user or administrator to perform any system-level installation.
 
 # Or set CUDA path
 export CUDA_PATH=/usr/local/cuda
@@ -292,8 +291,8 @@ output = llm(prompt, max_tokens=50)
 
 **Fix**:
 ```bash
-# Bind to all interfaces
-./llama-server -m model.gguf --host 0.0.0.0 --port 8080
+# Bind to loopback for local access
+./llama-server -m model.gguf --host 127.0.0.1 --port 8080
 
 # Check if port is in use
 lsof -i :8080

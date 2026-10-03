@@ -199,17 +199,23 @@ Avoid for frequent eval (too slow):
 Integrate with training script:
 
 ```python
+import subprocess
+
 # In training loop
 if step % eval_interval == 0:
     model.save_pretrained(f"checkpoints/step-{step}")
 
-    # Run evaluation
-    os.system(f"./eval_checkpoint.sh checkpoints step-{step}")
+    # Run evaluation without shell interpolation
+    subprocess.run(
+        ["./eval_checkpoint.sh", "checkpoints", f"step-{step}"],
+        check=True,
+    )
 ```
 
 Or use PyTorch Lightning callbacks:
 
 ```python
+import subprocess
 from pytorch_lightning import Callback
 
 class EvalHarnessCallback(Callback):
@@ -220,8 +226,16 @@ class EvalHarnessCallback(Callback):
         # Save checkpoint
         trainer.save_checkpoint(checkpoint_path)
 
-        # Run lm-eval
-        os.system(f"lm_eval --model hf --model_args pretrained={checkpoint_path} ...")
+        # Run lm-eval without shell interpolation
+        subprocess.run(
+            [
+                "lm_eval",
+                "--model", "hf",
+                "--model_args", f"pretrained={checkpoint_path}",
+                # Add explicit task and output arguments here.
+            ],
+            check=True,
+        )
 ```
 
 **Step 4: Plot learning curves**
@@ -494,6 +508,5 @@ code execution.
 - Docs: https://github.com/EleutherAI/lm-evaluation-harness/tree/main/docs
 - Task library: 60+ tasks including MMLU, GSM8K, HumanEval, TruthfulQA, HellaSwag, ARC, WinoGrande, etc.
 - Leaderboard: https://huggingface.co/spaces/HuggingFaceH4/open_llm_leaderboard (uses this harness)
-
 
 

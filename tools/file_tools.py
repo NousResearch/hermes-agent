@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ABOUTME: Exposes file tools with local and backend-aware write guards.
+# ABOUTME: Refuses whole-file overwrites when a task's remote view is stale.
 """File Tools Module - LLM agent file manipulation tools.
 
 Companions: ``file_tools_paths`` (task-aware resolution), ``file_tools_write_guards``
@@ -38,8 +40,9 @@ from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
     _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
-    _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
+    _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found, _record_remote_read,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+from tools.file_tools_read_tracking import _mark_remote_write_baseline, _remote_write_baseline
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +378,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
+def _remote_baseline_key(file_ops: ShellFileOperations, resolved: str) -> tuple[str, str]:
+    """Bind remote read knowledge to one backend session and its target path."""
+    owner = getattr(file_ops.env, "_session_id", None) or str(id(file_ops.env))
+    return str(owner), resolved
+
+
 def clear_file_ops_cache(task_id: str = None):
     """Clear file-operation state for a finished task, or all tasks."""
     with _file_ops_lock:
@@ -677,7 +686,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
         file_ops = _get_file_ops(task_id)
-        version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
+        host_paths = _file_ops_uses_host_paths(file_ops)
+        version_before = _file_metadata(resolved_str) if host_paths else None
+        remote_before = file_ops.file_digest(resolved_str) if not host_paths and isinstance(file_ops, ShellFileOperations) else None
         if (cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
@@ -737,6 +748,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
                                         snapshot=getattr(result, "_snapshot", None))
+        if remote_before is not None and remote_before[0] == "file":
+            remote_after = file_ops.file_digest(resolved_str)
+            if remote_after == remote_before:
+                _record_remote_read(
+                    task_id, _remote_baseline_key(file_ops, resolved_str), remote_before[1], start=offset,
+                    end=end_line, total_lines=total_lines,
+                    redacted=redacted or bool(result_dict.get("truncated_lines")),
+                )
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -892,12 +911,27 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # A whole-file overwrite of content this task never saw, or that
             # changed since, is refused HERE — before the write — instead of
             # warning after the clobber (#65604). Nothing below runs.
-            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            file_ops = _get_file_ops(task_id)
+            remote_file = bool(_resolved and isinstance(file_ops, ShellFileOperations)
+                               and not _file_ops_uses_host_paths(file_ops))
+            if remote_file and not file_state.guard_disabled():
+                remote_status, remote_digest = file_ops.file_digest(_resolved)
+                if remote_status == "file":
+                    seen_digest = _remote_write_baseline(task_id, _remote_baseline_key(file_ops, _resolved))
+                    blocker = None if seen_digest == remote_digest else (
+                        f"{_resolved} changed since this task's full read"
+                        if seen_digest else f"{_resolved} has not been read in full by this task")
+                elif remote_status == "missing":
+                    blocker = None
+                else:
+                    blocker = f"cannot verify the target file on the {remote_status} backend"
+            else:
+                blocker = _stale_overwrite_blocker(path, _resolved, task_id)
             if blocker:
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            result = file_ops.write_file(_resolved or path, content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -915,6 +949,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     # Own write = current whole-file content: consecutive
                     # same-task writes stay unblocked. patch never does this.
                     _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
+                    if remote_file:
+                        remote_status, remote_digest = file_ops.file_digest(_resolved)
+                        expected_digest = getattr(result, "_content_sha256", None)
+                        _mark_remote_write_baseline(
+                            task_id, _remote_baseline_key(file_ops, _resolved),
+                            remote_digest if remote_status == "file" and remote_digest == expected_digest else None,
+                        )
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:

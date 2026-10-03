@@ -41,7 +41,7 @@ def test_regex_matches_bridged_session_vars():
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from gateway.session_context import _VAR_MAP
 
-    for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER):
+    for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER, "HERMES_SINGLE_QUERY_SESSION"):
         line = f'declare -x {name}="whatever"'
         assert rx.search(line), f"{name} should be excluded from the snapshot"
 
@@ -87,7 +87,7 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
         # And the snapshot file must not carry the session id at all.
         snap = env._snapshot_path
         if os.path.exists(snap):
-            with open(snap) as f:
+            with open(snap, encoding="utf-8-sig") as f:
                 assert "HERMES_SESSION_ID" not in f.read()
     finally:
         env.cleanup()
@@ -105,7 +105,7 @@ def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from gateway.session_context import _VAR_MAP
 
-    scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER]
+    scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER, "HERMES_SINGLE_QUERY_SESSION"]
     exports = "; ".join([f'export {n}="x"' for n in scoped] + ['export HERMES_HOME="/h"', 'export MYVAR="keep"'])
     out = subprocess.run(
         ["bash", "-c", f"{exports}; {_export_dump_excluding_session_vars('/dev/stdout')}"],

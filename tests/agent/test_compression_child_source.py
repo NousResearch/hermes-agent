@@ -1,6 +1,7 @@
 """A compression child is the same conversation as its parent: it keeps the parent's persisted source
 (``--source tool``, ``oneshot``, an inherited ``kanban``) instead of degrading to ``agent.platform`` (#112550)."""
 
+import json
 import types
 
 import pytest
@@ -43,3 +44,39 @@ def test_compression_child_keeps_parent_source(db, parent_source):
 
     assert agent.session_id != "parent"
     assert db.get_session(agent.session_id)["source"] == parent_source
+
+
+def test_compression_child_keeps_structured_bot_mode_authorization(db):
+    decision = {
+        "source": "cli",
+        "gateway_session_key": "",
+        "authorized": True,
+    }
+    record = {
+        "version": 1,
+        "active": {
+            "source": "cli",
+            "gateway_session_key": "",
+        },
+        "decisions": [decision],
+    }
+    db.create_session(
+        "parent",
+        source="cli",
+        model_config={"_bot_mode_authorized": record},
+    )
+    db.append_message("parent", "user", "hello")
+    agent = _agent(db, "parent")
+
+    cc._publish_rotated_compaction(
+        agent,
+        [{"role": "user", "content": "hello"}],
+        [{"role": "user", "content": "[handoff]"}],
+        new_system_prompt="sys",
+        lease=types.SimpleNamespace(holder=None, ttl=60.0, watermark=None),
+        old_session_id="parent",
+        compressed_user_turn_outcome="none",
+    )
+
+    child = db.get_session(agent.session_id)
+    assert json.loads(child["model_config"])["_bot_mode_authorized"] == record

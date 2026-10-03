@@ -1992,17 +1992,28 @@ def read_raw_config() -> Dict[str, Any]:
     return _read_raw_config_impl(want_deepcopy=True)
 
 
-def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
+def read_user_config_raw(
+    config_path: Optional[Path] = None, *, strict: bool = False,
+) -> Dict[str, Any]:
     """Read a user ``config.yaml`` EXACTLY as written (no defaults/overlay/expansion, no cache).
     ONLY legal for write-back round-trips and raw-file diagnostics — behavioral reads must use
-    load_config()/load_config_readonly()."""
+    load_config()/load_config_readonly(). Bounded policy owners use ``strict`` when malformed,
+    empty, non-mapping, or dangling files must fail closed rather than look absent."""
     if config_path is None:
         config_path = get_config_path()
     try:
         with open(config_path, encoding="utf-8-sig") as f:
-            data = fast_safe_load(f) or {}
+            data = fast_safe_load(f)
     except FileNotFoundError:
+        if strict:
+            try:
+                config_path.lstat()
+            except FileNotFoundError:
+                return {}
+            raise
         return {}
+    if strict and not isinstance(data, dict):
+        raise InvalidUserConfigError(f"Config must be a mapping: {config_path}")
     return data if isinstance(data, dict) else {}
 
 

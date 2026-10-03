@@ -184,6 +184,23 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_warm_bot_mode_prompt_rebuilds_when_persisted_identity_is_stale():
+    agent = _FakeAgent()
+
+    def rebuild(target, _system_message, _history):
+        target._cached_system_prompt = "REBUILT"
+
+    restore = MagicMock(side_effect=rebuild)
+    with patch(
+        "tools.bot_mode_probe.bot_mode_cached_prompt_needs_rebuild",
+        return_value=True,
+    ):
+        ctx = _build(agent, restore_or_build_system_prompt=restore)
+
+    restore.assert_called_once()
+    assert ctx.active_system_prompt == "REBUILT"
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged payload above the model window must not escape turn construction (a request that
     still fits its window is sent uncompressed instead — see test_preflight_compression_timeout_fail_closed)."""

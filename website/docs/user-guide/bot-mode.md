@@ -183,44 +183,53 @@ Bots message each other with attribution, and you can hand work off from any cha
 - **@mentions** — type `@researcher have a look at this` in any chat and the composer's `@` autocomplete helps you pick the right Bot; on send, the mention is resolved against the live roster and the active Bot is told exactly who you mean (profile, friendly name, and device for cross-connection Bots). The Bot then composes its own message and sends it with `message_agent` — your text is never forwarded verbatim, and the reply comes back attributed to that agent. An email address or an unknown `@` passes through untouched. Bots on other connected machines are reachable the same way: the Desktop relays the message over that connection's own socket (see *Bots across machines* below).
 - **Renamed Bots keep their tags in sync** — give a Bot a friendly name (the pencil in its chat header, or `hermes profile rename`) and it becomes taggable by that name: a Bot titled *Research Buddy* answers to `@research-buddy` (and `@researchbuddy`), in regular chats and in group rooms alike. The composer's `@` autocomplete offers the renamed tag and also matches when you type the old profile name, which keeps resolving too. This includes the primary Bot: rename it *Maia* and group-turn prompts introduce it as `@maia`, its inter-agent messages sign as `Message from 🤖 Maia (@hermes)`, and teammates can `message_agent(target="maia")` it — `@hermes` stays a working alias.
 - **Remote Bots complete under their titles, from any chat.** The `@` autocomplete lists Bots on your other connected machines as soon as the Desktop is connected — you do not have to open the Bots pane first — and a remote `default` appears under its Bot Mode title (`@cos-bot` for a remote default titled *CoS Bot*, not a second `@hermes`). When two Bots would tag alike, the picker inserts the connection-qualified form (`@cos-bot@<connection>`), which resolves to exactly that machine's Bot. A relayed message signed `Message from 🤖 hermes (@hermes@<connection>)` still renders as an agent notice, not as your own text.
-- **Direct messages** — every Bot Chat carries the `message_agent` tool: a Bot messages a teammate by calling `message_agent(target="researcher", message="…")`. The target is the teammate's profile name, its friendly name (`hermes profile rename` or the Bot Mode title — `Scribe`, `Dr. Foo`) or the `@`-tag the Desktop inserts for it (`@scribe`, `@dr-foo`, `@drfoo`); `@hermes` always means the primary Bot. A profile name is matched first, so it can never be hijacked by another Bot's friendly name, and a friendly name shared by two Bots is refused with the roster instead of guessing. The tool validates the target against the live roster, prefixes the sender's `Message from 🤖 <friendly name> (@<handle>):` attribution automatically, and delivers into the teammate's canonical Bot Chat. Delivery is **fire-and-forget**: the sender gets a *dispatch* acknowledgement (`status: queued` plus a `delivery_id` — and a `process_id` for the background delivery process — means the message was handed to that process, not that it was delivered), finishes its turn, and that process's completion notification carries the outcome — the reply, or the delivery failure. On surfaces that cannot receive completion notifications (an `api_server` session, one-shot runners) the acknowledgement instead carries `reply_delivery: poll`: the sender retrieves the outcome with `process(action="wait", session_id=…)` before ending its turn, and the outcome is also saved into the sender's session transcript as a delivery row when the process exits, so the reply is never silently lost. The notification carries the reply whole up to the message size limit (16,000 characters); a longer one arrives as its tail and says how much was cut (`process(action="log", session_id=…)` has the rest). The message travels as a real parameter (nothing shell-interpreted — quotes, `$(...)`, and backticks arrive verbatim), and the Bot composes its own message rather than forwarding your words. The teammate roster — names **and roles** from each profile's title/description — is part of every Bot Chat's system prompt, so Bots know who does what before choosing a recipient. The tool exists **only** in canonical Bot Chat sessions on Bot-Mode-managed installs; regular chats, group-room member sessions, and CLI sessions never see it.
+- **Direct messages** — every canonical Bot Chat and trusted human messaging-gateway session can carry the `message_agent` tool: a Bot messages a teammate by calling `message_agent(target="researcher", message="…")`. The target is the teammate's profile name, its friendly name (`hermes profile rename` or the Bot Mode title — `Scribe`, `Dr. Foo`) or the `@`-tag the Desktop inserts for it (`@scribe`, `@dr-foo`, `@drfoo`); `@hermes` always means the primary Bot. A profile name is matched first, so it can never be hijacked by another Bot's friendly name, and a friendly name shared by two Bots is refused with the roster instead of guessing. The tool validates the target against the live directed roster, prefixes the sender's `Message from 🤖 <friendly name> (@<handle>):` attribution automatically, and delivers into the teammate's canonical Bot Chat. Delivery is **fire-and-forget**: the sender gets a *dispatch* acknowledgement (`status: queued` plus a `delivery_id` — and a `process_id` for the background delivery process — means the message was handed to that process, not that it was delivered), finishes its turn, and that process's completion notification carries the outcome — the reply, or the delivery failure. On surfaces that cannot receive completion notifications the acknowledgement instead carries `reply_delivery: poll`; API, webhook, A2A, cron, delegated-child, and finite one-shot gateway sessions are not granted the tool. The canonical Bot Chat transport remains allowed under `chat -Q`, so a recipient can make a bounded nested handoff to another teammate. The notification carries the reply whole up to the message size limit (16,000 characters); a longer one arrives as its tail and says how much was cut (`process(action="log", session_id=…)` has the rest). The message travels as a real parameter (nothing shell-interpreted — quotes, `$(...)`, and backticks arrive verbatim), and the Bot composes its own message rather than forwarding your words. The teammate roster — names **and roles** from each profile's title/description — is part of the authorized session's system prompt, so Bots know who does what before choosing a recipient.
 
 Local messages also reach a Bot Chat that stays open in Desktop or the TUI, and so do messages relayed from another machine. The receiving backend keeps ownership: it reads durable ingress on its existing notification poller, admits immediately when idle, or waits until the running turn and already queued human prompts finish. A `queued` acknowledgement confirms durable admission, **not** a completed reply. The target profile retains the delivery ID and receipt under `runtime/bot_live_delivery/`; `settled` confirms completion. A crashed or cancelled imported turn is not automatically replayed, and pending work pinned to a departed owner remains inspectable rather than being silently rerun. Do not resend a delivery whose outcome is unknown. Older backends without live-delivery capability retain the existing ownership refusal; restart that backend after upgrading.
 
 - **Staying silent** — a Bot that has nothing to add may end a turn with one of the [intentional silence tokens](./messaging/index.md#intentional-silence-tokens) (`[SILENT]`, `NO_REPLY`, …). The Bot Chat keeps that turn in its transcript but renders nothing, and a teammate that messaged it gets an empty reply instead of the token. Failed turns and prose that merely mentions a token are shown as-is.
 
-The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
+The backend teaches each canonical Bot Chat and authorized messaging-gateway session the protocol at prompt-build time. Your SOUL.md stays untouched. `agent.bot_mode_protocol` remains the master switch, while `agent.bot_mode` can opt in a headless install and constrain directed relationships:
 
 ```yaml
 agent:
-  bot_mode_protocol: true   # inject the bot-to-bot messaging protocol into canonical Bot Chats
+  bot_mode_protocol: true
+  bot_mode:
+    enabled: true
+    roster:
+      - from: default
+        to: [research, dev, ops, reviewer]
+      - from: research
+        to: [default, reviewer]
 ```
 
-### What actually makes a chat a Bot Chat
+`from` and `to` use profile IDs; `hermes` is accepted as an alias for `default`.
+The roster governs local `message_agent` relationships and is directed: allowing
+`default → research` does not implicitly allow `research → default`. Omitting
+`roster` keeps the legacy all-local-profiles behavior; an explicit empty or
+malformed roster allows no local targets.
 
-`agent.bot_mode_protocol` is only the master switch. Before the protocol section — or the `message_agent` tool — is injected, two further conditions must hold, and on a desktop install the Bots pane satisfies both for you the moment it creates a Bot:
+### Which sessions receive the capability
 
-1. **The session is titled exactly `Bot Chat`.** That exact title is the canonical chat's identity (it is what the desktop plugin's createCanonicalChat uses and what `hermes -p <bot> chat -c "Bot Chat"` resumes); any other title, or an untitled scratch session, gets neither the section nor the tool.
-2. **At least one profile on the install carries a `ui_meta: { hermes-bots: … }` block in its `profile.yaml`.** This is the "Bot-Mode-managed" marker the desktop plugin writes for every Bot it owns; the gate scans every profile, so one marked profile marks the whole install. There is no CLI command that writes it.
+The protocol and schema are granted only when all relevant checks pass:
 
-The practical consequence: on a **headless install with no desktop app** (gateway plus Telegram, say) nothing ever writes either marker, so `message_agent` is unreachable even though the docs-level switch is on — bots message each other fine over the messaging platform, but the agent-side `message_agent` tool never appears. To enable it headless, satisfy both conditions by hand:
+- The install is enabled by `agent.bot_mode.enabled: true`, or retains the legacy Desktop `ui_meta.hermes-bots` marker without explicitly setting `enabled: false`.
+- The sender is a real live profile and `profile.yaml` does not explicitly set `bot.enabled: false`. Missing legacy metadata remains enabled; malformed or unreadable metadata fails closed.
+- The session is either the exact canonical `Bot Chat` on a local CLI/TUI/Desktop source, or a recognized human messaging adapter such as Telegram, Discord, Slack, Matrix, or Feishu.
+- API, relay, webhook, A2A, automation, cron, delegated-child, and finite one-shot gateway sources are denied even if they reuse a trusted session ID or set a human-facing platform hint. The canonical `Bot Chat` one-shot used for teammate delivery remains eligible so bounded nested handoffs continue to work.
+- The target is live, enabled, and allowed by the sender's directed roster.
 
-```bash
-# the canonical forever-chat, created once per Bot (later runs resume it)
-hermes -p <bot> chat -c "Bot Chat" --create-if-missing
-```
+Prompt/schema classification is frozen by profile home, persisted session ID,
+authoritative source, and Gateway session key to keep the provider prefix byte-stable. Dispatch separately
+rechecks live policy immediately before delivery, so disabling Bot Mode, disabling a
+profile, or removing a roster edge takes effect without waiting for a process restart.
+Prompt advertisement for a newly enabled capability or added edge takes effect in a
+new session (`/new` on messaging surfaces), rather than changing an existing
+session's tool schema.
 
-```yaml
-# ~/.hermes/profiles/<any-bot>/profile.yaml — an empty block is enough to mark the install
-ui_meta:
-  hermes-bots: {}
-```
-
-From the next turn in that Bot Chat the teammate roster, the protocol section, and `message_agent` are all picked up — including over `hermes -p <bot> chat` on a purely terminal box.
-
-:::note
-Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.
-:::
+For an explicit per-profile kill switch, set `bot.enabled: false` in that
+profile's `profile.yaml`. This is execution authority, separate from Desktop
+presentation metadata such as title, avatar, or section.
 
 ### Failed turns retry safely
 

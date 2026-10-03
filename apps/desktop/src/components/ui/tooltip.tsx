@@ -287,6 +287,27 @@ function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipPro
   return provided ? tip : <TooltipProvider delayDuration={delayDuration}>{tip}</TooltipProvider>
 }
 
+// Measure an element's full text in its own rendered font, in pixels. Canvas
+// text measurement is unaffected by the element's clipping (unlike
+// scrollWidth, which rounds to the constrained box). Measurers are cached per
+// resolved font string.
+const textMeasureCache = new Map<string, (text: string) => number>()
+
+function textPixelWidth(element: HTMLElement): number {
+  const { font } = window.getComputedStyle(element)
+  let measure = textMeasureCache.get(font)
+
+  if (!measure) {
+    const context = document.createElement('canvas').getContext('2d')!
+
+    context.font = font
+    measure = (text: string): number => context.measureText(text).width
+    textMeasureCache.set(font, measure)
+  }
+
+  return measure((element.textContent ?? '').replace(/\s+$/, ''))
+}
+
 /** Hover-open delay for `OverflowTip`. Longer than `TIP_DELAY_MS`: the trigger
  *  is a row's own content (not a control), so the tip should only appear on a
  *  deliberate, lingering hover — a cursor travelling the list must not pop a
@@ -294,15 +315,16 @@ function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipPro
 const OVERFLOW_TIP_DELAY_MS = 600
 
 /**
- * A `Tip` that only opens when the trigger's content is actually truncated
- * (its `scrollWidth` exceeds its `clientWidth` at pointerenter). A tooltip that
- * repeats a fully visible label is noise, and Radix's uncontrolled hover-open
- * can't see overflow — so this owns `open` and arms its own timer after
- * measuring. Pointer-only by design: keyboard focus keeps the child's existing
- * a11y affordances (the full text is already in the accessible name).
+ * A `Tip` that only opens when the trigger's content is actually truncated.
+ * Detection measures the full text's pixel width (canvas, in the element's
+ * font) against the box width: under flex squeeze with an ellipsis,
+ * scrollWidth can round a real clip down to within the sub-pixel slack and
+ * miss it. This owns `open` and arms its timer after measuring. Pointer-only
+ * by design: keyboard focus keeps the child's existing a11y affordances (the
+ * full text is already in the accessible name).
  *
- * Measurement happens on the CHILD element (`asChild` puts the trigger props on
- * it), so wrap the element that carries the truncation/overflow styling.
+ * Measurement happens on the CHILD element (`asChild` puts the trigger props
+ * on it), so wrap the element that carries the truncation/overflow styling.
  */
 function OverflowTip({ label, children, delayDuration = OVERFLOW_TIP_DELAY_MS, ...props }: TipProps) {
   const provided = React.useContext(HasTooltipProvider)
@@ -338,13 +360,15 @@ function OverflowTip({ label, children, delayDuration = OVERFLOW_TIP_DELAY_MS, .
         // Clicking the row means the user is acting on it, not reading the tip.
         onPointerDown={close}
         onPointerEnter={event => {
-          const el = event.currentTarget
+          const el = event.currentTarget as HTMLElement
 
           cancel()
 
-          // Same 2px slack the sidebar marquee uses: sub-pixel rounding can
-          // report a 1px "overflow" on a title that fully fits.
-          if (el.scrollWidth - el.clientWidth > 2) {
+          // Measure the rendered text directly: under flex squeeze with an
+          // ellipsis, scrollWidth can under-report a real clip by ~1px (it
+          // lands within rounding slack), so compare the full text's pixel
+          // width with the box width. 1px slack still rejects sub-pixel noise.
+          if (textPixelWidth(el) - el.clientWidth > 1) {
             timer.current = window.setTimeout(() => setOpen(true), delayDuration)
           }
         }}

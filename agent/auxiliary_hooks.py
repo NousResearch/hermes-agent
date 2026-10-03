@@ -6,8 +6,11 @@ compression, MoA advisors/aggregator, vision, approval, ...) shares, retries and
 included — carrying the ``pre_api_request`` / ``post_api_request`` payload shape plus
 ``aux_task``. They are deliberately DISTINCT events: the main-loop ``*_api_request`` events stay
 turn-scoped, so observability plugins keyed on turn identity never see auxiliary traffic unless
-they subscribe to these. Observer-only (returns ignored) and fail-open: a raising or hung
-callback is logged and the auxiliary call proceeds untouched.
+they subscribe to these. Fail-open: a raising or hung callback is logged and the auxiliary call
+proceeds untouched. ``post_auxiliary_call`` is observer-only; a ``pre_auxiliary_call`` callback may
+return ``{"action": "block", "message": ...}`` to veto that provider attempt (egress / data-residency
+policy): :class:`AuxiliaryCallBlocked` is raised before anything is sent, and the recovery ladder
+re-raises it instead of retrying or falling back to another provider.
 """
 
 from __future__ import annotations
@@ -20,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 PRE_AUXILIARY_CALL = "pre_auxiliary_call"
 POST_AUXILIARY_CALL = "post_auxiliary_call"
+
+
+class AuxiliaryCallBlocked(RuntimeError):
+    """A ``pre_auxiliary_call`` callback vetoed this provider attempt (``{"action": "block"}``).
+
+    Deliberately matches none of the auxiliary fallback predicates, so the recovery ladder re-raises
+    it instead of retrying or hopping to another provider (e.g. the main agent model)."""
 
 
 def _parent_turn_identity() -> Dict[str, str]:
@@ -126,7 +136,7 @@ class _AuxCallHooks:
             messages = []
         body = {k: v for k, v in kwargs.items() if k not in {"timeout", "http_client"}}
         total_chars = sum(len(str(_field(m, "content") or "")) for m in messages)
-        _fire(
+        results = _fire(
             PRE_AUXILIARY_CALL, **self.base,
             request_messages=list(messages),
             system_prompt=_system_prompt(messages, kwargs),
@@ -136,6 +146,7 @@ class _AuxCallHooks:
             max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
             request=_Sanitize._sanitize_hook_payload({"method": "POST", "body": body}),
         )
+        _raise_if_blocked(results, self.base.get("aux_task", ""))
 
     def post(self, response: Any = None, error: Optional[BaseException] = None) -> None:
         if not _has_hook(POST_AUXILIARY_CALL):
@@ -186,16 +197,26 @@ def _has_hook(name: str) -> bool:
         return False
 
 
-def _fire(name: str, **payload: Any) -> None:
-    """Dispatch one event; a failing subscriber is logged, never propagated (the aux task's
-    result must not depend on an observer)."""
+def _fire(name: str, **payload: Any) -> list:
+    """Dispatch one event and return the callbacks' non-None results; a failing subscriber is
+    logged, never propagated (the aux task's result must not depend on an observer)."""
     try:
         from hermes_cli.lifecycle import invoke_hook
 
-        invoke_hook(name, **payload)
+        return invoke_hook(name, **payload) or []
     except Exception:
         logger.warning("%s plugin hook failed for aux_task=%s; continuing",
                        name, payload.get("aux_task"), exc_info=True)
+        return []
+
+
+def _raise_if_blocked(results: list, aux_task: str) -> None:
+    """Raise :class:`AuxiliaryCallBlocked` if any ``pre_auxiliary_call`` result is a block directive."""
+    for ret in results:
+        if isinstance(ret, dict) and str(ret.get("action") or "").lower() == "block":
+            message = str(ret.get("message") or "blocked by a pre_auxiliary_call plugin")
+            logger.warning("Auxiliary %s: provider attempt blocked by plugin: %s", aux_task or "call", message)
+            raise AuxiliaryCallBlocked(message)
 
 
 def _hooks_or_none(**kw: Any) -> Optional[_AuxCallHooks]:
@@ -204,6 +225,8 @@ def _hooks_or_none(**kw: Any) -> Optional[_AuxCallHooks]:
     try:
         hooks = _AuxCallHooks(**kw)
         hooks.pre()
+    except AuxiliaryCallBlocked:
+        raise
     except Exception:
         logger.warning("pre_auxiliary_call payload build failed; continuing", exc_info=True)
         return None

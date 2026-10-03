@@ -256,7 +256,10 @@ class HermesProviderMixin:
                     except _RefreshCompletedByPeer:
                         break
                     except Exception as exc:
-                        from mcp.client.auth.oauth2 import OAuthRegistrationError
+                        try:
+                            from mcp.client.auth.oauth2 import OAuthRegistrationError
+                        except ImportError:  # SDK 1.26.0 keeps it in mcp.client.auth.exceptions
+                            from mcp.client.auth.exceptions import OAuthRegistrationError
                         if (isinstance(exc, OAuthRegistrationError) and discovery_failures
                                 and self.context.oauth_metadata is None):
                             raise _with_discovery_context(exc, discovery_failures) from exc

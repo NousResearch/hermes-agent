@@ -111,7 +111,10 @@ async def test_registration_failure_after_failed_discovery_leads_with_discovery(
     """When every authorization-server metadata fetch fails, the SDK guesses ``/register`` on the MCP
     host; the surfaced error must name the metadata refusal first, not only the fallback 404 (#113771),
     and must not be mistaken for a DCR allowlist refusal by the humanizer."""
-    from mcp.client.auth.oauth2 import OAuthRegistrationError
+    try:
+        from mcp.client.auth.oauth2 import OAuthRegistrationError
+    except ImportError:  # SDK 1.26.0 keeps it in mcp.client.auth.exceptions
+        from mcp.client.auth.exceptions import OAuthRegistrationError
     from tools.mcp_oauth import humanize_oauth_registration_error
 
     httpx, req, flow = await _make_flow(tmp_path, monkeypatch, registered=False)

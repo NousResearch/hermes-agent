@@ -559,9 +559,15 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            from gateway.session_identity import transport_profile_of
+
+            # Scope the update counter to the bot that received /restart, even if its
+            # session executes in a different (or shared) runtime profile.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            transport_profile = transport_profile_of(event.source)
+            if transport_profile is not None:
+                data["transport_profile"] = transport_profile
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data

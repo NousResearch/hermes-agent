@@ -862,8 +862,11 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
 
 
 # Endpoints that reject image input: vision auto-detect skips these to the aggregator chain
-# instead of returning a client that 404s (Kimi Coding Plan Anthropic wire has no image_in).
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({"kimi-coding", "kimi-coding-cn"})
+# instead of returning a client that 404s. kimi-coding (api.kimi.com/coding) removed:
+# its Anthropic and OpenAI wires both accept image blocks (verified live with k3 and
+# kimi-for-coding: supports_image_in=true, color-identification probes answered correctly).
+# kimi-coding-cn (api.moonshot.cn) remains listed pending equivalent verification.
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({"kimi-coding-cn"})
 
 # OpenRouter app attribution (always sent). `X-Title` is what the dashboard reads.
 _OR_HEADERS_BASE = {

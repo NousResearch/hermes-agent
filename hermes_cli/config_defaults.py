@@ -1,3 +1,5 @@
+# ABOUTME: Defines default configuration values for Hermes runtime features.
+# ABOUTME: Provides bounded completion repair settings without enabling a policy.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -215,6 +217,8 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Repair rounds requested by a completion policy. Rejection at the limit fails the turn.
+        "max_final_continuations": 2,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

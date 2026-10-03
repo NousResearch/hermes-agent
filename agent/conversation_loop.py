@@ -1,3 +1,5 @@
+# ABOUTME: Coordinates provider requests, tool rounds, and terminal turn outcomes.
+# ABOUTME: Routes final and partial answers through registered completion policies.
 """The agent conversation loop — extracted from ``run_agent.AIAgent``.
 
 ``run_conversation(agent, ...)`` drives one user turn (model call, tool dispatch,
@@ -1620,6 +1622,15 @@ def _run_conversation_turn(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
+        from agent.turn_end_hooks import defers_text_delivery, _failure
+        if defers_text_delivery():
+            gate = _failure(agent, "Completion review requires the regular SDK runtime. Switch away from codex_app_server.",
+                            "final_policy_unsupported_runtime")
+            s.final_response, s.failed, s._turn_exit_reason = gate.message, True, gate.code
+            return finalize_turn(agent, **{
+                name: getattr(s, name)
+                for name in inspect.signature(finalize_turn).parameters if name != "agent"
+            })
         codex_result = agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,
@@ -1737,6 +1748,8 @@ def run_conversation(
             turn_author=turn_author,
             title_user_message=title_user_message,
         )
+    from agent.turn_end_hooks import finalize_early_result
+    result = finalize_early_result(agent, result, user_message)
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

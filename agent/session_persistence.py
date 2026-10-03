@@ -1,3 +1,5 @@
+# ABOUTME: Persists transcript rows with durable identity and append deduplication.
+# ABOUTME: Skips internal recovery and completion repair scaffolding.
 """Durable transcript persistence for ``AIAgent`` (mixin; MRO-resolved from ``run_agent``): SQLite flush
 with intrinsic ``_DB_PERSISTED_MARKER`` dedup, ephemeral-scaffolding filtering, explicit
 trajectory export."""
@@ -39,6 +41,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill",
     "_verification_stop_synthetic",  # verify-on-stop nudge; the assistant candidate itself is NOT synthetic
     "_pre_verify_synthetic",
+    "_turn_end_synthetic",
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
 )

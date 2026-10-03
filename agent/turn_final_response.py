@@ -1,3 +1,5 @@
+# ABOUTME: Resolves normal text responses before stop gates and durable persistence.
+# ABOUTME: Applies completion policy decisions to the same conversation turn.
 """No-tool-call (final text) branch of the conversation turn loop: empty/think-only recovery,
 intent-ack / stall-guard continuation, length-continuation joining, dropped-tool-call
 re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted from
@@ -50,6 +52,8 @@ class FinalResponseVerdict:
     _pending_verification_response_previewed: Any
     api_call_count: int
     result: Optional[Dict[str, Any]] = None
+    failed: bool = False
+    interrupted: bool = False
 
 
 def finish_text_response(
@@ -318,6 +322,32 @@ def finish_text_response(
         and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
     ):
         messages.pop()
+
+    from agent.turn_end_hooks import before_turn_end, defers_text_delivery, prepare_response
+    final_response = prepare_response(agent, final_response)
+    # Same row contract as the stock transform below: a promoted reasoning-only reply
+    # keeps ``content`` empty and carries the text in the ``api_content`` sidecar.
+    if defers_text_delivery():
+        if _promoted:
+            final_msg["api_content"] = final_response
+        else:
+            final_msg["content"] = final_response
+    _gate = before_turn_end(
+        agent, final_response, final_msg, messages, user_message=user_message,
+        can_continue=(api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0),
+    )
+    if _gate.action == "continue":
+        _pending_verification_response = None
+        _pending_verification_response_previewed = False
+        final_response = None
+        return _verdict("continue")
+    if _gate.action in {"fail", "interrupt"}:
+        final_response = _gate.message
+        _turn_exit_reason = _gate.code or "interrupted_during_completion_review"
+        verdict = _verdict("break")
+        verdict.failed = _gate.action == "fail"
+        verdict.interrupted = _gate.action == "interrupt"
+        return verdict
 
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,

@@ -33,6 +33,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from fixtures import build_workspace  # noqa: E402
 from tasks import TASKS, TASKS_BY_ID  # noqa: E402
+from utils import atomic_json_write  # noqa: E402  (repo-root helper: temp file + fsync + os.replace)
 
 SYSTEM_SUFFIX = (
     "You are working inside the project directory {ws}. All paths in the "
@@ -177,8 +178,15 @@ def main() -> int:
     for rep in range(1, args.reps + 1):
         rep_path = out_dir / f"rep{rep}.json"
         if rep_path.exists():
-            print(f"rep{rep} exists, skipping")
-            continue
+            try:
+                json.loads(rep_path.read_text(encoding="utf-8"))
+            except ValueError:
+                # An interrupt between truncate and write leaves invalid JSON, and
+                # a bare exists() check would then skip that rep forever.
+                print(f"rep{rep} exists but is unreadable; rewriting")
+            else:
+                print(f"rep{rep} exists, skipping")
+                continue
         records = []
         for task in slate:
             print(f"[rep{rep}] {task.task_id} ...", flush=True)
@@ -191,12 +199,10 @@ def main() -> int:
                 flush=True,
             )
             records.append(rec)
-        rep_path.write_text(
-            json.dumps(
-                {"model": args.model, "provider": args.provider, "label": args.label,
-                 "rep": rep, "records": records},
-                indent=2,
-            )
+        atomic_json_write(
+            rep_path,
+            {"model": args.model, "provider": args.provider, "label": args.label,
+             "rep": rep, "records": records},
         )
         print(f"wrote {rep_path}")
     return 0

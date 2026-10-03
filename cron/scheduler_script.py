@@ -250,10 +250,40 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         os.killpg(process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
-def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
+def _terminate_orphaned_script_group(job_pgid: int) -> None:
+    """POSIX: bounded fallback for a job whose direct script process was already reaped
+    (#125780). The spawn-time process group is the only ownership handle left — the reaped
+    leader's pid is unqueryable (``getpgid`` is ESRCH) and must never be signalled directly
+    (it may be recycled) — so TERM/KILL the recorded group after proving it still has members,
+    mirroring ``_terminate_process_group``'s TERM→KILL pacing without a waitable leader."""
+    try:
+        os.killpg(job_pgid, 0)  # ESRCH once the group is empty. windows-footgun: ok — POSIX-only
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+    with contextlib.suppress((ProcessLookupError, PermissionError, OSError)):
+        os.killpg(job_pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch
+    time.sleep(0.5)
+    try:
+        os.killpg(job_pgid, 0)  # windows-footgun: ok — POSIX-only branch
+    except (ProcessLookupError, OSError):
+        return
+    with contextlib.suppress((ProcessLookupError, PermissionError, OSError)):
+        os.killpg(
+            job_pgid, getattr(signal, "SIGKILL", signal.SIGTERM)
+        )  # windows-footgun: ok — POSIX-only branch
+
+
+def _terminate_cron_script_tree(
+    proc: subprocess.Popen, job_pgid: Optional[int] = None
+) -> None:
     """Terminate a script tree, then fall back to the local process-group path."""
     if proc.poll() is not None:
-        # Already reaped: kill_process_tree would log a spurious "no signal" warning.
+        # Already reaped: kill_process_tree would log a spurious "no signal" warning, and the
+        # recycled leader pid must not be signalled. Children that survived in the job's own
+        # process group still hold the pipe write ends open, so terminate the spawn-time group
+        # instead (#125780); without a recorded pgid the historic leave-alone behavior stands.
+        if job_pgid is not None and job_pgid > 0 and sys.platform != "win32":
+            _terminate_orphaned_script_group(job_pgid)
         return
     def fallback(reason: str, *args, exc_info: bool = False) -> None:
         logger.warning(
@@ -487,17 +517,25 @@ def _run_job_script(
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
+        # Snapshot the job's own process group while the leader is alive (start_new_session
+        # above): once the leader exits and is reaped its pid is unqueryable, and this handle
+        # is what lets the timeout/cancel cleanup still reach surviving pipe-holding children
+        # in the exited-parent case (#125780).
+        job_pgid: Optional[int] = None
+        if sys.platform != "win32":
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                job_pgid = os.getpgid(proc.pid)
         deadline = time.monotonic() + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,
             # backgrounded shell jobs); kill_process_tree snapshots descendants BEFORE signalling.
             if cancel_event is not None and cancel_event.is_set():
-                _terminate_cron_script_tree(proc)
+                _terminate_cron_script_tree(proc, job_pgid)
                 _drain_script_pipes(proc)
                 return False, "Script cancelled because cron fire ownership was lost"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_cron_script_tree(proc)
+                _terminate_cron_script_tree(proc, job_pgid)
                 _drain_script_pipes(proc)
                 # Phase 4a (#85125): a script timeout must leave ZERO living descendants. killpg only
                 # reaches the script's own process group — a grandchild that called setsid (backgrounded

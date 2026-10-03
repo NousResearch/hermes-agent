@@ -8,8 +8,10 @@ persistence, timeout policy and the final authorization stay host-owned in
 
 import logging
 import os
+import queue
 import sys
 import threading
+import time
 from tools import approval_context as _ctx, approval_gateway_wait as _gw
 from tools.approval_human_wait import activity_heartbeat, human_wait_window
 from tools.interrupt import is_interrupted
@@ -79,20 +81,181 @@ _CLI_CHOICE_I18N = {
 }
 
 
-def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
-    """Read one answer on a daemon thread; None when the user never answered."""
-    result = {"choice": ""}
+# One daemon reader owns stdin for the process: a per-prompt reader outlives its
+# timeout while still blocked inside input(), and the next prompt's reader then
+# races the orphan for the same keystrokes. The reader is armed one line at a
+# time and only while a prompt is live, so between prompts it parks on the
+# arming condition instead of inside input(): keystrokes meant for the other
+# input() call sites (auth codes, hook consent, ...) are never swallowed into
+# _stdin_lines. A prompt accepts only lines stamped after its freshness cutoff,
+# which is taken before the tty typeahead flush, so anything buffered before
+# the prompt displayed is dropped as stale no matter when the queue delivers it.
+_STDIN_READER_NAME = "hermes-approval-stdin-reader"
+_STDIN_EOF = object()  # queued marker: stdin is dead
+_stdin_lines: queue.Queue = queue.Queue(maxsize=1024)
+_stdin_state = threading.Condition()
+_stdin_want_lines = 0  # lines the live prompt has asked the reader for
+_stdin_reader_thread: threading.Thread | None = None
+_stdin_eof = False
+_stdin_shutdown = False  # tests only: stop the reader between cases
 
-    def get_input():
+
+def _stdin_reader() -> None:
+    """Pump stdin lines into the shared queue, one per arming.
+
+    The reader calls input() only after the live prompt asks for a line, then
+    parks on the arming condition again. Between prompts nothing consumes stdin,
+    so the other input() call sites keep working, and exactly one reader ever
+    exists, so a timed-out prompt cannot leave a zombie racing the next one.
+    """
+    global _stdin_eof
+    served = 0
+    while True:
+        with _stdin_state:
+            _stdin_state.wait_for(
+                lambda: _stdin_shutdown or _stdin_eof or _stdin_want_lines > served)
+            if _stdin_shutdown or _stdin_eof:
+                return
         try:
-            result["choice"] = input(prompt).strip().lower()
+            line = input()
         except (EOFError, OSError):
-            result["choice"] = ""
+            # stdin is really dead: latch it so later prompts fail closed fast
+            # instead of stacking timeouts.
+            logger.debug("approval stdin reader saw EOF; parking", exc_info=True)
+            with _stdin_state:
+                _stdin_eof = True
+                _stdin_state.notify_all()
+            _stdin_offer(_STDIN_EOF)  # wake any parked prompt; stdin is dead
+            return
+        except Exception:
+            # Transient read failure, not EOF: exit WITHOUT latching stdin
+            # dead. The next prompt restarts the reader, so one bad read can no
+            # longer auto-deny every later approval for the rest of the session.
+            logger.warning("approval stdin reader hit a transient read error; "
+                           "exiting without parking stdin", exc_info=True)
+            return
+        _stdin_offer((time.monotonic_ns(), line))
+        with _stdin_state:
+            # This line satisfies the latest arming, even when the arming
+            # arrived while input() was already blocked: never read twice for
+            # one ask.
+            served = _stdin_want_lines
 
-    thread = threading.Thread(target=get_input, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout_seconds)
-    return None if thread.is_alive() else result["choice"]
+
+def _stdin_offer(item) -> None:
+    """Enqueue a reader result without ever blocking the reader thread.
+
+    The queue stays bounded: once full, the oldest unread line is dropped to
+    make room. A blocking put() would wedge the reader inside put() and hand
+    stdin back to the contended state this module exists to remove.
+    """
+    while True:
+        try:
+            _stdin_lines.put_nowait(item)
+            return
+        except queue.Full:
+            try:
+                _stdin_lines.get_nowait()  # drop oldest; the live prompt re-arms
+            except queue.Empty:
+                pass
+
+
+def _ensure_stdin_reader_locked() -> None:
+    """Start the single stdin reader when it is not already alive.
+
+    Call with _stdin_state held. Deliberately a bare Thread, not
+    spawn_context_thread: it serves every profile, so it must NOT inherit the
+    first caller's contextvar scope.
+    """
+    global _stdin_reader_thread
+    thread = _stdin_reader_thread
+    if thread is None or not thread.is_alive():
+        thread = threading.Thread(target=_stdin_reader, daemon=True,
+                                  name=_STDIN_READER_NAME)
+        _stdin_reader_thread = thread
+        thread.start()
+
+
+def _arm_stdin_reader() -> None:
+    """Ask the reader for one more line.
+
+    The reader reads exactly one line per arming and then parks again, so while
+    no prompt is live it never sits inside input() holding stdin.
+    """
+    global _stdin_want_lines
+    with _stdin_state:
+        _stdin_want_lines += 1
+        _stdin_state.notify_all()
+
+
+def _flush_stdin_pending() -> None:
+    """Drop keystrokes already buffered in the tty so the next prompt answers
+    only what is typed after it displays. termios is POSIX-only, so on Windows
+    the console input buffer is drained with msvcrt instead of silently
+    skipping the flush and letting typeahead answer the prompt."""
+    try:
+        if not sys.stdin.isatty():
+            return
+        if sys.platform == "win32":
+            _drain_windows_console_input()
+        else:
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass  # non-tty, undrainable, or closed stdin: nothing flushable
+
+
+def _drain_windows_console_input() -> None:
+    """Drop typeahead from the Windows console input buffer.
+
+    msvcrt only sees console input, so this is a no-op for pipes, where
+    pre-prompt bytes were deliberately piped in rather than typed ahead.
+    """
+    import msvcrt
+    while msvcrt.kbhit():
+        msvcrt.getwch()
+
+
+def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
+    """Read one answer; None on timeout, '' when stdin is dead (deny-shaped)."""
+    with _stdin_state:
+        if _stdin_eof:
+            return ""
+        _ensure_stdin_reader_locked()
+    # Stamp the freshness cutoff BEFORE the flush: the flush drops everything
+    # buffered up to this instant, so any line the reader delivers afterwards
+    # was typed after the cutoff and the stale check below can trust the stamp.
+    # (Flushing first and stamping after leaves a window where a pre-prompt
+    # keystroke is read with a fresh stamp and accepted as the answer.)
+    cutoff_ns = time.monotonic_ns()
+    _flush_stdin_pending()
+    try:
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+    except Exception:
+        return ""  # nowhere to show the prompt; deny-shaped, same as a dead reader
+    timeout_ns = int(max(timeout_seconds, 0) * 1e9)
+    if timeout_ns <= 0:
+        return None
+    deadline_ns = cutoff_ns + timeout_ns
+    _arm_stdin_reader()
+    while True:
+        remaining = (deadline_ns - time.monotonic_ns()) / 1e9
+        if remaining <= 0:
+            return None
+        try:
+            item = _stdin_lines.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if item is _STDIN_EOF:
+            return ""
+        stamp_ns, line = item
+        if stamp_ns <= cutoff_ns:
+            # Stale: read before this prompt's cutoff (a previous prompt's late
+            # line, or a gap keystroke). Ask for another line.
+            _arm_stdin_reader()
+            continue
+        return line.strip().lower()
 
 
 def callback_accepts(callback, keyword: str) -> bool:

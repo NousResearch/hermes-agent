@@ -304,6 +304,50 @@ class TestInsightsPopulated:
         total_pct = sum(t["percentage"] for t in tools)
         assert total_pct == pytest.approx(100.0, abs=0.1)
 
+    def test_tool_reach_unwraps_the_tool_call_bridge(self, db):
+        """Reach = share of tool-using sessions that invoked the tool. A deferred tool is
+        recorded as a ``tool_call`` bridge entry; reach must credit the tool it carried
+        (both the batch and legacy single shape) and never list the bridge itself."""
+        db.create_session(session_id="a", source="cli", model="m")
+        db.append_message("a", role="assistant", content="x", tool_calls=[
+            {"function": {"name": "tool_call",
+                          "arguments": '{"calls":[{"name":"x_search","arguments":{"q":"1"}}]}'}},
+            {"function": {"name": "read_file", "arguments": "{}"}}])
+        db.append_message("a", role="tool", content="r", tool_name="tool_call")  # bare bridge row
+        db.append_message("a", role="assistant", content="y", tool_calls=[
+            {"function": {"name": "tool_call", "arguments": '{"name":"x_search","arguments":{}}'}}])
+        db.create_session(session_id="b", source="cli", model="m")
+        db.append_message("b", role="assistant", content="z",
+                          tool_calls=[{"function": {"name": "read_file", "arguments": "{}"}}])
+        db.create_session(session_id="quiet", source="cli", model="m")  # no tools: not in the denominator
+        db.append_message("quiet", role="assistant", content="hello")
+        db._conn.commit()
+
+        by_name = {t["tool"]: t for t in InsightsEngine(db).generate(days=30)["tools"]}
+        assert "tool_call" not in by_name
+        assert (by_name["x_search"]["count"], by_name["x_search"]["sessions"]) == (2, 1)
+        assert by_name["x_search"]["reach_pct"] == pytest.approx(50.0)
+        assert by_name["read_file"]["reach_pct"] == pytest.approx(100.0)
+
+    def test_tool_context_advice_splits_by_reach_against_the_served_surface(self, monkeypatch):
+        """Eager tools under 20% reach are deferral candidates (largest schema first, never the
+        ambient ``clarify``); deferred or registry-invisible tools at/over 50% reach are hot;
+        a sample under MIN_SESSIONS yields no advice at all."""
+        from agent import insights_tool_context as tc
+        monkeypatch.setattr(tc, "_served_tools", lambda platform: (
+            {"delegate_task": 1000, "memory": 800, "read_file": 300, "clarify": 100}, {"todo_list": 50}))
+        tools = [{"tool": "read_file", "sessions": 90, "reach_pct": 90.0},
+                 {"tool": "todo_list", "sessions": 80, "reach_pct": 80.0},
+                 {"tool": "mcp__linear__issues", "sessions": 60, "reach_pct": 60.0},
+                 {"tool": "memory", "sessions": 5, "reach_pct": 5.0},
+                 {"tool": "tool_describe", "sessions": 70, "reach_pct": 70.0}]
+
+        advice = tc.tool_context_advice(tools, 100, "cli")
+        assert [e["tool"] for e in advice["defer_candidates"]] == ["delegate_task", "memory"]
+        assert [e["tool"] for e in advice["hot_deferred"]] == ["todo_list", "mcp__linear__issues"]
+        assert advice["eager_schema_tokens"] == 2200
+        assert tc.tool_context_advice(tools, tc.MIN_SESSIONS - 1, "cli")["defer_candidates"] == []
+
     def test_skill_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+from agent.insights_tool_context import format_tool_context, tool_context_advice
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 from hermes_cli.timefmt import coerce_epoch
 from hermes_time import safe_strftime
@@ -66,6 +67,24 @@ def _iter_functions(raw_calls: Any):
     for call in _parse_json(raw_calls, list) or []:
         if isinstance(call, dict):
             yield call.get("function", {})
+
+
+def _iter_invoked_tool_names(raw_calls: Any):
+    """Tool names a tool_calls column invoked, with the ``tool_call`` bridge unwrapped to
+    the deferred tools it carried: the bridge is plumbing, and a reach figure that counts
+    ``tool_call`` instead of ``x_search`` can never tell a hot deferred tool from a cold one."""
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+    from tools.tool_search_validation import normalize_tool_call_entries
+
+    for fn in _iter_functions(raw_calls):
+        name = fn.get("name")
+        if name != TOOL_CALL_NAME:
+            if name:
+                yield name
+            continue
+        entries, _err = normalize_tool_call_entries(_parse_json(fn.get("arguments"), dict) or {})
+        for entry in entries:
+            yield entry["name"]
 
 
 def _hour12(hr: int) -> str:
@@ -154,6 +173,7 @@ class InsightsEngine:
     def __init__(self, db):
         self.db = db
         self._conn = db._conn
+        self._tool_using_sessions = 0  # set by _get_tool_usage; reach denominator
         try:
             self._has_assistant_calls_index = bool(self._conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
@@ -186,12 +206,14 @@ class InsightsEngine:
             return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
                     "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
         models = self._compute_model_breakdown(sessions, cutoff, source)
+        tools = self._compute_tool_breakdown(tool_usage)
         return {
             "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
             "overview": self._compute_overview(sessions, message_stats, models),
             "models": models,
             "platforms": self._compute_platform_breakdown(sessions),
-            "tools": self._compute_tool_breakdown(tool_usage),
+            "tools": tools,
+            "tool_context": tool_context_advice(tools, self._tool_using_sessions, source or "cli"),
             "skills": self._compute_skill_breakdown(skill_usage),
             "activity": self._compute_activity_patterns(sessions),
             "top_sessions": self._compute_top_sessions(sessions),
@@ -224,18 +246,27 @@ class InsightsEngine:
         carried the other representation (#9814)."""
         by_session_tool = Counter()
         for row in self._query("_GET_TOOL_NAMES", cutoff, source):
+            if row["tool_name"] == "tool_call":
+                continue  # bare bridge row: the assistant view names the tool it carried
             by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
         calls_by_session_tool = Counter()
         for row in self._query("_GET_TOOL_CALLS", cutoff, source):
             try:
-                names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
-                calls_by_session_tool.update((row["session_id"], name) for name in names)
+                calls_by_session_tool.update(
+                    (row["session_id"], name) for name in _iter_invoked_tool_names(row["tool_calls"]))
             except (TypeError, AttributeError):
                 continue
-        tool_counts = Counter()
+        tool_counts, tool_sessions, sessions = Counter(), Counter(), set()
         for key in set(by_session_tool) | set(calls_by_session_tool):
             tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
-        return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
+            tool_sessions[key[1]] += 1
+            sessions.add(key[0])
+        usage = [{"tool_name": name, "count": count, "sessions": tool_sessions[name]}
+                 for name, count in tool_counts.most_common()]
+        # Reach denominator rides on the list (a second pass over the assistant rows of a
+        # multi-GB state.db is what it would otherwise cost); ``_compute_tool_breakdown`` reads it.
+        self._tool_using_sessions = len(sessions)
+        return usage
 
     def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Extract per-skill usage from assistant tool calls."""
@@ -389,9 +420,16 @@ class InsightsEngine:
         return sorted(({"platform": platform, **data} for platform, data in platform_data.items()), key=lambda x: x["sessions"], reverse=True)
 
     def _compute_tool_breakdown(self, tool_usage: List[Dict]) -> List[Dict]:
-        """Ranked tool list with percentages."""
+        """Ranked tool list with call share and *reach*: the share of tool-using sessions
+        that invoked the tool at least once (a tool called 500 times in one session has
+        high share and low reach; reach is what decides whether its schema belongs in
+        every request)."""
         total_calls = sum(t["count"] for t in tool_usage)
-        return [{"tool": t["tool_name"], "count": t["count"], "percentage": (t["count"] / total_calls * 100) if total_calls else 0} for t in tool_usage]
+        tool_sessions = self._tool_using_sessions
+        return [{"tool": t["tool_name"], "count": t["count"], "sessions": t.get("sessions", 0),
+                 "percentage": (t["count"] / total_calls * 100) if total_calls else 0,
+                 "reach_pct": (t.get("sessions", 0) / tool_sessions * 100) if tool_sessions else 0}
+                for t in tool_usage]
 
     def _compute_skill_breakdown(self, skill_usage: List[Dict]) -> Dict[str, Any]:
         """Per-skill usage → summary + ranked list."""
@@ -514,11 +552,13 @@ class InsightsEngine:
             lines += self._section("📱 Platforms") + [f"  {'Platform':<14} {'Sessions':>8} {'Messages':>10} {'Tokens':>14}"]
             lines += [f"  {p['platform']:<14} {p['sessions']:>8} {p['messages']:>10,} {p['total_tokens']:>14,}" for p in platforms] + [""]
         if report["tools"]:
-            lines += self._section("🔧 Top Tools") + [f"  {'Tool':<28} {'Calls':>8} {'%':>8}"]
-            lines += [f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}%" for t in report["tools"][:15]]
+            lines += self._section("🔧 Top Tools") + [f"  {'Tool':<28} {'Calls':>8} {'%':>8} {'Reach':>8}"]
+            lines += [f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}% {t.get('reach_pct', 0):>7.1f}%"
+                      for t in report["tools"][:15]]
             if len(report["tools"]) > 15:
                 lines.append(f"  ... and {len(report['tools']) - 15} more tools")
             lines.append("")
+            lines += format_tool_context(report.get("tool_context") or {}, self._section("🧰 Tool Context"))
         skills = report.get("skills", {})
         top_skills = skills.get("top_skills", [])
         if top_skills:

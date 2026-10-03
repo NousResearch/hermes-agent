@@ -1168,6 +1168,7 @@ DEFAULT_CONFIG = {
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
         # inflates upload time, billing and hallucinations. Failure = raw upload.
         "cloud_trim_silence": True,
+        "cloud_vad_gate": False,  # drop no-speech clips before a cloud upload (fail-open)
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {

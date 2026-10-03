@@ -794,7 +794,14 @@ def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **du
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     secure_parent_dir(target)
-    atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, **dump_kwargs)
+    owner = None
+    if os.name == "posix":
+        try:
+            source = target.stat()
+        except FileNotFoundError:
+            source = target.parent.stat()
+        owner = (source.st_uid, source.st_gid)
+    atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, owner=owner, **dump_kwargs)
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:

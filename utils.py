@@ -287,7 +287,8 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  owner: "tuple[int, int] | None" = None) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -310,10 +311,17 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
-    original_owner = _preserve_file_owner(path) if preserve_owner else None
+    original_owner = owner if owner is not None else (_preserve_file_owner(path) if preserve_owner else None)
     fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
+            if owner is not None and hasattr(os, "fchown"):
+                current = os.fstat(f.fileno())
+                if (current.st_uid, current.st_gid) != owner:
+                    # A directory owner may replace a foreign-owned credential store
+                    # without permission to restore that owner. Keep recovery possible.
+                    with suppress(OSError):
+                        os.fchown(f.fileno(), *owner)
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)
@@ -378,19 +386,22 @@ def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_k
 
 def atomic_json_write(
     path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
-    ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
+    ensure_ascii: bool = False, fsync_dir: bool = False,
+    owner: tuple[int, int] | None = None, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
 
     Surrogate-escaped strings (non-UTF-8 argv/paths) are always persisted: the write falls back
     to ``ensure_ascii=True`` escapes for that payload only, so normal content keeps its raw UTF-8
     bytes. ``mode=0o600`` is the private-credential form: the temp file is 0600 from creation
-    (mkstemp), so the payload is never umask-readable.
+    (mkstemp), so the payload is never umask-readable. An explicit POSIX *owner*
+    is applied best-effort to the temporary descriptor before writing and replacing;
+    *mode* is reasserted after chown.
     """
     path = Path(path)
     _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
-                  fsync_dir=fsync_dir)
+                  fsync_dir=fsync_dir, owner=owner)
 
 
 def read_json_or_empty(path: Union[str, Path]) -> dict:

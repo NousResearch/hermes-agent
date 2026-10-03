@@ -5622,12 +5622,29 @@ class SlackAdapter(BasePlatformAdapter):
             return
         team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
-        # Double-click guard (atomic pop). Also accept the bare ts: the approval may
-        # have been stored without a team id while the click carries one.
+        # A click that reached this line but gets dropped by the guard below used to be
+        # entirely silent, indistinguishable from an undelivered payload. Log the dispatch.
+        logger.debug(
+            "[Slack] Approval click dispatched: action=%s ts=%s team=%r user=%s",
+            action_id, msg_ts, team_id, user_name)
+        # Double-click guard (atomic pop). The send side and the click side can disagree on
+        # whether a team id is present: the prompt is stored team-scoped
+        # (``_workspace_message_marker(team_id, ts)``) from outbound metadata, while an inbound
+        # Enterprise Grid interaction payload may carry only ``enterprise``, leaving
+        # ``_event_team_id`` empty. Match on the ts component in EITHER direction, or the pop
+        # misses, returns its ``True`` default and the click is swallowed with the agent still
+        # blocked (it then times out as if nobody ever clicked).
         approval_key = self._workspace_message_marker(team_id, msg_ts)
-        if msg_ts in self._approval_resolved:
-            approval_key = msg_ts
+        if approval_key not in self._approval_resolved:
+            approval_key = next(
+                (k for k in self._approval_resolved
+                 if (k[1] if isinstance(k, tuple) else k) == msg_ts),
+                approval_key)
         if self._approval_resolved.pop(approval_key, True):
+            logger.warning(
+                "[Slack] Approval click for ts=%s (team=%r) matched no live prompt key — "
+                "ignoring as a double-click or expired card (live keys: %d)",
+                msg_ts, team_id, len(self._approval_resolved))
             return
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".

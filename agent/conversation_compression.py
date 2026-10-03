@@ -4152,13 +4152,14 @@ def compress_context(
     # fence. If no durable lock was acquired there is no hook to publish.
     lease.finish_lock_setup()
     try:
-        if snapshot_is_current is not None and not snapshot_is_current():
-            _emit_aborted_attempt_telemetry(agent, attempt.started_at, "snapshot_stale")
-            lease.release()
-            return messages, _existing_system_prompt(agent, system_message)
+        current = snapshot_is_current is None or snapshot_is_current()
     except BaseException:
         lease.release()
         raise
+    if not current:
+        _emit_aborted_attempt_telemetry(agent, attempt.started_at, "snapshot_stale")
+        lease.release()
+        return messages, _existing_system_prompt(agent, system_message)
     _adopted = _adopt_if_parent_rotated(agent, lease, messages, system_message)
     if _adopted is not None:
         return _adopted

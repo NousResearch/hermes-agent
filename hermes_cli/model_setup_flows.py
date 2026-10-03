@@ -890,6 +890,14 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
     if special is not None:
         return special(pconfig, curated, api_key_for_probe, effective_base)
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider_id)
+    if profile is not None and getattr(profile, "live_catalog_mode", "union") == "authoritative":
+        model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
+        if model_list is not None:
+            _report_live_models(model_list, f"{pconfig.name} catalog")
+            return model_list
+        return list(curated)
     # models.dev first (tool-capable, noise-filtered), merged with curated so newly added
     # models still appear.
     model_list = _models_dev_merged(provider_id, curated)
@@ -900,8 +908,6 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
-    from providers import get_provider_profile
-    profile = get_provider_profile(provider_id)
     if profile is not None:
         # The profile owns endpoint (models_url), headers and response shape. Same probe as the
         # ``/model`` picker; when neither live nor fallback_models yields rows, the curated

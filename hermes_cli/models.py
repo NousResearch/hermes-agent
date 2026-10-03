@@ -27,6 +27,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import TypeGuard
 
+from hermes_cli.chat_catalog import AuthoritativeModelCatalog
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
@@ -1581,6 +1582,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     ``_LIVE_FIRST_PICKER_PROVIDERS`` (OpenCode Zen/Go, authoritative live API) live-first so stale
     curated entries stop polluting the top. Plugin providers without a static entry use the
     profile's ``fallback_models`` as the curated list (Fireworks lists an image model first).
+    Profiles opting into ``live_catalog_mode="authoritative"`` instead replace the curated list.
     """
     from providers import get_provider_profile
 
@@ -1599,7 +1601,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
             live = None
         # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
         # `hermes model` offer one list: live ids plus any pinned id the probe omitted.
-        return merge_profile_catalog(normalized, profile, list(live) if live else None)
+        return merge_profile_catalog(normalized, profile, list(live) if live is not None else None)
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
@@ -1607,10 +1609,10 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
 
 
 def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base_url: Optional[str]) -> Optional[list[str]]:
-    """``profile.fetch_models`` gated on a key (no key → no doomed probe) and merged with the curated
-    list; a raising catalog override degrades like a None return — fallback_models, not an empty picker."""
+    """Probe keyed or explicitly public catalogs, then apply the profile's merge policy.
+    A raising catalog override degrades like None: fallback_models, not an empty picker."""
     live = None
-    if api_key:
+    if api_key or getattr(profile, "public_model_catalog", False):
         try:
             live = profile.fetch_models(api_key=api_key, base_url=base_url)
         except Exception:
@@ -1621,8 +1623,11 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
-    if not live:
+    picker will later show. Authoritative profiles keep successful lists (even empty) in order;
+    others merge curated-first. None always falls back; legacy empty lists do too."""
+    if live is not None and getattr(profile, "live_catalog_mode", "union") == "authoritative":
+        rows = AuthoritativeModelCatalog(live)
+    elif not live:
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
     else:
         curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
@@ -1692,8 +1697,8 @@ def _configured_relay_base_url(provider: str) -> str:
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
     """Live catalog probed at a configured ``model.base_url`` relay, or None to fall through.
 
-    Returns only the relay's live ids (no curated merge): a relay user must see the relay's
-    catalog, and a failed/empty probe degrades to the canonical fetchers untouched.
+    Returns only the relay's live ids (no curated merge); failure degrades to local static rows.
+    Authoritative profiles keep valid empty lists and their own offline fallback policy.
     """
     try:
         from providers import get_provider_profile
@@ -1702,6 +1707,8 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
         if profile is None or getattr(profile, "auth_type", "") != "api_key":
             return None
         api_key, _ = _api_key_credentials(normalized)
+        if getattr(profile, "live_catalog_mode", "union") == "authoritative":
+            return probe_profile_catalog(normalized, profile, api_key, relay)
         live = profile.fetch_models(api_key=api_key, base_url=relay)
         return [str(m) for m in (live or []) if m] or None
     except Exception:
@@ -1760,7 +1767,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     relay = _configured_relay_base_url(provider or "")
     if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS:
         relayed = _relay_model_catalog(normalized, relay)
-        if relayed:
+        if relayed is not None:
             return _chat_catalog_rows(relayed)
         return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
@@ -1802,7 +1809,10 @@ _swr_refresh_lock = threading.Lock()
 
 def _cache_entry(fp: str, models: list[str], at: Optional[float] = None) -> dict:
     """One provider row of the disk cache: credential fingerprint, write time, model ids."""
-    return {"fp": fp, "at": time.time() if at is None else at, "models": list(models)}
+    entry = {"fp": fp, "at": time.time() if at is None else at, "models": list(models)}
+    if isinstance(models, AuthoritativeModelCatalog):
+        entry["authoritative"] = True
+    return entry
 
 
 def _live_result_entry(fp: str, live: list[str], existing: Any, at: Optional[float] = None) -> Optional[dict]:
@@ -1842,9 +1852,9 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
-        if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
+        if live or isinstance(live, AuthoritativeModelCatalog) or (cache_key == "ollama" and _ollama_native_probe_reachable()):
             fp = _credential_fingerprint(cache_key)
-            return _live_result_entry(fp, live or [], _load_provider_models_cache().get(cache_key))
+            return _live_result_entry(fp, live, _load_provider_models_cache().get(cache_key))
         return None
 
     def _refresh() -> None:
@@ -2041,6 +2051,7 @@ def cached_provider_model_ids(
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
     entry = cache.get(normalized)
+    catalog_type = AuthoritativeModelCatalog if isinstance(entry, dict) and entry.get("authoritative") is True else list
     now = time.time()
 
     if not force_refresh:
@@ -2048,7 +2059,7 @@ def cached_provider_model_ids(
         if tier is not None:
             if tier == "stale":
                 _spawn_swr_refresh(normalized)
-            return _chat_catalog_rows(list(entry["models"]))
+            return _chat_catalog_rows(catalog_type(entry["models"]))
 
     if non_blocking and not force_refresh:
         # Read path: never touch the network in the caller's thread. A same-credentials row past the
@@ -2056,19 +2067,19 @@ def cached_provider_model_ids(
         # warms the next open; a cold row returns [] and the caller falls back to its curated list.
         _spawn_swr_refresh(normalized)
         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
-            return _chat_catalog_rows([
+            return _chat_catalog_rows(catalog_type(
                 model for model in entry["models"]
-                if not _model_requires_account_discovery(normalized, model)])
+                if not _model_requires_account_discovery(normalized, model)))
         return []
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
-    if live:
+    if live or isinstance(live, AuthoritativeModelCatalog):
         fresh = _live_result_entry(fp, live, entry, now)
         if fresh is None:
             # The live fetch degraded to the curated list; the account's real catalog is on disk.
-            return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
+            return _chat_catalog_rows(catalog_type(model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)))
         _store_cache_entry(normalized, fresh, cache)
-        return _chat_catalog_rows(list(live))
+        return _chat_catalog_rows(live if isinstance(live, AuthoritativeModelCatalog) else list(live))
 
     if is_ollama:
         if _ollama_native_probe_reachable():
@@ -2079,13 +2090,13 @@ def cached_provider_model_ids(
         # the picker during a transient outage.
         same_creds = isinstance(entry, dict) and entry.get("fp") == fp
         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
-            return _chat_catalog_rows(list(entry["models"]))
+            return _chat_catalog_rows(catalog_type(entry["models"]))
         return []
     # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
     # models, which only a successful discovery may advertise (the entry itself is untouched, so the
     # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
-        return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
+        return _chat_catalog_rows(catalog_type(model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)))
     return []
 
 
@@ -2828,7 +2839,7 @@ def _cache_entry_valid(
         isinstance(entry, dict)
         and entry.get("fp") == fp
         and isinstance(entry.get("models"), list)
-        and (allow_empty or bool(entry["models"]))
+        and (allow_empty or entry.get("authoritative") is True or bool(entry["models"]))
         and isinstance(entry.get("at"), (int, float))
         and not isinstance(entry.get("at"), bool))
 

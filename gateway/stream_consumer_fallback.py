@@ -326,6 +326,9 @@ class StreamFallbackMixin:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
             _md["_interim_send"] = True
+            if self._initial_reply_to_id:
+                # Matrix reads the request here to apply reply_to_mode; Relay strips the key.
+                _md["_stream_reply_to_message_id"] = self._initial_reply_to_id
             result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:
                 self._already_sent = True

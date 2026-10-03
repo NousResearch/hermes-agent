@@ -355,6 +355,7 @@ def bridge_platform_shared_keys(
             authored.get(plat.value, {}), platform_cfg, plat.value, toplevel=cfg_toplevel, warned=warned)
         bridged = _bridged_keys(plat, effective, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
+        has_reply_mode = cfg_toplevel and "reply_to_mode" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)
             _dict_slot(plat_data, "extra")
@@ -364,10 +365,12 @@ def bridge_platform_shared_keys(
                 if isinstance(ov_data, dict)
             }
         enabled_was_explicit = cfg_toplevel and "enabled" in platform_cfg
-        if not bridged and not enabled_was_explicit and not has_channel_overrides:
+        if not bridged and not enabled_was_explicit and not has_channel_overrides and not has_reply_mode:
             continue
         plat_data = _dict_slot(platforms_data, plat.value)
         extra = _dict_slot(plat_data, "extra")
+        if has_reply_mode:
+            plat_data["reply_to_mode"] = platform_cfg["reply_to_mode"]
         if enabled_was_explicit:
             plat_data["enabled"] = platform_cfg["enabled"]
             extra["_enabled_explicit"] = True

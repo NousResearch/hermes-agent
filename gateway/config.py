@@ -43,6 +43,22 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def _coerce_reply_to_mode(value: Any) -> str:
+    """A reply mode from YAML, where a bare ``off`` parses as False; anything else keeps ``first``."""
+    if value is False:
+        return "off"
+    if value is None:
+        return "first"
+    mode = value.strip().lower() if isinstance(value, str) else ""
+    if mode in {"off", "first", "all"}:
+        return mode
+    logger.warning(
+        "Ignoring invalid reply_to_mode=%r (expected off, first or all); using first.",
+        value,
+    )
+    return "first"
+
+
 def _env_multiplex_profiles_override() -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
@@ -468,7 +484,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_coerce_reply_to_mode(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

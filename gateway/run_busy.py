@@ -493,12 +493,16 @@ class GatewayBusySessionMixin:
         )
 
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
-        """Send a busy-path reply anchored to the event (thread metadata included)."""
+        """Send a busy-path reply anchored to the event (thread metadata included).
+
+        ``_notice_reply`` tells adapters that this reply does not answer the event, so an
+        adapter that quotes a request once per turn keeps the quote for the turn's answer.
+        Gateway-internal; Relay strips it before the wire."""
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
             reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
-            metadata=self._thread_metadata_for_source(event.source, reply_anchor),
+            metadata={**(self._thread_metadata_for_source(event.source, reply_anchor) or {}), "_notice_reply": True},
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
@@ -1053,6 +1057,7 @@ class GatewayBusySessionMixin:
                 reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
+                reply_to_author_authorized=event.reply_to_author_authorized,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,

@@ -35,10 +35,12 @@ _EXTRA_STORES = {
     DEFAULT_TEAMS_PIPELINE_STORE_FILENAME, "mem0.json",
     "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
     "mcp-tokens/srv.json", "vault/vault.key", "platforms/pairing/approved.json", "slack_tokens.json",
-    "webhook_subscriptions.json",
+    "webhook_subscriptions.json", ".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
 }
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
 _DOTLESS_FILES = {"npmrc"}
+# Dot-named stores that are directories.
+_DOT_DIRS = {".ssh", ".aws", ".gnupg", ".kube"}
 
 
 def _seed_stores(root):
@@ -50,7 +52,7 @@ def _seed_stores(root):
     (root / "config.yaml").write_text("model: gpt-4\n")
     (root / "platforms" / "keep.json").write_text("{}")
     for rel in stores:
-        is_dir = "." not in rel.rsplit("/", 1)[-1] and rel not in _DOTLESS_FILES
+        is_dir = rel in _DOT_DIRS or ("." not in rel.rsplit("/", 1)[-1] and rel not in _DOTLESS_FILES)
         target = root / rel / "store" if is_dir else root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("fake-credential")
@@ -106,6 +108,10 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
+        nested = ["skills/s/.ssh/id_rsa", "skills/s/.aws/credentials", "skills/s/.envrc"]
+        for rel in nested:
+            (profile_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (profile_dir / rel).write_text("fake-credential")
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         copies = [
             create_pre_update_backup(hermes_home=profile_dir),
@@ -124,7 +130,7 @@ class TestCredentialExclusion:
 
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
         assert _LEAKED_KEY not in note
-        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json",
+        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json", *nested,
                 *(c.relative_to(profile_dir).as_posix() for c in copies)}
         folded = {n.casefold() for n in members}
         leaked = sorted(r for r in rels if any(

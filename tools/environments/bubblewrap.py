@@ -17,44 +17,54 @@ Layout of the argv (later mounts overlay earlier ones):
    own ``rm -rf``) skips the bind and the command runs in the recovered
    cwd instead of wedging every later spawn
 4. operator binds from terminal.bubblewrap_binds, minus sensitive sources
-5. the pins: each ancestor of a sensitive path or of HERMES_HOME that lies
-   strictly inside a writable bind (the cwd under the workspace and
-   network profiles, a read-write operator bind) is bound over itself, so
-   a command cannot rename the parent of a hidden path out from under its
-   overlay
-6. the sensitive overlays: a tmpfs over each sensitive directory and an
-   empty file over each sensitive file that exists on the host, then the
-   same for HERMES_HOME and for the default HOME/.hermes when HERMES_HOME
-   points elsewhere (a profile under HOME/.hermes/profiles, or any other
-   directory), so a profile's sandbox cannot read the default home's
-   credentials
-7. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
-   that overlay (it is the subprocess HOME then)
-8. the per-environment state dir read-write at the same path; between
-   commands it holds the shell snapshot and the cwd file, and for the
-   duration of an execute_code call the hermes_exec_<id> dir with the
-   script, the tools module and the rpc files
-9. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
-   shell argv
+5. the pins: each ancestor of a hidden path that lies strictly inside a
+   writable bind is bound over itself, so a command cannot rename the
+   parent of a hidden path out from under its overlay
+6. the HOME layout (bubblewrap_home.home_layout_args), which makes HOME
+   default-deny for dot entries: a tmpfs over HOME, the non-dot entries
+   and the allowed dot entries bound back, a tmpfs with the allowed
+   children for HOME/.config, HOME/.local and HOME/.local/share, an
+   overlay for each hidden path that is still visible, and at the very
+   end a read-only remount of each tmpfs. The cwd, the operator binds
+   and the pins of steps 3 to 5 that land under HOME, and the binds of
+   steps 8 to 10 that do, are emitted inside the layout, before the
+   remount: a mount point under a sealed HOME could not be made
+7. the overlays for hidden paths outside HOME: a tmpfs over a directory
+   and an empty file over a file that exists on the host. HERMES_HOME is
+   hidden as a whole, and so is the default HOME/.hermes when HERMES_HOME
+   points elsewhere, so a profile's sandbox cannot read the default
+   home's credentials
+8. the Hermes scratch dir (TMPDIR), writable with the cwd, and the staged
+   data roots of the cache registry, read-only, on top of that overlay
+9. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
+   the overlay (it is the subprocess HOME then)
+10. the per-environment state dir read-write at the same path; between
+    commands it holds the shell snapshot and the cwd file, and for the
+    duration of an execute_code call the hermes_exec_<id> dir with the
+    script, the tools module and the rpc files
+11. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append
+    the process limit and the shell argv
 
-The paths in the argv are fixed at construction: the hidden set is
-resolved through realpath once, so a symlinked entry is hidden at its
-target, and the cwd, state dir and operator bind destinations use their
-real paths (bwrap resolves a mount destination inside the sandbox root,
-where an absolute symlink points nowhere), so the pins are computed in
-the real tree of each bind. What varies per spawn is presence only: an
-overlay is emitted for a sensitive path that exists on the host at spawn
-time and never for one that does not, a pin for an ancestor directory that
-exists inside a bind that is writable anyway, and nothing at all for a
-path that has become a symlink since construction. So host changes (or a
-sandbox with a writable HOME planting a symlink) can only add hiding
-mounts and pins, never expose anything. The pins are what
-keep that true: a hidden entry is a mount point and cannot be renamed
-from inside the sandbox, but without the pins a writable cwd covering its
-parent, or a writable bind whose destination resolves into the real tree
-above it, lets a command rename the parent, and the next spawn then finds
-nothing to hide at the old path while the secret is readable under the
-new one.
+The paths in the argv are fixed at construction: the hidden set and the
+HOME allowlist are resolved once, so a symlinked entry is hidden at its
+target and a command cannot widen the allowlist, and the cwd, state dir
+and operator bind destinations use their real paths (bwrap resolves a
+mount destination inside the sandbox root, where an absolute symlink
+points nowhere), so the pins are computed in the real tree of each bind.
+What varies per spawn is presence only: the listing of the top of HOME,
+an overlay for a hidden path that exists on the host at spawn time and
+never for one that does not, a pin for an ancestor directory that exists
+inside a bind that is writable anyway, and nothing at all for a path that
+has become a symlink since construction. A hidden path that does not
+exist cannot be created either: the top of HOME and the default-deny
+directories are read-only, and a writable bind that holds such a path is
+refused at construction. So host changes can only add hiding mounts and
+pins, never expose anything. The pins are what keep that true below a
+writable bind: a hidden entry is a mount point and cannot be renamed
+from inside the sandbox, but without the pins a writable bind covering
+its parent lets a command rename the parent, and the next spawn then
+finds nothing to hide at the old path while the secret is readable under
+the new one.
 
 Resource limits are applied by prlimit(1) from util-linux, in two
 places. In front of the bwrap argv above, prlimit sets RLIMIT_AS and
@@ -1146,9 +1156,10 @@ class BubblewrapEnvironment(LocalEnvironment):
         home = os.path.abspath(self._home).rstrip(os.sep) or os.sep
         if cwd == home or _is_within(home, cwd):
             logger.warning(
-                "bubblewrap cwd %s covers the home directory: every dotfile outside "
-                "the hidden set is writable inside the sandbox. Set terminal.cwd to "
-                "a project or scratch directory for a smaller writable set.",
+                "bubblewrap cwd %s covers the home directory: every existing non-dot "
+                "entry of it is writable inside the sandbox, and no new entry can be made "
+                "at the top of it (its dot entries are read-only or hidden). Set "
+                "terminal.cwd to a project or scratch directory for a smaller writable set.",
                 self._initial_cwd,
             )
 

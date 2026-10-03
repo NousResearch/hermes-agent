@@ -608,7 +608,7 @@ terminal:
 
 ### Bubblewrap Backend
 
-Runs every command inside its own [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) sandbox on the host: read-only host filesystem at host paths, writable working directory, `~/.ssh`, `~/.aws`, `~/.hermes` and the other credential paths hidden, a private `/proc` and a fresh `/tmp` per command, plus per-process memory, CPU and process limits. Linux only, bubblewrap 0.9.0 or later. <!-- no-tmp: ok — describes the sandbox boundary -->
+Runs every command inside its own [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) sandbox on the host: read-only host filesystem at host paths, writable working directory, the dot entries of your home directory hidden unless they are on an allowlist (`~/.ssh`, `~/.aws`, `~/.hermes` and the other credential paths always), a private `/proc` and a fresh `/tmp` per command, plus per-process memory, CPU and process limits. Linux only, bubblewrap 0.9.0 or later. <!-- no-tmp: ok — describes the sandbox boundary -->
 
 ```yaml
 terminal:
@@ -617,14 +617,16 @@ terminal:
   bubblewrap_binds: []             # extra host dirs: [{src, dest, readonly}]
   bubblewrap_memory_mb: 256        # RLIMIT_AS per process, 0 disables
   bubblewrap_cpu_seconds: 30       # RLIMIT_CPU per process, 0 disables
-  bubblewrap_max_procs: 256        # processes a command may add, 0 disables
+  bubblewrap_max_procs: 256        # processes one command may run, 0 disables
+  bubblewrap_home_allow: []        # more dot entries of HOME to show: [".zz-tool", ".config/nvim"]
+  bubblewrap_hide: []              # more paths to hide: ["~/Documents/keys"]
 ```
 
 **Requirements:** the `bubblewrap` package (`bwrap` in `$PATH`) and unprivileged user namespaces. `hermes doctor` reports the binary, its version and the sandbox probe.
 
 **Approval and file tools:** behave as for `local`, since commands write to real host paths. Background jobs are refused.
 
-See [Bubblewrap](./bubblewrap.md) for the profiles, the hidden path set, the limits and how to raise them, and the known limitations.
+See [Bubblewrap](./bubblewrap.md) for the profiles, what is visible under your home directory, the limits and how to raise them, and the known limitations.
 
 ### Common Terminal Backend Issues
 

@@ -643,6 +643,14 @@ class TestInitialCwdGuard:
         env.cleanup()
         assert any("covers the home directory" in r.getMessage() for r in caplog.records)
 
+    def test_cwd_warning_says_new_top_level_entries_cannot_be_made(self, sandbox_root, fake_home, caplog):
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            BubblewrapEnvironment(cwd=str(fake_home), timeout=10).cleanup()
+        message = next(r.getMessage() for r in caplog.records if "covers the home directory" in r.getMessage())
+        assert "no new entry can be made at the top of it" in message
+        assert "non-dot entry" in message
+        assert "every dotfile" not in message
+
     def test_project_dir_as_cwd_is_silent(self, sandbox_root, fake_home, work_dir, caplog):
         with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)

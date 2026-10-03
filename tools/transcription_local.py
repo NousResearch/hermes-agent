@@ -177,9 +177,15 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # multiple Intel OpenMP runtimes are loaded — set before the import.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     if force_cpu:
+        # Stay on CPU to avoid the native device-autodetection crash, but honour
+        # an EXPLICIT ``stt.local.compute_type``. The crash this guard exists for
+        # is about DEVICE probing, not about quantisation, so silently replacing
+        # a user's configured compute_type with int8 discards configuration for
+        # no safety benefit. "auto"/unset still falls back to int8.
+        forced_compute = compute_type if compute_type and compute_type != "auto" else "int8"
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-                    "(int8) to avoid native device autodetection crashes")
-        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
+                    "(%s) to avoid native device autodetection crashes", forced_compute)
+        return _create_whisper_model(model_name, device="cpu", compute_type=forced_compute)
     try:
         return _create_whisper_model(model_name, device=device, compute_type=compute_type)
     except Exception as exc:

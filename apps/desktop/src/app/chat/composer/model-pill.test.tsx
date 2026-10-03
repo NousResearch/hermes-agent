@@ -8,12 +8,14 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
 import { ModelPill } from './model-pill'
 import { RICH_INPUT_SLOT } from './rich-editor'
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from './scope'
 
 const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['model'] => ({
   canSwitch: true,
@@ -24,6 +26,7 @@ const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['mo
 
 afterEach(() => {
   cleanup()
+  $connectionsRegistry.set(null)
   $activeSessionId.set(null)
   setCurrentModel('')
   setCurrentModelSource('')
@@ -94,15 +97,15 @@ function MenuChoice() {
 }
 
 it('returns to the exact caret or backward selection after the model menu closes', async () => {
-  const surface = document.createElement('div')
+  const surface = globalThis.document.createElement('div')
   surface.dataset.composerTarget = 'main'
-  const editor = document.createElement('div')
+  const editor = globalThis.document.createElement('div')
   editor.dataset.slot = RICH_INPUT_SLOT
   editor.contentEditable = 'true'
   editor.tabIndex = 0
   editor.textContent = 'before and after'
   surface.append(editor)
-  document.body.append(surface)
+  globalThis.document.body.append(surface)
 
   try {
     render(<ModelPill disabled={false} model={modelState({ modelMenuContent: <MenuChoice /> })} />)
@@ -121,13 +124,89 @@ it('returns to the exact caret or backward selection after the model menu closes
       choice.focus()
       window.getSelection()!.removeAllRanges()
       fireEvent.click(choice)
-      await waitFor(() => expect(document.activeElement).toBe(editor))
+      await waitFor(() => expect(globalThis.document.activeElement).toBe(editor))
       expect(window.getSelection()!.anchorOffset).toBe(anchor)
       expect(window.getSelection()!.focusOffset).toBe(focus)
     }
   } finally {
     surface.remove()
   }
+})
+
+describe('ModelPill owner label', () => {
+  it('labels each selector from its catalog owner, not the registry primary', async () => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'Laptop', tokenSet: false, tokenPreview: null },
+        { id: 'remote', kind: 'ssh', label: 'Mini-2', tokenSet: false, tokenPreview: null }
+      ]
+    })
+    render(
+      <>
+        <ModelPill disabled={false} model={modelState({ ownerConnectionId: 'local', ownerProfile: 'default' })} />
+        <ModelPill
+          disabled={false}
+          model={modelState({
+            ownerConnectionId: 'remote',
+            ownerProfile: 'writer',
+            modelMenuContent: <div>Catalog</div>
+          })}
+        />
+      </>
+    )
+    expect(screen.getByText('default · Laptop')).toBeTruthy()
+    expect(screen.getByText('writer · Mini-2')).toBeTruthy()
+    const tile = screen.getByRole('button', { name: /writer · Mini-2/ })
+    act(() => tile.focus())
+    fireEvent.keyDown(tile, { key: 'Enter' })
+    expect((await screen.findByRole('menu')).textContent).toContain('writer · Mini-2')
+    expect(screen.getByRole('menu').textContent).not.toContain('Laptop')
+  })
+
+  it('retains exact owner identity without a registry label, including the compact keyboard control', async () => {
+    render(
+      <ModelPill
+        compact
+        disabled={false}
+        model={modelState({
+          ownerConnectionId: 'unlisted-gateway',
+          ownerProfile: 'default',
+          modelMenuContent: <div>Catalog</div>
+        })}
+      />
+    )
+    const trigger = screen.getByRole('button', { name: /default · unlisted-gateway/ })
+    act(() => trigger.focus())
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect((await screen.findByRole('menu')).textContent).toContain('default · unlisted-gateway')
+  })
+
+  it('uses the resolved session owner for an in-place cross-gateway chat', () => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'Laptop', tokenSet: false, tokenPreview: null },
+        { id: 'remote', kind: 'ssh', label: 'Mini-2', tokenSet: false, tokenPreview: null }
+      ]
+    })
+
+    render(
+      <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, connectionId: 'remote', profile: 'writer' }}>
+        <ModelPill
+          disabled={false}
+          model={modelState({ ownerConnectionId: 'local', ownerProfile: 'default' })}
+        />
+      </ComposerScopeProvider>
+    )
+
+    expect(screen.getByText('writer · Mini-2')).toBeTruthy()
+    expect(screen.queryByText('default · Laptop')).toBeNull()
+  })
 })
 
 describe('ModelPill per-surface model label', () => {

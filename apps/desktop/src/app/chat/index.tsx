@@ -295,6 +295,9 @@ export function ChatRuntimeBoundary({
     isCurrent: () => !suppressMessages && view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId
   })
 
+  const historyPage = history.page
+  const revealOlderHistory = history.revealOlder
+
   // History is a static display page. The live store continues streaming but
   // no delta subscribes/reconverts this historical runtime until return.
   const storeMessages = useMessagesWhileVisible(view.$messages, !history.page)
@@ -360,8 +363,8 @@ export function ChatRuntimeBoundary({
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {
-        return history.revealOlder(beforePrepend)
+      if (historyPage) {
+        return revealOlderHistory(beforePrepend)
       }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
@@ -408,7 +411,7 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
+    [historyPage, revealOlderHistory, runtimeId, storedId, tailProfile, view]
   )
 
   // An open history page carries its own reach: its first prompt is the anchor,
@@ -727,6 +730,8 @@ const ChatViewContent = memo(function ChatViewContent({
     () => ({
       model: {
         model: currentModel,
+        ownerConnectionId: modelOptionsOwnerConnectionId,
+        ownerProfile: modelOptionsProfile || activeGatewayProfile,
         provider: currentProvider,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
@@ -746,11 +751,14 @@ const ChatViewContent = memo(function ChatViewContent({
       }
     }),
     [
+      activeGatewayProfile,
       contextSuggestions,
       currentModel,
       currentProvider,
       gatewayOpen,
       modelMenuContent,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
       quickModels,
       reasoningMenuContent,
       supportsReasoning

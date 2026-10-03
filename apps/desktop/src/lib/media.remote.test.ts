@@ -310,6 +310,25 @@ describe('downloadGatewayMediaFile', () => {
     })
   })
 
+  it('preserves the source path and decodes suggested URL filenames only once', async () => {
+    for (const [path, suggestedName] of [
+      ['file:///tmp/a%2520b.md', 'a%20b.md'],
+      ['file:///tmp/%E6%B5%8B%E8%AF%95.md', '测试.md'],
+      ['/tmp/a%20b.md', 'a%20b.md'],
+      ['C:\\example\\a%20b.md', 'a%20b.md'],
+      ['file:///tmp/bad%ZZ.md', 'bad%ZZ.md']
+    ]) {
+      await downloadGatewayMediaFile(path)
+
+      expect(saveGatewayFile).toHaveBeenLastCalledWith({
+        connectionId: 'work-ssh',
+        path,
+        profile: 'docker-gw',
+        suggestedName
+      })
+    }
+  })
+
   it('rejects when the desktop bridge is unavailable', async () => {
     vi.stubGlobal('window', { hermesDesktop: {} })
 

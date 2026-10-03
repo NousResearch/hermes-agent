@@ -235,7 +235,7 @@ def _adopt(package, version: str, target: str, source: Path, manifest: dict, roo
                                     target=target, artifacts=artifacts, digest=tree_digest(entry))
     except BaseException:
         with suppress(OSError):
-            os.rename(entry, source)
+            os.rename(entry, verify_source)
         raise
     with suppress(OSError):
         source.rmdir()

@@ -218,6 +218,12 @@ describe('turn arc', () => {
 
 describe('epoch scoping', () => {
   it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
+    // Equal wall-clock milliseconds and reverse-sorted UUIDs must not reorder
+    // the room transcript when its server mirror is merged back in.
+    vi.spyOn(Date, 'now').mockReturnValue(1789737187523)
+    vi.spyOn(globalThis.crypto, 'randomUUID')
+      .mockReturnValueOnce('ffffffff-ffff-4fff-8fff-ffffffffffff')
+      .mockReturnValueOnce('00000000-0000-4000-8000-000000000000')
     let release!: (reply: string) => void
 
     const first = new Promise<string>(resolve => {

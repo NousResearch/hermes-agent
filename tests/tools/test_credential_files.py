@@ -10,6 +10,7 @@ import pytest
 from tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
+    get_refreshable_credential_host_paths,
     get_cache_directory_mounts,
     get_skills_directory_mount,
     iter_cache_files,
@@ -61,6 +62,15 @@ class TestRegisterCredentialFiles:
         assert missing == []
         mounts = get_credential_file_mounts()
         assert "real.json" in mounts[0]["container_path"]
+
+    def test_refreshable_declaration_is_exposed(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "token.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            register_credential_files([{"path": "token.json", "refreshable": True}])
+            assert get_refreshable_credential_host_paths() == {str(hermes_home / "token.json")}
 
 
 class TestSkillsDirectoryMount:

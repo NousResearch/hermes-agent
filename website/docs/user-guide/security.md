@@ -661,10 +661,11 @@ You can also list credential files manually in `config.yaml`:
 terminal:
   credential_files:
     - google_token.json
-    - my_custom_oauth_token.json
+    - path: my_custom_oauth_token.json
+      refreshable: true
 ```
 
-Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. Mark an OAuth token `refreshable: true` when the sandbox may refresh or create it; only that explicitly declared file is written back during SSH/file sync teardown. Static credentials remain upload-only by default. The same `refreshable: true` field is supported in skill `required_credential_files` entries. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
 ### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
 

@@ -16,8 +16,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from tools.computer_use.backend import ActionResult, CaptureResult, UIElement
 from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
 from tools.computer_use.cua_backend_parse import (
-    _apps_from_windows, _image_dimensions_from_bytes, _image_from_tool_result, _ingest_windows, _is_placeholder_id,
-    _is_real_app_window, _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
+    _app_name_aliases, _apps_from_windows, _describe_raw_windows, _image_dimensions_from_bytes,
+    _image_from_tool_result, _ingest_windows, _is_placeholder_id, _is_real_app_window,
+    _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
     _positive_int, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
 )
 
@@ -179,12 +180,24 @@ class _CaptureMixin:
     def _match_windows_for_app(self, windows: List[Dict[str, Any]], app: str) -> List[Dict[str, Any]]:
         """Resolve ``app=``: exact window names, then exact list_apps aliases (Linux ``list_windows`` can
         omit the app name that ``list_apps`` keeps), then substrings — querying ``Code`` must not silently
-        select ``Visual Studio Code`` because it is frontmost."""
+        select ``Visual Studio Code`` because it is frontmost.
+
+        Wayland complicates the *exact* tier: the compositor reports an app id (``google-chrome``,
+        ``org.mozilla.firefox``), never the display name, so the natural ``app="Google Chrome"`` matched
+        nothing — not by exact name, and not by substring either, since the separators differ (#74969). A
+        punctuation-folded comparison bridges the two while staying an exact match, so the ``Code`` /
+        ``Visual Studio Code`` distinction above is preserved.
+        """
         app_lower = app.strip().lower()
         _name = lambda w: str(w.get("app_name", "")).lower()  # noqa: E731
         direct_exact = [w for w in windows if app_lower and app_lower == _name(w).strip()]
         if not app_lower or direct_exact:
             return direct_exact
+        app_aliases = _app_name_aliases(app)
+        if app_aliases:
+            folded_exact = [w for w in windows if _app_name_aliases(w.get("app_name")) & app_aliases]
+            if folded_exact:
+                return folded_exact
         try:
             running_apps = self.list_apps()
         except Exception as exc:

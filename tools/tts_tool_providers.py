@@ -410,7 +410,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
         payload = {
             "model": model, "text": text,
             "voice_setting": {
-                "voice_id": voice_id, "speed": mm_config.get("speed", 1.0), "vol": mm_config.get("vol", 1.0),
+                "voice_id": voice_id, "speed": mm_config.get("speed", tts_config.get("speed", 1.0)), "vol": mm_config.get("vol", 1.0),
                 "pitch": mm_config.get("pitch", 0), "emotion": mm_config.get("emotion", "neutral"),
             },
             "audio_setting": {

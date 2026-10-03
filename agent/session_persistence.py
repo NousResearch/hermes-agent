@@ -405,9 +405,19 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         if adoption_budget > 0 and _db_flush_adopt_compression_tip(agent):
             return "adopted"
         agent._compression_adoption_failed = True  # lets the turn explanation name rotation, not full-disk advice
-    logger.warning("Session DB append_message failed: %s", e)
-    return None
+    # The prose alone cannot separate a real ENOSPC from a ceiling/limit refusal that reuses
+    # SQLITE_FULL's text (`hermes_state_errors.describe_sqlite_error`), so log the class, the
+    # result code/name, and the db path next to it.
+    from hermes_state_errors import describe_sqlite_error
 
+    logger.warning(
+        "Session DB append_message failed: %s (cause=%s, db=%s, detail=%s)",
+        e,
+        agent._last_persistence_error_cause,
+        getattr(getattr(agent, "_session_db", None), "db_path", None) or "unknown",
+        describe_sqlite_error(e),
+    )
+    return None
 
 
 class SessionPersistenceMixin:

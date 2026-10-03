@@ -187,9 +187,11 @@ def _cmd_skills_trust(args):
     """``hermes skills trust|untrust [path]`` — manage ``skills.trusted_project_dirs``.
 
     With no path, operates on the project root enclosing the current directory
-    (nearest ancestor with ``.git``).
+    (nearest ancestor with ``.git``). Falls back to os.getcwd() if no git dir found,
+    so it works even when TERMINAL_CWD points to a non-git directory (e.g. home dir).
     """
     from pathlib import Path
+    import os
     from agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
@@ -205,6 +207,10 @@ def _cmd_skills_trust(args):
             return
     else:
         root = find_project_root()
+        if root is None:
+            # Fall back to cwd so skills trust works even when TERMINAL_CWD
+            # is set to a non-git directory (e.g. a home dir).
+            root = Path(os.getcwd()).resolve()
         if root is None:
             print(
                 "Not inside a git checkout. Run from a project directory or "

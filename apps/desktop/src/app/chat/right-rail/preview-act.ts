@@ -758,12 +758,20 @@ async function driveScroll(
 export async function actOnActivePreview(
   action: Omit<PreviewActAction, 'kind'> & { kind: string },
   signal?: AbortSignal,
-  owner?: PreviewOwner
+  owner?: PreviewOwner,
+  target?: { tabId: string; valid: () => boolean }
 ): Promise<PreviewActResult> {
+  const assertTarget = () => {
+    if (target && !target.valid()) {
+      throw new Error('The requested browser tab closed, moved, or is no longer selected.')
+    }
+  }
+
+  assertTarget()
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
-    const handle = activePreviewNav(owner)
+    const handle = activePreviewNav(owner, target?.tabId)
 
     if (!handle) {
       return { error: NOTHING_OPEN, success: false }
@@ -776,7 +784,19 @@ export async function actOnActivePreview(
     return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
   }
 
-  const run = activePreviewScriptRunner(owner)
+  const registeredRun = activePreviewScriptRunner(owner, target?.tabId)
+
+  const run =
+    registeredRun &&
+    (async (code: string) => {
+      assertTarget()
+
+      if (target && activePreviewScriptRunner(owner, target.tabId) !== registeredRun) {
+        throw new Error('Browser guest was replaced.')
+      }
+
+      return registeredRun(code)
+    })
 
   if (!run) {
     return { error: NOTHING_OPEN, success: false }
@@ -805,7 +825,26 @@ export async function actOnActivePreview(
     return trip.kind === 'answered' ? trip.result : { acted: typed.kind, note: NAVIGATED, success: true }
   }
 
-  const input = activePreviewInput(owner)
+  const registeredInput = activePreviewInput(owner, target?.tabId)
+
+  const checkInput = () => {
+    assertTarget()
+
+    if (target && activePreviewInput(owner, target.tabId) !== registeredInput) {
+      throw new Error('Browser guest was replaced.')
+    }
+  }
+
+  const input = registeredInput && {
+    focus: () => {
+      checkInput()
+      registeredInput.focus()
+    },
+    send: (event: Parameters<PreviewInputHandle['send']>[0]) => {
+      checkInput()
+      registeredInput.send(event)
+    }
+  }
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
     return driveAction(run, input, typed, signal)

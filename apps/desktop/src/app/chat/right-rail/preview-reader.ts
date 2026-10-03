@@ -13,7 +13,7 @@
  * directly (read_file / the conversation's artifact).
  */
 
-import { type PreviewTab, previewTabsFor } from '@/store/preview'
+import { $browserPages, $poppedBrowserTabIds, type PreviewTab, previewTabsFor } from '@/store/preview'
 import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { resolveActivePreviewTab } from './preview-active-tab'
@@ -89,7 +89,18 @@ function windowText(
 }
 
 function tabSummary(tab: PreviewTab): PreviewReadTabSummary {
-  return { id: tab.id, kind: tab.target.kind, label: tab.target.label, url: tab.target.url }
+  // A popped tab's owner cache may still describe its former docked guest;
+  // its target is now the native workspace's authoritative page snapshot.
+  const page = tab.target.kind === 'url' && !$poppedBrowserTabIds.get().has(tab.id)
+    ? $browserPages.get()[tab.id]
+    : undefined
+
+  return {
+    id: tab.id,
+    kind: tab.target.kind,
+    label: page?.title || tab.target.label,
+    url: page?.url || tab.target.url
+  }
 }
 
 function zoneMeta(tab: PreviewTab, tabs: PreviewTab[]): { active_tab_id?: string; tabs?: PreviewReadTabSummary[] } {
@@ -110,15 +121,15 @@ function withMultiNote(note: string | undefined, multi: boolean): string | undef
   return note ? `${note} ${extra}` : extra
 }
 
-/** Read the preview the user is looking at, among the tabs `sessionId` (the
- *  requesting session; default the focused one) can see. Null only when that
- *  session has no tab open at all. */
+/** Authorize the requesting owner before resolving an optional exact tab. */
 export async function readActivePreview(
   opts: PreviewReadOptions = {},
-  sessionId?: PreviewOwner
+  sessionId?: PreviewOwner,
+  tabId?: string,
+  authorizedTabIds?: readonly string[]
 ): Promise<null | PreviewReadResult> {
-  const tabs = previewTabsFor(sessionId)
-  const tab = resolveActivePreviewTab(tabs)
+  const tabs = previewTabsFor(sessionId).filter(tab => !authorizedTabIds || authorizedTabIds.includes(tab.id))
+  const tab = tabId === undefined ? resolveActivePreviewTab(tabs) : tabs.find(item => item.id === tabId)
 
   if (!tab) {
     return null

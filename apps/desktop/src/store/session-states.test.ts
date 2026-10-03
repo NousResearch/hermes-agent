@@ -992,7 +992,7 @@ describe('dropTilesForProfile', () => {
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-divergent'])
   })
 
-  it('throws on a route without profile instead of silently falling into the local-delete branch', () => {
+  it('rejects a route without profile instead of silently falling into the local-delete branch', async () => {
     // A caller passing a route with only connectionId/targetProfile would
     // silently take the local branch and start requiring
     // `ownerConnection === 'local'` — dropping nothing remotely owned while
@@ -1009,7 +1009,7 @@ describe('dropTilesForProfile', () => {
       workspaceOwnerKey: 'work-vps::copilot'
     })
 
-    expect(() => mod.dropTilesForProfile('copilot', { connectionId: 'work-vps', targetProfile: 'copilot' })).toThrow(
+    await expect(mod.dropTilesForProfile('copilot', { connectionId: 'work-vps', targetProfile: 'copilot' })).rejects.toThrow(
       /route without profile/
     )
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-remote'])

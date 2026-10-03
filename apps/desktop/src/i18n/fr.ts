@@ -5271,8 +5271,12 @@ export const frOverrides = {
     openPreview: "Ouvrir l'aperçu",
     openInBrowser: 'Ouvrir dans le navigateur',
     openInExternal: 'Ouvrir dans une application externe',
+    newBrowserTab: 'Nouvel onglet du navigateur',
     popIn: 'Réintégrer',
     popOut: 'Détacher',
+    popOutFailed: 'Impossible de détacher le navigateur',
+    popOutOwnerUnavailable:
+      'La conversation du navigateur est introuvable. Ouvrez son chat ou son groupe et réessayez, ou continuez à utiliser cet onglet intégré.',
     linkHint: "⌘/Ctrl-clic pour le panneau d'aperçu",
     sourceLineTitle: 'Clic pour sélectionner · shift-clic pour étendre · glisser vers le compositeur',
     source: 'SOURCE',

@@ -17,9 +17,12 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
+import { browserRequestConversation, browserRequestSourceMismatch, isBrowserSessionRetired } from '@/store/browser-conversation'
+import { selectedDetachedBrowser, selectedPopoutTarget } from '@/store/browser-workspaces'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { previewTabIdsVisibleTo } from '@/store/preview'
 import type { PreviewOwner } from '@/store/preview-ownership'
 import {
   receiveApprovalRequest,
@@ -505,19 +508,26 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request, sessionId }) => {
+const previewRead: Handler = ({ request, sessionId, isActiveSession, deps }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
   // The window that passes the session gate may be the chat window while the
   // live webview lives in the popped-out Browser renderer — forward there
   // first; a null (no pop-out answered) falls back to the legacy local read.
   // A local read sees only the tabs the requesting session can see.
   const opts = { count: num(request.params.count), start: num(request.params.start) }
+  const requester = browserRequestConversation(request, sessionId)
   const owner = previewOwnerFor(sessionId)
 
   void (async () => {
-    const result = hasLivePreviewSurface(owner)
-      ? await readActivePreview(opts, owner)
-      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+    const result = deps.sessionInterrupted(sessionId) || isBrowserSessionRetired(sessionId) || browserRequestSourceMismatch(request, sessionId)
+      ? null
+      : selectedPopoutTarget(requester, previewTabIdsVisibleTo(owner ?? null))
+        ? await requestPopoutPreviewRead(opts, requester, owner)
+        : selectedDetachedBrowser() && isActiveSession
+          ? null
+          : hasLivePreviewSurface(owner)
+            ? await readActivePreview(opts, owner)
+            : ((await requestPopoutPreviewRead(opts, requester, owner)) ?? (await readActivePreview(opts, owner)))
 
     answerValue(request, result)
   })()
@@ -531,7 +541,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // before this runs, so a refusal here reaches the tool instead of stalling it.
   const p = request.params
 
-  if (!isActiveSession) {
+  if (!isActiveSession || deps.sessionInterrupted(sessionId) || isBrowserSessionRetired(sessionId) || browserRequestSourceMismatch(request, sessionId)) {
     answerValue(request, {
       error: 'The in-app browser only takes actions in the session the user is looking at.',
       success: false
@@ -577,14 +587,22 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       // answer with the pop-out's result. No pop-out answering (null) falls
       // through to the local engine, which keeps the legacy NOTHING_OPEN
       // error for a genuinely closed pane.
-      if (!hasLivePreviewSurface(owner)) {
-        const remote = await requestPopoutPreviewAct(action, owner)
+      const requester = browserRequestConversation(request, sessionId)
+
+      if (selectedPopoutTarget(requester, previewTabIdsVisibleTo(owner ?? null)) || !hasLivePreviewSurface(owner)) {
+        const remote = await requestPopoutPreviewAct(action, requester, signal, owner)
 
         if (remote) {
           answerValue(request, remote)
 
           return
         }
+      }
+
+      if (selectedDetachedBrowser()) {
+        answerValue(request, { success: false, error: 'The selected browser belongs to another conversation.' })
+
+        return
       }
 
       const run = await loadPreviewEngine()

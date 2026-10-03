@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { runBrowserTabAction } from '@/app/chat/browser-tab-actions'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -86,6 +87,7 @@ import {
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestThreadPageScroll } from '@/store/thread-scroll'
+import { windowBrowserWorkspaceId } from '@/store/windows'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
@@ -455,6 +457,23 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (windowBrowserWorkspaceId()) {
+        const combo = comboFromEvent(event)
+        const actions = combo ? ($comboIndex.get().get(combo) ?? []) : []
+
+        // Guest and native host chords arrive via scoped IPC; this is the
+        // renderer fallback. No chat/profile action may escape this shell.
+        if (!event.repeat && (event.ctrlKey || event.metaKey || event.altKey) && actions.some(runBrowserTabAction)) {
+          event.preventDefault()
+          event.stopPropagation()
+        } else if (actions.includes('view.findInPage')) {
+          event.preventDefault()
+          openFindBar()
+        }
+
+        return
+      }
+
       // An active IME composition owns the keyboard. Windows Chinese IMEs
       // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
       // so without this guard that keystroke ALSO matched `nav.settings` and

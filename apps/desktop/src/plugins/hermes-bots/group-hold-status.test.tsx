@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { translateBots } from './i18n-test-helper'
 import type { GroupMember } from './types'
 
-const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+const { host } = vi.hoisted(() => ({
+  host: {
+    state: {
+      connectionId: { get: () => 'local' }
+    }
+  } as Record<string, unknown>
+}))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')

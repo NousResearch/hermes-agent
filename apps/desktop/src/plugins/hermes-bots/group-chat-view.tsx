@@ -578,6 +578,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const composerKey = groupComposerDraftKey(group, room)
+
+  // Rooms are replicated frontend conversations, not any one member's hidden
+  // runtime. Their durable record rides the hosting connection's default
+  // profile (groupChatSyncRequest); pin that route for this mounted room.
+  const [browserRoute] = useState(() => ({
+    connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || ''),
+    profile: 'default'
+  }))
+
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
 
@@ -661,7 +670,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
       const request = data as {
         count?: unknown
-        destination?: { composerKey?: unknown; group?: unknown; kind?: unknown; windowId?: unknown }
+        destination?: { composerKey?: unknown; group?: unknown; kind?: unknown; windowId?: unknown; conversation?: { kind?: string; id?: string; connectionId?: string; profile?: string } }
         images?: unknown
         prompt?: unknown
         requestId?: unknown
@@ -670,6 +679,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
       const destination = request.destination
       const sourceWindowId = window.sessionStorage.getItem('hermes.desktop.previewAnnotate.windowId')?.trim()
+      const currentRoom = $groupChats.get()[group]
 
       if (
         !sourceWindowId ||
@@ -680,7 +690,14 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         destination?.kind !== 'group' ||
         destination.windowId !== sourceWindowId ||
         destination.group !== group ||
-        destination.composerKey !== composerKeyRef.current
+        destination.composerKey !== composerKeyRef.current ||
+        (destination.conversation && (
+          !currentRoom || destination.conversation.kind !== 'group' ||
+          destination.conversation.id !== groupComposerDraftKey(group, currentRoom) ||
+          destination.conversation.id !== composerKeyRef.current ||
+          destination.conversation.connectionId !== browserRoute.connectionId ||
+          destination.conversation.profile !== browserRoute.profile
+        ))
       ) {
         return
       }
@@ -738,7 +755,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       channel?.removeEventListener('message', onBroadcast)
       channel?.close()
     }
-  }, [composerKey, group])
+  }, [browserRoute, composerKey, group])
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1432,9 +1449,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     <div
       className="relative flex h-full flex-col"
       data-preview-annotate-composer-key={composerKey}
+      data-preview-annotate-connection-id={browserRoute.connectionId}
       data-preview-annotate-destination="group"
       data-preview-annotate-group={group}
       data-preview-annotate-owner-key={groupWorkspaceOwnerKey(group)}
+      data-preview-annotate-profile={browserRoute.profile}
       onDragLeave={event => {
         // Only clear when leaving the room container itself, not when the
         // cursor moves between its children. React types relatedTarget as a

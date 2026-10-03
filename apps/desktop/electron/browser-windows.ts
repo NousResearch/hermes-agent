@@ -16,10 +16,14 @@ export const BROWSER_WINDOW_MIN_HEIGHT = 400
  */
 export function buildBrowserWindowUrl(
   tabId: null | string | undefined,
-  { devServer, rendererIndexPath }: { devServer?: null | string; rendererIndexPath?: string } = {}
+  {
+    devServer,
+    rendererIndexPath,
+    windowId
+  }: { devServer?: null | string; rendererIndexPath?: string; windowId?: string } = {}
 ): string {
   const tab = typeof tabId === 'string' ? tabId.trim() : ''
-  const query = `?win=browser${tab ? `&tab=${encodeURIComponent(tab)}` : ''}`
+  const query = `?win=browser${tab ? `&tab=${encodeURIComponent(tab)}` : ''}${windowId ? `&browserWindow=${encodeURIComponent(windowId)}` : ''}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer

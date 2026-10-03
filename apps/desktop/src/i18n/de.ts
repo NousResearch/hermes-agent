@@ -5257,8 +5257,12 @@ export const deOverrides = {
     openPreview: 'Vorschau öffnen',
     openInBrowser: 'Im Browser öffnen',
     openInExternal: 'In externem Programm öffnen',
+    newBrowserTab: 'Neuer Browser-Tab',
     popIn: 'Eindocken',
     popOut: 'Abdocken',
+    popOutFailed: 'Browser konnte nicht abgedockt werden',
+    popOutOwnerUnavailable:
+      'Die Browser-Zuordnung ist nicht verfügbar. Öffne den zugehörigen Chat oder die Gruppe und versuche es erneut, oder nutze diesen Tab weiter angedockt.',
     linkHint: '⌘/Strg-Klick für das Vorschau-Fenster',
     sourceLineTitle: 'Zum Auswählen klicken · zum Erweitern Umschalt-Klick · zum Composer ziehen',
     source: 'QUELLE',

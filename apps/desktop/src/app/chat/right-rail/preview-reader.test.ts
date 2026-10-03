@@ -70,6 +70,32 @@ describe('readActivePreview (read_preview tool)', () => {
     })
   })
 
+  it('reports current page metadata for every browser without changing guest mount targets', async () => {
+    const { $browserPages, commitBrowserTabLocation, markBrowserTabPopped, newBrowserTab, noteBrowserPage } = await import('@/store/preview')
+    $browserPages.set({})
+    newBrowserTab()
+    newBrowserTab()
+    const [first, second] = $previewTabs.get()
+    const mountTargets = $previewTabs.get().map(tab => tab.target)
+    noteBrowserPage(first!.id, { title: 'First navigated', url: 'https://example.test/first' })
+    noteBrowserPage(second!.id, { title: 'Second navigated', url: 'https://example.test/second' })
+    register(second!.id, async () => ({ text: 'Second page', title: 'Second navigated', url: 'https://example.test/second' }))
+    const result = await readActivePreview({}, undefined, second!.id)
+    expect(result?.tabs).toEqual([
+      { id: first!.id, kind: 'url', label: 'First navigated', url: 'https://example.test/first' },
+      { id: second!.id, kind: 'url', label: 'Second navigated', url: 'https://example.test/second' }
+    ])
+    expect($previewTabs.get().map(tab => tab.target)).toEqual(mountTargets)
+    // The opener's last docked page must not mask a newer detached snapshot.
+    markBrowserTabPopped(first!.id, true)
+    commitBrowserTabLocation(first!.id, 'https://example.test/detached', 'Detached page')
+    expect((await readActivePreview({}, undefined, second!.id))?.tabs?.[0]).toMatchObject({
+      label: 'Detached page', url: 'https://example.test/detached'
+    })
+    markBrowserTabPopped(first!.id, false)
+    $browserPages.set({})
+  })
+
   it('windows long pages with start/count and reports the full length', async () => {
     openPreview(urlTarget('https://example.com'))
     register($rightRailActiveTabId.get()!, async () => ({

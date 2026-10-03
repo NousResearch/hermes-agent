@@ -6,6 +6,31 @@
 // renderer tsconfig cannot import from electron/.
 export const GUEST_EXTERNAL_CHANNEL = 'preview-open-external'
 
+// Mirrored in PreviewPane; renderer code cannot import from electron/.
+export const GUEST_INTERACTION_CHANNEL = 'preview-guest-interaction'
+
+interface GuestInteractionHost {
+  addEventListener(
+    type: 'pointerdown' | 'keydown',
+    listener: (event: { isTrusted?: boolean }) => void,
+    capture?: boolean
+  ): void
+  sendToHost(channel: string): void
+}
+
+/** Guest DOM input does not bubble into the host. Report intent, never page
+ * content, keys, URLs or a guest-supplied tab ID. Focus alone is not intent. */
+export function installGuestInteractionHandoff(host: GuestInteractionHost): void {
+  const interact = (event: { isTrusted?: boolean }) => {
+    if (event.isTrusted === true) {
+      host.sendToHost(GUEST_INTERACTION_CHANNEL)
+    }
+  }
+
+  host.addEventListener('pointerdown', interact, true)
+  host.addEventListener('keydown', interact, true)
+}
+
 interface GuestEventTarget {
   closest(selector: string): { href: string } | null
 }

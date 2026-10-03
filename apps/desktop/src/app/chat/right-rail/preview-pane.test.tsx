@@ -4,12 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
-import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
+import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
+import { $poppedBrowserTabIds, $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from '@/store/preview-explicit'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { PreviewTilePane } from './preview'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
 import { PreviewPane } from './preview-pane'
+import { readActivePreview } from './preview-reader'
 
 // The consent dialog has its own test file and needs a QueryClientProvider;
 // these tests exercise the pane's console/watch/webview wiring, not the
@@ -825,6 +828,82 @@ describe('PreviewPane console state', () => {
 
     expect(executeJavaScript).toHaveBeenCalledOnce()
     expect(String(executeJavaScript.mock.calls[0]?.[0])).toContain('window.print')
+  })
+})
+
+describe('PreviewPane guest interaction handoff', () => {
+  const target = { kind: 'url', label: 'Docked', source: 'https://docked.test', url: 'https://docked.test' } as const
+
+  function interact(webview: HTMLElement, args: unknown[] = []) {
+    webview.dispatchEvent(Object.assign(new Event('ipc-message'), { channel: 'preview-guest-interaction', args }))
+  }
+
+  afterEach(() => {
+    cleanup()
+    $previewTabs.set([])
+    $poppedBrowserTabIds.set(new Set())
+    selectRightRailTab(null)
+    clearExplicitPreviewOpen()
+  })
+
+  it('reclaims docked tool selection from detached intent only on guest interaction', async () => {
+    $previewTabs.set([
+      { id: 'url:docked', target },
+      { id: 'url:detached', target: { ...target, label: 'Detached', url: 'https://detached.test' } }
+    ])
+    $poppedBrowserTabIds.set(new Set(['url:detached']))
+    noteExplicitPreviewOpen('url:detached')
+    selectRightRailTab('url:detached')
+    const rendered = render(<PreviewTilePane tabId="url:docked" />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+    Object.assign(webview, {
+      executeJavaScript: vi.fn(async () => 'docked body'),
+      getURL: () => target.url,
+      getTitle: () => target.label
+    })
+
+    act(() => {
+      webview.dispatchEvent(new Event('focus'))
+      webview.dispatchEvent(new Event('page-title-updated'))
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: target.url }))
+    })
+    expect($rightRailActiveTabId.get()).toBe('url:detached')
+    act(() => interact(webview))
+    expect($rightRailActiveTabId.get()).toBe('url:docked')
+    expect(await readActivePreview()).toMatchObject({ active_tab_id: 'url:docked', text: 'docked body' })
+
+    // A queued message from the old docked guest cannot reclaim after transfer.
+    act(() => {
+      $poppedBrowserTabIds.set(new Set(['url:detached', 'url:docked']))
+      selectRightRailTab('url:detached')
+      interact(webview)
+    })
+    expect($rightRailActiveTabId.get()).toBe('url:detached')
+  })
+
+  it('uses the current callback without rebuilding and drops hidden, malformed and retired guest messages', () => {
+    const previous = vi.fn()
+    const current = vi.fn()
+    const rendered = render(<PreviewPane onGuestInteraction={previous} target={target} />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+    rendered.rerender(<PreviewPane onGuestInteraction={current} target={target} />)
+    expect(rendered.container.querySelector('webview')).toBe(webview)
+    act(() => interact(webview))
+    expect(previous).not.toHaveBeenCalled()
+    expect(current).toHaveBeenCalledOnce()
+
+    act(() => {
+      rendered.container.setAttribute('data-pane-hidden', '')
+      interact(webview)
+      rendered.container.removeAttribute('data-pane-hidden')
+      interact(webview, ['url:someone-else'])
+      webview.dispatchEvent(Object.assign(new Event('ipc-message'), { channel: 'unknown', args: [] }))
+      webview.dispatchEvent(new Event('focus'))
+    })
+    expect(current).toHaveBeenCalledOnce()
+    rendered.unmount()
+    act(() => interact(webview))
+    expect(current).toHaveBeenCalledOnce()
   })
 })
 

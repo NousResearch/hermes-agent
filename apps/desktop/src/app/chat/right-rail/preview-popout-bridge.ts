@@ -16,9 +16,13 @@
  */
 
 import type { PreviewActAction, PreviewActResult } from '@/lib/preview-act/act-in-page'
-import { previewTabIdsVisibleTo } from '@/store/preview'
+import { selectedPopoutTarget, validPopoutTarget } from '@/store/browser-workspaces'
+import { previewTabIdsVisibleTo, previewTabsFor } from '@/store/preview'
 import type { PreviewOwner } from '@/store/preview-ownership'
-import { isBrowserWindow, windowBrowserTabId } from '@/store/windows'
+import { isBrowserWindow } from '@/store/windows'
+
+import { BROWSER_REQUEST_HISTORY_LIMIT, BROWSER_REQUEST_TIMEOUT_MS, BrowserRequestHistory } from '../../../../electron/browser-request-history'
+import type { BrowserConversation, BrowserRequestTarget } from '../../../../electron/browser-workspace-types'
 
 import { actOnActivePreview } from './preview-act'
 import { activePreviewNav } from './preview-nav'
@@ -27,22 +31,26 @@ import { activePreviewScriptRunner } from './preview-script-runner'
 
 const CHANNEL = 'hermes:preview-popout'
 
-const ACT_TIMEOUT_MS = 20_000
-const READ_TIMEOUT_MS = 8_000
+const ACT_TIMEOUT_MS = BROWSER_REQUEST_TIMEOUT_MS.act
+const READ_TIMEOUT_MS = BROWSER_REQUEST_TIMEOUT_MS.read
 
 type ActPayload = Omit<PreviewActAction, 'kind'> & { kind: string }
 
-/** `tabIds`: the tabs the requesting session may see, resolved in the chat
- *  window (it alone knows compression rotations and session tiles). A pop-out
- *  answers only when the tab it shows is among them; absent = unscoped. */
-type BridgeRequest = { id: string; tabIds?: string[] } & (
-  { kind: 'act'; payload: ActPayload } | { kind: 'read'; payload: PreviewReadOptions }
+type BridgeRequest = { target: BrowserRequestTarget; requester: BrowserConversation; owner?: PreviewOwner; tabIds: string[]; deadline: number } & (
+  { id: string; kind: 'act'; payload: ActPayload } | { id: string; kind: 'read'; payload: PreviewReadOptions }
 )
 
-type BridgeResponse =
+type BridgeResponse = { target: BrowserRequestTarget } & (
   | { id: string; kind: 'act'; result: PreviewActResult }
   | { id: string; kind: 'read'; result: PreviewReadResult | null }
   | { id: string; kind: 'error'; error: string }
+)
+
+interface BridgeCancel {
+  id: string
+  kind: 'cancel'
+  target: BrowserRequestTarget
+}
 
 let seq = 0
 
@@ -94,34 +102,56 @@ export function hasLivePreviewSurface(owner?: PreviewOwner): boolean {
   return Boolean(activePreviewScriptRunner(owner) || activePreviewNav(owner))
 }
 
-/** Scope a request to `owner`'s tabs (undefined = an unscoped request). */
-const scopeFor = (owner: PreviewOwner | undefined): { tabIds?: string[] } =>
-  owner === undefined ? {} : { tabIds: previewTabIdsVisibleTo(owner) }
 
-function nextId(prefix: string): string {
+function requestPreviewOwner(target: BrowserRequestTarget, requester?: BrowserConversation | null): PreviewOwner {
+  const conversation = requester ?? target.owner.conversation!
+
+  return {
+    profile: target.owner.scope,
+    runtimeId: conversation.kind === 'session' ? conversation.id : null,
+    sessionId: conversation.kind === 'session' ? conversation.id : null
+  }
+}
+
+function nextId(prefix: string, deadline: number): string {
   seq += 1
 
-  return `${prefix}-${Date.now()}-${seq}`
+  return `${prefix}-${globalThis.crypto.randomUUID()}-${seq}-${deadline}`
 }
 
 function askPopout<T>(
   request: BridgeRequest,
   timeoutMs: number,
-  pick: (response: BridgeResponse) => T | undefined
+  pick: (response: BridgeResponse) => T | undefined,
+  signal?: AbortSignal
 ): Promise<T | null> {
   const bus = getBus()
 
-  if (!bus) {
+  if (!bus || signal?.aborted) {
     return Promise.resolve(null)
   }
 
   return new Promise(resolve => {
     let stop: (() => void) | undefined
+    let settled = false
 
-    const timer = window.setTimeout(() => {
+    const finish = (value: T | null) => {
+      if (settled) {return}
+      settled = true
+      window.clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
       stop?.()
-      resolve(null)
-    }, timeoutMs)
+      resolve(value)
+    }
+
+    const cancel = () => {
+      if (settled) {return}
+      // Cancel the captured request, never re-resolve the currently selected tab.
+      bus.post({ id: request.id, kind: 'cancel', target: request.target } satisfies BridgeCancel)
+      finish(null)
+    }
+
+    const timer = window.setTimeout(cancel, timeoutMs)
 
     stop = bus.subscribe(data => {
       if (!data || typeof data !== 'object') {
@@ -132,7 +162,7 @@ function askPopout<T>(
 
       // Ignore our own request echo (same-window test buses / unusual hosts)
       // and unrelated traffic. Only a response carries `result` or `error`.
-      if (response.id !== request.id) {
+      if (response.id !== request.id || JSON.stringify(response.target) !== JSON.stringify(request.target)) {
         return
       }
 
@@ -140,39 +170,77 @@ function askPopout<T>(
         return
       }
 
-      window.clearTimeout(timer)
-      stop?.()
-
       if (response.kind === 'error') {
-        resolve(null)
+        finish(null)
 
         return
       }
 
-      resolve(pick(response as BridgeResponse) ?? null)
+      finish(pick(response as BridgeResponse) ?? null)
     })
 
+    signal?.addEventListener('abort', cancel, { once: true })
     bus.post(request)
   })
 }
 
-/** Ask the browser pop-out to run drive_preview for `owner` (the requesting
- *  session's stored id). Null when no pop-out showing one of its tabs answers. */
-export function requestPopoutPreviewAct(payload: ActPayload, owner?: PreviewOwner): Promise<PreviewActResult | null> {
-  return askPopout({ id: nextId('act'), kind: 'act', payload, ...scopeFor(owner) }, ACT_TIMEOUT_MS, response =>
-    response.kind === 'act' ? response.result : undefined
+/** Ask the browser pop-out to run drive_preview. Null when no pop-out answers. */
+export async function requestPopoutPreviewAct(payload: ActPayload, requester?: BrowserConversation | null, signal?: AbortSignal, owner?: PreviewOwner): Promise<PreviewActResult | null> {
+  const tabIds = owner === undefined ? previewTabsFor().map(tab => tab.id) : previewTabIdsVisibleTo(owner)
+  const target = selectedPopoutTarget(requester, tabIds)
+
+  if (!target) {
+    return null
+  }
+
+  const deadline = Date.now() + ACT_TIMEOUT_MS
+
+  return (
+    (await askPopout({ id: nextId('act', deadline), kind: 'act', payload, target, owner: owner ?? requestPreviewOwner(target, requester), tabIds, requester: requester ?? target.owner.conversation!, deadline }, ACT_TIMEOUT_MS, response =>
+      response.kind === 'act' ? response.result : undefined, signal
+    )) ?? {
+      success: false,
+      error: 'The selected detached browser did not answer. Retry against that tab; the action was not redirected.'
+    }
   )
 }
 
-/** Ask the browser pop-out to run read_preview for `owner`. Null when no
- *  pop-out showing one of its tabs answers. */
-export function requestPopoutPreviewRead(
-  payload: PreviewReadOptions = {},
-  owner?: PreviewOwner
-): Promise<PreviewReadResult | null> {
-  return askPopout({ id: nextId('read'), kind: 'read', payload, ...scopeFor(owner) }, READ_TIMEOUT_MS, response =>
+/** Ask the browser pop-out to run read_preview. Null when no pop-out answers. */
+export function requestPopoutPreviewRead(payload: PreviewReadOptions = {}, requester?: BrowserConversation | null, owner?: PreviewOwner): Promise<PreviewReadResult | null> {
+  const tabIds = owner === undefined ? previewTabsFor().map(tab => tab.id) : previewTabIdsVisibleTo(owner)
+  const target = selectedPopoutTarget(requester, tabIds)
+
+  if (!target) {
+    return Promise.resolve(null)
+  }
+
+  const deadline = Date.now() + READ_TIMEOUT_MS
+
+  return askPopout({ id: nextId('read', deadline), kind: 'read', payload, target, owner: owner ?? requestPreviewOwner(target, requester), tabIds, requester: requester ?? target.owner.conversation!, deadline }, READ_TIMEOUT_MS, response =>
     response.kind === 'read' ? response.result : undefined
   )
+}
+
+let responderStop: (() => void) | null = null
+let responderUsers = 0
+// Survives responder remounts; unexpired IDs cannot regain execution authority.
+const receivedRequests = new BrowserRequestHistory()
+
+function releaseResponder(): () => void {
+  let released = false
+
+  return () => {
+    if (released) {
+      return
+    }
+
+    released = true
+
+    if (--responderUsers === 0) {
+      responderStop?.()
+      responderStop = null
+    }
+  }
 }
 
 /**
@@ -190,49 +258,117 @@ export function installPopoutPreviewResponder(): () => void {
     return () => {}
   }
 
+  if (responderStop) {
+    responderUsers++
+
+    return releaseResponder()
+  }
+
+  const running = new Map<string, { target: BrowserRequestTarget; controller: AbortController; timer: number }>()
+
   const stop = bus.subscribe(data => {
     if (!data || typeof data !== 'object') {
       return
     }
 
-    const request = data as Partial<BridgeRequest> & { id?: unknown; kind?: unknown }
+    const request = data as Partial<BridgeRequest | BridgeCancel>
+
+    if (request.kind === 'cancel') {
+      const pending = typeof request.id === 'string' ? running.get(request.id) : undefined
+
+      // Main authenticates the opener against its pending record. The original
+      // target may already be invalid; that must never prevent cancellation.
+      if (pending && JSON.stringify(pending.target) === JSON.stringify(request.target)) {
+        pending.controller.abort('interrupted')
+      }
+
+      return
+    }
 
     if (
       typeof request.id !== 'string' ||
       (request.kind !== 'act' && request.kind !== 'read') ||
-      !('payload' in request)
+      !('payload' in request) ||
+      !request.payload ||
+      typeof request.payload !== 'object' ||
+      typeof request.deadline !== 'number' || !Number.isFinite(request.deadline) ||
+      !request.target ||
+      !validPopoutTarget(request.target)
     ) {
       return
     }
 
     // Another session's request: stay silent (an answer — even an error —
     // would win the race against a pop-out that does show that session's tab).
-    if (Array.isArray(request.tabIds) && !request.tabIds.includes(windowBrowserTabId() ?? '')) {
+    if (!Array.isArray(request.tabIds) || !request.tabIds.includes(request.target.tabId)) {
       return
     }
 
     const id = request.id
+    const target = request.target
+
+    if (running.has(id) || running.size >= BROWSER_REQUEST_HISTORY_LIMIT ||
+      !receivedRequests.admit(id, request.kind, request.deadline)) {
+      return
+    }
+
+    const remaining = request.deadline - Date.now()
+
+    // Admission and execution can straddle the deadline; do not invoke a reader
+    // (which has no AbortSignal) or an action after its budget expires.
+    if (remaining <= 0) {return}
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort('timeout'), remaining)
+    running.set(id, { target, controller, timer })
 
     void (async () => {
       try {
         if (request.kind === 'act') {
-          const result = await actOnActivePreview(request.payload as ActPayload)
-          bus.post({ id, kind: 'act', result } satisfies BridgeResponse)
+          const result = await actOnActivePreview(request.payload as ActPayload, controller.signal, request.owner, {
+            tabId: target.tabId,
+            valid: () => !controller.signal.aborted && Date.now() < request.deadline! && validPopoutTarget(target)
+          })
+
+          bus.post({ id, target, kind: 'act', result: controller.signal.aborted
+            ? { success: false, error: 'The detached browser action was cancelled.' }
+            : result } satisfies BridgeResponse)
 
           return
         }
 
-        const result = await readActivePreview(request.payload as PreviewReadOptions)
-        bus.post({ id, kind: 'read', result } satisfies BridgeResponse)
+        const result = await readActivePreview(request.payload as PreviewReadOptions, request.owner, target.tabId, request.tabIds)
+        bus.post({
+          id,
+          target,
+          kind: 'read',
+          result: !controller.signal.aborted && validPopoutTarget(target) ? result : null
+        } satisfies BridgeResponse)
       } catch (error) {
         bus.post({
           id,
+          target,
           kind: 'error',
           error: error instanceof Error ? error.message : String(error)
         } satisfies BridgeResponse)
+      } finally {
+        window.clearTimeout(timer)
+        running.delete(id)
       }
     })()
   })
 
-  return stop
+  responderStop = () => {
+    stop()
+
+    for (const pending of running.values()) {
+      pending.controller.abort('interrupted')
+      window.clearTimeout(pending.timer)
+    }
+
+    running.clear()
+  }
+
+  responderUsers++
+
+  return releaseResponder()
 }

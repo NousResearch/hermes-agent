@@ -12,7 +12,7 @@
 
 import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
-import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
+import { previewAnnotateConversationMatches, subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
 import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
 
 import { $floatingComposerOwner } from './floating-state'
@@ -647,16 +647,18 @@ subscribePreviewAnnotateHandoff(async request => {
   const typedTarget = target as ComposerTarget
   const surface = queryVisible<HTMLElement>(`[data-composer-target="${cssEscape(typedTarget)}"]`)
 
-  if (!surface || surface.dataset.composerSurfaceId !== surfaceId) {
+  if (!surface || surface.dataset.composerSurfaceId !== surfaceId || !previewAnnotateConversationMatches(request.destination, surface)) {
     return { error: 'The original chat composer is no longer visible.', ok: false }
   }
 
   for (const image of request.images) {
-    requestComposerAttachImages([dataUrlToBlob(image.dataUrl)], { target: typedTarget })
+    dispatchNow<AttachImagesDetail>(ATTACH_IMAGES_EVENT, { blobs: [dataUrlToBlob(image.dataUrl)], target: typedTarget })
   }
 
-  requestComposerInsert(request.prompt, { mode: 'block', target: typedTarget })
-  requestComposerFocus(typedTarget)
+  // Do not defer a pinned handoff: the same mounted primary can show another
+  // session before a timer dispatches an otherwise identical target/surface.
+  dispatchNow<InsertDetail>(INSERT_EVENT, { text: request.prompt, mode: 'block', target: typedTarget })
+  dispatchNow<FocusDetail>(FOCUS_EVENT, { target: typedTarget })
 
   return { ok: true }
 })

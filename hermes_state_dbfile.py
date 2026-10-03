@@ -511,6 +511,113 @@ def _parse_sqlite_header(header: bytes) -> Dict[str, Any]:
     return {"valid": True, "page_size": 65536 if raw_page_size == 1 else raw_page_size, **parsed}
 
 
+def _unwind_on_termination():
+    """``hermes_cli.termination_guard.unwind_on_termination``, or a no-op without hermes_cli.
+
+    Lazy, like every other hermes_cli import in this module: the capture must stay importable in a
+    scaffold/embed install (see ``_connect_tracked_db``), and the parent's helper is the one
+    ``hermes backup`` already ships so the two producers of staging cleanup cannot drift.
+    """
+    try:
+        from hermes_cli.termination_guard import unwind_on_termination
+    except ImportError:
+        return contextlib.nullcontext()
+    return unwind_on_termination()
+
+
+# The staging directory's own name, kept distinguishable from the artifact it becomes. The leading
+# dot is the contract with the sweeper in ``hermes_cli.backup_restore`` (hidden spellings only, so a
+# published ``<name>.retired-wal-<ts>-<pid>/`` is never a candidate) and with this module's own
+# ``_prune_stale_retired_generation_staging``. The pid is duplicated at the tail on purpose: that is
+# where ``_PARTIAL_PID_RE`` reads the OWNER from, and the timestamp in the middle is not a pid --
+# a name shaped ``.<stem>.<ts>.partial`` would have that sweeper compare 20261001 and keep the
+# residue forever. The published artifact name (``<name>.retired-wal-<ts>-<pid>/``) is unchanged:
+# backup.py's exclusion prefix, the operator-facing recovery flow and the capture tests key on it.
+_STAGING_LEADING_DOT = "."
+_STAGING_SUFFIX = ".partial"
+
+
+def _retired_generation_staging(final: Path) -> Path:
+    """The hidden staging directory that becomes *final* once the capture is complete."""
+    return final.with_name(f"{_STAGING_LEADING_DOT}{final.name}.{os.getpid()}{_STAGING_SUFFIX}")
+
+
+def _staging_owner_pid(name: str) -> Optional[int]:
+    """The pid that created a staging directory called *name*, or None when it is not one of ours.
+
+    Deliberately stricter than ``_staging_kind``'s ``.partial`` test: the sweep runs in the
+    profile's home, so it only accepts THIS module's exact shape -- the retired-wal marker plus a
+    pid at the tail. No other producer's staging, and no user file, can reach this.
+    """
+    if not name.startswith(_STAGING_LEADING_DOT) or not name.endswith(_STAGING_SUFFIX):
+        return None
+    middle = name[len(_STAGING_LEADING_DOT):-len(_STAGING_SUFFIX)]
+    if RETIRED_GENERATION_DIR_SUFFIX not in middle:
+        return None
+    owner = middle.rsplit(".", 1)[-1]
+    return int(owner) if owner.isdigit() else None
+
+
+def _prune_stale_retired_generation_staging(db_path: Path) -> int:
+    """Remove retired-WAL staging directories left by a run that could not unwind; return the count.
+
+    A SIGKILL, an OOM-kill or a kernel panic leaves no handler to run, so the next capture collects
+    the residue instead: this is the cap that keeps at most one dead staging directory per profile
+    on disk. Only THIS module's own hidden spelling is a candidate -- it is pid-attributed, so a
+    live peer's in-flight capture is never touched -- and the directory walked is the database's
+    own, not a user directory. Best effort: an unreadable directory or an entry that cannot be
+    removed never fails a capture (which exists to preserve retired frames, not to police disk).
+    """
+    parent = db_path.parent
+    try:
+        with os.scandir(parent) as scan:
+            candidates = [entry for entry in scan
+                          if _staging_owner_pid(entry.name) is not None]
+    except OSError:
+        return 0
+    removed = 0
+    for entry in candidates:
+        pid = _staging_owner_pid(entry.name)
+        if pid is None or pid == os.getpid() or _pid_is_alive(pid):
+            continue
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path, ignore_errors=True)
+            elif entry.is_file(follow_symlinks=False):
+                os.unlink(entry.path)  # a file under this name is never ours; see _staging_kind
+            else:
+                continue
+        except OSError:
+            continue
+        if not os.path.exists(entry.path):
+            removed += 1
+    if removed:
+        logger.warning(
+            "Removed %d retired-WAL staging director%s left by a run that could not unwind in %s "
+            "(pid gone); the published captures beside them are untouched.",
+            removed, "y" if removed == 1 else "ies", parent)
+    return removed
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """True when *pid* exists, or cannot be probed: never remove an artifact on doubt.
+
+    Mirrors ``hermes_cli.backup_restore._pid_is_alive`` (which this module must not import -- it
+    imports THIS module for ``RETIRED_GENERATION_DIR_SUFFIX``, so the dependency runs backwards).
+    EPERM and any other OSError read as alive: a recycled pid must never make the sweep delete a
+    live peer's staging directory.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def capture_retired_wal_generation(
     db_path, *, sidecar_identity: Dict[str, tuple], trigger: str,
 ) -> Path:
@@ -522,6 +629,10 @@ def capture_retired_wal_generation(
     path at capture time. Nothing is merged: whether those frames belong on top of the main file is
     the operator's decision. Raises :class:`RetiredGenerationCaptureError` when the exact generation
     cannot be located or written; no descriptor is ever closed, moved or truncated.
+
+    The bytes are written into a hidden staging directory (``_retired_generation_staging``) that only
+    becomes the artifact on a completed ``os.replace``: an interrupted capture is therefore always a
+    staging directory -- distinguishable from a published capture, and collected by the next one.
     """
     db_path = Path(db_path)
     wal_identity = tuple(sidecar_identity.get("-wal") or ())
@@ -538,13 +649,26 @@ def capture_retired_wal_generation(
         raise RetiredGenerationCaptureError(f"cannot stat the retired WAL of {db_path}: {exc}") from exc
 
     stem = f"{db_path.name}{RETIRED_GENERATION_DIR_SUFFIX}{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{os.getpid()}"
+    _prune_stale_retired_generation_staging(db_path)
     final = db_path.with_name(stem)
     n = 0
-    while final.exists() or final.with_name(final.name + ".partial").exists():
+    while final.exists() or _retired_generation_staging(final).exists():
         n += 1
         final = db_path.with_name(f"{stem}-{n}")
-    staging = final.with_name(final.name + ".partial")
+    staging = _retired_generation_staging(final)
+    published = False
+    # This staging directory sits next to the LIVE database and holds a copy of it: on a
+    # multi-GB state.db an abrupt death (SIGTERM, SIGHUP, or a kill the handler never sees) left
+    # it on the profile's disk with nothing to collect it -- `hermes_cli.backup_restore`'s sweep
+    # ignores a *visible* staging by design (it also ignores this published artifact), and the
+    # disk-hygiene cron never matched the name. The guard turns SIGTERM/SIGHUP into an ordinary
+    # exception so this finally runs, the same helper `hermes backup` uses. A missing hermes_cli
+    # (scaffold/embed install, see _connect_tracked_db) leaves the capture unguarded rather than
+    # failing the one path that preserves retired frames; that residue is pid-attributed and
+    # swept by _prune_stale_retired_generation_staging() on the next capture.
+    guard = contextlib.ExitStack()
     try:
+        guard.enter_context(_unwind_on_termination())
         staging.mkdir(parents=True, exist_ok=False)
         manifest: Dict[str, Any] = {
             "version": RETIRED_GENERATION_MANIFEST_VERSION,
@@ -589,14 +713,21 @@ def capture_retired_wal_generation(
         atomic_json_write(staging / RETIRED_GENERATION_MANIFEST, manifest, sort_keys=True)
         _fsync_path(staging)
         os.replace(staging, final)
+        published = True
         _fsync_path(final.parent)
     except RetiredGenerationCaptureError:
-        shutil.rmtree(staging, ignore_errors=True)
         raise
     except OSError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
         raise RetiredGenerationCaptureError(
             f"could not write the retired WAL generation of {db_path} under {staging}: {exc}") from exc
+    finally:
+        # Every exit other than a completed os.replace() removes the staging: the two exception
+        # arms above no longer duplicate the rmtree, and a SIGTERM/SIGHUP SystemExit (the guard)
+        # or any other unwinding exception unwinds through here too. rmtree on a directory that
+        # does not exist is a no-op, so the success path costs nothing.
+        guard.close()  # restore the previous dispositions before touching the filesystem
+        if not published:
+            shutil.rmtree(staging, ignore_errors=True)
     return final
 
 

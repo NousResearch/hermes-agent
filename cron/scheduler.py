@@ -567,6 +567,42 @@ def _cron_failure_marker_error(text: str) -> Optional[str]:
     return evidence or "Cron agent reported failure."
 
 
+# Threaded cron delivery: platforms whose adapters support posting a summary parent
+# message and the full report in its thread via metadata["thread_id"].
+THREADED_DELIVERY_PLATFORMS = frozenset({"slack"})
+_SUMMARY_MARKERS = ("tl;dr:", "tldr:", "summary:")
+
+
+def _split_summary(content: str) -> tuple[str, Optional[str]]:
+    """Split a cron report into (summary, detail) for threaded delivery."""
+    raw = content or ""
+    if not raw.strip():
+        return (raw, None)
+    parts = re.split(r"\r?\n\s*\r?\n", raw, maxsplit=1)
+    first = parts[0].strip()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if not rest:
+        return (first if len(parts) > 1 else raw, None)
+    lowered = first.lower()
+    for marker in _SUMMARY_MARKERS:
+        if lowered.startswith(marker):
+            first = first[len(marker):].strip()
+            break
+    if not first:
+        return (raw, None)
+    return (first, rest)
+
+
+def _threaded_delivery_enabled(job: dict) -> bool:
+    """True when this job should use summary-parent + thread-detail delivery."""
+    if job.get("thread") is False:
+        return False
+    try:
+        return bool(load_config().get("cron", {}).get("threaded_delivery", False))
+    except Exception:
+        return False
+
+
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
     NO_REPLY / NO REPLY) as the whole response OR its own first/last line — NOT mid-sentence.

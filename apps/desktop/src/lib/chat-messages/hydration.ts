@@ -31,6 +31,7 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 // one that types those rows `display_kind=hidden`. It is model scaffolding,
 // not something the user wrote, so it never paints as a bubble.
 const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
+const TODO_SNAPSHOT_ROW_RE = /(?:^|\n)\[Your active task list was preserved across context compression\][\s\S]*$/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
@@ -144,18 +145,19 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-function transcriptContent(
-  displayKind: SessionMessage['display_kind'],
-  role: SessionMessage['role'],
-  content: string
-): string | null {
-  if (displayKind === 'hidden') {
-    return null
-  }
+function transcriptContent(displayKind: SessionMessage['display_kind'], role: SessionMessage['role'], content: string): string | null {
+  if (displayKind === 'hidden') return null
+  if (role !== 'user') return content
 
-  return role === 'user' && LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) ? null : content
+  const heartbeat = LEGACY_HEARTBEAT_ROW_RE.test(content.trim())
+  if (heartbeat) return null
+
+  const todoSnapshot = content.match(TODO_SNAPSHOT_ROW_RE)
+  if (!todoSnapshot || todoSnapshot.index === undefined) return content
+
+  const visible = content.slice(0, todoSnapshot.index).trim()
+  return visible || null
 }
-
 /**
  * Backend-authored transcript notices. The gateway persists these itself and no
  * view "sent" them, so they render as system rows but are not authored

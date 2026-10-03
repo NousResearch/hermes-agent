@@ -601,17 +601,25 @@ def _session_files_dir(profile) -> Path:
 
 
 def _is_untyped_scaffold_notice(message) -> bool:
-    """A ``[System: …]`` role=user row persisted without a ``display_kind``.
-
-    ``[System:`` is a reserved gateway-notice namespace — it must never render as a user
-    bubble (the gateway's own history projection drops these rows outright) — but recovery
-    scaffolding written before typing existed carries no kind. Rows WITH a kind
-    (``model_switch``, …) are timeline entries and keep flowing.
-    """
+    """Return whether a persisted user row is model-only scaffolding."""
     if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind"):
         return False
     content = message.get("content")
-    return isinstance(content, str) and content.lstrip().startswith("[System:")
+    if not isinstance(content, str):
+        return False
+    if content.lstrip().startswith("[System:"):
+        return True
+    from tools.todo_tool import TODO_INJECTION_HEADER
+    return content.lstrip().startswith(TODO_INJECTION_HEADER)
+
+
+def _strip_todo_snapshot(content: str) -> str:
+    from tools.todo_tool import TODO_INJECTION_HEADER
+
+    marker = content.find(TODO_INJECTION_HEADER)
+    if marker < 0:
+        return content
+    return content[:marker].rstrip()
 
 
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
@@ -648,6 +656,12 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            from tools.todo_tool import TODO_INJECTION_HEADER
+            original_content = message["content"]
+            content = _strip_todo_snapshot(original_content)
+            if content != original_content and not original_content.lstrip().startswith(TODO_INJECTION_HEADER):
+                message = {**message, "content": content}
         if coerce is not None:
             message = coerce(message)
         # Same read-side typing as session.resume (tui_gateway/session_history.py).

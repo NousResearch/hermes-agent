@@ -365,6 +365,15 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.setattr(
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
+    # 3c. s6's live scandir is outside HERMES_HOME. When the suite itself runs
+    #     inside a supervised production container, container-aware tests would
+    #     otherwise register/stop/restart real gateways under /run/service.
+    #     Point default S6ServiceManager instances at this per-test directory;
+    #     explicit scandir arguments used by unit/integration tests still win.
+    fake_s6_scandir = tmp_path / "s6-scandir"
+    fake_s6_scandir.mkdir()
+    monkeypatch.setenv("HERMES_TEST_S6_SCANDIR", str(fake_s6_scandir))
+
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
@@ -916,6 +925,7 @@ def _ensure_current_event_loop(request):
 
 
 _REQUIRES_WAL_MARK = "requires_wal"
+_TEST_S6_SCANDIR: "Path | None" = None
 
 
 def _wal_is_usable() -> bool:
@@ -1094,14 +1104,17 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
-def pytest_unconfigure(config):  # noqa: D401 — pytest hook
-    _remove_relocated_basetemp(config)
-
-
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
-    """Register markers used by hermetic conftest."""
+    """Register markers and isolate live s6 before collection starts."""
     _relocate_basetemp_outside_operator_home(config)
+    global _TEST_S6_SCANDIR
+
+    # Collection-time imports must never inherit the live /run/service tree.
+    if _TEST_S6_SCANDIR is None:
+        _TEST_S6_SCANDIR = Path(tempfile.mkdtemp(prefix="hermes-pytest-s6-"))
+    os.environ["HERMES_TEST_S6_SCANDIR"] = str(_TEST_S6_SCANDIR)
+
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
@@ -1180,6 +1193,17 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     # suite runs natively there (POSIX keeps the more reliable signal method).
     if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
         config.option.timeout_method = "thread"
+
+
+def pytest_unconfigure(config):  # noqa: D401 — pytest hook
+    """Remove the process-wide temporary s6 scandir."""
+    _remove_relocated_basetemp(config)
+    global _TEST_S6_SCANDIR
+
+    if _TEST_S6_SCANDIR is not None:
+        shutil.rmtree(_TEST_S6_SCANDIR, ignore_errors=True)
+        _TEST_S6_SCANDIR = None
+    os.environ.pop("HERMES_TEST_S6_SCANDIR", None)
 
 
 _symlink_supported_cache = None

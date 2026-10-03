@@ -1016,11 +1016,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _stt_voice_attachment(
         self, url: str, content_type: str, filename: str, *, asr_refer_text: Optional[str] = None,
         voice_wav_url: Optional[str] = None) -> Optional[str]:
-        """Transcribe a voice attachment. Priority: QQ's free ``asr_refer_text`` →
-        STT on ``voice_wav_url`` (pre-converted WAV, no SILK decode) → STT on the
-        original URL (SILK→WAV). Returns the transcript or None."""
-        if asr_refer_text:
-            logger.debug("[%s] STT: using QQ asr_refer_text: %r", self._log_tag, asr_refer_text[:100])
+        """Transcribe a voice attachment. Priority: external STT (when ``prefer_stt`` is set in
+        the ``platforms.qqbot`` extra config) → QQ's free ``asr_refer_text`` → STT on
+        ``voice_wav_url`` (pre-converted WAV) → STT on the original URL (SILK→WAV). With
+        ``prefer_stt`` enabled, any external STT failure or empty transcript falls back to
+        ``asr_refer_text`` so no voice message is ever lost."""
+        prefer_stt = bool((self.config.extra or {}).get("prefer_stt", False))
+        if asr_refer_text and not prefer_stt:
+            logger.debug("[%s] STT: using QQ asr_refer_text: %d chars", self._log_tag, len(asr_refer_text))
             return asr_refer_text
 
         is_pre_wav = bool(voice_wav_url)
@@ -1032,12 +1035,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         from tools.url_safety import is_safe_url
         if not is_safe_url(download_url):
             logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
-            return None
+            return asr_refer_text or None
 
         try:
             if not self._http_client:
                 logger.warning("[%s] STT: no HTTP client", self._log_tag)
-                return None
+                return asr_refer_text or None
             download_headers = self._qq_media_headers()  # QQ CDN requires Authorization
             logger.debug(
                 "[%s] STT: downloading voice from %s (pre_wav=%s, headers=%s)",
@@ -1051,7 +1054,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 self._log_tag, len(audio_data), resp.headers.get("content-type", "unknown"))
             if len(audio_data) < 10:
                 logger.warning("[%s] STT: downloaded data too small (%d bytes), skipping", self._log_tag, len(audio_data))
-                return None
+                return asr_refer_text or None
 
             if is_pre_wav:
                 wav_path = self._write_temp(audio_data, ".wav")
@@ -1061,7 +1064,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 wav_path = await self._convert_audio_to_wav_file(audio_data, filename)
                 if not wav_path or not Path(wav_path).exists():
                     logger.warning("[%s] STT: ffmpeg conversion produced no output", self._log_tag)
-                    return None
+                    return asr_refer_text or None
 
             logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
             try:
@@ -1069,13 +1072,20 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             finally:
                 self._unlink_quiet(wav_path)
             if transcript:
-                logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
-            else:
-                logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
-            return transcript
-        except (httpx.HTTPStatusError, httpx.TransportError, IOError) as exc:
+                logger.debug("[%s] STT success: %d chars", self._log_tag, len(transcript))
+                return transcript
+            logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
+        except (httpx.HTTPError, OSError) as exc:
+            # Expected failures: HTTP/transport/timeout errors and file I/O.
             logger.warning("[%s] STT failed for voice attachment: %s: %s", self._log_tag, type(exc).__name__, exc)
-            return None
+        except Exception:
+            # Unexpected bug: still fall back below (zero message loss) but keep the full
+            # traceback visible so real defects are not silently swallowed.
+            logger.exception("[%s] Unexpected STT failure for voice attachment", self._log_tag)
+        if asr_refer_text:
+            logger.info("[%s] Falling back to QQ asr_refer_text", self._log_tag)
+            return asr_refer_text
+        return None
 
     @staticmethod
     def _write_temp(data: bytes, suffix: str) -> str:
@@ -1232,7 +1242,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return None
 
     async def _call_stt(self, wav_path: str) -> Optional[str]:
-        """Transcribe a wav via an OpenAI-compatible STT API; None if unconfigured/failed."""
+        """Transcribe a wav via Hermes central STT engine; fallback to OpenAI-compatible config if present."""
+        # 1. Try central Hermes STT pipeline (Gemini, Groq, Whisper, etc.)
+        try:
+            from tools.transcription_tools import transcribe_audio
+            result = await asyncio.to_thread(transcribe_audio, wav_path)
+            if result and result.get("success") and result.get("transcript"):
+                return result["transcript"].strip()
+        except Exception:
+            logger.exception("[%s] Central STT invocation failed; trying legacy stt config", self._log_tag)
+
+        # 2. Legacy adapter-specific stt config if central unconfigured or failed
         stt_cfg = self._resolve_stt_config()
         if not stt_cfg:
             logger.warning("[%s] STT not configured (no stt config or QQ_STT_API_KEY)", self._log_tag)

@@ -1223,14 +1223,45 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         # clock and return the earliest instant strictly after the base; a repeated
         # hour has two instants, so two candidates always suffice.
         base_ts = base_time.timestamp()
+        repeat = _repeated_hour_second_pass(expr, base_time.astimezone(zone), zone)
         next_wall = it.get_next(datetime)
         for _ in range(2):
             for fold in (0, 1):
                 candidate = next_wall.replace(tzinfo=zone, fold=fold)
                 if candidate.timestamp() > base_ts:
+                    if repeat is not None and repeat.timestamp() < candidate.timestamp():
+                        candidate = repeat
                     return candidate.isoformat()
             next_wall = it.get_next(datetime)
         return next_wall.replace(tzinfo=zone).isoformat()
+    return None
+
+
+def _repeated_hour_second_pass(expr: str, base_local: datetime, zone: Any) -> Optional[datetime]:
+    """Earliest second-pass (fold=1) occurrence of the repeated fall-back hour a FIRST-pass base
+    sits in, or None.
+
+    croniter walks naive wall clocks, so from 01:30 EDT the next wall clock for ``*/30`` is 02:00
+    and the strictly-later 01:00/01:30 EST instants were never candidates (a 90-minute silent gap).
+    Following cronie, only a job with ``*`` leading its minute or hour field (MIN_STAR/HR_STAR)
+    runs on the wall clock both times through; a fixed-time job such as ``30 1 * * *`` fires once.
+    croniter's single-field aliases follow the same rule: ``@hourly`` is cronie's HR_STAR job, the
+    others (``@daily``, ``@weekly``, ...) are fixed times.
+    """
+    shift = base_local.utcoffset() - base_local.replace(fold=1).utcoffset()
+    if base_local.fold or shift <= timedelta(0):
+        return None  # the base's wall clock is not repeated, or the base is already in the second pass
+    fields = str(expr).lower().split()
+    if fields != ["@hourly"] and not any(field.startswith("*") for field in fields[:2]):
+        return None
+    base_wall = base_local.replace(tzinfo=None)
+    it = croniter(expr, base_wall - shift)  # every wall clock of the repeated span up to the base
+    wall = it.get_next(datetime)
+    while wall <= base_wall:
+        candidate = wall.replace(tzinfo=zone, fold=1)
+        if candidate.timestamp() > base_local.timestamp():
+            return candidate
+        wall = it.get_next(datetime)
     return None
 
 

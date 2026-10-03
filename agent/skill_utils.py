@@ -30,13 +30,13 @@ EXCLUDED_SKILL_DIRS = frozenset((
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
-# Org mirrors live under skills/_org/<org_id>/ and are TOKEN-GATED: the sync
-# client writes the marker after verifying the token; no marker => no org skills
-# load. The marker persists offline so already-pulled org skills keep working.
+# Org-shared skill mirror: skills/_org/<org_id>/ is a read-side layout contract for skills an
+# organisation shares. Core never writes it; a separately installed skill-sharing plugin (Skill
+# Sync) materializes it and writes the ``.active_org`` marker after verifying membership. No
+# marker => no org skills load; the marker persists offline so pulled org skills keep working.
 ORG_MIRROR_DIR_NAME = "_org"
 ORG_ACTIVE_MARKER = ".active_org"
 ORG_PROVENANCE_FILE = ".org-provenance.json"
-ORG_BASELINE_FILE = ".org-baseline.json"  # upstream fingerprint; detects local edits
 
 
 def read_active_org_id(skills_dir: Path) -> Optional[str]:

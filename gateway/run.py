@@ -4680,16 +4680,11 @@ def _housekeeping_curator() -> None:
     maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
 
 
-def _housekeeping_skill_sync() -> None:
-    """Inert unless the access gate is open and a sync base URL is configured."""
-    from tools.skills_sync_client import maybe_pull_skills
-    maybe_pull_skills()
-
-
-def _housekeeping_org_skill_sync() -> None:
-    """Gated on real org membership (the token must carry an org role): solo accounts never reach the network."""
-    from tools.skills_sync_client_org import maybe_pull_org_skills
-    maybe_pull_org_skills()
+def _housekeeping_plugin_maintenance() -> None:
+    """``on_maintenance_tick`` for the profile in scope (its own plugin manager and plugins)."""
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    if has_hook("on_maintenance_tick"):
+        invoke_hook("on_maintenance_tick", surface="gateway")
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4849,8 +4844,7 @@ def _start_gateway_housekeeping(
         # Per served profile: each profile has its own skills tree, curator state, Nous login
         # and state.db.
         (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
-        (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
-        (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
+        (60, "Plugin maintenance tick", profile_scoped_chore(runner, _housekeeping_plugin_maintenance)),
         (60, "state.db maintenance tick", profile_scoped_chore(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.

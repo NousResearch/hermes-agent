@@ -103,3 +103,53 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+
+def test_serve_maintenance_tick_fires_once_per_hosted_profile_in_its_scope(tmp_path, monkeypatch):
+    """Multi-profile ``hermes serve``: the ``on_maintenance_tick('serve')`` hook reaches EVERY hosted
+    profile's own plugins once, each inside that profile's runtime scope, so a fail-closed
+    ``get_secret`` resolves the profile's own ``.env`` (never UnscopedSecretError, never another's)."""
+    from pathlib import Path
+
+    import agent.curator as curator
+    import hermes_cli.web_server_sessions as web_server_sessions
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+
+    fake_home = tmp_path / "home"
+    launch = fake_home / ".hermes"
+    other = launch / "profiles" / "s5probe-b"
+    log = tmp_path / "ticks.jsonl"
+    for home, value in ((launch, "launch-secret"), (other, "b-secret")):
+        plugin = home / "plugins" / "tick_probe"
+        plugin.mkdir(parents=True)
+        (home / ".env").write_text(f"S5_PROBE_KEY={value}\n", encoding="utf-8")
+        (home / "config.yaml").write_text("plugins:\n  enabled: [tick_probe]\n", encoding="utf-8")
+        (plugin / "plugin.yaml").write_text("name: tick_probe\nversion: 0.1.0\n", encoding="utf-8")
+        (plugin / "__init__.py").write_text(
+            "import json\n"
+            "def _tick(surface, **_):\n"
+            "    from agent.secret_scope import get_secret\n"
+            "    from hermes_constants import get_hermes_home\n"
+            "    try:\n"
+            "        secret = get_secret('S5_PROBE_KEY')\n"
+            "    except Exception as exc:\n"
+            "        secret = type(exc).__name__\n"
+            f"    with open({str(log)!r}, 'a', encoding='utf-8') as f:\n"
+            "        f.write(json.dumps([get_hermes_home().name, surface, secret]) + '\\n')\n"
+            "def register(ctx):\n"
+            "    ctx.register_hook('on_maintenance_tick', _tick)\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("S5_PROBE_KEY", raising=False)
+    monkeypatch.setattr(curator, "maybe_run_curator", lambda **_: None)
+    _reset_plugin_managers_for_tests()
+    set_multiplex_active(True)
+    try:
+        web_server_sessions._maybe_run_skill_maintenance(0.0)
+    finally:
+        set_multiplex_active(False)
+        _reset_plugin_managers_for_tests()
+
+    ticks = sorted(tuple(json.loads(line)) for line in log.read_text(encoding="utf-8").splitlines())
+    assert ticks == [(".hermes", "serve", "launch-secret"), ("s5probe-b", "serve", "b-secret")]

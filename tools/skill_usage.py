@@ -277,7 +277,8 @@ def _external_read_only_message(skill_name: str) -> str:
 
 def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> bool:
     """Agent-created: yes. Bundled: only with ``curator.prune_builtins``. Hub / external-dir / protected built-ins:
-    never (external owner). Org-shared skills are eligible here but protected from ARCHIVE/DELETE elsewhere."""
+    never (external owner). Org-shared mirror skills (``skills/_org``) get no special treatment in core: they are
+    eligible like any other local skill (an installed Skill Sync plugin may add its own protection)."""
     if ((skill_path is not None and is_external_skill_path(skill_path)) or is_protected_builtin(skill_name)
             or is_hub_installed(skill_name)):
         return False
@@ -575,15 +576,6 @@ def set_pinned(skill_name: str, pinned: bool) -> bool:
     success (issue #92993).
     """
     return _set_field(skill_name, "pinned", bool(pinned))
-
-
-def set_sync(skill_name: str, sync: bool) -> None:
-    """Opt-in ``sync`` flag (read by ``skills_sync_client``); curation-gated so bundled/hub/external can't be marked."""
-    _set_field(skill_name, "sync", bool(sync))
-
-
-def is_sync_enabled(skill_name: str) -> bool:
-    return get_record(skill_name).get("sync") is True
 
 
 def forget(skill_name: str) -> None:

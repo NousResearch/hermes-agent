@@ -133,6 +133,13 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    # on_maintenance_tick: best-effort background maintenance for the profile in scope, off any turn
+    # and off the main thread: once at CLI startup, every gateway housekeeping curator tick (per
+    # served profile, inside ITS runtime scope) and every `hermes serve` maintenance tick (per
+    # hosted profile, inside ITS runtime scope; skipped when a gateway owns the profile). Bounded
+    # (120s floor, plugins_dispatch._HOOK_TIMEOUT_FLOOR_SECS). Kwargs: surface ("cli"|"gateway"|
+    # "serve"). Return ignored.
+    "on_maintenance_tick",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.

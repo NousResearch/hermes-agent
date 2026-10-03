@@ -189,6 +189,92 @@ describe('ModelPill width', () => {
   })
 })
 
+// #98339: the pill shows the provider of THIS surface's resolved route —
+// the chat-bar snapshot, else the live SessionView atoms (the same source
+// the tooltip uses). No parallel plumbing, no secrets, never stale.
+const routeView = (model: string, provider: string): SessionView => ({
+  kind: 'tile',
+  $awaitingResponse: atom(false),
+  $busy: atom(false),
+  $cwd: atom(''),
+  $fast: atom(false),
+  $lastVisibleIsUser: atom(false),
+  $messages: atom([]),
+  $messagesEmpty: atom(true),
+  $model: atom(model),
+  $provider: atom(provider),
+  $reasoningEffort: atom(''),
+  $reasoningEffortPending: atom(false),
+  $reasoningEffortWire: atom(''),
+  $runtimeId: atom('tile-runtime'),
+  $storedId: atom('stored-tile'),
+  $turnStartedAt: atom<number | null>(null)
+})
+
+describe('ModelPill route provider', () => {
+  it('shows the chat-bar provider beside the model', () => {
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({ model: 'tile/claude-sonnet', provider: 'anthropic', modelMenuContent: <div /> })}
+      />
+    )
+
+    expect(screen.getByTestId('model-route-provider').textContent).toBe('Anthropic Account')
+  })
+
+  it('follows the SessionView route when the snapshot is silent', () => {
+    render(
+      <SessionViewProvider value={routeView('tile/claude-sonnet', 'anthropic')}>
+        <ModelPill
+          disabled={false}
+          model={modelState({ model: 'tile/claude-sonnet', provider: '', modelMenuContent: <div /> })}
+        />
+      </SessionViewProvider>
+    )
+
+    // Display name only — route keys and tokens never reach the DOM.
+    const el = screen.getByTestId('model-route-provider')
+    expect(el.textContent).toBe('Anthropic Account')
+    expect(el.textContent).not.toMatch(/sk-|token|key/i)
+  })
+
+  it('updates when the route switches provider', () => {
+    const providerAtom = atom('anthropic')
+    render(
+      <SessionViewProvider value={{ ...routeView('tile/claude-sonnet', 'anthropic'), $provider: providerAtom }}>
+        <ModelPill
+          disabled={false}
+          model={modelState({ model: 'tile/claude-sonnet', provider: '', modelMenuContent: <div /> })}
+        />
+      </SessionViewProvider>
+    )
+    expect(screen.getByTestId('model-route-provider').textContent).toBe('Anthropic Account')
+
+    act(() => {
+      providerAtom.set('nous')
+    })
+    expect(screen.getByTestId('model-route-provider').textContent).toBe('Nous Portal')
+  })
+
+  it('stays hidden while the model is still resolving (no stale route)', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: '', provider: 'anthropic' })} />)
+
+    expect(screen.queryByTestId('model-route-provider')).toBeNull()
+  })
+
+  it('keeps the provider in the accessible name under truncation', () => {
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({ model: 'tile/claude-sonnet', provider: 'anthropic', modelMenuContent: <div /> })}
+      />
+    )
+
+    expect(screen.getByRole('button').getAttribute('aria-label')).toContain('Anthropic Account')
+  })
+})
+
 // The `composer.modelPill` slot: a provider may override the pill's LABEL
 // (compact reasoning label, custom naming) while the pill keeps its chrome,
 // pin dot, and menu. A declining provider leaves the core label untouched.

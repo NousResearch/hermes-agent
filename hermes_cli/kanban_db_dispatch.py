@@ -2760,10 +2760,16 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
             cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
-        # Pin the provider too so the worker resolves the model against the
-        # intended backend (model X with provider Y is the classic board-stall).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
+    # Provider resolution is independent of model_override: an explicit
+    # task.provider_override always wins (model X with provider Y is the classic
+    # board-stall this pins against) and skips the pacing governor entirely.
+    # Otherwise the governor routes this NEW spawn to whichever provider currently
+    # has headroom, failing open to the profile's own configured provider on any
+    # error (t_31b1338d; aos.pacing_governor.resolve_provider_for_new_spawn via
+    # kanban_db_dispatch_pacing, since aos is not on this runtime's sys.path).
+    provider_arg = _kbdp.resolve_worker_provider(task, hermes_home)
+    if provider_arg:
+        cmd.extend(["--provider", provider_arg])
     # Independent of the model override — a task can run the profile's own
     # model at a different depth.
     if task.reasoning_effort:
@@ -3035,4 +3041,5 @@ def run_daemon(
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
+from hermes_cli import kanban_db_dispatch_pacing as _kbdp  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402

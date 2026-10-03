@@ -50,6 +50,7 @@ def _run_switch(
     validation=_ACCEPTED,
     current_model="old-model",
     current_base_url="",
+    catalog=(),
 ):
     """Drive ``switch_model`` with the resolution chain mocked out.
 
@@ -57,10 +58,12 @@ def _run_switch(
     alias resolution, aggregator catalog, ``detect_provider_for_model`` (so step
     e is a no-op and cannot accidentally reroute), validation, credential
     resolution, normalization, and model metadata.  This isolates the new
-    configured-provider detection step.
+    configured-provider detection step.  ``catalog`` feeds the current
+    aggregator's live ``/v1/models`` view (empty by default, so step d is a
+    no-op unless a test opts in).
     """
     with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
-         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_cli.model_switch.list_provider_models", return_value=list(catalog)), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
          patch("hermes_cli.models_validate.validate_requested_model", return_value=validation), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
@@ -253,3 +256,60 @@ def test_raw_list_provider_key_with_different_credential_stays_ambiguous():
         custom_providers=raw)
     assert result.success is False
     assert "multiple configured providers" in (result.error_message or "")
+
+
+# --- #132117: the current aggregator's live catalog must not hijack a name a configured provider
+# --- declares on a different provider.  ``catalog`` is the live /v1/models view of the CURRENT
+# --- (aggregator) provider; "(vendor)/<bare>" ids are exactly what it returns.
+
+_LLAMA = {"name": "llama-server", "api": "http://127.0.0.1:8080/v1",
+          "transport": "chat_completions", "default_model": "qwen3.8-flash"}
+_OPENROUTER_CATALOG = ["qwen/qwen3.8-flash", "deepseek/deepseek-v4.1-flash"]
+
+
+def test_aggregator_live_catalog_does_not_hijack_model_declared_elsewhere():
+    """A bare name the current aggregator's live catalog resolves must still route to the
+    configured provider that declares it — otherwise the switch silently lands on the billable
+    aggregator (#132117)."""
+    result = _run_switch(
+        raw_input="qwen3.8-flash",
+        current_provider="openrouter",
+        current_model="deepseek/deepseek-v4.1-flash",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={"llama-server": _LLAMA},
+        catalog=_OPENROUTER_CATALOG,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "llama-server"
+    assert result.new_model == "qwen3.8-flash"
+
+
+def test_aggregator_live_catalog_still_resolves_undeclared_bare_name():
+    """Regression guard for flat-namespace resellers (opencode-go/zen): when nothing in config
+    declares the name, the current aggregator's live catalog keeps resolving the bare id."""
+    result = _run_switch(
+        raw_input="qwen3.8-flash",
+        current_provider="openrouter",
+        current_model="deepseek/deepseek-v4.1-flash",
+        current_base_url="https://openrouter.ai/api/v1",
+        catalog=_OPENROUTER_CATALOG,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "qwen/qwen3.8-flash"
+
+
+def test_aggregator_live_catalog_still_owns_model_it_declares_itself():
+    """Control: when the current aggregator is itself the configured owner, its live catalog keeps
+    canonicalizing the id and no provider flip happens."""
+    result = _run_switch(
+        raw_input="qwen3.8-flash",
+        current_provider="openrouter",
+        current_model="deepseek/deepseek-v4.1-flash",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={"openrouter": {"name": "openrouter", "default_model": "qwen3.8-flash"}},
+        catalog=_OPENROUTER_CATALOG,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "qwen/qwen3.8-flash"

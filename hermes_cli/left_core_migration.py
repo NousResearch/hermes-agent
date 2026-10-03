@@ -87,12 +87,19 @@ class LeftCoreFeature:
     label: str                                # user-facing feature name
     in_use: Callable[..., bool]               # (home, *, process_env=False) -> bool, read-only
     unchanged: str                            # what migrated users keep, shown on success
+    # Credentials core stripped from every child process while it shipped the feature. Core keeps
+    # stripping them (tools/environments/local_env_policy.py): with the plugin absent (migration
+    # pending, declined or failed) no manifest declares them, and they would reach every child.
+    secret_env: tuple[str, ...] = ()
+    # Non-secret settings core kept out of children by default (provider blocklist, Tier 2).
+    private_env: tuple[str, ...] = ()
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     LeftCoreFeature(
         plugin="homeassistant", label="Home Assistant", in_use=homeassistant_in_use,
         unchanged="HASS_TOKEN/HASS_URL, platforms.homeassistant and the ha_* tool names are unchanged",
+        secret_env=("HASS_TOKEN",), private_env=("HASS_URL",),
     ),
 )
 

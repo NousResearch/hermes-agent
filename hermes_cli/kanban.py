@@ -1151,6 +1151,31 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_health(args: argparse.Namespace) -> int:
+    """Is the ready queue moving, and if not why — the read that tells a starved
+    board from an idle one, on demand (the dispatcher escalates it as a card).
+
+    ``state`` is the one-word verdict: ``starved`` (spawnable rows exist and
+    every one of them is held back), ``dispatchable`` (rows can start),
+    ``idle`` (nothing to run). Exits 0 either way — this is a read, and callers
+    that want to act on starvation parse ``--json``.
+    """
+    board = kb.get_current_board()
+    with kbc.connect_closing() as conn:
+        health = kbd.board_health(conn, board=board)
+    if _json_out(args, {"board": board, **health.as_dict()}):
+        return 0
+    print(health.describe())
+    print(f"  board: {board}")
+    if health.state == "starved":
+        print(f"  {health.suppressed} ready task(s) held back with nothing else to run — "
+              "the dispatcher cannot start this board's queue.")
+        print("  `hermes kanban tail <task-id>` on a held task shows the guard that holds it; "
+              "a deliberate re-queue (`hermes kanban unblock` / `promote`, or a done→ready move) "
+              "lifts it.")
+    return 0
+
+
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     delivery_metadata = {
         key: value
@@ -1331,6 +1356,7 @@ _HANDLERS = {
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
+    "health": _cmd_health,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,

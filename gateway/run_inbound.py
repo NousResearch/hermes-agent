@@ -1069,7 +1069,9 @@ class GatewayInboundMixin:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
+                # A routed profile's message runs under its scope, but os.environ is the launch
+                # profile's: drop that residue so the snippet sees the owning profile's own .env.
+                env=build_subprocess_env(strip_launch_profile=True),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             output = (stdout or stderr).decode().strip()

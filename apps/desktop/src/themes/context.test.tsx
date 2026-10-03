@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { setChatFontFamilyFromConfig } from './chat-font'
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { everforestTheme } from './presets'
 
@@ -15,6 +16,39 @@ const bloomberg = (foreground: string) => ({
 const cssVar = (name: string) => window.document.documentElement.style.getPropertyValue(name)
 
 const customStyleEl = () => window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
+
+describe('ThemeProvider chat font precedence', () => {
+  afterEach(() => {
+    cleanup()
+    setChatFontFamilyFromConfig('')
+    window.localStorage.clear()
+  })
+
+  it('publishes only the explicit font as a prefix and clears it back to locale defaults', () => {
+    window.localStorage.clear()
+    setChatFontFamilyFromConfig('')
+    render(<ThemeProvider><div /></ThemeProvider>)
+
+    const themeFont = cssVar('--dt-font-sans')
+    const monoFont = cssVar('--dt-font-mono')
+    expect(cssVar('--dt-font-chat-prefix')).toBe('')
+
+    for (const [configured, prefix] of [
+      ['OpenDyslexic', "'OpenDyslexic',"],
+      ['"Atkinson Hyperlegible", "Noto Sans CJK SC"', '"Atkinson Hyperlegible", "Noto Sans CJK SC",']
+    ]) {
+      act(() => setChatFontFamilyFromConfig(configured))
+      // A theme/system face here would preempt the locale's punctuation fallback.
+      expect(cssVar('--dt-font-chat-prefix').trim()).toBe(prefix)
+      expect(cssVar('--dt-font-sans')).toBe(`${prefix} ${themeFont}`)
+      expect(cssVar('--dt-font-mono')).toBe(monoFont)
+
+      act(() => setChatFontFamilyFromConfig('  '))
+      expect(cssVar('--dt-font-chat-prefix')).toBe('')
+      expect(cssVar('--dt-font-sans')).toBe(themeFont)
+    }
+  })
+})
 
 describe('ThemeProvider ← backend skin sync', () => {
   beforeEach(() => {

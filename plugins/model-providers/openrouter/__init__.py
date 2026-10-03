@@ -138,6 +138,10 @@ class OpenRouterProfile(ProviderProfile):
             prefs = {**(prefs or {}), "only": list(pin[1])}
         if prefs:
             body["provider"] = prefs
+        # Usage accounting: OpenRouter only reports the billed amount (``usage.cost``,
+        # ``cost_details``) when asked; agent.usage_pricing prices from it as status="actual"
+        # and falls back to the catalog estimate when an endpoint omits it.
+        body["usage"] = {"include": True}
         # Pareto Code router plugin is only meaningful for openrouter/pareto-code.
         score = context.get("openrouter_min_coding_score")
         if (context.get("model") or "") == "openrouter/pareto-code" and score is not None and score != "":

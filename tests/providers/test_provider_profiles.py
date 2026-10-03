@@ -24,6 +24,12 @@ class TestOpenRouterProfile:
             {"id": "pareto-router", "min_coding_score": 0.65}
         ]
 
+    def test_every_request_opts_into_usage_accounting(self):
+        """OpenRouter reports the billed ``usage.cost`` only when asked (#76187); without the
+        opt-in the provider-reported cost path never fires on a direct OpenRouter route."""
+        p = get_provider_profile("openrouter")
+        assert p.build_extra_body(model="anthropic/claude-sonnet-4.6")["usage"] == {"include": True}
+
     def test_grok_session_id_sets_cache_affinity_header(self):
         """OpenRouter + Grok model + session_id => x-grok-conv-id header."""
         p = get_provider_profile("openrouter")

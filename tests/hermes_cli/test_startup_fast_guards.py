@@ -180,6 +180,46 @@ def test_normalize_hermes_home_env_rewrites_tilde_and_leaves_absolute_alone(tmp_
     assert "HERMES_HOME" not in os.environ
 
 
+def test_runtime_floor_guard_exits_clean_on_a_marker_starved_venv(monkeypatch, capsys):
+    """A fresh <3.14 install resolved every core dependency away, so the CLI must fail with
+    the reinstall message instead of ``No module named 'ruamel'`` deep inside config (#124733)."""
+    from hermes_cli import _startup_fast
+
+    monkeypatch.setattr(sys, "version_info", (3, 11, 16, "final", 0))
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    with pytest.raises(SystemExit) as exc:
+        _startup_fast.guard_runtime_floor()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "requires Python 3.14" in err
+    assert "No module named" not in err
+
+
+def test_runtime_floor_guard_lets_a_bridge_venv_through(monkeypatch):
+    """A pre-PM updater mid-handoff still holds the old dependency set on its <3.14 venv —
+    the guard must let it through so the update can reach its 3.14 handoff (e1020f32)."""
+    from hermes_cli import _startup_fast
+
+    monkeypatch.setattr(sys, "version_info", (3, 11, 16, "final", 0))
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: object() if name == "ruamel" else None,
+    )
+    _startup_fast.guard_runtime_floor()  # must not raise
+
+
+def test_runtime_floor_guard_is_a_noop_on_314(monkeypatch):
+    """On a supported interpreter the guard must not even probe the venv."""
+    from hermes_cli import _startup_fast
+
+    monkeypatch.setattr(sys, "version_info", (3, 14, 7, "final", 0))
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: (_ for _ in ()).throw(AssertionError("find_spec probed on 3.14")),
+    )
+    _startup_fast.guard_runtime_floor()
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("remove_cwd", [False, True], ids=["live", "deleted"])
 def test_bootstrap_preserves_live_cwd_and_recovers_deleted_cwd(tmp_path, remove_cwd):

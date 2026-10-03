@@ -698,6 +698,13 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+# A fresh install on the 3.11-3.13 floor resolves every core dependency away
+# (marker-gated to 3.14 for the pre-PM updater bridge, e1020f32), and this
+# module used to die right below on an unactionable ``No module named
+# 'ruamel'`` (#124733). A bridge venv still holds the old dependency set, so
+# the guard keys on the markers' effect, not the version alone.
+_startup_fast.guard_runtime_floor()
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home

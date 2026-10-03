@@ -1694,6 +1694,11 @@ DEFAULT_CONFIG = {
         # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".
         "deny": [],
+        # Same globs/matching as deny, but a match PROMPTS instead of blocking — and keeps prompting
+        # under --yolo / mode=off / an isolated container ("run everything unattended, but every
+        # ssh must ask me first"). Where nobody can answer (cron, -q, unattended platforms) a match
+        # blocks regardless of *_mode: approve. Answering [a]lways silences that one rule.
+        "ask": [],
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,

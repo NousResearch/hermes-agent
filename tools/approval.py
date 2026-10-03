@@ -32,8 +32,8 @@ from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
-    _user_deny_block_result,
+    _ask_rule_description, _command_matches_permanent_allowlist, _hardline_block_result, _match_user_ask_rule,
+    _match_user_deny_rule, _sudo_stdin_block_result, _user_ask_block_result, _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
@@ -1172,12 +1172,17 @@ def check_all_command_guards(command: str, env_type: str,
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
-
-    blocked = _floor_block(command, sudo_guard=True)
+    isolated = _should_skip_container_guards(env_type, has_host_access=has_host_access)
+    blocked = _user_deny_block(command) if isolated else _floor_block(command, sudo_guard=True)
     if blocked is not None:
         return blocked
+    # ``approvals.ask`` sits between deny and the bypasses: like deny it states what the agent may
+    # DO (so an isolated container does not waive it), unlike deny a match prompts rather than
+    # blocks. Inspired by Claude Cowork, whose "Restrict to Ask" tool policy keeps prompting inside
+    # "Skip all approvals" mode — so yolo / mode=off / the permanent allowlist never silence it.
+    ask_pattern = _match_user_ask_rule(command)
+    if isolated and ask_pattern is None:
+        return _approved()
 
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
@@ -1185,15 +1190,22 @@ def check_all_command_guards(command: str, env_type: str,
         return prepared
 
     approval_mode = approval_context._get_approval_mode()
-    if _yolo_active() or approval_mode == "off":
-        return _approved()
-    if _command_matches_permanent_allowlist(command):
-        return _approved()
+    if ask_pattern is None:
+        if _yolo_active() or approval_mode == "off":
+            return _approved()
+        if _command_matches_permanent_allowlist(command):
+            return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
+        if ask_pattern is not None:
+            # An ask rule demands a human; approve-mode exists to waive the heuristic prompt, not
+            # a rule whose only purpose is to force one.
+            logger.warning("User ask rule %r requires a human; none present — BLOCKED: %s",
+                           ask_pattern, command[:200])
+            return _user_ask_block_result(ask_pattern)
         for ctx in _unattended_contexts():
             result = _unattended_deny(command, ctx)
             if result is not None:
@@ -1202,18 +1214,21 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
     # approval flow (block used to be a hard stop) so users can inspect the findings and approve.
-    tirith_result = _tirith_scan(command)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     warnings = []
     session_key = get_current_session_key()
-    if tirith_result["action"] in {"block", "warn"}:
-        findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
-        if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
-    if is_dangerous and not is_approved(session_key, pattern_key):
-        warnings.append((pattern_key, description, False))
+    if ask_pattern is not None and not is_approved(session_key, f"ask_rule:{ask_pattern}"):
+        warnings.append((f"ask_rule:{ask_pattern}", _ask_rule_description(ask_pattern), False))
+    if not isolated:
+        tirith_result = _tirith_scan(command)
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if tirith_result["action"] in {"block", "warn"}:
+            findings = tirith_result.get("findings") or []
+            rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+            tirith_key = f"tirith:{rule_id}"
+            if not is_approved(session_key, tirith_key):
+                warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
+        if is_dangerous and not is_approved(session_key, pattern_key):
+            warnings.append((pattern_key, description, False))
     if not warnings:
         return _approved()
 
@@ -1228,7 +1243,8 @@ def check_all_command_guards(command: str, env_type: str,
         _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
+        # The guardian LLM must not answer for the human an ask rule was written to reach.
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart" and ask_pattern is None,
         permanent_capable=any(not is_t for _, _, is_t in warnings),
     )
 

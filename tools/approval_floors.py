@@ -20,18 +20,15 @@ from tools.approval_detection import (
 logger = logging.getLogger("tools.approval")
 
 
-def _match_user_deny_rule(command: str) -> str | None:
-    """Return the matching ``approvals.deny`` glob, or None. User-defined fnmatch
-    globs that block unconditionally — like the hardline floor, a match fires
-    BEFORE the yolo / mode=off bypass ("never let the agent run this, even under
-    yolo"). Case-insensitive, run over the same normalized/deobfuscated variants
-    the dangerous-pattern detector uses so quoting tricks (``r\\m``,
-    ``git st""atus``) can't sidestep a rule."""
+def _match_user_rule(command: str, key: str) -> str | None:
+    """Return the first ``approvals.<key>`` glob matching ``command``, or None. Case-insensitive
+    fnmatch over the same normalized/deobfuscated variants the dangerous-pattern detector uses, so
+    quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule."""
     try:
-        deny_patterns = _ctx._get_approval_config().get("deny") or []
+        patterns = _ctx._get_approval_config().get(key) or []
     except Exception:
         return None
-    globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
+    globs = [p.strip() for p in patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None
     for command_variant in _deny_command_variants(command):
@@ -40,6 +37,35 @@ def _match_user_deny_rule(command: str) -> str | None:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
                 return pattern
     return None
+
+
+def _match_user_deny_rule(command: str) -> str | None:
+    """``approvals.deny``: like the hardline floor, a match blocks BEFORE the yolo / mode=off
+    bypass ("never let the agent run this, even under yolo")."""
+    return _match_user_rule(command, "deny")
+
+
+def _match_user_ask_rule(command: str) -> str | None:
+    """``approvals.ask``: the tier between ``deny`` and the allowlist. A match does not block; it
+    forces the human prompt even under yolo / mode=off ("always show me this one"), and fails
+    closed where nobody can answer. Inspired by Claude Cowork, whose per-tool "Restrict to Ask"
+    policy keeps prompting inside "Skip all approvals" mode."""
+    return _match_user_rule(command, "ask")
+
+
+def _user_ask_block_result(pattern: str) -> dict:
+    """Unattended-context result for an ``approvals.ask`` match: the rule demands a human, so
+    ``cron_mode`` / ``single_query_mode: approve`` (which waive the heuristic prompt) cannot
+    stand in for one."""
+    return {"approved": False, "user_ask": True, "pattern_key": f"ask_rule:{pattern}",
+            "description": _ask_rule_description(pattern), "message": (
+        f"BLOCKED: this command matches your approvals.ask rule '{pattern}' (config.yaml), "
+        "which requires a human decision, and nobody can answer in this context. Find another "
+        "approach, or remove the rule if the command is safe to run unattended.")}
+
+
+def _ask_rule_description(pattern: str) -> str:
+    return f"matches your approvals.ask rule '{pattern}'"
 
 
 def _user_deny_block_result(pattern: str) -> dict:

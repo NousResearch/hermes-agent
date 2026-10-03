@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import secrets
+import sys
 import threading
 import time
 import urllib.request
@@ -14,7 +15,6 @@ from typing import Any, Callable, Dict
 
 from hermes_constants import display_hermes_home
 from utils import atomic_json_write
-from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -26,6 +26,10 @@ _MISSING_SUBSCRIPTION = object()
 
 class SubscriptionMutationConflict(RuntimeError):
     """The route changed after a caller took the snapshot it intended to replace."""
+
+
+class WebhookSubscriptionsError(ValueError):
+    """The subscriptions store exists but cannot be read as a JSON object."""
 
 
 def _subscriptions_path() -> Path:
@@ -48,16 +52,30 @@ def _subscriptions_lock():
 
 
 def _load_subscriptions_unlocked() -> Dict[str, dict]:
-    """Read one complete store snapshot; unreadable or malformed files read as empty."""
+    """Read one complete store snapshot; only a MISSING store reads as empty.
+
+    An unreadable or malformed one raises: read as {}, the next create would publish a store
+    holding only its own route — every other route and its HMAC secret gone (the docs send
+    users into this file to hand-edit ``toolsets``)."""
+    path = _subscriptions_path()
     try:
-        raw = _subscriptions_path().read_bytes()
-    except OSError:
+        raw = path.read_bytes()
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        raise WebhookSubscriptionsError(
+            f"{display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME} is not readable ({exc}); "
+            "fix it or move it aside — refusing to overwrite it") from exc
     try:
         data = json.loads(raw.decode("utf-8-sig"))
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    except ValueError as exc:  # JSONDecodeError / UnicodeDecodeError are ValueErrors
+        data = exc
+    if not isinstance(data, dict):
+        reason = data if isinstance(data, Exception) else f"top level is {type(data).__name__}, not an object"
+        raise WebhookSubscriptionsError(
+            f"{display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME} is not a valid subscriptions file "
+            f"({reason}); fix it or move it aside — refusing to overwrite it")
+    return data
 
 
 def _load_subscriptions() -> Dict[str, dict]:
@@ -107,13 +125,18 @@ def _replace_subscription(name: str, route: dict, expected: object) -> dict:
 
 
 def _get_webhook_config() -> dict:
-    """Load webhook platform config. Returns {} if not configured."""
+    """The webhook platform as the gateway resolves it (``{"enabled", "extra"}``), else {}.
+
+    Resolved through ``load_gateway_config`` — not config.yaml alone — so WEBHOOK_ENABLED /
+    WEBHOOK_PORT (what ``hermes gateway setup`` and the dashboard write to .env) enable the CLI
+    and set its URLs exactly as they enable and bind the adapter; an explicit yaml ``enabled:
+    false`` still wins, as it does for the gateway."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        return cfg_get(cfg, "platforms", "webhook", default={})
+        from gateway.config import Platform, load_gateway_config
+        pc = load_gateway_config().platforms.get(Platform.WEBHOOK)
     except Exception:
         return {}
+    return {"enabled": bool(pc.enabled), "extra": dict(pc.extra or {})} if pc else {}
 
 
 def _is_webhook_enabled() -> bool:
@@ -172,7 +195,11 @@ def webhook_command(args):
         return
     handler = _ACTIONS.get(sub)
     if handler is not None:
-        handler(args)
+        try:
+            handler(args)
+        except WebhookSubscriptionsError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
 
 def _cmd_subscribe(args):

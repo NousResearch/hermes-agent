@@ -396,6 +396,34 @@ class TestWebhookEndpoints:
         from hermes_cli.webhook import _load_subscriptions
         assert _load_subscriptions()["todoist"]["enabled"] is False
 
+    def test_create_webhook_refuses_to_overwrite_an_unreadable_store(self):
+        """The dashboard create path must not read an unparseable store as {} and write back only
+        its own route (every other route and secret gone): it answers 409 and leaves the file."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.webhook import _subscriptions_path
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"port": 8644}}
+        save_config(cfg)
+        path = _subscriptions_path()
+        path.write_text('{"github-prs": {"secret": "s"},}', encoding="utf-8")
+
+        r = self.client.post("/api/webhooks", json={"name": "todoist", "deliver": "log"})
+
+        assert r.status_code == 409
+        assert path.read_text(encoding="utf-8") == '{"github-prs": {"secret": "s"},}'
+
+    def test_list_webhooks_reports_an_unreadable_store_as_409(self):
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.webhook import _subscriptions_path
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"port": 8644}}
+        save_config(cfg)
+        _subscriptions_path().write_text("broken{{{", encoding="utf-8")
+
+        assert self.client.get("/api/webhooks").status_code == 409
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config
 

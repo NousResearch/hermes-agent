@@ -537,9 +537,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(
-                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            bridge_args = [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
+                           "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
+            bridge_kwargs = dict(stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            try:
+                self._bridge_process = subprocess.Popen(bridge_args, stdin=subprocess.DEVNULL, **bridge_kwargs)
+            except PermissionError as exc:
+                breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+                flags = bridge_kwargs.get("creationflags", 0)
+                if not _IS_WINDOWS or getattr(exc, "winerror", None) != 5 or not flags & breakaway:
+                    raise
+                # A Windows job can forbid breakaway. Keep the bridge managed by
+                # this Gateway, retaining its hidden console and process group.
+                logger.warning("[%s] Retrying bridge without Windows job breakaway after access denial", self.name)
+                bridge_kwargs["creationflags"] = flags & ~breakaway
+                self._bridge_process = subprocess.Popen(bridge_args, stdin=subprocess.DEVNULL, **bridge_kwargs)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

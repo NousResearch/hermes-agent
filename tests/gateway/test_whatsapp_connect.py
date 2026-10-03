@@ -13,7 +13,12 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import json
+import os
 import signal
+import subprocess
+import sys
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -80,6 +85,79 @@ def _connect_patches(mock_proc, mock_fh):
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
     ]
     return base
+
+
+@pytest.mark.asyncio
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize(
+    "winerror,flags,fallback_fails,recovered",
+    [(5, 0x09000200, False, True), (5, 0x08000200, False, False),
+     (2, 0x09000200, False, False), (5, 0x09000200, True, False)],
+    ids=["windows-job-denied", "already-without-breakaway", "other-windows-error", "retry-fails"],
+)
+async def test_bridge_spawn_retries_only_windows_job_denial(winerror, flags, fallback_fails, recovered):
+    """A job that rejects breakaway must still permit the managed bridge to start."""
+    adapter = _make_adapter()
+    proc, log = MagicMock(), MagicMock()
+    denied = PermissionError("process creation denied")
+    denied.winerror = winerror
+    with ExitStack() as stack:
+        for item in _connect_patches(proc, log):
+            stack.enter_context(item)
+        stack.enter_context(patch.object(adapter, "_acquire_platform_lock", return_value=True))
+        release = stack.enter_context(patch.object(adapter, "_release_platform_lock"))
+        stack.enter_context(patch.object(adapter, "_ensure_bridge_deps", return_value=True))
+        stack.enter_context(patch.object(adapter, "_reuse_running_bridge", new_callable=AsyncMock, return_value=False))
+        stack.enter_context(patch.object(adapter, "_bridge_env", return_value={"PUBLIC_TEST": "1"}))
+        stack.enter_context(patch.object(adapter, "_wait_for_bridge", new_callable=AsyncMock, return_value=True))
+        stack.enter_context(patch.object(adapter, "_attach_to_bridge"))
+        stack.enter_context(patch.object(adapter, "_wire_plugin_handlers"))
+        for name in ("_kill_stale_bridge_by_pidfile", "_kill_port_process", "_write_bridge_pidfile"):
+            stack.enter_context(patch(f"plugins.platforms.whatsapp.adapter.{name}"))
+        stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_popen_kwargs", return_value={"creationflags": flags}))
+        spawn = stack.enter_context(patch("subprocess.Popen", side_effect=[denied, OSError("bridge unavailable") if fallback_fails else proc]))
+        result = await adapter.connect()
+    assert result is recovered
+    assert spawn.call_count == (2 if recovered or fallback_fails else 1)
+    if not recovered:
+        log.close.assert_called_once()
+        release.assert_called_once()
+    if recovered:
+        first, second = spawn.call_args_list
+        assert first.args == second.args
+        assert first.kwargs["stdin"] == second.kwargs["stdin"] == subprocess.DEVNULL
+        assert {k:v for k,v in first.kwargs.items() if k != "creationflags"} == {k:v for k,v in second.kwargs.items() if k != "creationflags"}
+        assert first.kwargs["creationflags"] & 0x01000000
+        assert second.kwargs["creationflags"] == flags & ~0x01000000
+        assert second.kwargs["creationflags"] & 0x08000200 == 0x08000200
+        assert adapter._bridge_process is proc
+
+
+@pytest.mark.platforms("windows")
+def test_bridge_spawn_inside_restrictive_native_job(tmp_path):
+    """Real Adapter/CreateProcess fallback inside a helper's own restrictive job."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    probe = Path(__file__).with_name("_whatsapp_windows_job_probe.py")
+    root = Path(__file__).resolve().parents[2]
+    env = {k:v for k,v in os.environ.items() if k in {
+        "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE",
+        "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+    }}
+    env.update(HERMES_HOME=str(tmp_path / "home"), HERMES_INSTALL_ROOT=str(root), PYTHONUTF8="1")
+    result = subprocess.run(
+        [sys.executable, str(probe), str(tmp_path)], cwd=root, env=env,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        creationflags=windows_hide_flags(), timeout=180,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    receipt = json.loads(result.stdout.splitlines()[-1])
+    assert receipt == {
+        "native_adapter_fallback": True, "initial_winerror": 5,
+        "child_in_job": True, "child_pid_matched": True,
+        "console_visible": False, "public_environment_preserved": True,
+        "lock_released": True, "log_closed": True,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -320,6 +320,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    reply_card: bool = False  # platforms.feishu.reply_card: send text replies as interactive cards
 
 
 @dataclass
@@ -1272,6 +1273,64 @@ def _card(title: str, template: str, markdown: str, *, actions: Optional[List[Di
     }
 
 
+# --- Reply cards (opt-in via ``platforms.feishu.reply_card``) ---
+
+_CARD_REPLY_TEMPLATE = "blue"  # header colour used when a reply does not name one
+_CARD_CONTENT_MAX_BYTES = 28000  # Feishu rejects card JSON over 30 KB; keep head-room
+_REPLY_CARD_TITLE_MAX = 30
+_REPLY_CARD_COLORS = frozenset({
+    "blue", "wathet", "turquoise", "green", "yellow", "orange", "red",
+    "carmine", "violet", "purple", "indigo", "grey",
+})
+# A leading ``【title】`` — optionally ``【title|colour】`` — becomes the header; the rest is the body.
+_REPLY_CARD_TITLE_RE = re.compile(r"^【([^】\n]{1,40})】[ \t]*\n?")
+
+
+def _reply_card_parts(text: str) -> tuple[str, str, str]:
+    """``(title, body, template)`` for a reply card.
+
+    An explicit ``【…】`` lead wins, and its remainder becomes the body so nothing is duplicated. Without
+    one, the first line is the title only when it is short enough to be reused verbatim; otherwise the
+    whole text stays in the body and the title is just a truncated label — content is never dropped.
+    """
+    match = _REPLY_CARD_TITLE_RE.match(text)
+    if match:
+        title, _, colour = match.group(1).partition("|")
+        colour = colour.strip().lower()
+        body = text[match.end():].strip("\n")
+        return (
+            title.strip() or "Hermes",
+            body or title.strip(),
+            colour if colour in _REPLY_CARD_COLORS else _CARD_REPLY_TEMPLATE,
+        )
+    first, _, rest = text.partition("\n")
+    label = re.sub(r"[*_`~]+", "", first).strip()
+    if label[:2] in {"- ", "> ", "# "}:
+        label = label[2:].strip()
+    if label and len(label) <= _REPLY_CARD_TITLE_MAX:
+        return label, rest.strip("\n"), _CARD_REPLY_TEMPLATE
+    if label:
+        return f"{label[:_REPLY_CARD_TITLE_MAX - 1]}…", text, _CARD_REPLY_TEMPLATE
+    return "Hermes", text, _CARD_REPLY_TEMPLATE
+
+
+def _build_reply_card(text: str) -> Dict[str, Any]:
+    """Card 2.0 payload for a text reply: colored header + one markdown block."""
+    title, body, template = _reply_card_parts(text)
+    elements: List[Dict[str, Any]] = [{"tag": "markdown", "content": body}] if body.strip() else []
+    return {
+        "schema": "2.0",
+        "config": {"width_mode": "default"},
+        "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
+        "body": {
+            "direction": "vertical",
+            "padding": "12px 12px 16px 12px",
+            "vertical_spacing": "8px",
+            "elements": elements,
+        },
+    }
+
+
 def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     """``request_cls.builder().<field>(value)...build()``; SimpleNamespace when the SDK is unbound."""
     if request_cls is None:
@@ -1416,6 +1475,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            reply_card=_to_boolean(extra.get("reply_card", _get_scoped_secret("FEISHU_REPLY_CARD", "false"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3627,6 +3687,13 @@ class FeishuAdapter(BasePlatformAdapter):
         # lets ``send`` treat the chunk as part of a larger markdown document: when a long markdown reply is
         # split at MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise mis-classify a plain-prose chunk
         # as ``text``. See #26841.
+        if getattr(self, "_reply_card", False):
+            payload = json.dumps(_build_reply_card(content), ensure_ascii=False)
+            if len(payload.encode("utf-8")) <= _CARD_CONTENT_MAX_BYTES:
+                return "interactive", payload
+            logger.warning(
+                "[Feishu] Reply card payload exceeds %d bytes; sending as post instead", _CARD_CONTENT_MAX_BYTES,
+            )
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         return "text", json.dumps({"text": content}, ensure_ascii=False)
@@ -4465,10 +4532,20 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
-    seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
-    seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
-    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
+    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots / feishu.reply_card to
+    ``FEISHU_ALLOW_BOTS`` / ``FEISHU_REPLY_CARD`` (env wins) and seed ``extra`` so a multiplexed
+    secondary profile's adapter reads its own values."""
+    seeded = _apply_yaml_bridge(
+        feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"), ("reply_card", "FEISHU_REPLY_CARD", "lower")),
+    )
+    if not seeded:
+        return None
+    extra: dict = {}
+    if "allow_bots" in seeded:
+        extra["allow_bots"] = str(seeded["allow_bots"]).lower()
+    if "reply_card" in seeded:
+        extra["reply_card"] = seeded["reply_card"]
+    return extra or None
 
 
 

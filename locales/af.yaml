@@ -2355,6 +2355,7 @@ cli:
     removed: "Tou-item {index} verwyder: {preview}"
     item_not_found: "Tou-item {index} nie gevind nie. Huidige grootte: {size}"
     usage_edit: "Gebruik: /queue edit <number> <new prompt>"
+    usage_remove: "Gebruik: /queue rm <number>"
     updated: "Tou-item {index} opgedateer: {preview}"
     usage_move: "Gebruik: /queue move <from> <to>"
     move_out_of_range: "Tou-verplasing buite bereik. Huidige grootte: {size}"

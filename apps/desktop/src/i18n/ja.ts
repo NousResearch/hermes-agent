@@ -707,6 +707,8 @@ export const ja = defineLocale({
       modelPricingTitle: 'モデル料金',
       modelPricingDesc: 'モデル選択で、100万トークンあたりの入力・出力・キャッシュ読み取り料金を表示します。',
       reactionsTitle: 'メッセージリアクション',
+      skillSuggestionsTitle: 'スキル提案',
+      skillSuggestionsDesc: '入力中に一致するスラッシュコマンドを提案 — Tab で確定、ホバーで説明を表示。',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       tipsTitle: 'アプリ内ヒント',
@@ -2700,6 +2702,7 @@ export const ja = defineLocale({
     commonCommands: '一般的なコマンド',
     hotkeys: 'ホットキー',
     helpFooter: 'フルパネルを開く · Backspace で閉じる',
+    ghostShiftTabHint: 'Shift+Tab で切り替え',
     commandDescs: {
       '/help': 'デスクトップのスラッシュコマンドを表示',
       '/clear': '新しいセッションを開始',
@@ -2842,6 +2845,12 @@ export const ja = defineLocale({
     snippetsDesc: 'スターターのプロンプトをコンポーザーに挿入します。',
     dropFiles: 'ファイルをドロップして添付',
     dropSession: 'ドロップしてこのチャットをリンク',
+    skillStripPrefix: '入力してみる：',
+    skillStripDismiss: '非表示',
+    onboardingTitle: 'Hermes Desktop へようこそ',
+    onboardingLine1: 'ここをクリックして会話を開始',
+    onboardingLine2: '/ で全コマンドを見る · @ でファイルを参照 · /help で完全なマニュアル',
+    onboardingAck: '了解',
     snippets: {
       codeReview: {
         label: 'コードレビュー',

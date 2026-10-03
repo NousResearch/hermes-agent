@@ -318,6 +318,8 @@ export const zhHantSettings = {
       textDirection: { auto: '自動', rtl: '從右到左', ltr: '從左到右' },
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
+      skillSuggestionsTitle: '技能建議',
+      skillSuggestionsDesc: '輸入時自動推薦相符的斜線命令，按 Tab 補全，懸停查看技能說明。',
       modelPricingTitle: '模型價格',
       modelPricingDesc: '在模型選擇器中顯示每百萬 token 的輸入、輸出和快取讀取價格。',
       reactionsTitle: '訊息回應',

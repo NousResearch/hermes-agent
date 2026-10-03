@@ -58,6 +58,8 @@ export const zhHantChat = {
     commonCommands: '常用指令',
     hotkeys: '快捷鍵',
     helpFooter: '開啟完整面板 · 退格鍵關閉',
+    commonCommands: '常用命令',
+    ghostShiftTabHint: '按 Shift+Tab 切換',
     commandDescs: {
       '/help': '顯示桌面端斜線指令',
       '/clear': '開始新工作階段',
@@ -196,6 +198,12 @@ export const zhHantChat = {
     snippetsDesc: '選擇一個起始提示詞放入輸入框。',
     dropFiles: '拖曳檔案以附加',
     dropSession: '拖曳以連結此聊天',
+    skillStripPrefix: '試試輸入：',
+    skillStripDismiss: '不再顯示',
+    onboardingTitle: '歡迎使用 Hermes Desktop',
+    onboardingLine1: '點按這裡開始對話',
+    onboardingLine2: '輸入 / 檢視所有命令 · @ 引用檔案 · /help 看完整手冊',
+    onboardingAck: '知道了',
     snippets: {
       codeReview: {
         label: '程式碼審查',

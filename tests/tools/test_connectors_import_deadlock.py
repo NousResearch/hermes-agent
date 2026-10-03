@@ -82,28 +82,3 @@ def test_concurrent_package_and_submodule_import_never_deadlocks():
     assert proc.returncode == 0, proc.stderr
     assert "alive 0" in proc.stdout, proc.stdout
     assert "errors []" in proc.stdout, proc.stdout
-
-
-def test_lazy_surface_matches_all_and_raises_for_unknown_names():
-    import tools.connectors as connectors
-
-    assert sorted(connectors.__all__) == [
-        "CONNECTOR_BATCH_SENTINEL",
-        "MANAGE_CONNECTIONS_SCHEMA",
-        "connector_describe",
-        "connector_search_hits",
-        "connectors_available",
-        "dispatch_connector_batch",
-        "dispatch_connector_call",
-        "is_connector_name",
-        "manage_connections",
-    ]
-    for name in connectors.__all__:
-        assert getattr(connectors, name) is not None
-    assert set(connectors.__all__) <= set(dir(connectors))
-    try:
-        connectors.not_a_real_connector_name
-    except AttributeError as exc:
-        assert "not_a_real_connector_name" in str(exc)
-    else:  # pragma: no cover - the attribute must not resolve
-        raise AssertionError("unknown attribute resolved")

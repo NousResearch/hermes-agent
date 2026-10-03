@@ -1291,9 +1291,13 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 continue
             models = row.get("models") or []
             if current_model not in models:
-                from hermes_cli.models import _model_requires_account_discovery
+                from hermes_cli.models import _model_requires_account_discovery, model_belongs_to_provider_family
 
                 if _model_requires_account_discovery(row.get("slug"), current_model):
+                    break
+                if model_belongs_to_provider_family(row.get("slug"), current_model):
+                    # A leftover ``model.default`` from a different provider's family (profile
+                    # clone + provider-only switch) must not surface as servable here (#125640).
                     break
                 row["models"] = [current_model, *models]
                 row["total_models"] = row.get("total_models", len(models)) + 1

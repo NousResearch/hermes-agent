@@ -2023,6 +2023,73 @@ def _model_requires_account_discovery(provider: Optional[str], model: str) -> bo
     return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
 
 
+# Single-vendor providers whose native ids positively identify the family: ``claude-*`` can only
+# be an Anthropic id, ``gpt-*``/``codex-*`` an OpenAI one, ... Used by the picker's current-model
+# injection to skip surfacing a ``model.default`` left over from a *different* provider's family
+# (#125640: ``model.provider: openai-codex`` + ``model.default: claude-sonnet-5`` after a profile
+# clone). Aggregators (openrouter, copilot, nous, vertex, ...) and custom endpoints legitimately
+# serve cross-vendor catalogs and are deliberately absent — unknown ids and ungated slugs keep
+# the historical inject behavior so a custom/uncurated model set via ``/model <provider>/<name>``
+# stays visible.
+_VENDOR_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
+    "anthropic": ("claude-",),
+    "openai": ("gpt-", "o1", "o3", "o4", "codex-", "chatgpt-"),
+    "gemini": ("gemini-",),
+    "xai": ("grok-",),
+    "deepseek": ("deepseek-",),
+    "zai": ("glm-",),
+    "minimax": ("minimax-", "abab"),
+    "kimi": ("kimi-", "moonshot-v"),
+    "stepfun": ("step-",),
+    "qwen": ("qwen",),
+}
+
+# Registry slugs serving exactly one vendor's family (sibling slugs of one vendor map together).
+_VENDOR_SLUG_TO_FAMILY: dict[str, str] = {
+    "anthropic": "anthropic",
+    "openai": "openai", "openai-api": "openai", "openai-codex": "openai",
+    "gemini": "gemini",
+    "xai": "xai", "xai-oauth": "xai",
+    "deepseek": "deepseek",
+    "zai": "zai",
+    "minimax": "minimax", "minimax-cn": "minimax", "minimax-oauth": "minimax",
+    "kimi-coding": "kimi", "kimi-coding-cn": "kimi",
+    "stepfun": "stepfun",
+    "qwen-oauth": "qwen",
+}
+
+
+def _normalize_model_for_family(model: str) -> str:
+    """Lowercase and strip ``vendor/`` and ``scope:`` prefixes (``anthropic/claude-opus-4-6``,
+    ``hf:zai-org/GLM-5.3-Flash`` → ``glm-5.3-flash``) so family prefixes match how ids arrive
+    from config (``model.default``) rather than from a native catalog."""
+    raw = str(model or "").strip().lower()
+    for _ in range(3):  # combined prefixes, e.g. hf:org/glm-5.3-flash
+        if ":" in raw:
+            raw = raw.split(":", 1)[1]
+        if "/" in raw:
+            raw = raw.split("/", 1)[1]
+    return raw.strip()
+
+
+def model_belongs_to_provider_family(provider: Optional[str], model: str) -> bool:
+    """True when ``model`` positively identifies as a single-vendor family OTHER than ``provider``'s.
+
+    Unknown slugs and unrecognized ids return False (no family known) — the caller keeps its
+    historical behavior; only a positive foreign-family match answers True."""
+    family = _VENDOR_SLUG_TO_FAMILY.get(_normalized_cache_slug(provider))
+    if not family:
+        return False
+    normalized = _normalize_model_for_family(model)
+    if not normalized:
+        return False
+    return any(
+        normalized.startswith(prefix)
+        for other_family, prefixes in _VENDOR_MODEL_FAMILIES.items()
+        if other_family != family
+        for prefix in prefixes)
+
+
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL, non_blocking: bool = False) -> list[str]:

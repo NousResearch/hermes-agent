@@ -131,15 +131,10 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
-        missing_display = ", ".join(missing_skills)
-        if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
-        logging.warning(
-            "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-            "List available skills with `hermes skills list`.",
-            missing_display,
-            ", ".join(loaded_skills),
-        )
+        # Fail-soft, never exit 1 — parity with cli.chat (see agent.skill_commands).
+        from agent.skill_commands import missing_preload_skills_message
+
+        logging.warning(missing_preload_skills_message(loaded_skills, missing_skills))
     return skills_prompt or None
 
 

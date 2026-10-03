@@ -2593,21 +2593,18 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
-    """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Hard-fails only when EVERY requested
-    skill is missing (cli.py parity): a typo'd name must not auto-block the Kanban task."""
+    """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Missing skills are a
+    warning, never a raise (cli.py / oneshot.py parity): an unknown startup skill degrades the
+    session instead of killing it — a hard exit there was a kanban crash-loop class."""
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
         return system_prompt
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, missing_preload_skills_message
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(startup_skills, task_id=task_id)
     if missing_skills:
-        missing_display = ", ".join(missing_skills)
-        if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
-        logger.warning("Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-                       "List available skills with `hermes skills list`.", missing_display, ", ".join(loaded_skills))
+        logger.warning(missing_preload_skills_message(loaded_skills, missing_skills))
     if skills_prompt:
         system_prompt = "\n\n".join(part for part in (system_prompt, skills_prompt) if part).strip()
     return system_prompt

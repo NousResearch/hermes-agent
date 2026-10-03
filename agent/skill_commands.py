@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -217,32 +218,112 @@ def _resolve_skill_commands_project() -> Optional[str]:
     return str(root) if root is not None else None
 
 
+# ── Preload resolution: transient-failure hardening ─────────────────────────────────────
+# Skill resolution runs on a cold skills tree at worker startup: a transient import/IO error
+# or a directory that is momentarily unreadable answers "not found" even though the SKILL.md
+# is on disk, and the preload caller used to turn that single answer into a hard exit
+# (kanban crash loop, one spawn slot burned per attempt). Resolution is therefore retried a
+# few times before its answer is believed, and every refusal keeps its reason so callers can
+# log WHY a skill did not load instead of only "Unknown skill(s)".
+_PRELOAD_RESOLVE_ATTEMPTS = 3
+_PRELOAD_RESOLVE_RETRY_DELAY = 0.25  # seconds; doubles between attempts
+# Refusals a retry cannot change (operator/config decisions): reported immediately, no delay.
+_DETERMINISTIC_SKILL_REFUSALS = (
+    "is disabled",
+    "ambiguous skill name",
+    "not supported on this platform",
+    "quarantined",
+)
+# identifier -> last refusal reason in this process. Write-only cache: read for logging only.
+_skill_resolution_reasons: Dict[str, str] = {}
+
+
+def skill_resolution_reasons(identifiers: Any = None) -> Dict[str, str]:
+    """Last known refusal reason per requested skill identifier (empty dict when none failed).
+
+    The map is process-local and only ever populated by :func:`_load_skill_payload`; it exists
+    so a caller that degrades on a missing skill can say WHY it is missing.
+    """
+    if identifiers is None:
+        return dict(_skill_resolution_reasons)
+    return {name: _skill_resolution_reasons[name] for name in identifiers
+            if isinstance(name, str) and name in _skill_resolution_reasons}
+
+
+def _is_deterministic_skill_refusal(reason: str) -> bool:
+    lowered = (reason or "").lower()
+    return any(token in lowered for token in _DETERMINISTIC_SKILL_REFUSALS)
+
+
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
-    """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+    """Load a skill by name/path and return (loaded_payload, skill_dir, display_name).
+
+    ``None`` means "did not resolve" — genuinely unknown, disabled, ambiguous, or transiently
+    unreadable. Transient failures are retried (:data:`_PRELOAD_RESOLVE_ATTEMPTS`); the refusal
+    reason for the identifier is recorded in :data:`_skill_resolution_reasons`.
+    """
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
         return None
-    try:
-        from tools.skills_tool import _skills_dir, skill_view
-        from agent.skill_utils import normalize_skill_lookup_name
-        normalized = normalize_skill_lookup_name(raw_identifier)
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
-    except Exception:
-        return None
-    if not loaded_skill.get("success"):
-        return None
-    skill_path = str(loaded_skill.get("path") or "")
-    skill_dir = None
-    # Prefer the absolute skill_dir from skill_view() (correct for external
-    # skills too); fall back to SKILLS_DIR-relative reconstruction for legacy responses.
-    if loaded_skill.get("skill_dir"):
-        skill_dir = Path(loaded_skill["skill_dir"])
-    elif skill_path:
+    normalized = raw_identifier
+    reason = ""
+    delay = _PRELOAD_RESOLVE_RETRY_DELAY
+    for attempt in range(1, _PRELOAD_RESOLVE_ATTEMPTS + 1):
+        loaded_skill: Optional[dict[str, Any]] = None
         try:
-            skill_dir = _skills_dir() / Path(skill_path).parent
-        except Exception:
-            skill_dir = None
-    return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
+            from tools.skills_tool import _skills_dir, skill_view
+            from agent.skill_utils import normalize_skill_lookup_name
+            normalized = normalize_skill_lookup_name(raw_identifier)
+            loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
+        except Exception as exc:  # import/IO/parse hiccup — transient by definition
+            reason = f"{type(exc).__name__}: {exc}"
+        if loaded_skill is not None:
+            if loaded_skill.get("success"):
+                _skill_resolution_reasons.pop(raw_identifier, None)
+                skill_path = str(loaded_skill.get("path") or "")
+                skill_dir = None
+                # Prefer the absolute skill_dir from skill_view() (correct for external
+                # skills too); fall back to SKILLS_DIR-relative reconstruction for legacy responses.
+                if loaded_skill.get("skill_dir"):
+                    skill_dir = Path(loaded_skill["skill_dir"])
+                elif skill_path:
+                    try:
+                        skill_dir = _skills_dir() / Path(skill_path).parent
+                    except Exception:
+                        skill_dir = None
+                return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
+            reason = str(loaded_skill.get("error") or "resolution failed without an error message")
+        _skill_resolution_reasons[raw_identifier] = reason
+        if attempt >= _PRELOAD_RESOLVE_ATTEMPTS or _is_deterministic_skill_refusal(reason):
+            break
+        time.sleep(delay)
+        delay *= 2
+    return None
+
+
+def missing_preload_skills_message(loaded_skills: list, missing_skills: list) -> Optional[str]:
+    """Operator-facing warning for skills a session asked for but did not get — or ``None``.
+
+    Callers MUST log this and continue: a missing/unknown skill degrades a session (run without
+    it), it never exits 1. Hard-exiting turned one config gap into a kanban crash loop that
+    burned the single spawn slot every few minutes; the reason detail below is what makes the
+    next occurrence diagnosable instead of just "Unknown skill(s)".
+    """
+    if not missing_skills:
+        return None
+    missing_display = ", ".join(str(name) for name in missing_skills)
+    reasons = skill_resolution_reasons(missing_skills)
+    if loaded_skills:
+        message = (f"Unknown skill(s) requested, skipping: {missing_display}. "
+                   f"Continuing with: {', '.join(str(name) for name in loaded_skills)}.")
+    else:
+        message = f"Unknown skill(s) requested, continuing without: {missing_display}."
+    if reasons:
+        detail = "; ".join(f"{name}: {reason.rstrip('.')}" for name, reason in reasons.items())
+        message += f" Resolution failure(s): {detail}."
+    return (message + " The skill was not loaded into this session — the session keeps running "
+                      "without it. List available skills with `hermes skills list`, or install it "
+                      "if it was expected to be here.")
 
 
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:

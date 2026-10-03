@@ -87,7 +87,7 @@ def main() -> int:
             if name in BORING_HEADERS or name in ("method", "path", "scheme", "authority"):
                 continue
             g["headers"][name] = trunc(h["value"], 120)
-        post = req.get("postData", {})
+        post = req.get("postData") or {}
         if post.get("text") and g["req_body"] is None:
             g["req_body"] = (post.get("mimeType", ""), trunc(post["text"], args.max_body))
         resp = entry.get("response", {})

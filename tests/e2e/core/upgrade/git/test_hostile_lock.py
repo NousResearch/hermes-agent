@@ -44,6 +44,20 @@ from pathlib import Path
 root, checkout, mode = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 envs = json.loads((root / "envs.json").read_text(encoding="utf-8"))
 ARGV = [sys.executable, "-m", "hermes_cli.main", "update", "--yes", "--branch", "main", "--no-gateway-restart"]
+# The readers a launch / a running server consult, in a fresh process of another home.
+READER = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.web_server_skew_exit import _update_in_progress
+from hermes_cli.venv_sync import prepare_launch
+out = {"skew_reader": _update_in_progress()}
+try:
+    out["launch"] = repr(prepare_launch(Path(sys.argv[1]), ["status"]))
+except RuntimeError as exc:
+    out["launch"] = "refused: " + str(exc)
+print(json.dumps(out))
+"""
 
 
 def ct(pid):
@@ -105,6 +119,26 @@ elif mode == "kill-mid-completion":
     first.wait()
     result["child_alive_before"] = child is not None and alive(child)
     result["rc"], result["out"] = update("home-b")
+    result["child_alive_after"] = child is not None and alive(child)
+    if child is not None and alive(child):
+        os.kill(child, signal.SIGKILL)
+elif mode == "orphan-reader":
+    first = subprocess.Popen(ARGV, env=envs["home-a"], cwd=checkout, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    child = None
+    deadline = time.time() + 240
+    while child is None and time.time() < deadline and first.poll() is None:
+        child = completion_child(envs["home-a"]["HERMES_HOME"])
+        time.sleep(0.05)
+    result["child_seen"] = child is not None
+    os.kill(first.pid, signal.SIGKILL)
+    first.wait()
+    # The killed owner's marker is gone (any reader compare-and-deletes a dead claim).
+    (Path(envs["home-a"]["HERMES_HOME"]) / ".hermes-update-in-progress").unlink(missing_ok=True)
+    reader = subprocess.run([sys.executable, "-c", READER, checkout], env=envs["home-b"], cwd=checkout,
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    result["reader_out"] = reader.stdout[-2000:] + reader.stderr[-2000:]
+    result["reader"] = json.loads(reader.stdout.strip().splitlines()[-1]) if reader.returncode == 0 else None
     result["child_alive_after"] = child is not None and alive(child)
     if child is not None and alive(child):
         os.kill(child, signal.SIGKILL)
@@ -218,3 +252,14 @@ def test_killed_owner_keeps_the_checkout_locked_while_its_tree_runs(rig):
     assert r["rc"] == 2 and REFUSAL in r["out"], (
         f"a new update started while the killed update's completion child ran (rc={r['rc']}, "
         f"child alive after: {r['child_alive_after']}):\n{r['out']}")
+
+
+def test_orphaned_update_tree_reads_as_in_progress(rig):
+    """(e) SIGKILL `hermes update` mid-completion and lose its marker: the completion child still
+    holds the checkout lock, so every "is an update running" reader must still say yes."""
+    r = rig.driver("orphan-reader", timeout=600)
+    assert r["child_seen"] and r["child_alive_after"], f"premise: no completion child outlived the owner: {r}"
+    assert r["reader"] is not None, f"reader process failed:\n{r['reader_out']}"
+    assert r["reader"]["skew_reader"] is True, f"the server's update probe missed the live update tree: {r}"
+    assert r["reader"]["launch"].startswith("refused: an update is still running"), (
+        f"a launch ran the completion tail beside the live update tree: {r}")

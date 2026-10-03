@@ -376,7 +376,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     import pm
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.update_lock import UpdateLock, read_live_update
+    from hermes_cli.update_lock import UpdateLock, read_live_update, update_in_progress
 
     current = pm.venv_is_current(project_root=root)
     from pm.environments import owning_home_root
@@ -401,8 +401,12 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # noise (the record's age tracks the wait), leaving the marker armed.
         pass
     elif not owed_to_cli and (not current or pending.is_file()):
+        # Read before claiming: our own claim would answer for us. A free marker over a held
+        # checkout lock is a killed update whose tree (its completion child) still runs.
+        busy = update_in_progress(root)
         lock = UpdateLock()
-        if not lock.acquire():
+        if not lock.acquire() or (lock.acquired and busy):
+            lock.release()
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
             # Under the launching update's own claim (its pid is our ancestor) a process it

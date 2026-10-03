@@ -175,3 +175,75 @@ def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(
         assert promoted == 0
         assert kb.get_task(conn, child_id).status == "blocked"
 
+
+# ---------------------------------------------------------------------------
+# Unattributed parks: a block with neither a failure record nor a block event
+# ---------------------------------------------------------------------------
+
+
+def test_direct_status_write_to_blocked_is_not_promoted_by_recompute_ready(kanban_home: Path) -> None:
+    """A ``blocked`` row carrying no recorded failure and no ``blocked``
+    event — the unattributed park an operator creates by writing the
+    status directly — must stay blocked across arbitrary dispatcher
+    ticks. Nothing attributes that block to the circuit breaker, so
+    ``recompute_ready`` promoting it would spawn a worker on a card a
+    human deliberately parked."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="parked by hand", assignee="a")
+        assert kb.get_task(conn, tid).status == "ready"
+
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+        conn.commit()
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        # A second tick must hold it too — the dispatcher loops.
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_unblocked_then_status_write_blocked_is_not_promoted(kanban_home: Path) -> None:
+    """The real-incident shape: a worker parks the card via
+    ``block_task``, an operator clears the sticky block via
+    ``unblock_task``, and the card is then re-parked with a direct
+    status write. ``unblock_task`` resets ``consecutive_failures`` and
+    leaves ``unblocked`` as the newest ``blocked``/``unblocked`` event,
+    so nothing attributes the new park to the breaker —
+    ``recompute_ready`` must leave it blocked."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="re-parked after unblock")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn, tid,
+            reason="needs_input: waiting on the operator",
+            kind="needs_input",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+        conn.commit()
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_failure_recorded_block_still_auto_recovers_below_limit(kanban_home: Path) -> None:
+    """The invariant the zero-evidence guard must not swallow: a block
+    that IS attributable to the breaker — ``consecutive_failures >= 1``,
+    below the effective limit — still auto-recovers to ``ready``. This
+    is the path pinned by
+    ``test_kanban_db.py::test_recompute_ready_honours_dispatcher_failure_limit``."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="breaker-blocked", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+        assert kb.recompute_ready(conn, failure_limit=3) == 1
+        assert kb.get_task(conn, tid).status == "ready"
+

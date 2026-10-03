@@ -847,21 +847,23 @@ def _leader_is_ours(pgid, expected_start) -> bool:
     come from the same host at different times, so they go through the drift-tolerant
     fingerprint comparator — same-host readings drift ~1 s on macOS (#117505), and
     exact equality made the guard refuse to kill live, legitimately-owned groups.
-    When no baseline was captured, or the current reading is unreadable while the
-    leader is still alive, keep the legacy best-effort behaviour rather than
-    refusing to kill; an unreadable reading for a gone leader means the PID/PGID may
-    have been recycled, so refuse."""
+    When no baseline was captured, or the current reading is unreadable, keep the
+    legacy best-effort behaviour rather than refusing to kill: only a LIVE leader with
+    a different start time proves recycling."""
     if pgid is None:
         return False
     if expected_start is None:
         return True
-    from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     try:
         current = get_process_start_time(pgid)
     except Exception:  # noqa: BLE001 — the guard must never break signalling
         return True
     if current is None:
-        return _pid_exists(pgid)
+        # Unreadable while alive: best effort. Gone: POSIX never reuses a PGID while any
+        # member of the group lives, so the group (if it still exists) is ours and its
+        # reparented grandchildren still need the signal; an empty group is just ESRCH.
+        return True
     try:
         return start_time_fingerprints_match(expected_start, current)
     except (TypeError, ValueError):  # junk fingerprints: best-effort, never break signalling

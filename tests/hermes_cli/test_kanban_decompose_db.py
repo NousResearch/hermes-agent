@@ -90,5 +90,32 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+@pytest.mark.parametrize("completion_contract", ["local-only", "acme/repo"])
+def test_decompose_inherits_root_completion_contract(kanban_home, completion_contract):
+    """Every child keeps the root's delivery boundary after atomic fan-out."""
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn,
+            title="bounded triage task",
+            completion_contract=completion_contract,
+            triage=True,
+        )
+        child_ids = decompose_triage_task(
+            conn,
+            root_id,
+            root_assignee="orchestrator",
+            children=[{"title": "child", "assignee": "engineer"}],
+        )
+
+    assert child_ids is not None
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, root_id)
+        child = kb.get_task(conn, child_ids[0])
+
+    assert root is not None
+    assert child is not None
+    assert child.completion_contract == root.completion_contract
+
+
 
 

@@ -31,7 +31,7 @@ def _pid_uid(pid: int) -> Optional[int]:
         return None
     with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
         result = subprocess.run(["ps", "-o", "uid=", "-p", str(pid)], capture_output=True, text=True, encoding="utf-8",
-                                check=False, timeout=2)
+                                errors="replace", check=False, timeout=2)
         if result.returncode == 0 and result.stdout.strip():
             return int(result.stdout.strip())
     return None

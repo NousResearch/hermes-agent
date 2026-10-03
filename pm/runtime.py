@@ -97,10 +97,13 @@ def _resident_runtime() -> tuple[Path, Path] | None:
 
 def _validate(python: Path, env: dict[str, str]) -> str:
     try:
+        # -I implies -E, so the child ignores PYTHONIOENCODING; -X utf8 keeps its
+        # failure output UTF-8 on ANSI-code-page Windows, matching the decode below.
         checked = subprocess.run(
-            [str(python), "-I", "-B", "-c",
+            [str(python), "-I", "-B", "-X", "utf8", "-c",
              "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return str(exc)

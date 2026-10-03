@@ -41,10 +41,13 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)
+    # -I implies -E, so the child ignores PYTHONIOENCODING; -X utf8 keeps its
+    # failure output UTF-8 on ANSI-code-page Windows, matching the decode below.
     checked = subprocess.run(
-        [str(environment.executable), "-I", "-B", "-c",
+        [str(environment.executable), "-I", "-B", "-X", "utf8", "-c",
          "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-        env=env, capture_output=True, text=True, timeout=30,
+        env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30,
     )
     if checked.returncode:
         raise InstallError("pm-runtime", f"dependency validation failed: {checked.stderr.strip()}")

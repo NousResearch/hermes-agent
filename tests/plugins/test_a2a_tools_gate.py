@@ -46,8 +46,8 @@ class TestA2AToolsGate(unittest.TestCase):
         with patch.object(a2at, "_load_config", side_effect=RuntimeError("boom")):
             self.assertFalse(a2at._a2a_tools_available())
 
-    def test_all_five_tools_carry_the_gate(self):
-        """Every a2a_* registration must pass the check_fn — a sixth tool
+    def test_every_tool_carries_the_gate(self):
+        """Every a2a_* registration must pass the check_fn — a new tool
         added without it would silently reopen the hole."""
         seen = {}
 

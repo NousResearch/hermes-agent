@@ -574,3 +574,46 @@ async def keep_command(cmd, command):
     kept = f' Messages from {join(others)} are kept and shown separately.' if others else ''
     return f'Done. {group} now continues on {name}.{kept}'
 
+
+# ---- the notice's numbers ------------------------------------------------------------------------
+
+async def continue_refs(runner, room_id) -> list[tuple]:
+    """``[(adapter, chat_id, metadata, n)]``: the room owner's private chats on this computer, each
+    with the number ``/group n continue`` reaches the room by there (given now if it had none)."""
+    from gateway.config import Platform
+    from gateway.group_chat_access import ensure_ref, grants
+    from gateway.group_chat_slash import connection_for
+    from gateway.session import SessionSource
+    from gateway.session_authorities import all_authorities
+    from gateway.session_group_controls import dispatch_group_control
+    found = []
+    for authority in all_authorities(runner):
+        if getattr(authority, 'hosted_room_service', None) is None:
+            continue
+        with authority.db._read_ctx() as conn:
+            private = [grant for grant in grants(conn) if grant['kind'] == 'private']
+        for grant in private:
+            connection = connection_for(authority, grant)
+            try:
+                listed = _obj(await dispatch_group_control(connection, 'groups.capabilities', {})).get('methods')
+                if not isinstance(listed, list) or STATUS not in listed:
+                    break  # this profile's gateway can't continue groups: none of its chats can
+                current = await dispatch_group_control(connection, STATUS, {'room_id': room_id})
+                if not isinstance(current, dict) or current.get('unavailable_reason') == 'not_owner':
+                    continue
+                platform = Platform(grant['platform'])
+                adapter = runner._adapters_for_profile(grant['bot']).get(platform)
+                if adapter is None:
+                    continue  # that Bot isn't connected right now
+                n = await asyncio.to_thread(ensure_ref, authority, grant, room_id)
+            except Exception:
+                logger.debug('A Group Chat continue reference was skipped', exc_info=True)
+                continue
+            try:
+                metadata = runner._thread_metadata_for_source(SessionSource(
+                    platform=platform, chat_id=grant['chat_id'], chat_type='dm', user_id=grant['user_id'],
+                    thread_id=grant['thread_id'], scope_id=grant['scope_id']))
+            except Exception:
+                metadata = None
+            found.append((adapter, grant['chat_id'], metadata, n))
+    return found

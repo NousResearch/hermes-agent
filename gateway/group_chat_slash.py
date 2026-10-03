@@ -161,6 +161,14 @@ def _too_fast(runner, key, limit=_RATE_LIMIT) -> bool:
     return False
 
 
+def connection_for(authority, grant):
+    """The owner's own reach, under the messaging chat's transport identity. A shared chat's says so
+    (``messaging:shared:…``), so owner-only gateway actions can refuse it as well."""
+    from gateway.session_contract import Principal
+    return SimpleNamespace(authority=authority, actor=Principal(
+        grant['owner'], authority.profile_id, _CAPABILITIES, f'messaging:{grant["kind"]}:' + grant['grant_id'][:32]))
+
+
 class GroupChatSlashCommandsMixin:
     async def _handle_group_command(self, event):
         try:
@@ -168,16 +176,18 @@ class GroupChatSlashCommandsMixin:
         except Refused as exc:
             return str(exc)
 
+    async def _group_chat_continue_refs(self, room_id):
+        """For the "group is paused" notice: ``[(adapter, chat_id, metadata, n)]``, one per private
+        chat of the room's owner here, where ``/group n continue`` reaches the room."""
+        from gateway.group_chat_hosts import continue_refs
+        return await continue_refs(self, room_id)
+
 
 class _GroupCommand:
     def __init__(self, runner, event, authority, chat, grant, prefix):
         self.runner, self.event, self.authority = runner, event, authority
         self.chat, self.grant, self.prefix = chat, grant, prefix
-        from gateway.session_contract import Principal
-        # The owner's own reach, under the messaging chat's transport identity. A shared chat's says so
-        # (messaging:shared:…), so owner-only gateway actions can refuse it as well.
-        self.connection = SimpleNamespace(authority=authority, actor=Principal(
-            grant['owner'], authority.profile_id, _CAPABILITIES, f'messaging:{grant["kind"]}:' + grant['grant_id'][:32]))
+        self.connection = connection_for(authority, grant)
 
     @classmethod
     async def start(cls, runner, event):
@@ -289,7 +299,8 @@ class _GroupCommand:
         lines = [f'Group Chats, page {command.page} of {pages}' if pages > 1 else 'Group Chats', '']
         for ref, room in rows[(command.page - 1) * PAGE_SIZE:command.page * PAGE_SIZE]:
             count = len(room['members'])
-            lines.append(f'{ref}. {safe(room["name"], 72)} · {count} Bot{"" if count == 1 else "s"}')
+            copy = ' · backup copy' if room.get('copy') is True else ''  # hosted on another computer
+            lines.append(f'{ref}. {safe(room["name"], 72)} · {count} Bot{"" if count == 1 else "s"}{copy}')
         g = self.prefix + 'group'
         lines.extend(['', f'Open one: {g} N'])
         if command.page < pages:
@@ -306,29 +317,43 @@ class _GroupCommand:
             log = await self._call('groups.log', {'room_id': room_id, 'since_seq': max(0, latest - RECENT_EVENTS),
                                                   'limit': RECENT_EVENTS}) if latest else probe
         except RuntimeStoreError as exc:
-            raise Refused(f'Group {command.ref} isn’t available right now. '
-                          f'Send {self.prefix}group list to check.') from exc
+            # A backup copy this gateway can't show as a room: its host is all there is to report.
+            g = f'{self.prefix}group {command.ref}'
+            hosting = await hosts.host_status(self, room_id)
+            host = hosts.host_lines(hosting, group=f'Group {command.ref}', g=g,
+                                    may_act=self.chat.kind == 'private') if hosting is not None else []
+            if not host:
+                raise Refused(f'Group {command.ref} isn’t available right now. '
+                              f'Send {self.prefix}group list to check.') from exc
+            return '\n'.join([f'Group {command.ref}', *host, '', f'Refresh: {g}'])
         hosting = await hosts.host_status(self, room_id)
         return '\n'.join(self._detail(command.ref, state, log['events'], hosting))
 
     def _detail(self, ref, state, events, hosting=None):
         from gateway import group_chat_hosts as hosts
         room, status = state['room'], state.get('driver_status') or {}
+        # A backup copy of a group another computer hosts: readable here, run there.
+        copy = state.get('copy') is True or room.get('copy') is True
         labels = _labels(room)
-        lines = [f'Group {ref} · {safe(room["name"], 72)}', self._status(status)]
-        if hosting is not None:
-            lines.extend(hosts.host_lines(hosting, group=f'“{safe(room["name"], 72)}”',
-                                          g=f'{self.prefix}group {ref}', may_act=self.chat.kind == 'private'))
+        host = hosts.host_lines(hosting, group=f'“{safe(room["name"], 72)}”', g=f'{self.prefix}group {ref}',
+                                may_act=self.chat.kind == 'private') if hosting is not None else []
+        lines = [f'Group {ref} · {safe(room["name"], 72)}']
+        if not copy:
+            lines.append(self._status(status))
+        elif not host:
+            lines.append('This computer keeps a backup copy of this group.')
+        lines.extend(host)
         roster = [f'{labels[m["member_id"]]} ({safe("@" + (m.get("handle") or m["member_id"]), 33)})'
                   for m in room['members'][:MAX_ROSTER]]
         extra = len(room['members']) - MAX_ROSTER
         lines.append('Bots: ' + ', '.join(roster) + (f' and {extra} more' if extra > 0 else ''))
         for action in _approvals(status)[:MAX_APPROVALS]:
             lines.extend(['', *self._approval_lines(ref, action, labels)])
-        lines.extend(self._remembered_lines(ref, room, labels))
+        if not copy:
+            lines.extend(self._remembered_lines(ref, room, labels))
         previews = [p for p in (self._preview(e, labels) for e in events) if p][-RECENT_MESSAGES:]
         lines.extend(['', 'Recent messages', *(previews or ['No messages yet.'])])
-        lines.extend(['', *self._commands(ref)])
+        lines.extend(['', *self._commands(ref, copy=copy)])
         return lines
 
     @staticmethod
@@ -378,8 +403,10 @@ class _GroupCommand:
         lines.append(f'Forget one: {self.prefix}group {ref} forget <code>')
         return lines
 
-    def _commands(self, ref):
+    def _commands(self, ref, copy=False):
         g = f'{self.prefix}group {ref}'
+        if copy:
+            return [f'Refresh: {g}']
         return [f'Send: {g} send <message>', f'Stop: {g} stop', f'Refresh: {g}']
 
     async def _send(self, command):

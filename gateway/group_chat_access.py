@@ -226,6 +226,21 @@ def assign_refs(authority, grant: dict, room_ids: list[str]) -> dict:
     return authority.db._execute_write(write)
 
 
+def ensure_ref(authority, grant: dict, room_id: str) -> int:
+    """This chat's number for one room, given now if it has none; every other room keeps its own."""
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        current = _load(conn, grant['grant_id'])
+        if current is None or current['owner'] != grant['owner']:
+            raise RuntimeStoreError('permission_denied')
+        if room_id not in current['refs']:
+            current = {**current, 'refs': {**current['refs'], room_id: current['next_ref']},
+                       'next_ref': current['next_ref'] + 1}
+            _save(conn, current)
+        return current['refs'][room_id]
+    return authority.db._execute_write(write)
+
+
 def room_for_ref(grant: dict, ref: int) -> str | None:
     return next((room for room, value in grant['refs'].items() if value == ref), None)
 

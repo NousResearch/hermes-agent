@@ -18,6 +18,7 @@ from gateway import group_chat_hosts as hosts
 from gateway import group_chat_slash as slash
 from gateway import hosted_rooms
 from gateway import session_group_controls as controls
+from gateway.config import Platform
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.group_chat_fixtures import OWNER, Bot, authority_for, message, runner_for
@@ -503,6 +504,44 @@ def test_help_lists_continue_and_keep_only_where_offered(advertised):
             '/group help') in listed
 
 
+def test_backup_copies_are_listed_and_read_only(advertised, monkeypatch):
+    real = controls.dispatch_group_control
+
+    async def copies(connection, method, params, **kwargs):
+        result = await real(connection, method, params, **kwargs)
+        if method == 'groups.list':
+            result['rooms'] = [{**room, 'copy': True} for room in result['rooms']]
+        if method == 'groups.state':
+            result = {'room': {**result['room'], 'copy': True}, 'driver_status': None}
+        return result
+    monkeypatch.setattr(controls, 'dispatch_group_control', copies)
+    connect(advertised)
+    assert '1. Research · 2 Bots · backup copy' in run(advertised, '/group list')
+    detail = run(advertised, '/group 1')
+    assert detail.startswith('Group 1 · Research\nHost: Mac mini, offline since ')
+    assert detail.endswith('\n\nRefresh: /group 1') and 'Send:' not in detail and 'driver' not in detail
+    monkeypatch.delitem(controls.GROUP_METHODS, hosts.STATUS)
+    assert run(advertised, '/group 1').startswith('Group 1 · Research\nThis computer keeps a backup copy of this '
+                                                  'group.\nBots: ')
+
+
+def test_a_copy_without_a_room_view_still_shows_its_host(advertised, monkeypatch):
+    connect(advertised)
+    real = controls.dispatch_group_control
+
+    async def unreadable(connection, method, params, **kwargs):
+        if method in {'groups.state', 'groups.log'}:
+            raise RuntimeStoreError('not_found')
+        return await real(connection, method, params, **kwargs)
+    monkeypatch.setattr(controls, 'dispatch_group_control', unreadable)
+    detail = run(advertised, '/group 1')
+    assert detail.startswith('Group 1\nHost: Mac mini, offline since ')
+    assert detail.endswith('Reply /group 1 continue to continue it on Home VPS.\n\nRefresh: /group 1')
+    assert run(advertised, '/group 1 continue').startswith('Continue this group on Home VPS?')
+    assert run(advertised, '/group 1 continue confirm', message_id='m-2') == (
+        'Done. Group 1 now continues on Home VPS. 1 task unknown, 2 waiting for Mac mini.')
+
+
 def test_waiting_work_is_summed_up_by_host(advertised, monkeypatch):
     connect(advertised)
     monkeypatch.setattr(advertised.service, 'status', lambda room_id=None: {
@@ -515,6 +554,30 @@ def test_waiting_work_is_summed_up_by_host(advertised, monkeypatch):
                   {'task_id': 't4', 'member_id': 'bob', 'state': 'running'}]})
     assert ('Group 1 · Research\nWorking · 2 waiting for Mac mini · 1 waiting for another computer\n'
             in run(advertised, '/group 1'))
+
+
+def test_the_notice_finds_the_owners_private_chats_and_their_numbers(advertised, monkeypatch):
+    room_id = 'copy-of-studio'
+    runner, bot = advertised.runner, advertised.bot
+    runner._adapters_for_profile = lambda profile: {Platform.TELEGRAM: bot} if profile == 'default' else {}
+    advertised.bot.config.extra['allow_admin_from'].append('carol')
+    connect(advertised)                                       # alice's private chat: the owner's
+    connect(advertised, chat='chat-3', user='carol', subject='uid:999')  # another account's private chat
+    connect(advertised, **SHARED)                              # a shared chat never gets the notice
+    advertised.gateway.status = lambda actor: hosting() if actor.subject == OWNER else refused('not_owner')
+    # The paused-group notice reaches the hook through getattr on the gateway's runner.
+    from gateway.run import GatewayRunner
+    refs_for = GatewayRunner._group_chat_continue_refs
+    assert refs_for is slash.GroupChatSlashCommandsMixin._group_chat_continue_refs
+    refs = asyncio.run(refs_for(runner, room_id))
+    assert refs == [(bot, 'chat-1', None, 2)]
+    assert asyncio.run(refs_for(runner, room_id)) == refs  # the same number every time
+    assert run(advertised, '/group 2 continue').startswith('Continue this group on Home VPS?')
+    prepared = [params['room_id'] for method, params, _ in advertised.gateway.calls if method == hosts.PREPARE]
+    assert prepared == [room_id]
+    # Without the methods, no chat is offered at all.
+    monkeypatch.delitem(controls.GROUP_METHODS, hosts.STATUS)
+    assert asyncio.run(refs_for(runner, room_id)) == []
 
 
 @pytest.mark.parametrize(('offset', 'pattern'), [(0, '%H:%M %Z'), (-3 * 86400, '{day} {month} %H:%M %Z')])

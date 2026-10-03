@@ -653,6 +653,72 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
             scrubber.reset()
 
 
+# Stable core wrappers the gateway wraps around voice-derived content
+# (gateway/run.py _enrich_message_with_transcription). Origin is classified
+# from these shapes per-row at ingest — no cross-message state anywhere.
+_VOICE_MARKERS = (
+    "[voice message could not be transcribed",
+    "[The user sent a voice message but it came through",
+)
+
+
+def _neutralize_untrusted(value):
+    """Cap untrusted display strings using the session module's sanitizer.
+
+    Falls back to a length-capped str() when the sanitizer is unavailable so
+    a missing import can never block attribution storage.
+    """
+    try:
+        from gateway.session import neutralize_untrusted_inline_text
+
+        return neutralize_untrusted_inline_text(value)
+    except Exception:
+        return str(value or "")[:200]
+
+
+def _classify_origin(content):
+    """Per-row origin: 'voice' when the body carries a voice wrapper, else 'text'."""
+    text = content if isinstance(content, str) else ""
+    stripped = text.lstrip()
+    is_voice = (
+        (text.startswith('"') and text.rstrip().endswith('"') and len(text) >= 2)
+        or any(stripped.startswith(m) for m in _VOICE_MARKERS)
+    )
+    return "voice" if is_voice else "text"
+
+
+def _derive_source_annotation(agent, content=None):
+    """Build the default ``display_metadata`` from the agent's source attributes.
+
+    The agent already resolves these at init from the inbound SessionSource, so no
+    per-caller wiring is required. Returns ``None`` when there is nothing worth
+    storing, keeping unannotated rows byte-identical to stock. Untrusted display
+    strings (user_name/chat_name) are neutralized so stored metadata is safe to
+    render anywhere.
+    """
+    try:
+        raw = {
+            "platform": getattr(agent, "platform", None),
+            "chat_id": getattr(agent, "_chat_id", None) or "",
+            "chat_type": getattr(agent, "_chat_type", None) or "",
+            "user_id": getattr(agent, "_user_id", None) or "",
+            "user_name": getattr(agent, "_user_name", None) or "",
+            "chat_name": getattr(agent, "_chat_name", None) or "",
+        }
+        ann = {}
+        for field, value in raw.items():
+            if value in (None, ""):
+                continue
+            if field in ("user_name", "chat_name"):
+                ann[field] = _neutralize_untrusted(value)
+            else:
+                ann[field] = str(value)
+        ann["origin"] = _classify_origin(content)
+        return ann or None
+    except Exception:
+        return None
+
+
 def _stage_turn_user_message(
     agent: Any, user_message: Any, persist_user_message: Any,
     persist_user_timestamp: Optional[float], persist_user_platform_id: Optional[str],
@@ -686,6 +752,12 @@ def _stage_turn_user_message(
     # row; the model still receives role/content unchanged (api_messages strips both).
     if persist_user_display_kind:
         user_msg["display_kind"] = persist_user_display_kind
+    if persist_user_display_metadata is None:
+        # Caller supplied nothing: derive attribution from the agent's resolved
+        # source attributes so it survives compaction without per-caller wiring.
+        _derived = _derive_source_annotation(agent, user_message)
+        if _derived:
+            persist_user_display_metadata = _derived
     if persist_user_display_metadata:
         user_msg["display_metadata"] = persist_user_display_metadata
     # The platform message id survives the turn-start flush; restart drain-window

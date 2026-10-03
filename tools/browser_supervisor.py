@@ -66,6 +66,11 @@ def _schedule(coro, loop, *, timeout: float):
     return fut.result(timeout=timeout)
 
 
+def _is_lost_session_error(exc: BaseException) -> bool:
+    """CDP -32001: the session's target no longer exists (its tab was closed or replaced)."""
+    return "session with given id not found" in str(exc).lower()
+
+
 def _fail(error: str) -> Dict[str, Any]:
     return {"ok": False, "error": error}
 
@@ -98,6 +103,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     running its own asyncio loop, connects, attaches to the first page target, enables
     domains and auto-attach. ``snapshot()`` / ``respond_to_dialog()`` / ``evaluate_runtime()``
     are sync, thread-safe bridges onto that loop; all CDP I/O lives on the loop."""
+
+    _page_target_id: Optional[str] = None  # target behind _page_session_id
 
     def __init__(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                  dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> None:
@@ -218,7 +225,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
         with self._state_lock:
-            active, session_id = self._active, self._page_session_id
+            active, session_id, target_id = self._active, self._page_session_id, self._page_target_id
         if not active:
             return _fail("supervisor is not active")
         if not session_id:
@@ -234,6 +241,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         try:
             response = _run_eval(return_by_value)
         except Exception as exc:
+            # A tab mid-close answers nothing, so the call times out instead of failing fast.
+            if _is_lost_session_error(exc) or (isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+                                               and not self._page_target_alive(target_id)):
+                return self._lost_page_session(session_id)
             # Deep-serializing live DOM nodes / NodeLists / Window can blow past
             # CDP's recursion guard (``Object reference chain is too long``).
             # Retry once with returnByValue=False so Chrome returns the description.
@@ -303,7 +314,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
                 with self._state_lock:
-                    self._page_session_id = sid
+                    self._page_session_id, self._page_target_id = sid, target_id
                 return {"ok": True, "url": url}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
@@ -429,13 +440,50 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
-    async def _attach_initial_page(self) -> None:
+    def _page_target_alive(self, target_id: Optional[str], timeout: float = 3.0) -> bool:
+        """Whether ``target_id`` is still a live target; True when it can't be told, so the
+        caller keeps its original error rather than dropping a healthy session."""
+        if not target_id or self._loop is None:
+            return True
+        try:
+            infos = _schedule(self._cdp("Target.getTargets", timeout=timeout), self._loop, timeout=timeout + 1)
+        except Exception:
+            return True
+        return any(t.get("targetId") == target_id for t in infos.get("result", {}).get("targetInfos", []))
+
+    def _lost_page_session(self, session_id: Optional[str]) -> Dict[str, Any]:
+        """The page target behind ``session_id`` is gone (tab closed or replaced by a new one):
+        drop the dead binding, rebind in the background, and answer with a "supervisor" error so
+        callers fall back to the CLI path, which follows the active tab, for this one call."""
+        with self._state_lock:
+            lost_target_id = self._page_target_id
+            if self._page_session_id == session_id:
+                self._page_session_id = None
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._reattach_lost_page(lost_target_id), loop)
+        return _fail("supervisor page session was lost (tab closed or replaced); re-attaching")
+
+    async def _reattach_lost_page(self, lost_target_id: Optional[str]) -> None:
+        """Rebind the page session after its target went away, so evaluate and the dialog bridge
+        keep working. Skips ``lost_target_id``: a closing tab stays listed briefly, and attaching
+        to it leaves every later call hanging until timeout. Runs as a loop task: logs, never raises."""
+        if self._page_session_id is not None:
+            return  # already rebound (detach event and a failed call can both land here)
+        try:
+            await self._attach_initial_page(exclude_target_id=lost_target_id)
+        except Exception as e:
+            logger.debug("CDP supervisor %s: page re-attach failed: %s", self.task_id, _redact_cdp_error_text(e))
+
+    async def _attach_initial_page(self, exclude_target_id: Optional[str] = None) -> None:
         """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
         targets = (await self._cdp("Target.getTargets")).get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        page_target = next((t for t in targets
+                            if t.get("type") == "page" and t.get("targetId") != exclude_target_id), None)
         if page_target is None:
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
+        self._page_target_id = page_target["targetId"]
         self._page_session_id = sid = attach["result"]["sessionId"]
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)

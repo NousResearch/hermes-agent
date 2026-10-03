@@ -24,6 +24,11 @@ from gateway.run import _collect_history_media_paths
 
 
 
+class TestSourceExtensions:
+    def test_latex_sources_are_deliverable(self):
+        assert ".tex" in MEDIA_DELIVERY_EXTS
+
+
 class TestSpacedPaths:
 
 

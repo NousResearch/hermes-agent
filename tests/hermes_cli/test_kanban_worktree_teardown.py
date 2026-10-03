@@ -51,8 +51,10 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A project repo with a remote whose history is fully pushed."""
+    from hermes_cli import kanban_survivor
+    monkeypatch.setattr(kanban_survivor, "_temporary_roots", lambda: [tmp_path / "temporary"])
     origin = tmp_path / "origin.git"
     _git("init", "--bare", str(origin))
     project = tmp_path / "project"
@@ -97,16 +99,17 @@ def test_cleanup_leaves_a_worktree_cwd_before_removal(
 ) -> None:
     """Windows cannot remove a worktree that is the process's current directory."""
     wt = _make_worktree(repo, "t_cwd112425")
-    real_git = kbw._git
+    from hermes_cli import kanban_survivor as survivor
+    real_git = survivor._git
 
-    def windows_git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
+    def windows_git(repo_root: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
         if args[:2] == ("worktree", "remove") and Path.cwd().is_relative_to(wt):
             return subprocess.CompletedProcess(
                 ["git", *args], 1, stderr="Permission denied: current directory"
             )
-        return real_git(repo_root, *args, timeout=timeout)
+        return real_git(repo_root, *args, **kwargs)
 
-    monkeypatch.setattr(kbw, "_git", windows_git)
+    monkeypatch.setattr(survivor, "_git", windows_git)
     monkeypatch.chdir(wt)
     kbw._cleanup_worktree_workspace("t_cwd112425", str(wt))
 
@@ -136,10 +139,11 @@ def test_cleanup_retries_worktree_removal_once(
 ) -> None:
     """A brief Windows directory-handle delay gets one safe retry."""
     wt = _make_worktree(repo, "t_retry112425")
-    real_git = kbw._git
+    from hermes_cli import kanban_survivor as survivor
+    real_git = survivor._git
     attempts = 0
 
-    def delayed_remove(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
+    def delayed_remove(repo_root: Path, *args: str, **kwargs) -> subprocess.CompletedProcess:
         nonlocal attempts
         if args[:2] == ("worktree", "remove"):
             attempts += 1
@@ -147,10 +151,9 @@ def test_cleanup_retries_worktree_removal_once(
                 return subprocess.CompletedProcess(
                     ["git", *args], 1, stderr="Permission denied: handle pending"
                 )
-        return real_git(repo_root, *args, timeout=timeout)
+        return real_git(repo_root, *args, **kwargs)
 
-    monkeypatch.setattr(kbw, "_git", delayed_remove)
-    monkeypatch.setattr(kbw.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(survivor, "_git", delayed_remove)
     kbw._cleanup_worktree_workspace("t_retry112425", str(wt))
 
     assert attempts == 2

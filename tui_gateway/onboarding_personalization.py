@@ -1,8 +1,13 @@
 import json
+import logging
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.profiles import get_profile_dir
-from tools.memory_tool import load_on_disk_store, memory_tool
+from tools.memory_tool import ENTRY_DELIMITER, load_on_disk_store, memory_tool
+
+logger = logging.getLogger(__name__)
+
+_HEADER = 'Agreed during onboarding:'
 
 
 def remember_onboarding(answers: dict) -> dict:
@@ -25,13 +30,36 @@ def remember_onboarding(answers: dict) -> dict:
             facts.append(f'{label}: {", ".join(values)}')
     if not facts:
         return {'saved': True, 'profile': 'default', 'target': 'user'}
-    content = 'Agreed during onboarding:\n' + '\n'.join(facts)
-    if len(content) > 2000:
-        raise ValueError('Onboarding facts are too long to remember')
 
     token = set_hermes_home_override(get_profile_dir('default'))
     try:
-        result = json.loads(memory_tool(action='add', target='user', content=content, store=load_on_disk_store()))
+        store = load_on_disk_store()
+        previous = [entry for entry in store.user_entries if entry.startswith(_HEADER)]
+        others = [entry for entry in store.user_entries if not entry.startswith(_HEADER)]
+        # USER.md is capped by user_char_limit and shared with what the agent already saved there:
+        # keep the facts that fit instead of failing the first build with the model-facing "Consolidate now".
+        fitting = []
+        for fact in facts:
+            if len(ENTRY_DELIMITER.join([*others, '\n'.join([_HEADER, *fitting, fact])])) <= store.user_char_limit:
+                fitting.append(fact)
+        if not fitting:
+            raise ValueError(f'USER.md is full ({len(ENTRY_DELIMITER.join(others)):,}/{store.user_char_limit:,} '
+                             'chars), so your onboarding answers could not be saved. Remove an entry from it, '
+                             'or raise memory.user_char_limit, then retry.')
+        if len(fitting) < len(facts):
+            logger.warning('USER.md has room for %d of %d onboarding facts; the rest were not saved',
+                           len(fitting), len(facts))
+        content = '\n'.join([_HEADER, *fitting])
+        if previous == [content]:  # same answers already saved, e.g. "Retry first build": nothing to write
+            return {'saved': True, 'profile': 'default', 'target': 'user'}
+        if previous:
+            # Re-running onboarding replaces the earlier answers instead of adding a second, conflicting entry.
+            operations = [{'action': 'remove', 'old_text': entry} for entry in previous]
+            raw = memory_tool(target='user', operations=[*operations, {'action': 'add', 'content': content}],
+                              store=store)
+        else:
+            raw = memory_tool(action='add', target='user', content=content, store=store)
+        result = json.loads(raw)
         if not result.get('success') or result.get('staged'):
             raise ValueError(result.get('error') or result.get('message') or 'Memory was not saved')
         if content not in load_on_disk_store().user_entries:

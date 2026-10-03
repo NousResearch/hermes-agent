@@ -109,7 +109,7 @@ def _pkce_code_challenge(code_verifier: str) -> str:
 
 
 def _make_loopback_callback_handler(
-    expected_path: str, *, display_name: str,
+    expected_path: str, *, display_name: str, extra_fields: tuple[str, ...] = (),
 ) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
     """Handler class for an RFC 8252 loopback redirect plus the dict it fills in.
 
@@ -118,6 +118,7 @@ def _make_loopback_callback_handler(
     servers that do not echo an explicit ``state`` parameter.
     """
     result: dict[str, Any] = {"code": None, "state": None, "error": None, "error_description": None}
+    result.update({field: None for field in extra_fields})
 
     class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802

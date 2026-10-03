@@ -298,6 +298,10 @@ _NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Run 'hermes au
 
 def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
     """Build a resolved-runtime dict; ``extra`` carries source/requested_provider/provider-specific keys."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    if profile is not None and profile.fixed_api_mode:
+        api_mode = profile.api_mode
     if is_actual_route(provider, base_url):
         api_mode = "chat_completions"
         base_url = normalize_actual_base_url(base_url)
@@ -1080,6 +1084,12 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
+    if (pconfig and pconfig.auth_type in {"oauth_external", "oauth_device_code"}
+            and provider not in _OAUTH_RUNTIME_PROVIDERS):
+        raise AuthError(
+            f"No usable OAuth credential for {provider}. Run `hermes auth add {provider}` to sign in.",
+            provider=provider, code="oauth_credentials_missing", relogin_required=True,
+        )
     fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
     if swallowed_auth_error is not None and not fallback.get("api_key"):
         fallback["auth_error"] = swallowed_auth_error

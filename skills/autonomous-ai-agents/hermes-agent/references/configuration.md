@@ -3,6 +3,16 @@
 Edit with `hermes config edit` or `hermes config set section.key value`.
 Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
 
+`hermes config set KEY VALUE` parses a JSON VALUE into nested dicts and lists,
+so structured settings are settable non-interactively (the pickers for them —
+`hermes model`, `hermes fallback add` — need a terminal):
+
+```bash
+hermes config set model.aliases.qwen9b '{"model":"<model-id>","provider":"custom","base_url":"http://127.0.0.1:11434/v1"}'
+hermes config set fallback_providers '[{"provider":"<name>","model":"<model-id>"}]'
+hermes config get model.aliases.qwen9b --json    # read back to confirm the shape
+```
+
 ### Config Sections (most-used keys)
 
 | Section | Key options |

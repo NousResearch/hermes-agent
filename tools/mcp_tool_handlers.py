@@ -25,6 +25,7 @@ from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
+_CALL_401_EVIDENCE_TTL_SEC = 5.0
 
 declaration.on_change = invalidate_check_fn_cache
 
@@ -188,11 +189,37 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     return _record_call_outcome(server_name, result)
 
 
-def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _clear_call_401_evidence(server: Any) -> None:
+    """Start each tools/call with no inherited HTTP rejection evidence."""
+    rejection = getattr(server, "_http_rejection", None)
+    if isinstance(rejection, dict):
+        rejection.clear()
+
+
+def _consume_recent_tools_call_401(server: Any) -> bool:
+    """Consume a just-observed tools/call 401 that mcp 2.x collapsed into MCPError.
+
+    The hook observes HTTP status below the SDK's error mapping.  Evidence is scoped to one
+    serialized RPC, has a short lifetime, and is removed even when stale so another call cannot
+    borrow an old rejection.
+    """
+    rejection = getattr(server, "_http_rejection", None)
+    if not isinstance(rejection, dict):
+        return False
+    snapshot = dict(rejection)
+    rejection.clear()
+    recorded_at = snapshot.get("recorded_at")
+    age = time.monotonic() - recorded_at if isinstance(recorded_at, (int, float)) else float("inf")
+    return (snapshot.get("status") == 401 and snapshot.get("rpc_method") == "tools/call"
+            and 0 <= age <= _CALL_401_EVIDENCE_TTL_SEC)
+
+
+def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str, *,
+                                 server: Any = None):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
-    if not _is_auth_error(exc):
+    if not _is_auth_error(exc) and not (server is not None and _consume_recent_tools_call_401(server)):
         return None
     from tools.mcp_oauth_manager import get_manager
     try:
@@ -572,6 +599,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
+                    _clear_call_401_evidence(server)
                     result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
                 finally:
                     server._pending_call_context = None
@@ -585,7 +613,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
+            (_handle_stdio_child_exited_and_retry,
+             partial(_handle_auth_error_and_retry, server=server), session_expired),
             _on_failure, record_outcome=True)
     return _handler
 

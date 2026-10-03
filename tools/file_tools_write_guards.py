@@ -189,36 +189,63 @@ _PROTECTED_INSTRUCTION_BASENAMES = frozenset({
     "agents.md", "claude.md", "soul.md", ".cursorrules"})
 
 
-def _protected_instruction_config() -> tuple[bool, list[str]]:
-    """Return ``(enabled, extra_patterns)`` from ``security.protected_instruction_files`` /
-    ``security.protected_instruction_extra_patterns`` (fnmatch on basename). Config read
-    failures keep the gate ON — fail-safe for a security boundary."""
+def _protected_instruction_config() -> tuple[bool, list[str], list[str]]:
+    """Return ``(enabled, extra_patterns, exempt_patterns)`` from
+    ``security.protected_instruction_files`` / ``security.protected_instruction_extra_patterns``
+    (fnmatch on basename) / ``security.protected_instruction_exempt_patterns`` (fnmatch on the
+    full normalized path AND its realpath). Config read failures keep the gate ON with NO
+    exemptions — fail-safe for a security boundary."""
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         enabled = cfg_get(cfg, "security", "protected_instruction_files", default=True)
         extra = cfg_get(cfg, "security", "protected_instruction_extra_patterns", default=[])
+        exempt = cfg_get(cfg, "security", "protected_instruction_exempt_patterns", default=[])
     except Exception:
-        return True, []
+        return True, [], []
     if not isinstance(enabled, bool):
         enabled = True
     if not isinstance(extra, list):
         extra = []
-    return enabled, [str(p) for p in extra if p]
+    if not isinstance(exempt, list):
+        exempt = []
+    return enabled, [str(p) for p in extra if p], [str(p) for p in exempt if p]
+
+
+def _protected_instruction_settings(
+    enabled: bool | None, extra_patterns: list[str] | None, exempt_patterns: list[str] | None
+) -> tuple[bool, list[str], list[str]]:
+    """Resolve the effective (enabled, extra, exempt) triple, tolerating callers/tests that
+    monkeypatch ``_protected_instruction_config`` with the legacy 2-tuple shape."""
+    if enabled is not None and extra_patterns is not None and exempt_patterns is not None:
+        return enabled, extra_patterns, exempt_patterns
+    cfg = _protected_instruction_config()
+    cfg_enabled, cfg_extra = cfg[0], cfg[1]
+    cfg_exempt = cfg[2] if len(cfg) > 2 else []
+    return (
+        cfg_enabled if enabled is None else enabled,
+        cfg_extra if extra_patterns is None else extra_patterns,
+        cfg_exempt if exempt_patterns is None else exempt_patterns,
+    )
 
 
 def _protected_instruction_reason(filepath: str, task_id: str = "default",
                                   *, enabled: bool | None = None,
-                                  extra_patterns: list[str] | None = None) -> str | None:
+                                  extra_patterns: list[str] | None = None,
+                                  exempt_patterns: list[str] | None = None) -> str | None:
     """Return a short label when ``filepath`` targets a protected instruction file, else ``None``.
     Matches BOTH the normalized input and its realpath so no symlink direction escapes.
 
     Matching runs on BOTH the normalized input path and its realpath so neither a symlink pointing AT a
     protected file (#41351) nor a protected name that is itself a symlink escapes the gate. ``..`` traversal
     is neutralized by normpath/realpath before the basename compare.
+
+    ``exempt_patterns`` (fnmatch against the full normalized path and its realpath) opts specific,
+    user-chosen paths out of the ALWAYS-ask gate — e.g. ``**/.hermes/environment.json`` for an
+    agent-owned verify manifest — while leaving every other protected file gated.
     """
-    if enabled is None or extra_patterns is None:
-        enabled, extra_patterns = _protected_instruction_config()
+    enabled, extra_patterns, exempt_patterns = _protected_instruction_settings(
+        enabled, extra_patterns, exempt_patterns)
     if not enabled:
         return None
 
@@ -227,6 +254,10 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
     except (OSError, ValueError, RuntimeError):
         resolved = os.path.realpath(normalized)
+
+    for candidate in (normalized, resolved):
+        if any(fnmatch.fnmatch(candidate, pattern) for pattern in exempt_patterns):
+            return None
 
     # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
     # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
@@ -334,10 +365,12 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
     """Gate a write/patch touching protected instruction files. ONE protected file gates
     the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
-    enabled, extra = _protected_instruction_config()
+    enabled, extra, exempt = _protected_instruction_settings(None, None, None)
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
+    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled,
+                                                         extra_patterns=extra,
+                                                         exempt_patterns=exempt)
                            for p in paths) if r]
     if not reasons:
         return None

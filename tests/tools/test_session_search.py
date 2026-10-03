@@ -1208,3 +1208,82 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+# =========================================================================
+# Workspace filter (#125826)
+# =========================================================================
+
+
+class TestWorkspaceFilter:
+    def test_discovery_filters_by_workspace_and_labels_the_hit(self, db):
+        db.create_session("s_proj_a", source="cli", cwd="/home/user/project-a")
+        db.append_message("s_proj_a", role="user", content="widget rollout unique token beta")
+        db.append_message("s_proj_a", role="assistant", content="ack widget rollout unique token beta")
+        db.create_session("s_proj_b", source="cli", cwd="/home/user/project-b")
+        db.append_message("s_proj_b", role="user", content="widget rollout unique token beta")
+        db.append_message("s_proj_b", role="assistant", content="ack widget rollout unique token beta")
+        _set_started(db, s_proj_a=_unix(2026, 6, 1), s_proj_b=_unix(2026, 6, 2))
+
+        result = json.loads(session_search(
+            query="widget rollout unique token beta", limit=5, workspace="project-a", db=db))
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["s_proj_a"]
+        assert result["results"][0]["workspace"] == "project-a"
+
+    def test_discovery_labels_workspace_even_without_a_filter(self, db):
+        db.create_session("s_labeled", source="cli", cwd="/home/user/project-c")
+        db.append_message("s_labeled", role="user", content="gizmo unique token gamma")
+        db.append_message("s_labeled", role="assistant", content="ack gizmo unique token gamma")
+
+        result = json.loads(session_search(query="gizmo unique token gamma", db=db))
+        assert result["results"][0]["workspace"] == "project-c"
+
+    def test_browse_filters_by_workspace_and_labels_results(self, db):
+        db.create_session("s_b_old", source="cli", cwd="/home/user/proj-b")
+        db.append_message("s_b_old", role="user", content="hi")
+        db.create_session("s_a_new", source="cli", cwd="/home/user/proj-a")
+        db.append_message("s_a_new", role="user", content="hi")
+        _set_started(db, s_b_old=_unix(2026, 5, 1), s_a_new=_unix(2026, 6, 1))
+
+        result = json.loads(session_search(db=db, workspace="proj-a"))
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["s_a_new"]
+        assert result["results"][0]["workspace"] == "proj-a"
+
+    def test_browse_workspace_filter_scans_wider_than_the_unfiltered_default(self, db):
+        """20 recent sessions from OTHER projects fill the small unfiltered scan window
+        (``limit + 15``); an older same-project session must still surface (the CLI's
+        own ``--workspace`` quirk this mirrors, minus the miss)."""
+        for i in range(20):
+            sid = f"s_other_{i}"
+            db.create_session(sid, source="cli", cwd="/home/user/other-project")
+            db.append_message(sid, role="user", content="noise")
+            _set_started(db, **{sid: _unix(2026, 6, 10) + i})
+        db.create_session("s_target", source="cli", cwd="/home/user/target-project")
+        db.append_message("s_target", role="user", content="hi")
+        _set_started(db, s_target=_unix(2026, 6, 1))
+
+        result = json.loads(session_search(db=db, limit=3, workspace="target-project"))
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["s_target"]
+
+    def test_workspace_filter_reaches_the_tool_through_the_inline_executor(self, db):
+        """Same sibling-call-path gap this suite already guards for after/before/
+        exclude_session_ids: the inline executor's explicit arg table must forward
+        workspace too, not just the registry handler."""
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+        db.create_session("s_proj_a", source="cli", cwd="/home/user/project-a")
+        db.append_message("s_proj_a", role="user", content="doohickey unique token delta")
+        db.create_session("s_proj_b", source="cli", cwd="/home/user/project-b")
+        db.append_message("s_proj_b", role="user", content="doohickey unique token delta")
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+        out = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
+            agent, {"query": "doohickey unique token delta", "limit": 5, "workspace": "project-a"}, ctx))
+        assert out["success"] is True
+        assert {r["session_id"] for r in out["results"]} == {"s_proj_a"}

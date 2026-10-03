@@ -297,6 +297,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
     Returns a JSON string ``{"success": bool, "data": {"web": [{"title", "url", "description", "position"},
     ...]}}`` (metadata only — use web_extract_tool for page content) or ``{"success": false, "error": ...}``.
+    Some backends also return extra structured metadata, such as ``data.images``
+    (``title``, ``url``, ``description``, ``position``, optional ``source_url``).
     """
     try:
         limit = min(max(int(limit), 1), 100)

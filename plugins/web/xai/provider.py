@@ -2,7 +2,8 @@
 Responses API (https://docs.x.ai/developers/tools/web-search); Grok is asked for structured JSON
 so rows match every other Hermes web provider. Config: ``web.backend: "xai"``; optional ``web.xai``:
 ``model`` (default grok-build-0.1), ``allowed_domains`` / ``excluded_domains`` (max 5, mutually
-exclusive), ``timeout`` (default 90s). Auth: Grok OAuth via ``hermes auth``, else XAI_API_KEY.
+exclusive), ``enable_image_search`` (default false — image rows under ``data.images``), ``timeout``
+(default 90s). Auth: Grok OAuth via ``hermes auth``, else XAI_API_KEY.
 """
 
 from __future__ import annotations
@@ -23,6 +24,16 @@ _MAX_DOMAIN_FILTERS = 5  # xAI hard cap on allowed_domains / excluded_domains
 
 # Tolerates leading/trailing prose — reasoning models occasionally narrate before the JSON block.
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^\s)]+)(?:\s+\"[^\"]*\")?\)")
+
+_RESULTS_SCHEMA = '{"results": [{"title": "string", "url": "string", "description": "1-2 sentence summary"}]}'
+_RESULTS_WITH_IMAGES_SCHEMA = (
+    '{"results": [{"title": "string", "url": "string", '
+    '"description": "1-2 sentence summary"}], '
+    '"images": [{"title": "string", "url": "https://direct-image-url", '
+    '"description": "short image description", '
+    '"source_url": "https://source-page-or-empty"}]}'
+)
 
 
 def _load_xai_web_config() -> Dict[str, Any]:
@@ -47,6 +58,13 @@ def _coerce(cast, value: Any, default: Any) -> Any:
         return cast(value)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Common config truthy values; arbitrary text stays off."""
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() in {"1", "true", "yes", "on"} if isinstance(value, str) else False
 
 
 class XAIWebSearchProvider(BaseWebSearchProvider):
@@ -83,8 +101,16 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         if web_search_tool is None:
             # xAI rejects this combo — surface a clear error rather than an API 400.
             return _fail("web.xai.allowed_domains and web.xai.excluded_domains cannot both be set (xAI restriction).")
+        image_search_enabled = _coerce_bool(cfg.get("enable_image_search"))
+        if image_search_enabled:
+            web_search_tool["enable_image_search"] = True
         # include=no_inline_citations keeps the JSON block clean; URLs come from annotations/citations.
-        payload: Dict[str, Any] = {"model": model, "input": [{"role": "user", "content": self._build_prompt(query, limit)}], "tools": [web_search_tool], "include": ["no_inline_citations"]}
+        payload: Dict[str, Any] = {
+            "model": model,
+            "input": [{"role": "user", "content": self._build_prompt(query, limit, include_images=image_search_enabled)}],
+            "tools": [web_search_tool],
+            "include": ["no_inline_citations"],
+        }
         try:
             import httpx  # noqa: F401 — availability probe
         except ImportError:
@@ -104,7 +130,10 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             logger.warning("xAI web search returned error envelope: %s", err_msg)
             return _fail(f"xAI returned an error: {err_msg}")
         # Empty list on 0 hits is a success (matches brave-free / exa).
-        return search_ok(self._extract_results(data, limit=limit))
+        result = search_ok(self._extract_results(data, limit=limit))
+        if image_search_enabled:
+            result["data"]["images"] = self._extract_image_results(data, limit=limit)
+        return result
 
     @staticmethod
     def _web_search_tool(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -166,15 +195,26 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             return None, _fail("Could not parse xAI Responses API reply as JSON")
 
     @staticmethod
-    def _build_prompt(query: str, limit: int) -> str:
+    def _build_prompt(query: str, limit: int, *, include_images: bool = False) -> str:
         """Ask for a JSON *object* (cheap to match with ``_JSON_BLOCK_RE``) and forbid
-        prose/fences/inline citations to keep the payload parseable."""
+        prose/fences/inline citations to keep the payload parseable. With image search
+        on, the schema adds an ``images`` array instead of raw Markdown embeds."""
+        if include_images:
+            schema, image_instruction, empty_schema = (
+                _RESULTS_WITH_IMAGES_SCHEMA,
+                "Use image search results when relevant. Put direct image URLs or embeddable image URLs under images, "
+                "with the source page URL when available. If no usable images exist, return \"images\": [].\n\n",
+                '{"results": [], "images": []}',
+            )
+        else:
+            schema, image_instruction, empty_schema = _RESULTS_SCHEMA, "", '{"results": []}'
         return (
             "Use the web_search tool to find current information for the query below, then respond with ONLY a single "
             "JSON object — no prose, no markdown fences, no inline citation links — matching this exact schema:\n\n"
-            '{"results": [{"title": "string", "url": "string", "description": "1-2 sentence summary"}]}\n\n'
-            f'Return at most {limit} results, ordered by relevance, with absolute https:// URLs. If no usable results exist, return '
-            '{"results": []}.\n\n'
+            f"{schema}\n\n"
+            f"{image_instruction}"
+            f"Return at most {limit} results, ordered by relevance, with absolute https:// URLs. If no usable results exist, return "
+            f"{empty_schema}.\n\n"
             f"Query: {query}"
         )
 
@@ -190,6 +230,61 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             return parsed
         citations = response_data.get("citations") or []
         return [_row("", str(u), "", i + 1) for i, u in enumerate(citations[:limit]) if isinstance(u, str) and u.strip()] if isinstance(citations, list) else []
+
+    @classmethod
+    def _extract_image_results(cls, response_data: Dict[str, Any], *, limit: int) -> List[Dict[str, Any]]:
+        """Direct image rows: structured ``images`` array first, then Markdown image embeds
+        (xAI's native image-search examples document that output shape)."""
+        text_blocks, _annotations = cls._collect_output_text(response_data)
+        parsed = next((p for p in (cls._try_parse_json_image_results(b, limit=limit) for b in text_blocks) if p), None)
+        return parsed if parsed is not None else cls._images_from_markdown(text_blocks, limit=limit)
+
+    @staticmethod
+    def _try_parse_json_image_results(text: str, *, limit: int) -> Optional[List[Dict[str, Any]]]:
+        match = _JSON_BLOCK_RE.search(text)
+        for candidate in [text] + ([match.group(0)] if match and match.group(0) != text else []):
+            try:
+                parsed = json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            images = parsed.get("images") if isinstance(parsed, dict) else None
+            if not isinstance(images, list):
+                continue
+            normalized: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            for row in images[:limit]:
+                url = str(row.get("url", "")).strip() if isinstance(row, dict) else ""
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                item: Dict[str, Any] = {
+                    "title": str(row.get("title", "")).strip(),
+                    "url": url,
+                    "description": str(row.get("description", "")).strip(),
+                    "position": len(normalized) + 1,
+                }
+                source_url = str(row.get("source_url", "")).strip()
+                if source_url:
+                    item["source_url"] = source_url
+                normalized.append(item)
+            if normalized:
+                return normalized
+        return None
+
+    @staticmethod
+    def _images_from_markdown(text_blocks: List[str], *, limit: int) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for block in text_blocks:
+            for match in _MARKDOWN_IMAGE_RE.finditer(block):
+                alt, url = match.group(1).strip(), match.group(2).strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                results.append({"title": alt, "url": url, "description": alt, "position": len(results) + 1})
+                if len(results) >= limit:
+                    return results
+        return results
 
     @staticmethod
     def _collect_output_text(response_data: Dict[str, Any]) -> tuple[List[str], List[Dict[str, Any]]]:

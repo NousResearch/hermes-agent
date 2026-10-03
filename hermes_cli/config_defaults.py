@@ -422,6 +422,11 @@ DEFAULT_CONFIG = {
         # preview builds). Entries match exactly, as "*.wildcard", or as a domain suffix
         # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
         "cache_exempt_hosts": [],
+        "xai": {
+            # Opt in to xAI Web Search image results under data.images
+            # (docs.x.ai web_search enable_image_search). Default off.
+            "enable_image_search": False,
+        },
     },
 
     "browser": {

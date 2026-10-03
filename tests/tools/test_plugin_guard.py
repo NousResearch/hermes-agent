@@ -610,6 +610,16 @@ class TestInertContextDemotions:
         sev = {f.file: f.severity for f in result.findings if f.pattern_id == "base64_decode_pipe"}
         assert sev == {"scripts/open-pr.sh": "medium", "scripts/boot.sh": "high"}
 
+    def test_base64_decode_through_a_filter_into_an_interpreter_stays_high(self, tmp_path):
+        """Only a pipeline of data consumers is a data decode: a filter in front of the shell
+        (``| gunzip | sh``) still executes the decoded bytes."""
+        files = dict(BASE_FILES)
+        files["scripts/boot.sh"] = "cat payload.b64 | base64 -d | gunzip | sh\n"
+        files["scripts/unpack.sh"] = "base64 -d assets.b64 | tar xz -C build\n"
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sev = {f.file: f.severity for f in result.findings if f.pattern_id == "base64_decode_pipe"}
+        assert sev == {"scripts/boot.sh": "high", "scripts/unpack.sh": "medium"}
+
 
 class TestIntakeFalsePositiveClasses:
     """Three shapes that scored on clean catalog pins (plugin-guard-v8): a CI workflow's own

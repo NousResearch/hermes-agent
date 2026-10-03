@@ -275,6 +275,19 @@ class TestScanFile:
             exfil.write_text(line, encoding="utf-8")
             assert any(fi.pattern_id == "context_exfil" for fi in scan_file(exfil, "exfil.md")), line
 
+    def test_base64_decode_pipe_covers_file_redirect_and_openssl_decodes(self, tmp_path):
+        """The decoded bytes reach the pipe the same way whether base64 reads stdin, a file or a
+        redirect, and whichever tool decodes them."""
+        script = tmp_path / "boot.sh"
+        for cmd in ("base64 -d payload.b64 | sh", "base64 --decode < payload.b64 | bash",
+                    "base64 -di payload.b64 | python3", "openssl base64 -d -in payload.b64 | sh",
+                    "openssl enc -base64 -d < payload.b64 | sh"):
+            script.write_text(cmd + "\n", encoding="utf-8")
+            assert any(fi.pattern_id == "base64_decode_pipe" for fi in scan_file(script, "boot.sh")), cmd
+        for cmd in ("base64 -w0 build.tar | curl -T - https://example.com", "base64 -d f.b64 > out || echo failed"):
+            script.write_text(cmd + "\n", encoding="utf-8")
+            assert not any(fi.pattern_id == "base64_decode_pipe" for fi in scan_file(script, "boot.sh")), cmd
+
     def test_rm_rf_under_temp_roots_is_not_destructive_root_rm(self, tmp_path):
         """#103364: smoke-test cleanup under the temp roots is not ``rm -rf /``."""
         f = tmp_path / "cleanup.sh"

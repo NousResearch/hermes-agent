@@ -922,6 +922,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
         self._check_bind_sources()
+        self._check_absent_denied_paths()
         sandbox_root = os.path.realpath(get_sandbox_dir())
         self._check_sandbox_root(sandbox_root)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
@@ -1023,6 +1024,47 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "a project or scratch directory for a smaller writable set.",
                 self._initial_cwd,
             )
+
+    def _check_absent_denied_paths(self) -> None:
+        """Refuse a writable bind under which a command could create a credential path.
+
+        A denied path that exists gets an overlay. One that does not exist
+        cannot be mounted over, and a placeholder made for it would land on
+        the host through the same writable bind. The top of HOME and the
+        default-deny directories are read-only tmpfs layers, so a name
+        there cannot be created whatever the cwd is. That leaves a denied
+        path inside a directory the sandbox may write to: the cwd under a
+        writable profile, or a read-write operator bind. A command there
+        could create ~/.config/gh or a token file and the host would use
+        it later, so the environment does not start.
+        """
+        root = self._home_root
+        if root is None:
+            return
+        writable: list[tuple[str, str]] = []
+        if resolve_profile(self._config.profile).writable_cwd:
+            writable.append(("terminal.cwd", self._initial_cwd))
+        writable += [
+            (f"the terminal.bubblewrap_binds entry {bind.src}", bind.dest)
+            for bind in self._config.binds if not bind.readonly
+        ]
+        for label, bound in writable:
+            for path in bubblewrap_home.denied_home_paths(self._home):
+                if path == bound or not _is_within(path, bound) or os.path.lexists(path):
+                    continue
+                if _is_within(root, bound) and _is_within(path, root):
+                    # The bind covers HOME. Under HOME only an existing
+                    # non-dot entry is writable through it.
+                    top = os.path.relpath(path, root).split(os.sep)
+                    if len(top) == 1 or top[0].startswith(".") or not os.path.isdir(os.path.join(root, top[0])):
+                        continue
+                raise ValueError(
+                    f"{label} makes {bound} writable inside the bubblewrap sandbox, and the "
+                    f"credential path {path} does not exist on the host, so the backend cannot "
+                    "hide it and a command could create it. Narrow the bind to the "
+                    "subdirectory you need (for a cache, that one cache directory), or use "
+                    "a project directory as terminal.cwd."
+                )
 
     def _check_bind_sources(self) -> None:
         """Refuse a read-write bind whose source a sandbox could swap.

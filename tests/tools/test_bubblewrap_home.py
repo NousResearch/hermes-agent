@@ -404,3 +404,11 @@ class TestLayout:
         with caplog.at_level("WARNING"):
             assert resolve_home_root(value) is None
         assert len(caplog.records) == 1
+
+    def test_layout_does_not_seal_a_default_deny_directory_a_bind_replaces(self, home):
+        _touch(home, ".config/git/config")
+        config = os.path.join(home, ".config")
+        mounts = _mounts(_layout(home, binds=(("--bind", config, config),)))
+        assert ("--bind", config) in mounts
+        assert ("--remount-ro", config) not in mounts
+        assert ("--remount-ro", home) in mounts

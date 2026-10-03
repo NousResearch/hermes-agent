@@ -255,6 +255,29 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    def test_focus_uses_actual_attached_url_not_requested_origin(self):
+        from tools import browser_vault_tool
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept):
+                assert origin == "https://bank.example"
+                return {"ok": True, "url": "https://evil.example/login"}
+
+        with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value=None):
+            assert browser_vault_tool._focus_bound_origin("t", "https://bank.example", "login") == "https://evil.example"
+
+    def test_focus_rechecks_live_origin_after_stale_navigation(self):
+        from tools import browser_vault_tool
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept):
+                return {"ok": True, "url": "https://bank.example/login"}
+
+        with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"):
+            assert browser_vault_tool._focus_bound_origin("t", "https://bank.example", "login") == "https://evil.example"
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""

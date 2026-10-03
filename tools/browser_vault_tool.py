@@ -200,9 +200,14 @@ _TAB_PROBES = {
 
 
 def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
-    """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
-    (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    """Focus a matching tab and return the origin of the page actually attached.
+
+    ``origin`` is only a candidate filter.  Do not return it after focus: the
+    supervisor reports the target URL it attached, and the page can navigate
+    between target discovery and the caller's origin check.  Re-reading the
+    current page origin catches that stale-navigation window; the target URL
+    remains a fallback when the non-secret read is unavailable.
+    """
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -210,7 +215,23 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    if not focused.get("ok"):
+        return None
+
+    from agent.vault_store import normalize_origin
+
+    focused_origin = None
+    focused_url = str(focused.get("url") or "").strip()
+    if focused_url:
+        try:
+            focused_origin = normalize_origin(focused_url)
+        except Exception:
+            focused_origin = None
+
+    # The focused target may have navigated after Target.getTargets.  Prefer
+    # the live page URL so callers compare the attached page, not stale target
+    # metadata or the requested candidate.
+    return _current_page_origin(task_id) or focused_origin
 
 
 # ---------------------------------------------------------------------------

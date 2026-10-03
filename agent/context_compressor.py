@@ -2110,7 +2110,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self, *, current_tokens: int | None, attempt_id: str | None = None, session_id: str | None = None,
         trigger_source: str | None = None,
     ) -> Dict[str, Any]:
-        """Initialize content-free per-attempt compression telemetry."""
+        """Initialize bounded, redacted per-attempt compression telemetry."""
         seed = getattr(self, "_compression_telemetry_seed", None)
         seed = seed if isinstance(seed, dict) else {}
         attempt_id = attempt_id or seed.get("attempt_id")
@@ -2129,6 +2129,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             "total_duration_ms": None, "aux_call_duration_ms": None, "queue_wait_ms": None, "prompt_build_ms": None,
             "time_to_first_progress_ms": None, "summary_generation_ms": None, "commit_ms": None,
             "fallback_used": False, "commit_status": "unknown", "split_status": "unknown", "failure_class": None,
+            "failed_aux_provider": None, "failed_aux_model": None, "failure_reason": None,
+            "failure_error_type": None, "failure_status_code": None, "result_estimated_tokens": None,
             # Lean-sampling coverage (filled by _record_summary_input_coverage; None on the legacy path).
             "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
             "summary_input_record_count": None, "summary_input_sampled_record_count": None,
@@ -2174,6 +2176,25 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # Wait and generation phases accumulate across retries; the rest are point readings.
             accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
             telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
+
+    def _record_summary_failure_telemetry(self, error: Exception) -> None:
+        """Keep bounded, redacted details for the failed summary attempt."""
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        failed_model = str(
+            getattr(self, "_last_aux_resolved_model", None) or self.summary_model or self.model or ""
+        ).strip() or None
+        failed_provider = str(telemetry.get("aux_provider") or self.provider or "").strip() or None
+        for key, value in (
+            ("failed_aux_provider", failed_provider),
+            ("failed_aux_model", failed_model),
+            ("failure_reason", _redact_compaction_text(_short_error_text(error))),
+            ("failure_error_type", type(error).__name__),
+            ("failure_status_code", _safe_int(_exc_status_code(error))),
+        ):
+            if telemetry.get(key) is None:
+                telemetry[key] = value
 
     def _emit_init_summary_once(self) -> None:
         """Emit the init log line once, on first context-length resolution (keeps __init__ non-blocking)."""
@@ -4184,6 +4205,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        self._record_summary_failure_telemetry(e)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response

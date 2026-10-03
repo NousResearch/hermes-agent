@@ -1467,9 +1467,9 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
 
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
+    commit_started_at: float | None = None, result_estimated_tokens: int | None = None,
 ) -> None:
-    """Emit one content-free JSON log line for a compression attempt."""
+    """Emit one bounded, redacted JSON log line for a compression attempt."""
     with _swallow('failed to emit compression attempt telemetry: %s'):
         compressor = agent.context_compressor
         telemetry = getattr(compressor, "_last_compression_telemetry", None)
@@ -1485,6 +1485,8 @@ def _emit_compression_attempt_telemetry(
         )
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
+        if result_estimated_tokens is not None:
+            payload["result_estimated_tokens"] = max(0, int(result_estimated_tokens))
         if failure_class:
             payload["failure_class"] = failure_class
         payload.setdefault("chunking", False)
@@ -4282,7 +4284,7 @@ def compress_context(
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
-            commit_started_at=commit.commit_started_at,
+            commit_started_at=commit.commit_started_at, result_estimated_tokens=_compressed_est,
         )
         return compressed, new_system_prompt
     finally:

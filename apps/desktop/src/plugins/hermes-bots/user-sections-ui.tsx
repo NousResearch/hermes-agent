@@ -243,9 +243,18 @@ export function useEscapeCancelsBotDrag(): void {
       }
     }
 
+    const resetDrag = () => $draggingBot.set(null)
+    window.addEventListener('dragend', resetDrag)
+    window.addEventListener('drop', resetDrag)
+    window.addEventListener('blur', resetDrag)
     window.addEventListener('keydown', onKeyDown, true)
 
-    return () => window.removeEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('dragend', resetDrag)
+      window.removeEventListener('drop', resetDrag)
+      window.removeEventListener('blur', resetDrag)
+      window.removeEventListener('keydown', onKeyDown, true)
+    }
   }, [dragging])
 }
 
@@ -295,6 +304,7 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
       data-slot="bots-section"
       onDragEnter={event => {
         if (accepts(event)) {
+          event.stopPropagation()
           event.preventDefault()
           setOver(true)
         }
@@ -312,6 +322,8 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
           return
         }
 
+        // The file tree's global backend otherwise replaces our move effect with none.
+        event.stopPropagation()
         // preventDefault is what MAKES this a drop target — without it the
         // browser refuses the drop and the cursor stays "no entry".
         event.preventDefault()
@@ -335,6 +347,7 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
           return
         }
 
+        event.stopPropagation()
         event.preventDefault()
         onDropBot(key)
       }}

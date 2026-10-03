@@ -67,6 +67,7 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
+import { startRosterDrag } from './roster-drag'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import {
   A2A_PREFIX_RE,
@@ -82,7 +83,6 @@ import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import {
   $botSections,
   $draggingBot,
-  BOT_DRAG_MIME,
   botSectionId,
   groupChatSectionId,
   groupDragKey,
@@ -255,9 +255,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       onClick={open}
       onDragEnd={() => $draggingBot.set(null)}
       onDragStart={event => {
-        event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
-        event.dataTransfer.effectAllowed = 'move'
-        $draggingBot.set(rosterKey)
+        startRosterDrag(event, rosterKey)
       }}
       onPointerEnter={warm}
     >
@@ -559,9 +557,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
       }}
       onDragEnd={() => $draggingBot.set(null)}
       onDragStart={event => {
-        event.dataTransfer.setData(BOT_DRAG_MIME, dragKey)
-        event.dataTransfer.effectAllowed = 'move'
-        $draggingBot.set(dragKey)
+        startRosterDrag(event, dragKey)
       }}
     >
       <div className="relative flex w-[34px] shrink-0 items-center justify-center">

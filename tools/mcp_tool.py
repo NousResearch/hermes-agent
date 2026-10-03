@@ -495,13 +495,21 @@ def _make_mcp_http_redirect_hooks(original_url: str):
         if not target_url:
             return
         target = httpx.URL(target_url)
-        if (
-            response.next_request is not None
-            and (target.scheme, target.host, target.port)
+
+        # Salvage #62929: drop credentials when the *Location*-resolved target
+        # leaves the configured origin.  ``response.next_request`` is frequently
+        # ``None`` while an httpx response hook runs (see
+        # ``tools.url_safety.redirect_target_from_response``), so it is used
+        # *only* as the carrier for headers to strip -- never to decide whether
+        # this redirect is cross-origin, and never as a precondition for the
+        # SSRF checks below.
+        next_request = getattr(response, "next_request", None)
+        if next_request is not None and (
+            (target.scheme, target.host, target.port)
             != (_original.scheme, _original.host, _original.port)
         ):
-            response.next_request.headers.pop("authorization", None)
-            response.next_request.headers.pop("Authorization", None)
+            next_request.headers.pop("authorization", None)
+            next_request.headers.pop("Authorization", None)
 
         if is_always_blocked_url(target_url):
             raise ValueError(

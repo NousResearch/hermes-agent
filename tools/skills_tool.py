@@ -73,6 +73,9 @@ def _skills_dir() -> Path:
 
 _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
+_PROJECT_CONTEXT_FILENAMES = frozenset({
+    ".hermes.md", "hermes.md", "agents.md", "claude.md", ".cursorrules",
+})
 
 
 def _skill_lookup_path_error(name: str) -> Optional[str]:
@@ -86,6 +89,15 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
         return "Skill name must be a relative path within the skills directory."
     if has_traversal_component(candidate):
         return "Skill name cannot contain '..' path traversal components."
+    return None
+
+
+def _project_context_lookup_hint(name: str) -> Optional[str]:
+    """Explain that repository rule files are read with ``read_file``, not ``skill_view``."""
+    if PurePosixPath(name.strip()).name.casefold() in _PROJECT_CONTEXT_FILENAMES:
+        return (
+            f"'{name}' looks like a repository instruction file, not an installed skill. "
+            f"Use read_file(path='{name}') to read it.")
     return None
 
 
@@ -548,8 +560,10 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
-        return _fail(f"Skill '{name}' not found.", available_skills=available,
-                     hint="Use skills_list to see all available skills"), None, None
+        return _fail(
+            f"Skill '{name}' not found.", available_skills=available,
+            hint=_project_context_lookup_hint(name) or "Use skills_list to see all available skills",
+        ), None, None
     return None, skill_dir, skill_md
 
 

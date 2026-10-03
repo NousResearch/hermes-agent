@@ -2986,9 +2986,13 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
 
 
 def get_python_path() -> str:
+    """Store Python, else the packaged wrapper's ``HERMES_PYTHON`` (Homebrew/Nix), else ``sys.executable``,
+    which resolves to the versioned install directory that a package upgrade removes."""
     from hermes_cli._launchers import resolve_store_python
 
-    return str(resolve_store_python(PROJECT_ROOT) or sys.executable)
+    packaged = os.environ.get("HERMES_PYTHON", "").strip()
+    packaged = packaged if os.path.isabs(packaged) and os.access(packaged, os.X_OK) else None
+    return str(resolve_store_python(PROJECT_ROOT) or packaged or sys.executable)
 
 
 # =============================================================================

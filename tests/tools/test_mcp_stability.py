@@ -273,6 +273,27 @@ class TestStdioPgroupReaping:
 
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
 
+    def test_kill_orphaned_signals_group_after_leader_exits(self):
+        """A dead MCP leader can leave grandchildren in its original process group."""
+        from tools.mcp_tool_lifecycle import (
+            _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids, _stdio_starttimes)
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        fake_pid = 484848
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _stdio_pgids[fake_pid] = fake_pid
+            _stdio_starttimes[fake_pid] = 444444
+
+        with patch("tools.mcp_tool_lifecycle._leader_start_time", return_value=None), \
+             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.mcp_tool.time.sleep"):
+            _kill_orphaned_mcp_children()
+
+        mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
+
     def test_kill_orphaned_without_baseline_keeps_legacy_behaviour(self):
         """No recorded start time (macOS / capture raced exit) -> best-effort killpg."""
         from tools.mcp_tool_lifecycle import (

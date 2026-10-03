@@ -268,9 +268,12 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
     an MCP child exits and is reaped the kernel may recycle its PID/PGID onto an unrelated
     process group; signalling the stale number would kill a stranger (observed: a recycled
     PGID landing on a desktop browser's session leader). When ``expected_start`` was captured
-    at spawn and no longer matches, skip entirely. Without a baseline (no /proc — macOS — or
-    the capture raced the child's exit) fall through to the legacy best-effort path."""
-    if expected_start is not None and _leader_start_time(pid) != expected_start:
+    at spawn and a live leader has a different start time, skip entirely. A missing leader is
+    not evidence of recycling: its process group may still hold orphaned grandchildren, so
+    killpg must still reach them. Without a baseline (no /proc — macOS — or the capture raced
+    the child's exit) fall through to the legacy best-effort path."""
+    current_start = _leader_start_time(pid) if expected_start is not None else None
+    if current_start is not None and current_start != expected_start:
         logger.debug(
             "Skip signalling MCP pid %d (%s): start-time mismatch — PID was recycled; "
             "refusing to kill an unrelated process group.", pid, server_name)

@@ -446,11 +446,15 @@ def generate_launchd_plist() -> str:
     <key>ExitTimeOut</key>
     <integer>60</integer>
 {nofile_block}
-    <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
-    
-    <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
+    <!-- No StandardOutPath/StandardErrorPath. launchd_program_arguments() appends the
+         gateway's stdout/stderr inside the shell command precisely so the child does
+         not inherit these plist log handles, which makes the wrapper their sole owner.
+         Naming the same two files here opened each of them twice — once by launchd and
+         once by the shell inside the osascript wrapper — and the gateway then exited
+         within seconds with EX_CONFIG 78 having written nothing at all. KeepAlive parks
+         78 on purpose, so the job latched into a respawn loop in which
+         `hermes gateway start` reported success while the messaging intake stayed down,
+         with no diagnostic in gateway.log, gateway.error.log or the unified log. -->
 </dict>
 </plist>
 """

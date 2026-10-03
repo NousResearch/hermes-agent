@@ -6362,7 +6362,7 @@ class TelegramAdapter(BasePlatformAdapter):
         logger.info(log_fmt, cached.kind, cached.path)
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
-        """Cache media from the message this turn replies to, if any."""
+        """Cache media from the message this turn replies to, if any (plus the rest of its album)."""
         reply_msg = getattr(msg, "reply_to_message", None)
         if reply_msg is None:
             return
@@ -6371,6 +6371,37 @@ class TelegramAdapter(BasePlatformAdapter):
             self._attach_cached(
                 event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
                 "[Telegram] Cached replied-to %s at %s")
+        await self._cache_replied_album_siblings(msg, reply_msg, event)
+
+    def _album_items(self):
+        """Lazy ``RecentAlbumItems`` (adapters built via ``object.__new__`` in tests skip ``__init__``)."""
+        items = self.__dict__.get("_recent_album_items")
+        if items is None:
+            from plugins.platforms.telegram.telegram_albums import RecentAlbumItems
+            items = self._recent_album_items = RecentAlbumItems()
+        return items
+
+    async def _cache_replied_album_siblings(self, msg: Any, reply_msg: Any, event: MessageEvent) -> None:
+        """A reply can quote only one album item; attach the other remembered items and their caption."""
+        if not self._is_group_chat(msg):
+            return
+        chat_id_str = self._chat_id_str(msg)
+        media_group_id = self._album_items().media_group_of(chat_id_str, reply_msg)
+        if not media_group_id:
+            return
+        for sibling, _update_id in self._album_items().siblings(chat_id_str, media_group_id, getattr(reply_msg, "message_id", None)):
+            caption = getattr(sibling, "caption", None)
+            status, cached = await self._download_observed_media(sibling, "replied-to album item")
+            if status == "ok":
+                self._attach_cached(
+                    event, cached,
+                    f"[Same album as the replied-to message: {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
+                    "[Telegram] Cached replied-to album %s at %s")
+                if caption:
+                    event.text = self._append_observed_note(
+                        event.text, f"[Album caption on '{cached.display_name}']: {caption}")
+            elif caption:
+                event.text = self._append_observed_note(event.text, f"[Album caption (attachment not cached)]: {caption}")
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
@@ -6877,15 +6908,31 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
             return
-        if not self._should_process_message(msg):
+        media_group_id = getattr(msg, "media_group_id", None)
+        chat_id_str = self._chat_id_str(msg)
+        # A later item of an album another item already addressed rides along with it.
+        album_sibling = self._is_group_chat(msg) and self._album_items().is_triggered(chat_id_str, media_group_id)
+        if not album_sibling and not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
                 if msg.caption:
                     _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+            elif media_group_id and self._is_group_chat(msg) and not self._is_own_message(msg):
+                self._album_items().remember(chat_id_str, msg, update.update_id)
             return
-        event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
+        if media_group_id and self._is_group_chat(msg) and self._album_items().mark_triggered(chat_id_str, str(media_group_id)):
+            # Earlier items of this album were skipped by the gate (no caption/mention on them).
+            for sibling, sibling_update_id in self._album_items().siblings(
+                    chat_id_str, str(media_group_id), msg.message_id, pop=True):
+                logger.info("[Telegram] Including earlier album item %s with addressed album %s", sibling.message_id, media_group_id)
+                await self._dispatch_media_message(sibling, sibling_update_id)
+        await self._dispatch_media_message(msg, update.update_id)
+
+    async def _dispatch_media_message(self, msg: Message, update_id: Optional[int]) -> None:
+        """Cache and route an addressed media message (gate already passed)."""
+        event = self._build_message_event(msg, self._media_message_type(msg), update_id=update_id)
         if msg.caption:
             from plugins.platforms.telegram.telegram_context import group_trigger_text
             event.text = group_trigger_text(self, msg, expand_link_entities(msg))

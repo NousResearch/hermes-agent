@@ -80,14 +80,54 @@ def _raise_unless_peer_gone(exc: Exception, what: str) -> None:
     logger.debug("StdioTransport %s peer gone: %s", what, exc)
 
 
+def _coerce_non_finite(value, _seen=None):
+    """*value* with every non-finite float as its string form (``inf``, ``-inf``, ``nan``).
+
+    ``json.dumps`` writes those as the bare tokens ``Infinity``/``NaN``, which no strict JSON parser
+    accepts. Only ever called once ``allow_nan=False`` has already proved one is present, so normal
+    frames never pay for the walk. A container that contains itself is returned unchanged: recursing
+    into one would hang, and the retry then raises so the caller's error frame reports it.
+    """
+    if isinstance(value, float):
+        return str(value) if value != value or abs(value) == float("inf") else value
+    if isinstance(value, (dict, list, tuple)):
+        _seen = set() if _seen is None else _seen
+        if id(value) in _seen:
+            return value
+        _seen.add(id(value))
+        if isinstance(value, dict):
+            return {k: _coerce_non_finite(v, _seen) for k, v in value.items()}
+        return [_coerce_non_finite(v, _seen) for v in value]
+    return value
+
+
 def serialize_frame(obj: dict, peer: str, log: logging.Logger) -> str:
-    """``json.dumps`` the frame; an unserializable payload becomes a JSON-RPC error frame carrying
-    the original id. Shared by every transport: without it the TypeError escaped from a pool
-    worker (the executor swallows it), so the client waited forever with no log line (#92506)."""
+    """``json.dumps`` the frame, always as strict JSON a client can parse.
+
+    An unserializable payload becomes a JSON-RPC error frame carrying the original id. Shared by
+    every transport: without it the TypeError escaped from a pool worker (the executor swallows it),
+    so the client waited forever with no log line (#92506).
+
+    ``allow_nan=False`` closes the other half of that guarantee. A non-finite number is *serializable*
+    — ``json.dumps`` writes it as the bare token ``Infinity``/``NaN`` — but no strict parser accepts
+    it, and a dropped *response* strands its caller exactly as silently as the TypeError did, so the
+    payload is coerced and the frame kept (the class ``_sanitize_ws_text`` handles for text, #97288).
+    Dropping a whole response is worse than losing one number's type, and the coercion is logged.
+    """
+    rid = obj.get("id") if isinstance(obj, dict) else None
     try:
-        return json.dumps(obj, ensure_ascii=False)
+        return json.dumps(obj, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
-        rid = obj.get("id") if isinstance(obj, dict) else None
+        if isinstance(exc, ValueError):
+            try:
+                # Circular references raise ValueError too: the retry raises again and falls through.
+                line = json.dumps(_coerce_non_finite(obj), ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError):
+                pass
+            else:
+                log.warning("non-finite number in frame peer=%s id=%s error=%s; coerced to string",
+                            peer, rid, exc)
+                return line
         log.error("frame serialization failed peer=%s id=%s error_type=%s error=%s",
                   peer, rid, type(exc).__name__, exc)
         fallback = {"jsonrpc": "2.0", "id": rid,

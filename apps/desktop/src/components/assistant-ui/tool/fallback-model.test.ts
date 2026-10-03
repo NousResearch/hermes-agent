@@ -470,6 +470,34 @@ describe('buildToolView title actions', () => {
     })
   })
 
+  it('drops a single-word context that is exactly the action verb', () => {
+    // A context with no trailing words ("Running") still doubled to
+    // "Running Running" before the boundary < 0 case was handled.
+    const view = buildToolView(
+      part({ args: { context: 'Running' }, result: undefined, toolName: 'terminal' }),
+      ''
+    )
+
+    expect(view.title.startsWith('Running Running')).toBe(false)
+    expect(view.titleAction?.text).toBe('Running')
+    expect((view.titleAction?.suffix ?? '').toLowerCase()).not.toContain('running')
+  })
+
+  it('does not double the verb when the context opens with a punctuated form', () => {
+    // "Running:" / "Running," must still be recognised as the leading verb.
+    const view = buildToolView(
+      part({ args: { context: 'Running: grep foo' }, result: undefined, toolName: 'terminal' }),
+      ''
+    )
+
+    expect(view.title.startsWith('Running Running')).toBe(false)
+    expect(view.titleAction).toEqual({
+      prefix: '',
+      text: 'Running',
+      suffix: ' grep foo'
+    })
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 

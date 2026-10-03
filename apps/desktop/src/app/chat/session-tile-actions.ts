@@ -18,6 +18,7 @@ import { textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
+import { setSessionCompacting } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
 import { notify, notifyError } from '@/store/notifications'
@@ -368,6 +369,10 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
     setSessionDraftingTool(sessionId, '')
+    // Stopping from a tile must dismiss a stuck "Summarizing thread" overlay the
+    // same way the composer Stop does, so the two surfaces agree — a hung
+    // compaction emits no message.start/complete/error to clear it otherwise.
+    setSessionCompacting(sessionId, false)
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
 

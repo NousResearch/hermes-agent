@@ -457,7 +457,7 @@ def test_assistant_anchor_cannot_retain_a_textless_oversized_turn(
 
 
 def _reasoning_heavy_small_turn() -> list[dict]:
-    """Under the ceiling on the wire, over it only if stale thinking were charged (BN04 2c)."""
+    """Under the ceiling on the wire, over it only if stale thinking were charged (#84371)."""
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "older request"},

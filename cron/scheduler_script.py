@@ -163,12 +163,19 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
             {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
 
 
-def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+def _windows_cron_python_invocation(
+    python_exe: str,
+) -> tuple[str, dict[str, str], Optional[tuple[str, str]]]:
     """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
     captured output; uv venv launchers can re-exec the base console python and flash a window
-    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
+    even with CREATE_NO_WINDOW, so run the base python directly.
+
+    Returns ``(interpreter, env_overlay, bootstrap_paths)``. ``bootstrap_paths`` is the
+    ``(repo, site-packages)`` pair handed to ``_windows_cron_bootstrap_argv``, which puts both
+    on ``sys.path`` in-process — never ``PYTHONPATH``: everything the script spawns would
+    inherit it and a foreign interpreter would load the store's compiled extensions (#123440)."""
     if sys.platform != "win32":
-        return python_exe, {}
+        return python_exe, {}, None
 
     interpreter = _sched.Path(python_exe)
     venv_dir = interpreter.parent.parent
@@ -191,8 +198,11 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         # and site-packages (a bare store Python would die on its first import).
         environment = committed_venv(repo)
         if environment is not None:
-            return str(managed_python), {"PYTHONPATH": os.pathsep.join(
-                [str(repo), str(dependency_site(environment))])}
+            # Lazy installs off for the script's process tree, as on POSIX (#123440): a script
+            # importing hermes_bootstrap could otherwise complete a source update and execv
+            # itself onto the bare store Python.
+            return str(managed_python), {"HERMES_DISABLE_LAZY_INSTALLS": "1"}, (
+                str(repo), str(dependency_site(environment)))
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
     home = cfg.get("home", "")
@@ -202,14 +212,9 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         if base_python.exists() and site_packages.exists():
             interpreter = base_python
             env_overlay["VIRTUAL_ENV"] = str(venv_dir)
-            pythonpath_entries = [
-                str(_sched.Path(__file__).resolve().parents[1]), str(site_packages)]
-            existing_pythonpath = os.environ.get("PYTHONPATH", "")
-            if existing_pythonpath:
-                pythonpath_entries.append(existing_pythonpath)
-            env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+            return str(interpreter), env_overlay, (str(repo), str(site_packages))
 
-    return str(interpreter), env_overlay
+    return str(interpreter), env_overlay, None
 
 
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
@@ -294,14 +299,16 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
 
 
 def _windows_cron_bootstrap_argv(
-    python_exe: str, env_overlay: dict[str, str], script_path: str) -> list[str]:
-    """Bootstrap a cron script under the base interpreter with ``.pth`` support. Overlay mode puts
-    the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
-    editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
-    ``__file__``/``sys.path[0]`` semantics). Plain invocation if the venv is unresolvable."""
-    site_packages = next((Path(item) for item in env_overlay.get("PYTHONPATH", "").split(os.pathsep)
-                          if Path(item).name == "site-packages"),
-                         _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages")
+    python_exe: str, bootstrap_paths: tuple[str, str], script_path: str) -> list[str]:
+    """Bootstrap a cron script under the base interpreter with ``.pth`` support. The venv's
+    site-packages and the live checkout are put on ``sys.path`` in-process: the same paths via
+    ``PYTHONPATH`` would be inherited by every child, and a foreign interpreter would load the
+    store's compiled extensions (#123440). ``.pth`` files are only processed by
+    ``site.addsitedir()``, so editable installs would be invisible without it; bootstrap via
+    addsitedir + ``runpy.run_path`` (keeps ``__file__``/``sys.path[0]`` semantics). Plain
+    invocation if the venv is unresolvable."""
+    repo, site_packages_entry = bootstrap_paths
+    site_packages = Path(site_packages_entry)
     if not site_packages.is_dir():
         # Warn: silent fallback would make "editable installs invisible" undiagnosable.
         logger.warning(
@@ -310,14 +317,18 @@ def _windows_cron_bootstrap_argv(
             site_packages)
         return [python_exe, script_path]
     bootstrap = (
-        "import os, runpy, site, sys;"
-        f"site.addsitedir({str(site_packages)!r});"
-        "script = sys.argv[1];"
-        "sys.argv = [script] + sys.argv[2:];"
-        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
-        "runpy.run_path(script, run_name='__main__')"
+        "import os, runpy, site, sys\n"
+        f"site.addsitedir({str(site_packages)!r})\n"
+        "repo = sys.argv[1]\n"
+        "script = sys.argv[2]\n"
+        "sys.argv = [script] + sys.argv[3:]\n"
+        "if sys.flags.safe_path:\n"
+        "    sys.path.insert(0, repo)\n"
+        "else:\n"
+        "    sys.path[0:1] = [os.path.dirname(script), repo]\n"
+        "runpy.run_path(script, run_name='__main__')\n"
     )
-    return [python_exe, "-c", bootstrap, script_path]
+    return [python_exe, "-c", bootstrap, repo, script_path]
 
 
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
@@ -423,9 +434,9 @@ def _script_argv(
     if sys.platform != "win32":
         argv, env_overlay = _posix_cron_script_argv(path)
         return argv, env_overlay, None
-    python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-    if env_overlay:
-        return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
+    python_exe, env_overlay, bootstrap_paths = _windows_cron_python_invocation(sys.executable)
+    if bootstrap_paths:
+        return _windows_cron_bootstrap_argv(python_exe, bootstrap_paths, str(path)), env_overlay, None
     return [python_exe, str(path)], env_overlay, None
 
 

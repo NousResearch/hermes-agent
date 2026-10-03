@@ -21,7 +21,7 @@ from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
-    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    casefold_sql, escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -1034,7 +1034,8 @@ class SessionSessionsMixin:
     def _chain_search_where(where_sql: str, id_needle: str, search_needle: str) -> Tuple[str, List[Any]]:
         """Extend ``where_sql`` with the id_query / search_query filters: a row is admitted when its own
         id or any id in its forward compression chain matches (search also matches titles and a
-        punctuation-stripped form so ``an94`` finds ``AN-94``); chain membership bounds the LIKE."""
+        punctuation-stripped form so ``an94`` finds ``AN-94``); chain membership bounds the LIKE.
+        ``search_needle`` arrives casefolded: titles compare through ``casefold_sql``."""
         params: List[Any] = []
         clauses: List[str] = []
         def like(needle: str) -> str:
@@ -1047,15 +1048,16 @@ class SessionSessionsMixin:
             params.append(like(id_needle))
         if search_needle:
             compact_needle = re.sub(r"[\W_]+", "", search_needle)
+            title_sql = casefold_sql("COALESCE(cs.title, '')")
             search_clause = (
                 "EXISTS (SELECT 1 FROM chain cq JOIN sessions cs ON cs.id = cq.cur_id"
-                " WHERE cq.root_id = s.id AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                f" WHERE cq.root_id = s.id AND ({title_sql} LIKE ? ESCAPE '\\'"
                 " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
             )
             params.extend([like(search_needle)] * 2)
             if compact_needle:
                 search_clause += (
-                    " OR REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(cs.title, '')),"
+                    f" OR REPLACE(REPLACE(REPLACE(REPLACE({title_sql},"
                     " '-', ''), '_', ''), '.', ''), ' ', '') LIKE ? ESCAPE '\\'"
                 )
                 params.append(like(compact_needle))
@@ -1336,7 +1338,7 @@ class SessionSessionsMixin:
             # require child.started_at >= parent.ended_at: races insert the
             # continuation before ended_at is written.
             outer_where, id_params = self._chain_search_where(
-                where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
+                where_sql, (id_query or "").strip().lower(), (search_query or "").strip().casefold(),
             )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (

@@ -410,10 +410,11 @@ async def search_sessions(
                 snippet = preview or f"Session ID: {sid}"
                 add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
 
-            # Prefix wildcards so partial words match ("nimb" -> "nimb*");
-            # quoted phrases and existing wildcards are kept as-is.
+            # Prefix wildcards so partial words match ("nimb" -> "nimb*"); quoted phrases,
+            # existing wildcards and FTS5's (case-sensitive) boolean operators are kept
+            # as-is — "OR*" is a prefix term, not an operator.
             prefix_query = " ".join(
-                tok if tok.startswith('"') or tok.endswith("*") else tok + "*"
+                tok if tok.startswith('"') or tok.endswith("*") or tok in {"AND", "OR", "NOT"} else tok + "*"
                 for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations when several hits collapse onto one root.

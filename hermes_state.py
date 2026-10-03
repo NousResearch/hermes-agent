@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
+    escape_like as _escape_like, register_sql_functions, stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
 from hermes_state_pidns import holder_pid_checkable
@@ -759,6 +759,7 @@ class SessionDB(
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
+        register_sql_functions(conn)
         return conn
 
     def _handle_quarantine_if_invalid(self, already_locked: bool = False) -> None:
@@ -792,6 +793,7 @@ class SessionDB(
         )
         try:
             conn.row_factory = sqlite3.Row
+            register_sql_functions(conn)
             mode = apply_wal_with_fallback(conn, db_label="state.db")
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.

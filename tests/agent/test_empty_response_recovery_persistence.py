@@ -267,3 +267,28 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
     # The Stop owner strips the nudge scaffold itself and closes with its own reason.
     assert result["messages"][-1]["content"] == result["final_response"]
+
+
+def test_empty_first_reply_after_a_previous_turns_tool_call_gets_no_post_tool_nudge(real_loop):
+    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+    history = [
+        {"role": "user", "content": "list files"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "a.txt"},
+        {"role": "assistant", "content": "There is a.txt."},
+    ]
+    requests = []
+    replies = [_response(""), _response("You're welcome.")]
+
+    def create(**kw):
+        requests.append([m.get("content") for m in kw["messages"]])
+        return replies.pop(0)
+
+    real_loop.agent.client = MagicMock()
+    real_loop.agent.client.chat.completions.create.side_effect = create
+    with patch("agent.turn_empty_response.interruptible_backoff_sleep", return_value=None):
+        real_loop.agent.run_conversation("thanks", conversation_history=history)
+
+    assert len(requests) >= 2
+    assert _EMPTY_TOOL_RESPONSE_NUDGE not in requests[1]

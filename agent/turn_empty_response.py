@@ -192,8 +192,10 @@ def recover_empty_response(
         agent._response_was_previewed = True
         return _verdict("break")
 
-    # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
-    _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
+    # Post-tool-call empty (no prior content, or only mid-task narration): nudge once. Only a tool
+    # round of THIS turn counts; the previous turn's tool rows are still within the last few messages.
+    _prior_was_tool = getattr(agent, "_tool_round_this_turn", False) and any(
+        m.get("role") == "tool" for m in messages[-5:])
     # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
     # it; detect here to route to prefill.
     _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))

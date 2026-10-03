@@ -11,6 +11,7 @@ import copy
 import json
 import logging
 import os
+import re
 import threading
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -319,6 +320,60 @@ def _msg_text(m: Dict) -> str:
     if isinstance(c, list):
         c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
     return c.strip() if isinstance(c, str) else ""
+
+
+_SKILL_INVOKED_RE = re.compile(r'has invoked the "([^"]+)" skill')
+_MAX_ELIGIBILITY_ROWS = 20
+
+
+def _consulted_skill_names(messages_snapshot: List[Dict]) -> List[str]:
+    """Skills the conversation loaded: ``skill_view(name=…)`` calls plus ``/skill`` invocation markers."""
+    names: List[str] = []
+    for m in messages_snapshot:
+        if m.get("role") == "assistant":
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                if not isinstance(fn, dict) or fn.get("name") != "skill_view":
+                    continue
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    with suppress(ValueError):
+                        args = json.loads(args)
+                if isinstance(args, dict) and isinstance(args.get("name"), str):
+                    names.append(args["name"])
+        elif m.get("role") == "user":
+            names.extend(_SKILL_INVOKED_RE.findall(_msg_text(m)))
+    return list(dict.fromkeys(n.strip() for n in names if n.strip()))
+
+
+def _skill_write_eligibility_block(messages_snapshot: List[Dict]) -> str:
+    """Pre-checked write eligibility of the consulted skills, for the review prompt.
+
+    The prompt already says protected skills are off-limits, but the fork cannot tell which of the
+    skills it just used are pinned or user-owned, so it drafts the patch and learns from the refusal:
+    81% of reviews on one install hit at least one refused write (76 of 106 on the pinned skill in
+    play) and cost 2.2x the calls of a clean review. Naming the verdict up front removes the probe.
+    Best-effort: any lookup failure yields an empty block and the guard still enforces the policy."""
+    names = _consulted_skill_names(messages_snapshot)[:_MAX_ELIGIBILITY_ROWS]
+    if not names:
+        return ""
+    try:
+        from tools.skill_manager_guards import background_write_eligibility
+        rows = background_write_eligibility(names)
+    except Exception:
+        logger.debug("skill write-eligibility precheck failed", exc_info=True)
+        return ""
+    lines = [
+        f"  • {name} — " + (f"PROTECTED ({why}): a write WILL be refused, do not attempt it"
+                            if why else "writable (curator-managed)")
+        for name, why in rows
+    ]
+    return (
+        "\n\nWrite eligibility of the skills consulted in this conversation, pre-checked with the "
+        "same guard skill_manage enforces:\n" + "\n".join(lines) +
+        "\nFor a PROTECTED skill go straight to options 2-4 (another umbrella, a support file, a new "
+        "class-level skill) or say 'Nothing to save.'"
+    )
 
 
 def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]:
@@ -1208,6 +1263,7 @@ def _run_review_fork(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
+                    + _skill_write_eligibility_block(messages_snapshot)
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
             )

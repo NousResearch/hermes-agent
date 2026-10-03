@@ -167,6 +167,45 @@ def _background_review_write_guard(
     has no user in the loop, so it is also blocked on pinned/external/bundled/hub skills."""
     if not _is_background_review():
         return None
+    return background_write_refusal(name, skill_dir, action)
+
+
+def background_write_eligibility(names: "list[str]") -> "list[tuple[str, Optional[str]]]":
+    """``(name, why_blocked)`` per skill, ``why_blocked`` None when autonomous curation may write it.
+
+    The same policy :func:`background_write_refusal` enforces, evaluated up front so the review
+    fork can be TOLD which consulted skills are off-limits instead of discovering it write by write:
+    81% of reviews on one install spent extra turns drafting patches for the pinned skill they had
+    just used and being refused. Unknown names are reported as writable (creation needs no record).
+    """
+    from tools import skill_manager_tool as _smt
+
+    rows: list[tuple[str, Optional[str]]] = []
+    for name in names:
+        existing = _smt._find_skill(name)
+        refusal = background_write_refusal(name, existing["path"], "patch") if existing else None
+        rows.append((name, _blocked_label(refusal["error"]) if refusal else None))
+    return rows
+
+
+def _blocked_label(message: str) -> str:
+    for needle, label in (
+        ("pinned skill", "pinned"),
+        ("external_dirs", "externally owned (skills.external_dirs)"),
+        ("protected built-in", "protected built-in"),
+        ("hub-installed", "hub-installed"),
+        ("bundled", "bundled"),
+        ("not curator-managed", "not curator-managed; user-owned, `hermes curator adopt` opts it in"),
+    ):
+        if needle in message:
+            return label
+    return "ownership could not be verified"
+
+
+def background_write_refusal(
+    name: str, skill_dir: Path, action: str) -> Optional[Dict[str, Any]]:
+    """The autonomous-curation write policy, ungated: refusal dict or None. Pinned, external,
+    built-in, hub, bundled and non-curator-managed skills are off-limits."""
     refuse = f"Refusing background curator {action} for"
     if _is_pinned(name, "pinned skill guard"):
         return _refusal(

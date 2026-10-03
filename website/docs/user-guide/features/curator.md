@@ -279,7 +279,10 @@ go `stale` (or `archived`) on the next pass; that is the point.
 Adoption is also what unblocks autonomous *improvement*. The background review
 fork refuses to patch a skill that isn't curator-managed, so if it notices one
 of your skills is outdated it will say so and recommend adoption rather than
-edit it. Foreground (user-directed) edits are never affected — you and the
+edit it. The fork is told up front which of the skills the conversation loaded
+are protected (pinned, user-owned, bundled, hub, external) and which are
+writable, so it does not spend turns drafting patches the guard would refuse.
+Foreground (user-directed) edits are never affected — you and the
 agent can always edit your own skills on request.
 
 :::note `created_by` is a policy flag, not a provenance claim

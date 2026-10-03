@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import contextvars
 import errno
+import hashlib
 import html
 import importlib.util as _importlib_util
 import json
@@ -782,7 +783,22 @@ def _announce_authorization_url(
     print(f"  ({note})\n", file=sys.stderr)
 
 
-def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
+def _credential_epoch(storage: HermesTokenStorage) -> str | None:
+    """Digest of the stored credential (never the raw token); ``None`` when there is none.
+
+    Bookkeeping-only rewrites of the tokens file (e.g. issuer stamping) keep the same digest.
+    """
+    payload = _read_json(storage._tokens_path())
+    if not isinstance(payload, dict):
+        return None
+    material = (payload.get("access_token"), payload.get("refresh_token"))
+    return hashlib.sha256(repr(material).encode("utf-8")).hexdigest()
+
+
+def _make_redirect_handler(
+    port: int, redirect_uri: str | None = None, redirect_host: str | None = None,
+    *, storage: HermesTokenStorage | None = None,
+):
     """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
     flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
     hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
@@ -790,8 +806,16 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_
 
     Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
     when multiple MCP servers run OAuth concurrently (fixes #44588).
+
+    With ``storage``, one browser prompt is allowed per stored-credential generation: a failed refresh
+    re-enters this long-lived provider's auth flow on every reconnect, and each re-entry used to open
+    another tab. A new credential re-arms it; ``hermes mcp login`` builds a fresh provider and gate.
     """
+    last_prompt_epoch: object = object()  # sentinel: nothing prompted yet
+    prompt_lock = threading.Lock()
+
     async def _redirect_handler(authorization_url: str) -> None:
+        nonlocal last_prompt_epoch
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
             await dashboard_flow.publish_authorization_url(authorization_url)
@@ -807,6 +831,15 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_
         _raise_if_non_interactive(
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
+        if storage is not None:
+            epoch = _credential_epoch(storage)
+            with prompt_lock:
+                if epoch == last_prompt_epoch:
+                    raise OAuthNonInteractiveError(
+                        "MCP OAuth authorization already requested for this token version; complete the "
+                        "existing browser flow or run `hermes mcp login <server>` explicitly."
+                    )
+                last_prompt_epoch = epoch
         _announce_authorization_url(authorization_url, port, redirect_uri, redirect_host)
 
     return _redirect_handler

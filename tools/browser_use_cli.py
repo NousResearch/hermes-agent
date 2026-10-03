@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from tools.tool_output_truncate import truncate_head_tail
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -708,8 +709,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if session:
         result["session"] = session
     stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
-    if len(stderr) > _STDERR_CAP_CHARS:
-        stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
+    stderr = truncate_head_tail(stderr, _STDERR_CAP_CHARS, label="STDERR")
     if stderr:
         result["stderr"] = stderr
     screenshot = _find_screenshot(proc.stdout, started)

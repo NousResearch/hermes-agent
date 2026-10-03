@@ -85,6 +85,31 @@ def test_dashboard_toggle_writes_canonical_key_and_clears_stale_aliases(home):
     assert again["unchanged"] is True and again["restart_required"] is False
 
 
+def test_plugin_in_both_lists_warns_instead_of_silent_debug_skip(home):
+    """A plugin listed in both plugins.enabled and plugins.disabled loads nowhere silently (#131980):
+    the disable still wins, but the gate must surface the contradiction at WARNING with both config
+    keys named, instead of the DEBUG skip that is invisible during normal operation."""
+    import logging
+
+    _write_plugin(home / "plugins", "obs/intake", "intake-probe")
+    manifest = next(m for m in collect_directory_manifests() if m.name == "intake-probe")
+
+    conflicting = gate_manifest(manifest, {"obs/intake"}, {"obs/intake"})
+    assert conflicting.action == "placeholder"
+    assert conflicting.error == "listed in both plugins.enabled and plugins.disabled — disabled wins"
+    assert conflicting.log[0] == logging.WARNING
+    assert "plugins.enabled" in conflicting.log[1] and "plugins.disabled" in conflicting.log[1]
+
+    # Cross-form contradiction (path key in one list, manifest name in the other) is caught too —
+    # the gate matches either identifier, so the warning must not depend on identical spelling.
+    cross = gate_manifest(manifest, {"obs/intake"}, {"intake-probe"})
+    assert cross.log[0] == logging.WARNING
+
+    # A plain disable with no overlap stays a quiet DEBUG skip — no behavior change.
+    plain = gate_manifest(manifest, {"obs/intake"}, {"other/plugin"})
+    assert plain.error == "disabled via config" and plain.log[0] == logging.DEBUG
+
+
 def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):
     """Bundled backends (auto-load) and the plugin selected by ``memory.provider`` run without a
     ``plugins.enabled`` entry; status must not call them "not enabled" (#73131, #82898)."""

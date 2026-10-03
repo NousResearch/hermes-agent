@@ -874,6 +874,42 @@ class TestPlaybackInterrupt:
         with _playback_lock:
             assert vm._active_playback is None
 
+    def test_deliberate_cut_does_not_try_the_next_player(self, monkeypatch, tmp_path):
+        """A cut stops the whole chain: killing ffplay used to hand the same sentence to aplay,
+        so the user heard a click and the voice seemed not to stop."""
+        import tools.voice_mode as vm
+
+        audio = tmp_path / "reply.ogg"
+        audio.write_bytes(b"OggS")
+        tried = []
+
+        def fake_player(cmd):
+            tried.append(cmd[0])
+            vm._playback_interrupted.set()  # stop_playback() ran while this player was alive
+            return False
+
+        monkeypatch.setattr(vm, "_system_player_candidates",
+                            lambda path: [["ffplay", path], ["aplay", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm, "_run_system_player", fake_player)
+        vm._playback_interrupted.clear()
+
+        assert vm.play_audio_file(str(audio)) is False
+        assert tried == ["ffplay"], "the chain fell through to the next player after a cut"
+
+    def test_player_killed_by_signal_latches_the_cut(self, monkeypatch):
+        """A negative return code means the player was killed (stop_playback's terminate), not
+        that the device failed — the chain must not fall through to the next candidate."""
+        import tools.voice_mode as vm
+
+        proc = MagicMock()
+        proc.returncode = -15  # SIGTERM
+        monkeypatch.setattr(vm.subprocess, "Popen", lambda *a, **k: proc)
+        vm._playback_interrupted.clear()
+
+        assert vm._run_system_player(["ffplay", "reply.ogg"]) is False
+        assert vm._playback_interrupted.is_set()
+
 # ============================================================================
 # Continuous mode flow
 # ============================================================================

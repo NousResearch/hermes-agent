@@ -972,6 +972,10 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 # ── Audio playback (interruptable) ──
 _active_playback: Optional[subprocess.Popen] = None  # so stop_playback can interrupt it
 _playback_lock = threading.Lock()
+# Latched by a deliberate cut (stop_playback, or a player killed by a signal) so the caller
+# stops walking the player chain: trying the next candidate would restart the SAME sentence
+# from the beginning, and the user hears a click instead of silence.
+_playback_interrupted = threading.Event()
 
 
 def _set_active_playback(proc) -> None:
@@ -983,6 +987,7 @@ def _set_active_playback(proc) -> None:
 def stop_playback() -> None:
     """Interrupt the currently playing audio (if any)."""
     global _active_playback
+    _playback_interrupted.set()  # latched for this player chain, cleared per playback
     with _playback_lock:
         proc = _active_playback
         _active_playback = None
@@ -1101,6 +1106,12 @@ def _run_system_player(cmd: List[str]) -> bool:
         rc = proc.returncode
         if rc == 0:
             return True
+        if rc < 0:
+            # Killed by a signal (stop_playback's terminate) rather than a device failure:
+            # latch it so the caller abandons the chain instead of restarting the same
+            # sentence on the next player.
+            _playback_interrupted.set()
+            return False
         # e.g. WSL ffplay/aplay with no audio device — fall through to the next player.
         logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
     except subprocess.TimeoutExpired:
@@ -1122,7 +1133,11 @@ def _play_audio_file_impl(file_path: str) -> bool:
     # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
+    _playback_interrupted.clear()  # fresh playback: an earlier cut must not abort this one
     for cmd in _system_player_candidates(file_path):
+        if _playback_interrupted.is_set():
+            logger.info("Audio playback cut by user, not trying other players")
+            return False
         if shutil.which(cmd[0]) and _run_system_player(cmd):
             return True
     logger.warning("No audio player available for %s", file_path)

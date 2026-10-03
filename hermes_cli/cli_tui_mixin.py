@@ -828,7 +828,7 @@ class CLITuiMixin:
         Runs on prompt_toolkit's event-loop thread: any blocking call here (locks, sd.wait,
         disk I/O) freezes the whole UI, so all heavy work goes to daemon threads.
         """
-        from cli import _DIM, _RST, _cprint, logger
+        from cli import _DIM, _RST, _cprint
         if not self._voice_mode:
             return
         if self._voice_recording:
@@ -850,20 +850,9 @@ class CLITuiMixin:
         if (self._clarify_state or self._sudo_state or self._approval_state
                 or self._slash_confirm_state or self._connection_state):
             return
-        # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
-        # the stop event drains the streaming pipeline if one is live.
-        if not self._voice_tts_done.is_set():
-            try:
-                logger.info("TTS CUT: record key handler cutting TTS")
-                from tools.tts_streaming import mark_speech_interrupted
-                mark_speech_interrupted()
-                if self._voice_tts_stop is not None:
-                    self._voice_tts_stop.set()
-                from tools.voice_mode import stop_playback
-                stop_playback()
-                self._voice_tts_done.set()
-            except Exception:
-                pass
+        # Cut TTS so the user can start talking: shared with the interrupt keys, it stops the
+        # player and drains the streaming pipeline if one is live.
+        self._tui_cut_tts("record key")
         with self._voice_lock:
             self._voice_continuous = True
 
@@ -931,10 +920,41 @@ class CLITuiMixin:
             self._should_exit = True
             event.app.exit()
 
+    def _tui_cut_tts(self, reason: str) -> None:
+        """Stop TTS playback for an explicit user interrupt (Ctrl+C / Ctrl+Q).
+
+        Pressing an interrupt key means "be quiet", but killing the player process alone
+        leaves a live streaming pipeline draining the rest of the sentence into the speaker,
+        so the pipeline's stop event is set too; ``mark_speech_interrupted()`` keeps a
+        superseded reply from resuming on the next turn. A no-op when nothing is playing, so
+        the key has no side effects in silence.
+        """
+        try:
+            from tools.voice_mode import is_audio_output_active, stop_playback
+            done = getattr(self, "_voice_tts_done", None)
+            if done is not None and done.is_set() and not is_audio_output_active():
+                return
+            from tools.tts_streaming import mark_speech_interrupted
+            mark_speech_interrupted()
+            if self._voice_tts_stop is not None:
+                self._voice_tts_stop.set()
+            stop_playback()
+            if done is not None:
+                done.set()
+            # Logged last and isolated: a logging failure must never keep the audio playing.
+            try:
+                from cli import logger
+                logger.info("TTS CUT: %s", reason)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _tui_handle_ctrl_c(self, event):
         """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt →
         interrupt the running agent (first press) → force exit (second press within 2s) → when
         idle clear the draft or exit."""
+        self._tui_cut_tts("Ctrl+C")
         now = time.time()
         if self._tui_cancel_voice_recording(event):
             return
@@ -960,6 +980,7 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_q(self, event):
         """Ctrl+Q: like Ctrl+C minus the double-press force exit (and it leaves the palette)."""
+        self._tui_cut_tts("Ctrl+Q")
         if self._tui_cancel_voice_recording(event):
             return
         if self._tui_cancel_foreground_ui(event, closers=(

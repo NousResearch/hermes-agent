@@ -1278,13 +1278,11 @@ class CLICommandsMixin:
         if not target:
             _cp(f"  {_t('resume.usage')}")
             if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
                 # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
                 # next line instead of having to retype `/resume 3`. The list here must match the one shown
                 # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                # _list_recent_sessions() sized by display.resume_list_limit. See #34584.
+                self._pending_resume_sessions = self._list_recent_sessions()
                 return
             return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
@@ -1336,7 +1334,7 @@ class CLICommandsMixin:
         it could not be resolved. An empty compression-chain head redirects to the descendant
         that actually holds the transcript."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            sessions = self._list_recent_sessions()
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))

@@ -311,10 +311,17 @@ class CLISessionMixin:
         lines.extend(status_lines(fields, "created", "last_activity", "tokens", "agent_running"))
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+    def _list_recent_sessions(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return recent CLI sessions for in-chat browsing/resume affordances.
+
+        ``limit`` defaults to ``display.resume_list_limit`` so the table /resume shows and the
+        index a bare number resolves against are always the same list (#34584).
+        """
         if not self._session_db:
             return []
+        if limit is None:
+            from cli import CLI_CONFIG
+            limit = int(CLI_CONFIG.get("display", {}).get("resume_list_limit", 10))
         try:
             from hermes_cli.session_listing import query_session_listing
             from hermes_state_sessions import INTERNAL_LISTING_SOURCES
@@ -326,7 +333,7 @@ class CLISessionMixin:
         except Exception:
             return []
 
-    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
+    def _show_recent_sessions(self, *, reason: str = "history", limit: int | None = None) -> bool:
         """Render recent sessions inline from the active chat TUI.
 
         Returns True when something was shown, False if no session list was available.

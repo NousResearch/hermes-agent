@@ -68,6 +68,15 @@ except ImportError:
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
+try:
+    from mautrix.errors.request import MLimitExceeded, MatrixRequestError
+except ImportError:  # mautrix may be absent (lazy-install not run); _call_with_rate_limit_backoff
+    class MatrixRequestError(Exception):  # only needs isinstance + getattr(exc, "http_status")
+        http_status: int = 0
+
+    class MLimitExceeded(MatrixRequestError):
+        pass
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
@@ -1434,7 +1443,6 @@ class MatrixAdapter(BasePlatformAdapter):
         mautrix 0.21's ``MLimitExceeded`` no longer carries ``retry_after_ms``, so retries
         use capped exponential backoff (1.5s/3s/6s) — enough to ride out a matrix.org burst
         limit instead of dropping the send (e.g. a reaction-based approval prompt)."""
-        from mautrix.errors.request import MLimitExceeded, MatrixRequestError
         for attempt in range(retries + 1):
             try:
                 return await op()

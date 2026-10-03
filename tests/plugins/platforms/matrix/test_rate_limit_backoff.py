@@ -10,6 +10,8 @@ capped exponential backoff; other Matrix errors still fail immediately."""
 import asyncio
 
 import pytest
+
+pytest.importorskip("mautrix.errors.request")  # matrix extra is linux-only; stubs cover CI runs
 from mautrix.errors.request import MForbidden, MLimitExceeded, MatrixStandardRequestError
 
 from gateway.config import PlatformConfig

@@ -1,7 +1,7 @@
 """``hermes_cli.left_core_migration``: homes that used a feature that left core get its catalog plugin.
 
-Real config/.env files under a temp home and the in-tree catalog; only the network install is a
-recording stand-in (the live install is exercised end to end outside the unit suite).
+Real config/.env files under a temp home; the catalog lookup and the network install are stand-ins
+(the live install is exercised end to end outside the unit suite).
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
     monkeypatch.setattr(lcm, "_undelivered", {})
     monkeypatch.delenv("HASS_TOKEN", raising=False)
-    # The in-tree catalog (this checkout's plugin-catalog/), never the network.
-    import hermes_cli.plugin_catalog as pc
-    monkeypatch.setattr(pc, "fetch_live_catalog", lambda **_: None)
+    # A catalog that lists every left-core plugin; never the network.
+    import hermes_cli.memory_provider_migration as mpm
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
 
 
 def _home(tmp_path: Path, name: str = "home", *, env: str = "", config: str = "") -> Path:
@@ -156,10 +156,3 @@ def test_gateway_start_outcome_waits_for_the_first_agent(tmp_path, monkeypatch):
     assert len(said) == 1 and said[0].startswith("✓ Home Assistant moved out of core")
     assert lcm.recover_at_startup(say=said.append) == [] and len(said) == 1
 
-
-def test_in_tree_catalog_ships_the_homeassistant_entry():
-    from hermes_cli.plugin_catalog import get_catalog_entry
-    entry = get_catalog_entry("homeassistant")
-    assert entry is not None and entry.category == "platform" and entry.tier == "official"
-    assert set(entry.capabilities.provides_tools) == {
-        "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"}

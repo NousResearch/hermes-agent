@@ -14,11 +14,17 @@ A corrupt store is an unavailable store, not an empty one.
 import sqlite3
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from hermes_cli import web_server
 import hermes_cli.web_server_sessions as _web_server_sessions
 from hermes_cli.web_routers import sessions as sessions_router
+
+# get_session_detail/delete_session_endpoint/rename_session_endpoint are admin-gated
+# (_require_dashboard_admin) since the Mini App tiered access control landed; a bare Request with
+# no request.state.token_principal set resolves to the cookie/session caller's unrestricted scope,
+# same as these direct calls always got before that gate existed.
+_FAKE_REQUEST = Request(scope={"type": "http", "headers": []})
 
 
 class _MalformedDB:
@@ -49,7 +55,7 @@ def malformed_db(monkeypatch):
 @pytest.mark.asyncio
 async def test_corrupt_db_is_not_reported_as_missing_session(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
 
     assert excinfo.value.status_code != 404, (
         "corruption reported as 'Session not found' - this is the bug"
@@ -60,7 +66,7 @@ async def test_corrupt_db_is_not_reported_as_missing_session(malformed_db):
 @pytest.mark.asyncio
 async def test_corrupt_db_detail_names_the_real_cause(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
 
     detail = str(excinfo.value.detail).lower()
     assert "corrupt" in detail or "malformed" in detail
@@ -69,7 +75,7 @@ async def test_corrupt_db_detail_names_the_real_cause(malformed_db):
 @pytest.mark.asyncio
 async def test_db_is_closed_even_when_corruption_raises(malformed_db):
     with pytest.raises(HTTPException):
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
 
     assert malformed_db.closed, "connection leaked on the corruption path"
 
@@ -86,7 +92,7 @@ async def test_db_is_closed_even_when_corruption_raises(malformed_db):
 async def test_messages_endpoint_reports_corruption(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
         await sessions_router.get_session_messages(
-            "20260830_180820_744f05", None, None, 0, None, False
+            _FAKE_REQUEST, "20260830_180820_744f05", None, None, 0, None, False
         )
     assert excinfo.value.status_code == 503
 
@@ -94,7 +100,7 @@ async def test_messages_endpoint_reports_corruption(malformed_db):
 @pytest.mark.asyncio
 async def test_delete_does_not_claim_success_on_a_corrupt_store(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.delete_session_endpoint("20260830_180820_744f05")
+        await sessions_router.delete_session_endpoint(_FAKE_REQUEST, "20260830_180820_744f05")
     assert excinfo.value.status_code == 503
 
 
@@ -104,7 +110,7 @@ async def test_rename_endpoint_reports_corruption(malformed_db):
 
     with pytest.raises(HTTPException) as excinfo:
         await sessions_router.rename_session_endpoint(
-            "20260830_180820_744f05", SessionRename(title="neu")
+            _FAKE_REQUEST, "20260830_180820_744f05", SessionRename(title="neu")
         )
     assert excinfo.value.status_code == 503
 
@@ -141,7 +147,7 @@ async def test_absent_session_is_still_404(monkeypatch):
         lambda profile, *, read_only: _EmptyDB(),
     )
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("does_not_exist")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "does_not_exist")
     assert excinfo.value.status_code == 404
 
 
@@ -161,4 +167,4 @@ async def test_non_corruption_database_error_is_not_swallowed(monkeypatch):
         lambda profile, *, read_only: _OtherErrorDB(),
     )
     with pytest.raises(sqlite3.DatabaseError):
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")

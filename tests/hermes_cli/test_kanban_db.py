@@ -480,6 +480,15 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         # A filename or other ordinary token containing ``auth`` is not an
         # authentication failure.
         ("worker failed while reading server/auth.go", None),
+        ("worker failed while reading auth/service.py", None),
+        ("auth.go:42 changed", None),
+        # Real auth failure prose must still trip the guard.
+        ("auth token expired", "blocker_auth"),
+        ("auth required", "blocker_auth"),
+        ("auth header missing", "blocker_auth"),
+        ("OAuth expired", "blocker_auth"),
+        ("credentials-invalid", "blocker_auth"),
+        ("OAuth refresh failed but auth.json has newer tokens", "blocker_auth"),
         # Genuine auth failures must still trip the guard, one row per
         # curated stem family and failure-oriented auth phrase.
         ("401 auth failed", "blocker_auth"),

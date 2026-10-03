@@ -10,6 +10,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms import weixin
+from gateway.platforms.event import MessageType
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_targets import _parse_target_ref
 
@@ -864,4 +865,31 @@ class TestWeixinVoiceGatewayHandoff:
         assert event.text != tencent_text, (
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
+        )
+
+
+class TestWeixinCommandClassification:
+    """Invisible-padded commands must not land in the text-batching path.
+
+    _enqueue_text_event holds TEXT events for a debounce window and
+    concatenates whatever arrives next, so a command misclassified as TEXT
+    gets the user's follow-up glued on as its arguments.
+    """
+
+    def test_plain_command_classifies_as_command(self):
+        assert weixin._message_type_from_media([], "/deny") == MessageType.COMMAND
+
+    def test_invisible_padded_command_classifies_as_command(self):
+        assert (
+            weixin._message_type_from_media([], "⁠/deny⁠")
+            == MessageType.COMMAND
+        )
+
+    def test_plain_text_still_classifies_as_text(self):
+        assert weixin._message_type_from_media([], "hello") == MessageType.TEXT
+
+    def test_media_still_wins_over_command_text(self):
+        assert (
+            weixin._message_type_from_media(["image/jpeg"], "/deny")
+            == MessageType.PHOTO
         )

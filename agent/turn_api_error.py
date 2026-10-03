@@ -13,7 +13,9 @@ import json
 import logging
 import ssl
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from agent.turn_failure_copy import interrupted_retry
 
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
@@ -407,7 +409,7 @@ def settle_unrecovered_error(
         agent, wait_time, _retry, messages=messages, conversation_history=conversation_history,
         api_call_count=api_call_count,
         abort_message="Interrupt detected during retry wait, aborting.",
-        interrupt_text=f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
+        interrupt_text=interrupted_retry("api", f"{retry_count}/{max_retries}"),
         activity_label=f"error retry backoff ({retry_count}/{max_retries})",
     )
     if _interrupted is not None:

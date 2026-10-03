@@ -21,6 +21,8 @@ auth:
 # Explicit allowlist: future tools remain off. No AI jobs, assignment,
 # suggestion resolution, or SDK resource/prompt meta-tools enabled.
 tools:
+  resources: false
+  prompts: false
   default_enabled:
     - list_budgets
     - get_budget_overview

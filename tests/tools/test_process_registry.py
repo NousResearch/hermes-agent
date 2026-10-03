@@ -467,6 +467,61 @@ def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry
 
 
 # =========================================================================
+# Stdin approval guard (#22557)
+# =========================================================================
+
+class TestStdinApprovalGuard:
+    @pytest.mark.parametrize("sink", ["pty", "pipe"])
+    def test_hardline_payload_never_reaches_a_live_process(self, registry, sink):
+        """``terminal(\"bash\")`` passes the guard, so the follow-on text must hit the SAME hardline
+        floor before any PTY/pipe write — the launcher being harmless is not consent for its stdin."""
+        session = _make_session(sid=f"proc_stdin_{sink}", command="bash")
+        if sink == "pty":
+            session._pty = MagicMock()
+            writes = session._pty.write
+        else:
+            session.process = MagicMock()
+            writes = session.process.stdin.write
+        registry._running[session.id] = session
+
+        results = [registry.write_stdin(session.id, "rm -rf $HOME\n"),
+                   registry.submit_stdin(session.id, "rm -rf $HOME")]
+
+        assert [r["status"] for r in results] == ["blocked", "blocked"]
+        assert all("hardline" in r["error"] for r in results)
+        writes.assert_not_called()
+
+    def test_dangerous_payload_uses_the_terminal_approval_callback_and_safe_payload_never_prompts(
+        self, registry, monkeypatch
+    ):
+        """Recoverable dangerous stdin goes through the established terminal approval UI (not a
+        callback-less fail-closed deny) and is written once approved; ordinary input never prompts."""
+        from tools import terminal_tool
+
+        calls = []
+
+        def approve(command, description, *, allow_permanent=True, **_kw):
+            calls.append(command)
+            return "once"
+
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        terminal_tool.set_approval_callback(approve)
+        session = _make_session(sid="proc_stdin_callback", command="bash")
+        session.process = MagicMock()
+        registry._running[session.id] = session
+        try:
+            dangerous = "chmod -R 777 /srv/hermes-stdin-approval-test\n"
+            assert registry.write_stdin(session.id, dangerous) == {"status": "ok", "bytes_written": len(dangerous)}
+            assert registry.write_stdin(session.id, "print('hello')\n")["status"] == "ok"
+        finally:
+            terminal_tool.set_approval_callback(None)
+
+        assert calls == [dangerous]
+        assert [c.args[0] for c in session.process.stdin.write.call_args_list] == [dangerous, "print('hello')\n"]
+
+
+# =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 

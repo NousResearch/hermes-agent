@@ -38,6 +38,26 @@ from tools.process_registry_results import load_completed_results, save_complete
 
 logger = logging.getLogger(__name__)
 
+def _check_process_stdin_guards(data: str) -> dict | None:
+    """Run the terminal command guard (tirith + dangerous-command + hardline floor) on a stdin
+    payload. ``terminal()`` guards only the launcher; a live shell/interpreter turns
+    ``process(write|submit)`` into a second execution channel, so the follow-on text passes the
+    same guard (same approval UI, session/permanent allowlists, gateway wait) before it reaches
+    the process. Returns the process-tool error result, or None when approved."""
+    if not data:
+        return None
+    from tools.terminal_tool import _check_all_guards
+
+    approval = _check_all_guards(data, "local")
+    if approval.get("approved"):
+        return None
+    result = {"status": approval.get("status") or "blocked",
+              "error": approval.get("message") or "Process stdin rejected by approval policy"}
+    if approval.get("user_summary"):
+        result["user_summary"] = approval["user_summary"]
+    return result
+
+
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 _CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
@@ -2414,6 +2434,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
+
+        # Second-stage execution channel: the launcher (``bash``) passed the terminal guard, so the
+        # follow-on command text must pass the same guard before it reaches a live shell/interpreter.
+        session = self.get(session_id)
+        if session is not None and not session.exited:
+            guard_error = _check_process_stdin_guards(data)
+            if guard_error is not None:
+                return guard_error
 
         def via_pty(pty):
             # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.

@@ -807,8 +807,9 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (adapter, app, delivered):
         assert app.concurrent_updates == 7
 
-    async with connected(monkeypatch, extra={"max_concurrent_updates": "lots"}) as (adapter, app, delivered):
-        assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
+    for bad in ("lots", float("inf")):  # .inf in YAML: int() raises OverflowError
+        async with connected(monkeypatch, extra={"max_concurrent_updates": bad}) as (adapter, app, delivered):
+            assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
 
     # Cancelling a waiting same-chat update must neither fail its running predecessor nor
     # let the next update of that chat overtake it.

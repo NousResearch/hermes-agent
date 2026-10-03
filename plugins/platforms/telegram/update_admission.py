@@ -19,6 +19,7 @@ from functools import wraps
 from telegram import Update
 from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, SimpleUpdateProcessor
 
+from gateway.platforms._shared import coerce_port
 from gateway.platforms.helpers import bounded_put
 from utils import atomic_json_write
 
@@ -169,10 +170,7 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
 def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
     """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
     raw = extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
-    try:
-        limit = int(raw)
-    except (TypeError, ValueError):
-        limit = 0
+    limit = coerce_port(raw, 0)
     if limit < 1:
         logger.warning("[%s] Invalid max_concurrent_updates=%r; using %d",
                        name, raw, DEFAULT_MAX_CONCURRENT_UPDATES)

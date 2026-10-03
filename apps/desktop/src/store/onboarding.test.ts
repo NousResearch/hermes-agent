@@ -83,6 +83,24 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
   }
 }
 
+// A readiness answer from the WRONG backend (local/pooled instead of the
+// configured remote): both checks confidently agree nothing is configured.
+// The renderer cannot tell this apart from a genuinely empty backend, so the
+// background refresh must not trust it (#123339).
+function wrongBackendGateway(): OnboardingContext['requestGateway'] {
+  return async method => {
+    if (method === 'setup.status') {
+      return { provider_configured: false } as never
+    }
+
+    if (method === 'setup.runtime_check') {
+      return { error: 'No inference provider is configured.', ok: false } as never
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  }
+}
+
 describe('refreshOnboarding', () => {
   it('keeps onboarding work in its initiating lifetime and profile', async () => {
     const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
@@ -276,6 +294,34 @@ describe('refreshOnboarding', () => {
     }
   })
 
+  it('does not downgrade a configured app on a confident not-ready background check (#123339)', async () => {
+    // Force Reload against the wrong (local/pooled) backend answers
+    // confidently unconfigured — and a genuinely wrong backend has no
+    // configured record, so its checks agree. Downgrading on that writes
+    // configured=false, wipes the boot cache, and raises the blocking
+    // provider picker over a remote backend that is actually ready.
+    const api = vi.fn()
+
+    installApiMock(api)
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [makeOAuthProvider('cached')],
+        reason: null,
+        requested: false
+      })
+    )
+
+    const ready = await refreshOnboarding(onboardingContext(wrongBackendGateway()))
+
+    expect(ready).toBe(false)
+    expect(api).not.toHaveBeenCalled()
+    expect($desktopOnboarding.get().configured).toBe(true)
+    expect($desktopOnboarding.get().reason).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+  })
+
   it('leaves configured unknown on a boot fallback instead of erasing the cache', async () => {
     const notifySpy = vi.spyOn(notifications, 'notify')
 
@@ -360,7 +406,9 @@ describe('refreshOnboarding', () => {
 
   it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {
     // Outside the boot window: no setup.ready bump precedes the round, so an
-    // answered ok:false is a real verdict, not a hydration race.
+    // answered ok:false is a real verdict, not a hydration race — and both
+    // probes agree nothing is configured. A disagreeing round is handled by
+    // the boot-race guards above instead of this downgrade path.
     installApiMock(vi.fn())
     window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(

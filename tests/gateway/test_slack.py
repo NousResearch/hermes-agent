@@ -3919,14 +3919,23 @@ class TestSlashEphemeralAck:
                            "dm-control": [True, True]}.get(row, [])
 
     @pytest.mark.asyncio
-    async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
+    @pytest.mark.parametrize("channel_team, reply_team, expected", [
+        (None, "", "T_PRI"),          # single workspace: the primary client
+        (None, "T_SEC", "T_SEC"),     # shared channel: the map names no single owner
+        ("T_PRI", "T_SEC", "T_SEC"),  # the map points at the other workspace
+        ("T_SEC", "T_PRI", "T_PRI"),
+    ], ids=["single-workspace", "ambiguous-map", "map-says-primary", "map-says-secondary"])
+    async def test_send_slash_ephemeral_fallback_on_post_failure(
+        self, adapter, channel_team, reply_team, expected
+    ):
         """Failed response_url POST falls back to chat.postEphemeral — never
-        a public channel post (#19688)."""
+        a public channel post (#19688) — from the workspace that owns the reply, not whichever one
+        the channel map (or the primary client) names (#130313)."""
         from plugins.platforms.slack.adapter import _slash_reply_context
 
         slash_ctx = {
             "response_url": "https://hooks.slack.com/commands/bad", "user_id": "U1",
-            "channel_id": "C1", "team_id": "", "posts": 0, "replied": False}
+            "channel_id": "C1", "team_id": reply_team, "posts": 0, "replied": False}
 
         mock_resp = AsyncMock()
         mock_resp.status = 500
@@ -3940,27 +3949,33 @@ class TestSlashEphemeralAck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "1234.5678", "ok": True}
-        )
-        adapter._app.client.chat_postEphemeral = AsyncMock(
-            return_value={"ok": True}
-        )
+        clients = {"T_PRI": adapter._app.client, "T_SEC": AsyncMock()}
+        for team, client in clients.items():
+            client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678", "ok": True})
+            client.chat_postEphemeral = AsyncMock(return_value=(
+                {"ok": True} if team == expected else {"ok": False, "error": "channel_not_found"}))
+        if reply_team:
+            adapter._team_clients = clients
+        adapter._channel_team = {"C1": channel_team} if channel_team else {}
+        adapter._channel_teams = {"C1": {"T_PRI", "T_SEC"}} if reply_team and not channel_team else {}
 
         token = _slash_reply_context.set(slash_ctx)
         try:
             with patch(
                 "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
             ):
-                result = await adapter.send("C1", "Some response")
+                result = await adapter.send(
+                    "C1", "Some response",
+                    metadata={"slack_team_id": reply_team} if reply_team else None)
         finally:
             _slash_reply_context.reset(token)
 
-        # Reply delivered ephemerally via postEphemeral; the public
-        # chat.postMessage path must NOT be used for a slash reply.
+        # Reply delivered ephemerally via postEphemeral, once, from the reply's own workspace;
+        # the public chat.postMessage path must NOT be used for a slash reply.
         assert result.success is True
-        adapter._app.client.chat_postEphemeral.assert_awaited_once()
-        adapter._app.client.chat_postMessage.assert_not_awaited()
+        assert {team: c.chat_postEphemeral.await_count for team, c in clients.items()} == {
+            team: int(team == expected) for team in clients}
+        assert not any(c.chat_postMessage.await_count for c in clients.values())
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_both_paths_fail_never_posts_publicly(

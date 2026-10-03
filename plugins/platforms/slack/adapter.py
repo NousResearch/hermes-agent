@@ -1520,7 +1520,9 @@ class SlackAdapter(BasePlatformAdapter):
             return 0, "no user_id in slash context for postEphemeral"
         delivered = 0
         try:
-            client = self._get_client(chat_id)
+            # The invocation's own workspace: the channel map has no owner for a channel that two
+            # installed workspaces share, and the primary bot need not be a member of it.
+            client = self._get_client(chat_id, team_id=ctx.get("team_id") or None)
             for chunk in chunks:
                 result = await client.chat_postEphemeral(channel=chat_id, user=user_id, text=chunk)
                 payload = _slack_response_payload(result)

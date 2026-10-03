@@ -157,7 +157,19 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            # A truncated outer envelope loses every deferred call before the
+            # per-entry argument repair path can run. Reuse that bounded
+            # repair chain once, but retain the original parse error when it
+            # falls back to its unrepairable-object sentinel (#119640).
+            from agent.message_sanitization import _repair_tool_call_arguments
+
+            repaired_calls = _repair_tool_call_arguments(raw_calls, "tool_call calls")
+            if repaired_calls == "{}":
+                return [], f"tool_call 'calls' is not valid JSON: {e}"
+            try:
+                raw_calls = json.loads(repaired_calls)
+            except json.JSONDecodeError:
+                return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

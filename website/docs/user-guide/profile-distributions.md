@@ -87,7 +87,7 @@ Not a fit:
 
 - **You want to hand someone your setup once, right now.** A distribution needs a repo, a manifest, and a `.gitignore`. `/export` needs none of that — see [Export and import a profile file](#export-and-import-a-profile-file). Same for backing up or moving a profile to a new machine.
 - **You want to share your desktop theme and layout.** A distribution carries the agent — SOUL, config, skills, cron, MCP, plugins. An export made from the desktop app also carries the look: skin, light/dark mode, custom themes, rail color, and window layout.
-- **You want to share API keys alongside the agent.** `auth.json`, `.env` and the other credential stores Hermes reads from a profile (`.op.env`, `npmrc`, OAuth and bot token files, `honcho.json`, `mem0.json`, `teams_pipeline_store.json`, `mcp-tokens/`, `vault/`, `proxy/`, browser profiles, platform sessions) are deliberately excluded from distributions. Each installer brings their own credentials. (Export files strip them too.)
+- **You want to share API keys alongside the agent.** `auth.json`, `.env` and the other credential stores Hermes reads from a profile (`.op.env`, `npmrc`, OAuth and bot token files, `honcho.json`, `mem0.json`, `teams_pipeline_store.json`, `mcp-tokens/`, `vault/`, `proxy/`, browser profiles, platform sessions, and `.ssh/`, `.aws/`, `.gnupg/`, `.kube/` and `.envrc` at the root or nested under a skill) are deliberately excluded from distributions. Each installer brings their own credentials. (Export files strip them too.)
 - **You want to share memories / sessions / conversation history.** Those are user data, not distribution content. Never shipped. (Export files are different here — read [what an export contains](#what-an-export-file-contains) before sending one.)
 
 :::caution

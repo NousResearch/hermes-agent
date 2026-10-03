@@ -79,6 +79,7 @@ def test_validate_workdir_allows_unicode_filesystem_paths():
     ) is None
     assert terminal_tool._validate_workdir("/tmp/テスト") is None
     assert terminal_tool._validate_workdir("/home/jürgen/über projekt") is None
+    assert terminal_tool._validate_workdir(r"C:\Program Files (x86)\Microsoft") is None
 
 
 def test_validate_workdir_still_blocks_metachars_in_unicode_paths():

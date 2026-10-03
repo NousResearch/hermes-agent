@@ -64,11 +64,13 @@ _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+_PASSWORD_QUERY_RE = re.compile(r"([?&]password=)[^&\s'\"]+", re.IGNORECASE)
 
 
 def _redact(text: str) -> str:
-    """Redact phone numbers and emails from log output."""
-    return _EMAIL_RE.sub("[REDACTED]", _PHONE_RE.sub("[REDACTED]", text))
+    """redact phone numbers, emails, and password parameters from log output."""
+    res = _EMAIL_RE.sub("[REDACTED]", _PHONE_RE.sub("[REDACTED]", str(text)))
+    return _PASSWORD_QUERY_RE.sub(r"\1[REDACTED]", res)
 
 
 def check_bluebubbles_requirements() -> bool:
@@ -134,6 +136,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- API helpers ---
 
+    def _sanitize_error(self, exc: Any) -> str:
+        """strip sensitive credentials from error message strings."""
+        msg = str(exc) if exc is not None else ""
+        if not msg and isinstance(exc, Exception):
+            msg = type(exc).__name__
+        if self.password:
+            msg = msg.replace(self.password, "[REDACTED]").replace(quote(self.password, safe=""), "[REDACTED]")
+        return _PASSWORD_QUERY_RE.sub(r"\1[REDACTED]", msg)
+
+    def _sanitize_exc(self, exc: Exception) -> Exception:
+        """return a sanitized exception with redacted credentials."""
+        clean_msg = self._sanitize_error(exc)
+        if isinstance(exc, httpx.HTTPStatusError):
+            return httpx.HTTPStatusError(clean_msg, request=exc.request, response=exc.response)
+        if isinstance(exc, httpx.RequestError):
+            return type(exc)(clean_msg)
+        return RuntimeError(clean_msg)
+
     def _api_url(self, path: str) -> str:
         return f"{self.server_url}{path}{'&' if '?' in path else '?'}password={quote(self.password, safe='')}"
 
@@ -159,9 +179,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _api_json(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
         """Authenticated request to the BlueBubbles REST API; raises on HTTP errors, returns decoded JSON."""
         assert self.client is not None
-        res = await getattr(self.client, method)(self._api_url(path), **kwargs)
-        res.raise_for_status()
-        return res.json()
+        try:
+            res = await getattr(self.client, method)(self._api_url(path), **kwargs)
+            res.raise_for_status()
+            return res.json()
+        except Exception as exc:
+            raise self._sanitize_exc(exc) from None
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
         return await self._api_json("get", path)
@@ -177,7 +200,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=self._sanitize_error(exc))
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -210,7 +233,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
+            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, self._sanitize_error(exc))
             await self._close_client()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
@@ -300,7 +323,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.warning("[bluebubbles] webhook registration returned status %s: %s", status, res.get("message"))
             return False
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to register webhook with server: %s", exc)
+            logger.warning("[bluebubbles] failed to register webhook with server: %s", self._sanitize_error(exc))
             return False
 
     async def _unregister_webhook(self) -> bool:
@@ -316,7 +339,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if removed:
                 logger.info("[bluebubbles] webhook unregistered: %s", self._webhook_register_url_for_log)
         except Exception as exc:
-            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", exc)
+            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", self._sanitize_error(exc))
         return removed
 
     # --- Chat GUID resolution ---
@@ -414,7 +437,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=self._sanitize_error(e))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -488,7 +511,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # Videos, documents, and everything else
             return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
+            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), self._sanitize_error(exc))
             return None
 
     # --- Webhook handling ---

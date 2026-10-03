@@ -123,6 +123,12 @@ class TestSlackExecApproval:
 
     @pytest.mark.asyncio
     async def test_smart_deny_owner_override_hides_persistent_buttons(self):
+        """v5 (2026-09-28): smart-approval deny no longer hides the session
+        tier from the user — the human reviewer is the final authority, so
+        the matrix-parity set (once / session / deny) is offered whenever the
+        host allows session. ``allow_permanent=False`` still hides ♾️. The
+        card subtitle still labels smart-deny as a one-operation override so
+        the user knows the smart-approval LLM said no to running this."""
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
@@ -134,8 +140,9 @@ class TestSlackExecApproval:
 
         kwargs = mock_client.chat_postMessage.call_args.kwargs
         elements = kwargs["blocks"][1]["elements"]
+        # smart-denied + allow_permanent=False: once, session, deny.
         assert [element["action_id"] for element in elements] == [
-            "hermes_approve_once", "hermes_deny",
+            "hermes_approve_once", "hermes_approve_session", "hermes_deny",
         ]
         assert "one operation" in kwargs["blocks"][0]["text"]["text"].lower()
 

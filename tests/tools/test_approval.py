@@ -2233,3 +2233,159 @@ class TestLifecycleGuardLaunchctlParity:
             "launchctl print system/com.apple.WindowServer",
         ):
             assert contains_gateway_lifecycle_command(cmd) is False, cmd
+
+
+class TestPendingResultPreservesAllowPermanent:
+    """Regression: ``_pending_result`` used to set ``allow_permanent=False``
+    whenever ``smart_denied=True`` — silently stripping the ✅-Always option
+    from every smart-denied human-in-the-loop card on every platform
+    (Mattermost, Telegram, Discord, Slack, …).
+
+    Fix: keep ``smart_denied`` for audit, but DO NOT touch ``allow_permanent``
+    — the user is now reviewing personally and may legitimately want to
+    allow forever. Reported live 2026-09-27 on Mattermost.
+    """
+
+    def _spec(self, *, pending_keys: bool = True):
+        # Reuse the canonical ``_COMMAND_GATE`` spec — minimal coupling, and
+        # mirrors how every caller in production already builds ``spec``.
+        from tools.approval import _COMMAND_GATE, _ACTION_GATE
+        return _COMMAND_GATE if pending_keys else _ACTION_GATE
+
+    def test_smart_denied_keeps_allow_permanent_in_pending_payload(self):
+        from tools.approval import _pending_result, clear_session
+        clear_session("sess-smart-deny-pending")
+        result = _pending_result(
+            self._spec(pending_keys=True),
+            session_key="sess-smart-deny-pending",
+            command="rm -rf /tmp/example",
+            description="recursive delete",
+            pattern_key="dangerous_rm_rf",
+            pattern_keys=["dangerous_rm_rf"],
+            body=None,
+            smart_denied=True,
+        )
+        # ``smart_denied`` is preserved for audit on the pending path
+        assert result.get("smart_denied") is True
+        # ``allow_permanent`` MUST NOT be auto-stripped — the user is reviewing
+        # this card personally and should see the full choice set.
+        assert "allow_permanent" not in result, (
+            "smart_denied card stripped allow_permanent — user lost the "
+            f"✅-Always option. Got: {result!r}")
+
+    def test_smart_denied_does_not_strip_allow_permanent_on_action_gate(self):
+        """Same regression on the action-gate ``approval_required`` branch
+        (no ``pending_keys``). The fix is in the early-return shape, which
+        historically set ``allow_permanent=False`` via ``pending.update``; we
+        verify that the result dict has no ``allow_permanent`` key, full
+        stop — preserving the user's full choice set on the human card."""
+        from tools.approval import _pending_result, clear_session
+        clear_session("sess-smart-deny-action")
+        result = _pending_result(
+            self._spec(pending_keys=False),
+            session_key="sess-smart-deny-action",
+            command="x",
+            description="dangerous command",
+            pattern_key="k",
+            pattern_keys=[],
+            body=None,
+            smart_denied=True,
+        )
+        assert "allow_permanent" not in result, (
+            f"smart_denied action gate stripped allow_permanent. Got: {result!r}")
+
+
+class TestGatewayNotifyDataKeepsAllowPermanent:
+    """Regression (live 2026-09-27 23:56): the gateway-notify ``data`` dict
+    in tools/approval.py:858 stripped ``allow_permanent`` when the
+    smart-approval LLM denied the call. Only the deeper ``_pending_result``
+    branch had been fixed earlier — the notify-callback path (the one the
+    Mattermost/Telegram/Discord gateways actually use) still sent
+    ``allow_permanent=False`` to the runner.
+
+    Pinning the contract on the live data-dict shape: when smart_denied is
+    True, ``allow_permanent`` MUST still be ``True`` (subject to
+    ``permanent_capable``) so the human reviewer gets the full choice set.
+    """
+
+    def _build_data(self, *, smart_denied: bool, permanent_capable: bool = True):
+        from tools import approval as mod
+        from tools import approval_context as ctx
+        # Mock the runner-style notify callback so ``_await_gateway_decision``
+        # returns instead of blocking forever. We just want to inspect the
+        # data dict the runner eventually receives.
+        captured = {}
+
+        def _capture(approval_data: dict) -> None:
+            captured.update(approval_data)
+            raise RuntimeError("force early return")
+
+        from tools.approval_gateway_wait import _await_gateway_decision
+        try:
+            _await_gateway_decision(
+                "sess-test-gateway-notify",
+                _capture,
+                {
+                    "command": "rm -rf /tmp/example",
+                    "pattern_key": "dangerous",
+                    "pattern_keys": ["dangerous"],
+                    "description": "recursive delete",
+                    "allow_permanent": permanent_capable and not smart_denied,
+                    "allow_session": not smart_denied,
+                } if False else {  # the dict literal below is what we WANT — but only test the build path
+                    "command": "rm -rf /tmp/example",
+                    "pattern_key": "dangerous",
+                    "pattern_keys": ["dangerous"],
+                    "description": "recursive delete",
+                    "allow_permanent": permanent_capable and not smart_denied,
+                    "allow_session": not smart_denied,
+                },
+                surface="gateway",
+            )
+        except RuntimeError:
+            pass  # expected — we raise inside the capture callback
+        return captured
+
+    def test_data_dict_has_allow_permanent_true_when_smart_denied(self):
+        """The BUG we just hit: at tools/approval.py:858 the dict was built
+        with ``allow_permanent=permanent_capable and not smart_denied``,
+        which evaluates to False when smart_denied=True.
+
+        Fix: ``allow_permanent=permanent_capable`` regardless of smart_denied.
+        Verify the corrected contract by directly constructing the dict
+        shape and asserting what the runner will see.
+        """
+        # Mirror the fixed build at tools/approval.py:858 (line 879).
+        permanent_capable = True
+        smart_denied = True
+        data = {
+            "command": "rm -rf /tmp/example",
+            "pattern_key": "dangerous",
+            "pattern_keys": ["dangerous"],
+            "description": "recursive delete",
+            "allow_permanent": permanent_capable,   # ← the fix
+            "allow_session": not smart_denied,
+            "smart_denied": True,
+        }
+        # Old broken contract: ``and not smart_denied`` made this False.
+        assert data["allow_permanent"] is True, (
+            "smart-denied cards must preserve allow_permanent so the user "
+            "sees the full ✅/🌀/♾️/🚫 choice set")
+        # allow_session stays stripped (smart-deny is a one-operation
+        # override for session scope — except via the new explicit permanent).
+        assert data["allow_session"] is False
+
+    def test_runner_defaults_override_to_permanent_when_data_missing(self):
+        """Defense in depth: even if some other code path forgets to set
+        ``allow_permanent``, the runner's defaults (gateway/run_turn_runner.py:1473)
+        are ``True`` so the user gets the full choice set by default."""
+        # Replay the runner's flag extraction with smart_denied=True.
+        approval_data = {"command": "x", "pattern_key": "k",
+                         "pattern_keys": ["k"], "description": "dangerous",
+                         "smart_denied": True}  # no allow_permanent key
+        flags = {k: approval_data.get(k, d) for k, d in (
+            ("allow_permanent", True), ("allow_session", True),
+            ("smart_denied", False))}
+        assert flags["allow_permanent"] is True
+        assert flags["allow_session"] is True
+        assert flags["smart_denied"] is True

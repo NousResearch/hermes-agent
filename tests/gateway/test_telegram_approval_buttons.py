@@ -150,7 +150,12 @@ class TestTelegramExecApproval:
 
     @pytest.mark.asyncio
     async def test_smart_deny_two_buttons_share_one_row(self, monkeypatch):
-        """smart_deny yields 2 buttons — they pair into a single readable row."""
+        """v5 (2026-09-28): smart-approval deny no longer hides the session
+        tier from the user — the human reviewer is the final authority, so
+        the matrix-parity set (once / session / deny) is offered whenever the
+        host allows session. ``allow_permanent=False`` still hides ♾️ (only
+        session/once/deny are seeded). The two interactive buttons and the
+        deny share one readable row."""
         adapter = _make_adapter()
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         captured_rows = []
@@ -168,8 +173,11 @@ class TestTelegramExecApproval:
             allow_permanent=False, smart_denied=True,
         )
 
+        # smart-denied + allow_permanent=False: once, session, deny.
+        # Telegram _rows_of_two lays them out 2-per-row; 3 buttons → 2 rows.
         assert captured_rows == [
-            [t("platform.telegram.approval.action_once"), t("platform.telegram.approval.action_deny")],
+            [t("platform.telegram.approval.action_once"), t("platform.telegram.approval.action_session")],
+            [t("platform.telegram.approval.action_deny")],
         ]
 
 

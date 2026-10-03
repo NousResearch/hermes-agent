@@ -44,7 +44,7 @@ class ApiCallVerdict:
     interrupted: Any
 
 
-def _should_stream(agent: Any) -> bool:
+def should_stream(agent: Any) -> bool:
     """Streaming is preferred even without consumers (stale-stream / read-timeout health
     checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
     external-process provider profile), MoA without a display consumer, or Mock clients in
@@ -63,6 +63,9 @@ def _should_stream(agent: Any) -> bool:
         if isinstance(getattr(agent, "client", None), Mock):
             return False
     return True
+
+
+_should_stream = should_stream  # original private spelling, kept as an alias
 
 
 def perform_api_call(

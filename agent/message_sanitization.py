@@ -28,13 +28,16 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
 
 
-def _sanitize_surrogates(text: str) -> str:
+def sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
     # ``str.isascii`` is an O(1) flag check; surrogates are never ASCII, so the
     # regex scan only runs for the (rare) non-ASCII leaf.
     if text.isascii():
         return text
     return _SURROGATE_RE.sub('\ufffd', text)
+
+
+_sanitize_surrogates = sanitize_surrogates  # original private spelling, kept as an alias
 
 
 # OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
@@ -447,7 +450,7 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 __all__ = [
     "_SURROGATE_RE", "close_interrupted_tool_sequence",
-    "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+    "_sanitize_surrogates", "sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
     "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",

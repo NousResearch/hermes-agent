@@ -443,8 +443,13 @@ class GatewayStartupMixin:
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            # Anchor the recovered reply to the message it answers; a platform whose anchor is gone
+            # (deleted message) falls back to an unanchored send inside its own adapter.
+            from gateway.delivery_ledger import get_reply_to
+            reply_to = await asyncio.to_thread(get_reply_to, row["obligation_id"])
             try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                result = await adapter.send(chat_id=row["chat_id"], content=content,
+                                            reply_to=reply_to, metadata=metadata)
             except Exception as send_err:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None

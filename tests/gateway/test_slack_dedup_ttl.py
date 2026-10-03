@@ -13,6 +13,7 @@ Follows the slack-bolt mocking pattern from test_slack_mention.py.
 import os
 import sys
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -47,7 +48,11 @@ import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.helpers import MessageDeduplicator  # noqa: E402
-from plugins.platforms.slack.adapter import _slack_dedup_ttl_seconds  # noqa: E402
+from hermes_constants import get_hermes_home  # noqa: E402
+from plugins.platforms.slack.adapter import (  # noqa: E402
+    _slack_dedup_state_path,
+    _slack_dedup_ttl_seconds,
+)
 
 
 def test_default_ttl_outlasts_slack_reconnect_redelivery_window():
@@ -60,5 +65,22 @@ def test_default_ttl_outlasts_slack_reconnect_redelivery_window():
 def test_env_override_is_respected():
     with patch.dict(os.environ, {"SLACK_DEDUP_TTL_SECONDS": "120"}, clear=True):
         assert _slack_dedup_ttl_seconds() == 120.0
+
+
+def test_dedup_state_lives_in_the_profile_home():
+    """The seen-set is per-profile: each profile's bot has its own Slack event stream."""
+    path = _slack_dedup_state_path()
+    assert path.parent == Path(get_hermes_home())
+    assert path.name == "slack_seen_event_ids.json"
+
+
+def test_adapter_dedup_survives_a_restart_via_its_state_path(tmp_path):
+    """A redelivered event must be suppressed by a process that did not receive it."""
+    state = tmp_path / "slack_seen_event_ids.json"
+    before = MessageDeduplicator(ttl_seconds=1800, persist_path=state)
+    assert before.is_duplicate("T0BURRXNHQB:1789134549.911449") is False
+    # The restart: same path, new process.
+    after = MessageDeduplicator(ttl_seconds=1800, persist_path=state)
+    assert after.is_duplicate("T0BURRXNHQB:1789134549.911449") is True
 
 

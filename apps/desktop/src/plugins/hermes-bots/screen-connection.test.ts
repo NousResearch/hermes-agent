@@ -133,3 +133,19 @@ describe('resolveScreenWsUrl', () => {
     )
   })
 })
+
+describe('resolveScreenWsUrl', () => {
+  it('uses the route target profile for an aliased bot screen', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'launch', targetProfile: 'home-ops' })
+    vi.mocked(resolveSiblingWsUrl).mockResolvedValue('wss://gateway.example/api/display/ws')
+
+    await expect(resolveScreenWsUrl(bot, 'ticket-123')).resolves.toBe(
+      'wss://gateway.example/api/display/ws?display_ticket=ticket-123'
+    )
+    expect(resolveSiblingWsUrl).toHaveBeenCalledWith(
+      { connectionId: 'conn-a', profile: 'home-ops' },
+      '/api/display/ws',
+      { stripGatewayCredential: true }
+    )
+  })
+})

@@ -1230,7 +1230,7 @@ def _slot_selects(slot: Any, normalized: str) -> bool:
 
 
 def _config_selects_provider(normalized: str) -> bool:
-    """config.yaml ``model.provider``, or a MoA advisor/aggregator slot naming the provider.
+    """config.yaml ``model.provider``, a fallback slot, or a MoA advisor/aggregator slot naming the provider.
 
     MoA presets are explicit model selections too: ``provider: anthropic`` in a MoA slot opts into
     Anthropic credentials for that slot even when the main model is another provider; otherwise
@@ -1244,6 +1244,14 @@ def _config_selects_provider(normalized: str) -> bool:
     # slot does — without this the seeder treats the credential as merely discovered (#114740).
     aux_cfg = cfg.get("auxiliary")
     if isinstance(aux_cfg, dict) and any(_slot_selects(s, normalized) for s in aux_cfg.values()):
+        return True
+    # A provider named in ``fallback_providers`` (or the legacy single-dict ``fallback_model``) is
+    # the same opt-in as ``model.provider``: naming it there authorizes borrowing its credentials,
+    # so the seeder fills in the row and the fallback chain can actually use it (#131993).
+    fb_cfg = cfg.get("fallback_providers")
+    if isinstance(fb_cfg, list) and any(_slot_selects(s, normalized) for s in fb_cfg):
+        return True
+    if _slot_selects(cfg.get("fallback_model"), normalized):
         return True
 
     def _moa_block_matches(block: Any) -> bool:
@@ -1349,9 +1357,10 @@ _EXPLICIT_CONFIG_CHECKS: Tuple[Tuple[Callable[[str], bool], bool], ...] = (
 
 def is_provider_explicitly_configured(provider_id: str) -> bool:
     """True only if the user explicitly configured this provider: auth.json ``active_provider``,
-    config.yaml ``model.provider`` / MoA slots, a pasted provider env var, a pool entry from a
-    Hermes-initiated flow, or Hermes-scoped routing config for keyless cloud-SDK providers. Ambient
-    borrowed credentials (gh CLI, qwen-cli, ~/.claude/.credentials.json) never count."""
+    config.yaml ``model.provider`` / fallback slots / MoA slots, a pasted provider env var, a pool
+    entry from a Hermes-initiated flow, or Hermes-scoped routing config for keyless cloud-SDK
+    providers. Ambient borrowed credentials (gh CLI, qwen-cli, ~/.claude/.credentials.json) never
+    count."""
     normalized = (provider_id or "").strip().lower()
     for check, best_effort in _EXPLICIT_CONFIG_CHECKS:
         try:

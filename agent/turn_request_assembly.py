@@ -113,10 +113,14 @@ def assemble_api_request(
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
     from agent.conversation_loop import (
-        _apply_context_engine_selection, _canonicalize_api_tool_calls, _clone_message_for_send,
-        _midturn_request_pressure_tokens, _pressure_with_real_floor,
+        _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
+        _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
-    from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_native_anthropic_messages_tokens_rough,
+        estimate_tokens_rough,
+    )
 
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
@@ -144,6 +148,12 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may replace the request with a fresh clone of canonical history.
+    # Re-apply durable rejection suppression after that final replacement hook.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+    apply_rejected_thinking_suppression(agent, api_messages)
+
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)
@@ -168,8 +178,13 @@ def assemble_api_request(
 
     # Drop thinking-only assistant turns + merge adjacent users, API copy only:
     # Anthropic-style backends 400 on a trailing `thinking` block; history keeps it.
+    # Off the Codex wire (e.g. after a reasoning-only stall fell over to a Chat Completions
+    # provider, #67321) the synthetic continuation nudge is Codex-only control text: drop it
+    # alongside the opaque replay state.
+    _cross_protocol = agent.api_mode != "codex_responses"
     api_messages = agent._drop_thinking_only_and_merge_users(
-        api_messages, drop_codex_reasoning_items=agent.api_mode != "codex_responses"
+        api_messages, drop_codex_reasoning_items=_cross_protocol,
+        drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
     )
 
     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
@@ -233,7 +248,17 @@ def assemble_api_request(
     from agent.turn_context import _agent_stale_thinking_on_wire
 
     if _agent_stale_thinking_on_wire(agent):
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        if getattr(agent, "api_mode", "") == "anthropic_messages":
+            from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+            if native_anthropic_preserves_prior_thinking(
+                getattr(agent, "base_url", ""), getattr(agent, "model", "")
+            ):
+                approx_tokens = estimate_native_anthropic_messages_tokens_rough(api_messages)
+            else:
+                approx_tokens = estimate_messages_tokens_rough(api_messages)
+        else:
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
     else:
         approx_tokens = estimate_messages_tokens_rough(api_messages, charge_stale_thinking=False)
     # Route-aware: native Responses compaction prunes the wire payload, so the raw

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_state_errors import SessionActiveWriteGuardError
 
 
 def get_hermes_home():
@@ -294,15 +295,19 @@ def _cmd_list(db, args):
     _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
     _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
     _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
+
+    def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
+        created = s.get("created_source") or ""
+        return f"{created}→{s['source']}" if created and created != s["source"] else s["source"]
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
                        lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
-        (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}", 100,
-                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {s['source']:<6} {s['id']}"),
+        (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<16} {'ID'}", 110,
+                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {_src(s):<16} {s['id']}"),
         (False, True): (f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}", 110,
                         lambda s: f"{_title(s, 30):<32} {_preview(s, 38):<40} {_ago(s):<13} {s['id']}"),
-        (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}", 95,
-                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {s['source']:<6} {s['id']}"),
+        (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<16} {'ID'}", 105,
+                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {_src(s):<16} {s['id']}"),
     }
     header, rule, fmt = layouts[(has_ws, has_titles)]
     print(header + "\n" + "─" * rule)
@@ -323,8 +328,11 @@ def _cmd_export(db, args):
         except ValueError as e:
             print(f"Error: {e}")
             return
-        # Unlike prune/archive, export includes archived sessions.
+        # A backup includes protected rows; prune's keep rules must not omit them.
         filters["archived"] = None
+        filters["include_pinned"] = True
+    if args.session_id and not db.resolve_session_id(args.session_id):
+        return _not_found(args.session_id)
 
     def _redact(data):
         if not args.redact or data is None:
@@ -332,11 +340,39 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
+    # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
+    shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
+    projection = export_projection(shown)
+
+    def _too_large(session_ids=None) -> bool:
+        """The transfer projection holds every stored row in memory: the console export's per-session
+        ``sessions.max_export_messages`` guard (0 disables) runs before any is loaded. ``None`` = the
+        sessions a bare export loads."""
+        from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
+        if shown:
+            return False
+        limit = resolved_max_export_messages()
+        if limit == 0:
+            return False  # resolved before the bare-path scan: a disabled guard costs nothing
+        if session_ids is None:
+            session_ids = [s["id"] for s in db.search_sessions(source=None, limit=100000)]
+        try:
+            db.assert_exports_safe(session_ids, max_messages=limit)
+        except SessionExportTooLargeError as exc:
+            print(f"Error: {exc}")
+            return True
+        return False
+
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
+        def _one(session_id):
+            return _redact(db.export_session(session_id, **projection))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
-            data = _redact(db.export_session(resolved)) if resolved else None
+            if resolved and _too_large([resolved]):
+                return None
+            data = _one(resolved) if resolved else None
             if not data:
                 _not_found(args.session_id)
                 return None
@@ -345,10 +381,14 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
-            return [s for s in (_redact(db.export_session(row["id"])) for row in candidates) if s]
+            if _too_large([row["id"] for row in candidates]):
+                return None
+            return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None)]
+        if _too_large():
+            return None
+        return [_redact(s) for s in db.export_all(source=None, **projection)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":
@@ -414,9 +454,6 @@ def _export_trace(db, args, filters):
         if not session_id:
             print("No session found to export. Pass --session-id.")
             return
-    if session_id and not db.resolve_session_id(session_id):
-        _not_found(session_id)
-        return
     from agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
     redact_trace = not getattr(args, "no_redact", False)
     if getattr(args, "upload", False):
@@ -472,13 +509,20 @@ def _export_markdown(db, args, filters, redact):
     output_dir = _export_dir(args.output)
 
     def _export_one(session_id: str, *, include_lineage: bool = False):
-        data = db.export_session_lineage(session_id) if include_lineage else db.export_session(session_id)
-        if not data:
-            return None, None
-        data = redact(data)
+        # The history the user sees, not only the live rows: in-place compaction archives earlier turns under
+        # the same id, and --delete-after-verified removes every row of it.
+        export = db.export_session_lineage if include_lineage else db.export_session
+        raw_data = export(session_id, include_compacted=True)
+        if not raw_data:
+            return None, None, None
+        snapshots = {
+            segment["id"]: segment.get("messages") or []
+            for segment in (raw_data.get("segments") or [raw_data]) if segment.get("id")
+        }
+        data = redact(raw_data)
         path = write_session_markdown(data, output_dir, fmt=args.format, force=args.force)
         append_manifest_entry(output_dir, data, path, fmt=args.format)
-        return data, path
+        return data, path, snapshots
     if args.delete_after_verified and not args.yes:
         print("--delete-after-verified requires --yes.")
         return
@@ -498,7 +542,7 @@ def _export_markdown(db, args, filters, redact):
     exported = 0
     for row in candidates:
         try:
-            data, exported_path = _export_one(row["id"], include_lineage=lineage_is_logical)
+            data, exported_path, _ = _export_one(row["id"], include_lineage=lineage_is_logical)
         except FileExistsError as e:
             print(f"Skipping existing export: {e}. Pass --force to overwrite.")
             continue
@@ -511,16 +555,13 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
     """--session-id markdown export, optionally + verified delete of it and its delegates."""
     from hermes_cli.session_export_md import verify_export_file
     resolved_session_id = db.resolve_session_id(args.session_id)
-    if not resolved_session_id:
-        _not_found(args.session_id)
-        return
     delete_target_ids = (
         db.get_session_delete_targets(resolved_session_id) if args.delete_after_verified else [resolved_session_id]
     )
     exported_items = []
     for target_id in delete_target_ids:
         try:
-            data, exported_path = export_one(
+            data, exported_path, snapshots = export_one(
                 target_id, include_lineage=(target_id == resolved_session_id and lineage_is_logical),
             )
         except FileExistsError as e:
@@ -529,22 +570,32 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         if not data or not exported_path:
             print(f"Session '{target_id}' disappeared during export; nothing was deleted.")
             return
-        exported_items.append((data, exported_path))
-    message_count = sum(len(data.get("messages") or []) for data, _path in exported_items)
+        exported_items.append((data, exported_path, snapshots))
+    message_count = sum(len(data.get("messages") or []) for data, _path, _ in exported_items)
     n = len(exported_items)
     print(f"Exported {n} session{'' if n == 1 else 's'} ({message_count} message{'' if message_count == 1 else 's'}) "
           f"to {exported_items[0][1] if n == 1 else output_dir}")
     if not args.delete_after_verified:
         return
-    for data, exported_path in exported_items:
+    # verify_export_file proves file == dict; store == dict is decided inside delete_session's transaction
+    # (expected_display_messages), where no writer can slip between the check and the delete.
+    expected_messages = {}
+    for data, exported_path, snapshots in exported_items:
         ok, reason = verify_export_file(exported_path, data)
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
-    if not db.delete_session(
-        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids
-    ):
-        print(f"Exported, but session '{resolved_session_id}' was not deleted because its delegate set changed.")
+        expected_messages.update(snapshots)
+    try:
+        if not db.delete_session(
+            resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
+            expected_display_messages=expected_messages, exclude_active_write_guards=True,
+        ):
+            print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
+                  "changed after export.")
+            return
+    except SessionActiveWriteGuardError as exc:
+        print(f"Exported, but not deleted: {exc}")
         return
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""
@@ -565,8 +616,12 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-    if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir()):
-        return _not_found(args.session_id)
+    try:
+        if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
+            return _not_found(args.session_id)
+    except SessionActiveWriteGuardError as exc:
+        print(f"Cannot delete active session: {exc}")
+        return 1
     print(f"Deleted session '{resolved_session_id}'.")
 
 
@@ -610,18 +665,20 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
-    deleted, routing_deleted = db.prune_never_active_keyed_sessions(
+    deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
         older_than_days=days, sessions_dir=_sessions_dir()
     )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
+    if skipped:
+        print(f"Skipped {skipped} session(s) with a live turn or compression lock.")
 
 
 def _note_pinned_skipped(db, filters, action):
     """Tell the user how many pinned rows bulk prune/archive spared (pin = durable keep; only
     `prune --include-pinned` opts in, archive always spares them)."""
-    _base = {k: v for k, v in filters.items() if k != "include_pinned"}
-    with_pinned, without = (int(db.count_prune_matches(**_base, include_pinned=flag)) for flag in (True, False))
-    skipped = max(with_pinned - without, 0)
+    # Count matching pinned rows only: neither the unpinned ancestors a pinned tip spares nor the
+    # unpinned continuations a pinned segment protects carry the pin.
+    skipped = int(db.count_prune_matches(**filters, pinned_only=True))
     if not skipped:
         return
     suffix = "" if skipped == 1 else "s"
@@ -657,11 +714,15 @@ def _cmd_prune_or_archive(db, args, action):
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
     filters["include_pinned"] = getattr(args, "include_pinned", False)
+    # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
+    # never qualifies); the preview must show the same rows the archive will touch.
+    filters["lineage_tips_only"] = not prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
-    candidates = db.list_prune_candidates(**filters)
-    # Archive expands each row to its compression lineage (may include open continuations), so a
-    # direct-open count would misdescribe its effect.
+    # Prune deletes a compression lineage only as a unit; the preview must list the rows it deletes.
+    candidates = db.list_prune_candidates(**filters, whole_lineages=prune)
+    # Archive expands each matched tip to its compression lineage, so a direct-open count would
+    # misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
@@ -693,7 +754,7 @@ def _cmd_prune_or_archive(db, args, action):
         print("Cancelled.")
         return
     if prune:
-        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), **filters)} session(s).")
+        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")
@@ -952,6 +1013,157 @@ def _cmd_repair_routing(db, args):
     print(f"\nRepaired {repaired} of {len(adoptable)} session(s).")
 
 
+def _repair_prompts_pin_names(row) -> list[str] | None:
+    """Resolve legacy name-list and current versioned tools[] pins to tool names.
+
+    Any malformed or unknown shape is unverifiable and therefore never eligible for automatic
+    repair. Current pins store full tool definitions in a versioned object; older rows may contain
+    a JSON list of names directly.
+    """
+    try:
+        pin = json.loads(row.get("tool_names") or "null")
+    except (TypeError, ValueError):
+        return None
+    tools = pin.get("tools") if isinstance(pin, dict) else pin
+    if not isinstance(tools, list):
+        return None
+    names: list[str] = []
+    for item in tools:
+        if isinstance(item, str):
+            name = item
+        elif isinstance(item, dict):
+            function = item.get("function")
+            name = function.get("name") if isinstance(function, dict) else None
+        else:
+            return None
+        if not isinstance(name, str) or not name:
+            return None
+        names.append(name)
+    return names
+
+
+def _repair_prompts_lacks_skill_safety(row) -> bool:
+    # Only the Skill Safety guidance is a reliable marker: <available_skills> is legitimately
+    # absent when no skills are installed, but the guidance is emitted whenever skill_manage is.
+    from agent.prompt_builder import SKILL_SAFETY_HEADING
+    prompt = (row.get("system_prompt") or "").strip()
+    return bool(prompt and SKILL_SAFETY_HEADING not in prompt)
+
+
+def _cmd_repair_prompts(db, args):
+    """Report (or clear) stored system prompts degraded to a reduced-toolset build (#122822).
+
+    Automatic repair requires positive tools[] evidence. Rows with missing/malformed pins are
+    reported as unverifiable and never changed by a scan. An explicit session_id remains the
+    operator escape hatch and clears that row regardless of detector evidence.
+    """
+    findings = []
+    unverifiable = []
+    target = getattr(args, "session_id", None)
+    if target:
+        session_id = db.resolve_session_id(target)
+        if not session_id:
+            print(f"No session matches {target!r}.")
+            return 1
+        row = db.get_session(session_id)
+        if row and row.get("system_prompt"):
+            findings.append({
+                "id": row["id"], "reason": "targeted clear", "prompt_chars": len(row["system_prompt"]),
+            })
+    else:
+        seen = set()
+        offset = 0
+        while True:
+            batch = db.list_sessions_rich(
+                limit=200, offset=offset, include_children=True,
+                include_archived=True, include_hidden=True, compact_rows=True,
+            )
+            if not batch:
+                break
+            offset += len(batch)
+            for summary in batch:
+                # OFFSET paging can re-serve a row when sessions are inserted mid-scan.
+                if summary["id"] in seen:
+                    continue
+                seen.add(summary["id"])
+                row = db.get_session(summary["id"])
+                if not row or not _repair_prompts_lacks_skill_safety(row):
+                    continue
+                pin = _repair_prompts_pin_names(row)
+                entry = {"id": row["id"], "prompt_chars": len(row["system_prompt"])}
+                if "skill_manage" in (pin or ()):
+                    findings.append({
+                        **entry,
+                        "reason": "Skill Safety guidance missing while the tools[] pin carries skill_manage",
+                    })
+                elif pin is None:
+                    unverifiable.append({
+                        **entry,
+                        "reason": "skills markers missing but the tools[] pin is unavailable or unreadable",
+                    })
+                elif set(pin) == {"memory"}:
+                    # Not proof: toolsets=[memory] is also a legitimate user config whose healthy
+                    # prompt has no skills markers, so auto-clearing it would repeat every run.
+                    unverifiable.append({
+                        **entry,
+                        "reason": "memory-only tools[] pin may be a user toolset; clear explicitly by SESSION_ID",
+                    })
+
+    apply = bool(getattr(args, "apply", False))
+    as_json = bool(getattr(args, "json", False))
+
+    def _payload(cleared):
+        return {
+            "findings": findings,
+            "unverifiable": unverifiable,
+            "apply": apply,
+            "cleared": cleared,
+        }
+
+    if not findings:
+        if as_json:
+            print(json.dumps(_payload([]), indent=2))
+        elif target:
+            print(f"{session_id} already has no stored prompt; nothing to clear.")
+        else:
+            print("No degraded stored system prompts found.")
+            if unverifiable:
+                print(f"{len(unverifiable)} row(s) lacked enough tools[] evidence and were left unchanged.")
+        return 0
+
+    if not as_json:
+        for finding in findings:
+            print(f"  {finding['id']}  ({finding['prompt_chars']} chars) - {finding['reason']}")
+        if unverifiable:
+            print(f"\nSkipped {len(unverifiable)} unverifiable row(s) without enough tools[] evidence.")
+
+    if not apply:
+        if as_json:
+            print(json.dumps(_payload([]), indent=2))
+        else:
+            print(f"\n{len(findings)} stored prompt(s) can be repaired. Re-run with --apply to clear them; "
+                  "the next turn rebuilds a healthy prompt (one prefix-cache break per session).")
+        return 0
+
+    # JSON mode is the non-interactive automation surface; --apply is the explicit mutation opt-in.
+    if not as_json and not _confirm_prompt(f"Clear {len(findings)} stored prompt(s)? [y/N] "):
+        print("Aborted - nothing was changed.")
+        return 0
+
+    cleared = []
+    for finding in findings:
+        db.update_system_prompt(finding["id"], None)
+        cleared.append(finding["id"])
+
+    if as_json:
+        print(json.dumps(_payload(cleared), indent=2))
+    else:
+        print(f"\nCleared {len(cleared)} stored prompt(s); the next turn for each rebuilds and persists "
+              "a healthy prompt.")
+        print("One 'Stored system prompt ... is null' warning per repaired session is expected on that rebuild.")
+    return 0
+
+
 def _cmd_stats(db, args):
     print(f"Total sessions: {db.session_count()}\nTotal messages: {db.message_count()}")
     for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
@@ -963,7 +1175,21 @@ def _cmd_stats(db, args):
 
 # -- dispatch -----------------------------------------------------------------
 
-_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+def _cmd_repair_profiles(args):
+    from hermes_cli.sessions_cmd_repair_profiles import cmd_repair_profiles
+    return cmd_repair_profiles(args)
+
+
+def _cmd_set_journal_mode(args):
+    from hermes_cli.sessions_cmd_journal_mode import cmd_set_journal_mode
+    return cmd_set_journal_mode(args)
+
+
+_PRE_DB_HANDLERS = {
+    "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
+    "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
+    "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
+}
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
@@ -971,7 +1197,7 @@ _DB_HANDLERS = {
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
-    "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,
+    "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
 }
 
 
@@ -983,6 +1209,11 @@ def _print_empty_store(action: str, args) -> None:
         print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
     else:
         print("No sessions found.")
+
+
+# VACUUM, the FTS-layout rebuild and bulk deletes rewrite the store; underneath a live gateway/Desktop/cron
+# writer that is the second-writer class behind the retired-WAL refusal (#110054). `--force` is the override.
+_HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
 
 
 def cmd_sessions(args, sessions_parser=None):
@@ -1007,6 +1238,13 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
+        if action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False):
+            from hermes_state_holders import held_store_refusal
+            # Same resolver the SessionDB above opened, so the scan never depends on the db object.
+            refusal = held_store_refusal(_default_db_path(), command=action)
+            if refusal:
+                print(refusal)
+                return 1
         try:
             return handler(db, args)
         except sqlite3.OperationalError as e:

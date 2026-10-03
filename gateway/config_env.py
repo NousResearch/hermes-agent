@@ -316,9 +316,15 @@ def _api_server(config: GatewayConfig) -> None:
 
 
 def _webhook(config: GatewayConfig) -> None:
-    if is_truthy_value(getenv("WEBHOOK_ENABLED")):
-        extra = _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False).extra
-        _env_extras(extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
+    enabled = is_truthy_value(getenv("WEBHOOK_ENABLED"))
+    if not (enabled or Platform.WEBHOOK in config.platforms):
+        return
+    webhook_config = (
+        _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False)
+        if enabled
+        else config.platforms[Platform.WEBHOOK]
+    )
+    _env_extras(webhook_config.extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
 
 
 def _msgraph_webhook(config: GatewayConfig) -> None:

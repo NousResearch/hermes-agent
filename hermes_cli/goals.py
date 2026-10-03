@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,28 @@ class GoalGate:
             last_exit_code=(int(data["last_exit_code"]) if data.get("last_exit_code") is not None else None),
             last_output_tail=str(data.get("last_output_tail") or ""),
         )
+
+
+def _gate_workspace() -> Tuple[Optional[str], Optional[str]]:
+    """``(cwd, refusal)`` for this check's gates. A multi-session backend's process directory is not
+    the session's project, so gates run in the scoped session workspace (#125369). A declared
+    workspace that is not a directory on this host (deleted, remote, container) is a refusal: a
+    relative gate run anywhere else would check a different project and could pass a failing goal,
+    and no agent turn can fix it, so the caller pauses instead of retrying.
+    No declared workspace keeps the classic resolution (TERMINAL_CWD, else the launch directory)."""
+    from agent.runtime_cwd import resolve_agent_cwd, scoped_session_cwd
+
+    declared = scoped_session_cwd()
+    if declared:
+        path = Path(declared).expanduser()
+        if path.is_dir():
+            return str(path), None
+        return None, (f"the session workspace {declared} is not a directory on this host, "
+                      "and running gates anywhere else would check a different project")
+    try:
+        return str(resolve_agent_cwd()), None
+    except OSError:
+        return None, None  # deleted launch directory: subprocess reports it per gate
 
 
 def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
@@ -905,7 +928,7 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
-        current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
+        current_time=safe_strftime(datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
@@ -1288,8 +1311,15 @@ class GoalManager:
         if state is None or not state.gates:
             return None
 
+        gate_cwd, refusal = _gate_workspace()
+        if refusal:
+            return self._pause_decision(
+                f"quality gates not run: {refusal}", "gate_failed", f"gates not run: {refusal}",
+                f"⏸ Goal paused — quality gates not run: {refusal}. Fix the workspace or "
+                f"/goal gate remove the gates, then /goal resume.",
+            )
         for gate in state.gates:
-            passed, exit_code, tail = run_gate(gate)
+            passed, exit_code, tail = run_gate(gate, cwd=gate_cwd)
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:

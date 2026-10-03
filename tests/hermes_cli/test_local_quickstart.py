@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from hermes_cli.local_runtime.binaries import Engine
 
 
 @pytest.fixture
@@ -54,7 +55,9 @@ def test_quickstart_without_recommendation_requires_explicit_choice(client, monk
     )
     monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: budget)
     monkeypatch.setattr(lm.catalog, "refresh_catalog_soon", lambda: None)
-    monkeypatch.setattr(lm.binaries, "installed_tags", lambda: [lm.binaries.default_tag()])
+    monkeypatch.setattr(lm.binaries, "installed_engine",
+                        lambda *args, **kwargs: lm.binaries.Engine("cpu", "b1", Path("unused")))
+    monkeypatch.setattr(lm, "_runtime_target", lambda requested=None: ("b1", "cpu"))
     monkeypatch.setattr(lm.bootstrap, "staged_model_ids", lambda: set())
     config = lm.config_mod.load_config()
     config.setdefault("local_runtime", {})["backend"] = "cpu"
@@ -147,19 +150,20 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
+        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_engine",
+        lambda backend, **kwargs: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
-    def _fake_download(url, dest, job, *, base_done=0, keep_totals=False):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        Path(dest).write_bytes(b"GGUF\x00")
+    def _fake_download(job, plan):
+        for _url, dest, _size in plan:
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(b"GGUF\x00")
         calls.append("download")
 
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models.download_file", _fake_download)
+        "hermes_cli.web_routers.local_models._download_job", _fake_download)
 
     # Leg 3: activation — stub the server start and the model assignment.
     monkeypatch.setattr(
@@ -199,19 +203,22 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_engine",
+        lambda backend, **kwargs: calls.append("install"))
 
-    # Every catalog variant reads as staged.
+    # Every model file and companion is already present.
     from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.web_routers.local_models import _download_plan
 
-    all_ids = {v.model_id for e in CATALOG for v in e.variants}
+    for entry in CATALOG:
+        for variant in entry.variants:
+            for _, dest, _ in _download_plan(entry, variant):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(b"downloaded fixture")
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.staged_model_ids", lambda: all_ids)
-    monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models.download_file",
+        "hermes_cli.web_routers.local_models._download_job",
         lambda *a, **k: calls.append("download"))
     monkeypatch.setattr(
         "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
@@ -245,7 +252,7 @@ def quickstart_ready(monkeypatch):
     from hermes_cli.local_runtime.catalog import VariantChoice
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant",
         lambda entry, budget: VariantChoice(variant=entry.variants[0],
@@ -283,3 +290,41 @@ def test_assign_default_reaches_model_assignment(monkeypatch):
         lambda *a, **k: seen.append(a))
     lm._assign_default({}, "some-model")
     assert seen == [("main", "llamacpp", "some-model", "", "", "")]
+
+
+def test_quickstart_prices_after_installing_the_engine(client, monkeypatch):
+    """A Vulkan/HIP card's size comes from the installed engine's own device probe, so the model the
+    job downloads and makes default is the one priced AFTER the install, not the preflight guess."""
+    import hermes_cli.web_routers.local_models as lm
+    from hermes_cli.local_runtime.catalog import CATALOG, VariantChoice
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    gib = 1 << 30
+    as_ram = HardwareBudget(usable_vram_bytes=50 * gib, total_device_bytes=50 * gib,
+                            ram_available_bytes=128 * gib, uma=True)
+    as_card = HardwareBudget(usable_vram_bytes=22 * gib, total_device_bytes=24 * gib,
+                             ram_available_bytes=128 * gib, uma=False)
+    guess, fit = CATALOG[0], CATALOG[1]
+    installed: list[str] = []
+    downloaded: list[str] = []
+    assigned: list[str] = []
+
+    monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: as_card if installed else as_ram)
+    monkeypatch.setattr(lm.catalog, "recommended_entry",
+                        lambda budget, entries=None, backend="auto": (guess if budget is as_ram else fit, "best-fits"))
+    monkeypatch.setattr(lm.catalog, "select_variant", lambda entry, budget: VariantChoice(
+        variant=entry.variants[0], zero_spill=True, reason_key="best-fits"))
+    monkeypatch.setattr(lm, "_engine_too_old", lambda min_engine: False)
+    monkeypatch.setattr(lm, "_runtime_target", lambda backend=None: ("b1", "vulkan"))
+    monkeypatch.setattr(lm.binaries, "installed_engine", lambda *a, **k: None)
+    monkeypatch.setattr(lm.binaries, "ensure_engine", lambda backend, **kw: installed.append(backend))
+    monkeypatch.setattr(lm, "_run_download_plan", lambda job, plan, label: downloaded.append(label))
+    monkeypatch.setattr(lm, "_ensure_server", lambda *a, **k: None)
+    monkeypatch.setattr(lm, "_assign_default", lambda job, model_id: assigned.append(model_id))
+
+    r = client.post("/api/local-models/quickstart", json={})
+    assert r.status_code == 200
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert installed == ["vulkan"]
+    assert (job["model_id"], downloaded, assigned) == (fit.id, [fit.display_name], [fit.variants[0].model_id])

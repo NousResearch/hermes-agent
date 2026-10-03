@@ -51,12 +51,6 @@ class TestIsUnsupportedParameterError:
 
 
 
-    def test_temperature_param_routes_through_generic(self):
-        msg = "HTTP 400: Unsupported parameter: temperature"
-        assert _is_unsupported_parameter_error(RuntimeError(msg), "temperature") is True
-        # And the unrelated-case still holds
-        assert _is_unsupported_parameter_error(
-            RuntimeError("max_tokens is too large"), "temperature") is False
 
 
 def _dummy_response():

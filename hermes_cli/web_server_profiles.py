@@ -46,6 +46,28 @@ def _hermes_home_scope(path) -> Any:
         reset_hermes_home_override(token)
 
 
+def serving_profile_name() -> str:
+    """This process's OWN profile name — but only when that name provably resolves back
+    to the process home.
+
+    The dashboard SPA needs an explicit scope for requests it fires before the profile
+    switcher has resolved: a destructive route now 400s on an unnamed profile as soon as
+    the host serves more than one, and "" would otherwise mean "whichever home this
+    process launched with" anyway. Naming it is only safe if the name cannot resolve
+    ELSEWHERE, so a custom HERMES_HOME outside ``profiles/`` (``get_active_profile_name()``
+    answers ``"custom"``) returns "" and keeps the old unnamed behaviour rather than
+    risking a wrong-profile write.
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        name = (profiles_mod.get_active_profile_name() or "").strip()
+        if not name or name == "custom":
+            return ""
+        return name if profiles_mod.profile_matches_home(name, get_process_hermes_home()) else ""
+    except Exception:
+        return ""
+
+
 def _is_other_profile(profile: Optional[str]) -> bool:
     """True when ``profile`` names a profile other than this process's own."""
     if _is_current_profile(profile):
@@ -81,9 +103,15 @@ def _broadcast_gateway_session_info() -> None:
         _log.exception("session.info broadcast after config save failed")
 
 
-def _parse_model_ids(resp: "Any") -> List[str]:
-    """Model ids from an OpenAI-compatible ``/v1/models`` response: ``{"data": [{"id": ..}]}``
-    or a bare ``{"data": ["id", ..]}``. ``[]`` on any parse/HTTP error so a slightly
+_MODEL_ENTRY_METADATA = ("canonical_model", "reasoning_effort")
+
+
+def _parse_model_entries(resp: "Any") -> List[Dict[str, str]]:
+    """Model rows from an OpenAI-compatible ``/v1/models`` response as ``{"id": ..}`` dicts,
+    keeping the alias metadata a gateway may advertise (``canonical_model``,
+    ``reasoning_effort``). Flattening to bare ids lost that, so Desktop stored a reasoning
+    alias as the literal upstream model (#93622). Accepts ``{"data": [{"id": ..}]}`` or a
+    bare ``{"data": ["id", ..]}``; ``[]`` on any parse/HTTP error so a slightly
     non-standard endpoint never hard-blocks."""
     try:
         if not resp.is_success:
@@ -94,8 +122,24 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list):
         return []
-    ids = [str((item.get("id") if isinstance(item, dict) else item) or "").strip() for item in data]
-    return [mid for mid in ids if mid]
+    entries: List[Dict[str, str]] = []
+    for item in data:
+        model_id = str((item.get("id") if isinstance(item, dict) else item) or "").strip()
+        if not model_id:
+            continue
+        entry = {"id": model_id}
+        if isinstance(item, dict):
+            for key in _MODEL_ENTRY_METADATA:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    entry[key] = value
+        entries.append(entry)
+    return entries
+
+
+def _parse_model_ids(resp: "Any") -> List[str]:
+    """Bare model ids from a ``/v1/models`` response (see :func:`_parse_model_entries`)."""
+    return [entry["id"] for entry in _parse_model_entries(resp)]
 
 
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
@@ -269,7 +313,7 @@ def _config_profile_scope(profile: Optional[str]):
         # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
         secrets = launch_secret_scope(process_home)
     with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
-        token = set_secret_scope(secrets)
+        token = set_secret_scope(secrets, profile_home=str(profile_dir or process_home))
         try:
             yield scoped
         finally:
@@ -392,11 +436,14 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _profile_cli_args(profile: Optional[str]) -> List[str]:
-    """``["-p", <name>]`` for a validated non-default profile, else ``[]``. Hub actions run in
+    """``["-p", <name>]`` for a validated named profile, else ``[]``. Hub actions run in
     a fresh ``hermes`` subprocess whose ``_apply_profile_override()`` reads ``-p`` from argv —
-    the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``."""
+    the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``.
+    ``default`` is a real named target, not an alias for the dashboard's own profile:
+    selector-less argv would make the child resolve the ambient ``HERMES_HOME`` (the launch
+    profile under a pooled ``-p X serve``), not the default home."""
     requested = (profile or "").strip()
-    if not requested or requested.lower() in {"current", "default"}:
+    if not requested or requested.lower() == "current":
         return []
     from hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)
@@ -428,5 +475,7 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
         keys = ("name", "trust_level", "scan_verdict")
         return {entry["identifier"]: {k: entry.get(k) for k in keys}
                 for entry in lock.list_installed() if entry.get("identifier")}
+    except HTTPException:
+        raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:
         return {}

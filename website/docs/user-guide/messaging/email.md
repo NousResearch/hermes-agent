@@ -169,10 +169,15 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 Email access is stricter by default than chat-style platforms:
 
-1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
+1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses (and from `GATEWAY_ALLOWED_USERS` or an approved pairing) are processed
 2. **No allowlist set** → unknown senders are ignored silently
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
 4. **`platforms.email.unauthorized_dm_behavior: pair`** → unknown senders receive a pairing code
+5. **`platforms.email.unauthorized_dm_behavior: decline`** → an unknown sender receives one polite refusal, then nothing more for 24 hours
+
+Allowlist entries match whole addresses. A bare entry such as `alice` (a chat username in `GATEWAY_ALLOWED_USERS`, say) never admits `alice@` at any domain, and mail from such an address is dropped rather than paired or declined.
+
+Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Hermes mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when no stamp comes from the pinned `authserv_id`. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
 
 :::warning
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.

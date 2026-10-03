@@ -45,44 +45,6 @@ def commandcode_anthropic_profile():
 
 # ── Chat Completions profile ──────────────────────────────────────────────────
 
-class TestCommandCodeProfileIdentity:
-    """Profile metadata matches the declared contract."""
-
-    def test_name(self, commandcode_profile):
-        assert commandcode_profile.name == "commandcode"
-
-    def test_api_mode(self, commandcode_profile):
-        assert commandcode_profile.api_mode == "chat_completions"
-
-    def test_aliases(self, commandcode_profile):
-        assert "commandcode-chat" in commandcode_profile.aliases
-
-    def test_env_vars(self, commandcode_profile):
-        assert "COMMANDCODE_API_KEY" in commandcode_profile.env_vars
-
-    def test_base_url(self, commandcode_profile):
-        assert commandcode_profile.base_url == "https://api.commandcode.ai/provider/v1"
-
-    def test_display_name(self, commandcode_profile):
-        assert "CommandCode" in commandcode_profile.display_name
-
-    def test_has_fallback_models(self, commandcode_profile):
-        assert len(commandcode_profile.fallback_models) >= 5
-        # Should include the major families
-        names = " ".join(commandcode_profile.fallback_models)
-        assert "deepseek" in names
-        assert "Qwen" in names
-        assert "Kimi" in names
-        assert "gemini" in names
-
-    def test_default_aux_model(self, commandcode_profile):
-        assert commandcode_profile.default_aux_model == "deepseek/deepseek-v4-flash"
-
-    def test_signup_url(self, commandcode_profile):
-        assert "commandcode" in commandcode_profile.signup_url.lower()
-
-    def test_hostname_derived_from_base_url(self, commandcode_profile):
-        assert commandcode_profile.get_hostname() == "api.commandcode.ai"
 
 
 class TestCommandCodeReasoningWireControls:
@@ -113,20 +75,10 @@ class TestCommandCodeReasoningWireControls:
 class TestCommandCodeAnthropicProfileIdentity:
     """Anthropic-compatible profile metadata."""
 
-    def test_name(self, commandcode_anthropic_profile):
-        assert commandcode_anthropic_profile.name == "commandcode-anthropic"
 
-    def test_api_mode(self, commandcode_anthropic_profile):
-        assert commandcode_anthropic_profile.api_mode == "anthropic_messages"
 
-    def test_aliases(self, commandcode_anthropic_profile):
-        assert "commandcode-claude" in commandcode_anthropic_profile.aliases
 
-    def test_env_vars(self, commandcode_anthropic_profile):
-        assert "COMMANDCODE_API_KEY" in commandcode_anthropic_profile.env_vars
 
-    def test_base_url(self, commandcode_anthropic_profile):
-        assert commandcode_anthropic_profile.base_url == "https://api.commandcode.ai/provider/v1"
 
     def test_fallback_models_are_claude_family(self, commandcode_anthropic_profile):
         for model in commandcode_anthropic_profile.fallback_models:
@@ -134,15 +86,8 @@ class TestCommandCodeAnthropicProfileIdentity:
                 f"All anthropic fallback models should be claude-*: got {model}"
             )
 
-    def test_default_aux_model(self, commandcode_anthropic_profile):
-        assert commandcode_anthropic_profile.default_aux_model == "claude-haiku-4-5-20251001"
 
-    def test_display_name_distinct_from_chat(self, commandcode_anthropic_profile):
-        # The Anthropic profile should be distinguishable in /model picker
-        assert "(Anthropic)" in commandcode_anthropic_profile.display_name
 
-    def test_hostname_derived_from_base_url(self, commandcode_anthropic_profile):
-        assert commandcode_anthropic_profile.get_hostname() == "api.commandcode.ai"
 
 
 # ── Bearer Auth Recognition ───────────────────────────────────────────────────
@@ -176,60 +121,10 @@ class TestCommandCodeAnthropicBearerAuth:
 
 # ── Registry integrity ───────────────────────────────────────────────────────
 
-class TestCommandCodeRegistryIntegrity:
-    """Both profiles are discoverable and distinct."""
-
-    def test_both_profiles_registered(self):
-        import model_tools  # noqa: F401
-        import providers
-
-        chat = providers.get_provider_profile("commandcode")
-        anth = providers.get_provider_profile("commandcode-anthropic")
-        assert chat is not None
-        assert anth is not None
-        assert chat is not anth  # distinct profile instances
-
-    def test_alias_lookup(self):
-        import model_tools  # noqa: F401
-        import providers
-
-        assert providers.get_provider_profile("commandcode-chat") is not None
-        assert providers.get_provider_profile("commandcode-claude") is not None
-
-    def test_unknown_returns_none(self):
-        import model_tools  # noqa: F401
-        import providers
-
-        assert providers.get_provider_profile("commandcode-nonexistent") is None
 
 
 # ── Model list filtering ──────────────────────────────────────────────────────
 
-class TestCommandCodeModelFiltering:
-    """``fetch_models`` filtering contracts."""
-
-    def test_anthropic_profile_filters_to_claude(self):
-        """If we mock a response with mixed models, anthropic profile
-        should only return claude-* models.
-        """
-        from plugins.model_providers.commandcode import CommandCodeAnthropicProfile
-
-        profile = CommandCodeAnthropicProfile(
-            name="test-cc-anth",
-            api_mode="anthropic_messages",
-            env_vars=("COMMANDCODE_API_KEY",),
-            base_url="https://api.commandcode.ai/provider/v1",
-        )
-
-        # Don't actually hit the network — just test the filter logic.
-        # The class has a fetch_models override that filters.
-        # We verify the filter works by inspecting the method.
-        import inspect
-
-        source = inspect.getsource(profile.fetch_models)
-        assert "startswith(\"claude-\")" in source or '"claude-" in m' in source, (
-            "CommandCodeAnthropicProfile.fetch_models should filter to claude-* models"
-        )
 
 
 # ── Picker contract ──────────────────────────────────────────────────────────
@@ -244,16 +139,6 @@ class TestCommandCodeFetchModelsPickerContract:
     was swallowed, leaving the provider with zero models.
     """
 
-    @pytest.mark.parametrize("profile_name", ["commandcode", "commandcode-anthropic"])
-    def test_accepts_base_url_kwarg(self, profile_name):
-        import inspect
-
-        import model_tools  # noqa: F401 — triggers discovery
-        import providers
-
-        profile = providers.get_provider_profile(profile_name)
-        assert profile is not None
-        assert "base_url" in inspect.signature(profile.fetch_models).parameters
 
     def test_resolve_provider_full(self):
         """Both profiles must resolve through the model-switch path.

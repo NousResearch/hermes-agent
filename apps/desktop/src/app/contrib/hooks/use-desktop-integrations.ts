@@ -1,14 +1,19 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-link'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
+import { getSession } from '@/hermes'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
+import { recordAction } from '@/store/desktop-metrics'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -17,6 +22,7 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
@@ -25,6 +31,7 @@ import {
   getRememberedSessionId,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
   setRememberedRoute,
   setRememberedSessionId
 } from '@/store/session'
@@ -32,13 +39,15 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
-type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
+import { resolveRememberedSessionId } from './remembered-session'
+
+type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -113,7 +122,12 @@ export function useDesktopIntegrations({
   // This ref is a one-time lifecycle latch, not a mirror of reactive atom state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    if (!profileReady || isHudWindow() || isBrowserWindow()) {
+    // A peer instance window (Ctrl+Shift+N / New Window) boots on the fresh
+    // draft route by design: it must not replay the primary window's
+    // remembered-route/remembered-session restore, which lands it back on the
+    // very session Window 1 has open (#74948). Connections' source
+    // restoration already skips peers for the same reason.
+    if (!profileReady || isHudWindow() || isBrowserWindow() || isPeerInstanceWindow()) {
       return
     }
 
@@ -160,11 +174,22 @@ export function useDesktopIntegrations({
 
         restoredRef.current = true
 
+        // A delegate child (source='subagent') is never a restorable
+        // destination: it is invisible in the sidebar, so resuming one leaves
+        // the app split between the highlighted parent and the child the chat
+        // area shows (#56983). `/branch` children also carry
+        // parent_session_id but ARE user-facing — source, not parenthood, is
+        // the discriminator. A listed row carries its source, so the guard is
+        // synchronous there; an unlisted id resolves by id below.
+        const rowFor = (id: string) => sessions.find(session => sessionMatchesStoredId(session, id))
+
+        const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
+
         if (
           route &&
           route !== NEW_CHAT_ROUTE &&
           !isOverlayView(appViewForPath(route)) &&
-          (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
+          (!routeSession || (restorableRouteSession && sessionBelongsToProfile(sessions, routeSession, activeProfile)))
         ) {
           // The user may have started typing on the fresh chat while the
           // backend was still coming up; the composer moves that draft onto
@@ -181,15 +206,36 @@ export function useDesktopIntegrations({
           setRememberedRoute(null, activeProfile)
         }
 
-        if (last && sessionBelongsToProfile(sessions, last, activeProfile)) {
-          announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
-          navigate(sessionRoute(last), { replace: true })
+        if (last) {
+          // Fast path: a listed, non-delegate row restores directly, exactly
+          // as before — no by-id fetch on the common cold start.
+          if (rowFor(last)?.source !== 'subagent' && sessionBelongsToProfile(sessions, last, activeProfile)) {
+            announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
+            navigate(sessionRoute(last), { replace: true })
+
+            return
+          }
+
+          // Unlisted (or a delegate row that reached a list slice): resolve
+          // the id directly — the by-id endpoint serves delegate children the
+          // list omits. A delegate child repairs to its parent, an orphan or
+          // foreign-profile id clears, and a fetch failure keeps the
+          // remembered value for the next launch instead of discarding it.
+          void resolveRememberedSessionId(last, getSession)
+            .then(remembered => {
+              if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
+                setRememberedSessionId(null, activeProfile)
+
+                return
+              }
+
+              announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
+              setRememberedSessionId(remembered, activeProfile)
+              navigate(sessionRoute(remembered), { replace: true })
+            })
+            .catch(() => undefined)
 
           return
-        }
-
-        if (last) {
-          setRememberedSessionId(null, activeProfile)
         }
       } else {
         restoredRef.current = true
@@ -200,13 +246,45 @@ export function useDesktopIntegrations({
     // non-overlay route (a page like /skills, or a session route) per profile.
     // Session-shaped routes require an explicit matching owner; unresolved and
     // wrong-profile rows must not replace known-safe navigation.
-    if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
-      setRememberedSessionId(routedSessionId, activeProfile)
-      setRememberedRoute(locationPathname, activeProfile)
+    // The resume-exhausted session must not be written back into remembered
+    // navigation: the cleanup effect above drops it once, but this
+    // persistence effect re-runs on every session-list refresh while its
+    // deps are unchanged — without the barrier the dead id outlives every
+    // restart and the window boots into the resume-error screen each time.
+    const exhausted = routedSessionId !== null && routedSessionId === resumeExhaustedSessionId
+
+    if (routedSessionId && !exhausted && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
+      // A delegate child (source='subagent') is never itself a rememberable
+      // destination: it is invisible in the sidebar, so a restart would resume
+      // an orphan chat while the sidebar highlights its parent (#56983).
+      // `/branch` children also carry parent_session_id but ARE user-facing —
+      // source, not parenthood, is the discriminator.
+      const routedRow = sessions.find(session => sessionMatchesStoredId(session, routedSessionId))
+
+      const rememberedSessionId =
+        routedRow?.source === 'subagent' ? routedRow.parent_session_id || null : routedSessionId
+
+      if (rememberedSessionId) {
+        setRememberedSessionId(rememberedSessionId, activeProfile)
+        setRememberedRoute(
+          rememberedSessionId === routedSessionId ? locationPathname : sessionRoute(rememberedSessionId),
+          activeProfile
+        )
+      }
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, diskPluginsScanPending, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
+  }, [
+    activeProfile,
+    diskPluginsScanPending,
+    locationPathname,
+    navigate,
+    profileReady,
+    resumeExhaustedSessionId,
+    resumeLastSession,
+    routedSessionId,
+    sessions
+  ])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {
@@ -296,6 +374,9 @@ export function useDesktopIntegrations({
 
   // hermes:// deep links:
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - plugin/install?catalog=<name> → curated-catalog lookup, then the same
+  //    reviewed/pinned install modal an in-app catalog pick opens; unknown
+  //    names toast an error and never fall back to a git-path install.
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
   //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
@@ -316,6 +397,24 @@ export function useDesktopIntegrations({
 
       const action = resolveDeepLinkAction(payload)
 
+      // The user finished a sign-in in their browser and the portal sent them back. Show the card
+      // and wake its watcher; the link's status is not allowed to move any row.
+      if (action.type === 'connection-done') {
+        void resumeAccountConnect(action.op, navigate).then(handled => {
+          if (handled) {
+            return
+          }
+
+          return openConnectionDoneLink(action.op, navigate, runtimeId => {
+            const viaLocalMap = storedSessionIdForNotification(runtimeId, runtimeIdByStoredSessionId.current)
+
+            return viaLocalMap !== runtimeId ? viaLocalMap : (storedSessionIdForRuntimeId(runtimeId) ?? runtimeId)
+          })
+        })
+
+        return
+      }
+
       if (action.type === 'composer-blueprint') {
         const slots = Object.entries(action.params || {})
           .map(([k, v]) => {
@@ -332,14 +431,18 @@ export function useDesktopIntegrations({
         return
       }
 
+      if (action.type === 'plugin-catalog-install') {
+        void requestPluginCatalogInstallFromDeepLink(action.name)
+
+        return
+      }
+
       if (action.type === 'plugin-install') {
         openPluginInstallRequest({
           repo: action.repo,
           enable: action.enable,
           force: action.force,
-          legacyHint: action.legacyHint,
-          catalogName: action.catalogName,
-          sha: action.sha
+          legacyHint: action.legacyHint
         })
 
         return
@@ -368,16 +471,24 @@ export function useDesktopIntegrations({
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [navigate])
+  }, [navigate, runtimeIdByStoredSessionId])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the
   // OS-standard window close, esp. secondary windows). The Win/Linux keyboard
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(
-      () => void closeActiveTab(id => navigate(sessionRoute(id)))
-    )
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => {
+      // A focused user terminal owns the chord as the shell's word erase: main
+      // claimed the keystroke (before-input-event), so re-deliver the ^W byte
+      // to the PTY instead of closing the pane and killing the shell (#65457).
+      // Read-only agent mirrors and everything else keep the close meaning.
+      if (wordEraseFocusedTerminal()) {
+        return
+      }
+
+      void closeActiveTab(id => navigate(sessionRoute(id)))
+    })
 
     return () => unsubscribe?.()
   }, [navigate])
@@ -388,6 +499,10 @@ export function useDesktopIntegrations({
   // app-level meaning to fall back to; an unfocused swipe is a no-op.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
+      if (commandFocusedTerminal(command)) {
+        return
+      }
+
       if (!commandFocusedPreview(command) && command === 'reload') {
         window.location.reload()
       }
@@ -398,7 +513,10 @@ export function useDesktopIntegrations({
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => {
+      recordAction('workspace.openFolder', 'menu')
+      void openFolderAsProject()
+    })
 
     return () => unsubscribe?.()
   }, [])

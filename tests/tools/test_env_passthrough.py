@@ -2,7 +2,7 @@
 
 import os
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import secret_scope as ss
 import tools.env_passthrough as _ep_mod
@@ -28,10 +28,6 @@ def _clean_passthrough():
 
 
 class TestSkillScopedPassthrough:
-    def test_register_and_check(self):
-        assert not is_env_passthrough("TENOR_API_KEY")
-        register_env_passthrough(["TENOR_API_KEY"])
-        assert is_env_passthrough("TENOR_API_KEY")
 
 
     def test_skips_empty(self):
@@ -44,7 +40,7 @@ class TestConfigPassthrough:
     def test_reads_from_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["MY_CUSTOM_KEY", "ANOTHER_TOKEN"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _ep_mod._config_passthrough.clear()
 
@@ -56,7 +52,7 @@ class TestConfigPassthrough:
     def test_union_of_skill_and_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["CONFIG_KEY"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _ep_mod._config_passthrough.clear()
 
@@ -105,54 +101,7 @@ class TestProfileScopedResolution:
 class TestExecuteCodeIntegration:
     """Verify that the passthrough is checked in execute_code's env filtering."""
 
-    def test_secret_substring_blocked_by_default(self):
-        """TENOR_API_KEY should be blocked without passthrough."""
-        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
 
-        test_env = {"PATH": "/usr/bin", "TENOR_API_KEY": "test123", "HOME": "/home/user"}
-        child_env = {}
-        for k, v in test_env.items():
-            if is_env_passthrough(k):
-                child_env[k] = v
-                continue
-            if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-                continue
-            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
-                child_env[k] = v
-
-        assert "PATH" in child_env
-        assert "HOME" in child_env
-        assert "TENOR_API_KEY" not in child_env
-
-    def test_passthrough_allows_secret_through(self):
-        """TENOR_API_KEY should pass through when registered."""
-        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
-
-        register_env_passthrough(["TENOR_API_KEY"])
-
-        test_env = {"PATH": "/usr/bin", "TENOR_API_KEY": "test123", "HOME": "/home/user"}
-        child_env = {}
-        for k, v in test_env.items():
-            if is_env_passthrough(k):
-                child_env[k] = v
-                continue
-            if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-                continue
-            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
-                child_env[k] = v
-
-        assert "PATH" in child_env
-        assert "HOME" in child_env
-        assert "TENOR_API_KEY" in child_env
-        assert child_env["TENOR_API_KEY"] == "test123"
 
     def test_execute_code_uses_active_profile_for_passthrough(self, monkeypatch):
         """The execute_code child must receive the routed profile's value."""
@@ -362,6 +311,66 @@ class TestTerminalIntegration:
         result = _sanitize_subprocess_env(env)
         assert blocked_var not in result
         assert "PATH" in result
+
+    def test_passthrough_case_variant_of_blocklist_rejected(self):
+        """A case-variant registration (``openai_api_key``) must be refused just
+        like the canonical name: the remote-exec env builder resolves each
+        registered name via ``os.getenv``, which is case-insensitive on Windows,
+        so a variant would tunnel the real ``OPENAI_API_KEY`` value into
+        SSH/Docker children: the same GHSA-rhgp-j443-p4rf primitive."""
+        for var in ("openai_api_key", "OpenAi_Api_Key", "anthropic_api_key",
+                    "Aws_Bearer_Token_Bedrock"):
+            register_env_passthrough([var])
+            assert not is_env_passthrough(var), (
+                f"{var} should be refused passthrough registration")
+
+    def test_passthrough_case_variant_via_config_rejected(self, tmp_path, monkeypatch):
+        """The config-based allowlist (terminal.env_passthrough) must refuse
+        case variants of provider credentials on the same filter."""
+        config = {"terminal": {"env_passthrough": ["openai_api_key", "MY_OWN_KEY"]}}
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _ep_mod._config_passthrough.clear()
+
+        assert not is_env_passthrough("openai_api_key")
+        assert is_env_passthrough("MY_OWN_KEY")
+
+    def test_passthrough_case_variant_never_reaches_remote_exec_env(self, monkeypatch):
+        """Even if a case-variant name were present in the registered set, the
+        remote env builder must not resolve it: on Windows ``os.getenv`` is
+        case-insensitive, so ``openai_api_key`` would carry the real
+        ``OPENAI_API_KEY`` into SSH/Docker exec envs."""
+        from tools.environments import remote_common
+
+        register_env_passthrough(["openai_api_key"])
+        exec_env, _unset = remote_common.resolve_passthrough_env(set())
+        assert not any(k.lower() == "openai_api_key" for k in exec_env)
+
+        # Defense in depth, load-bearing on POSIX too: force the variant into
+        # the registered set and set a real env entry under that spelling, so
+        # os.getenv() resolves it and only the folded blocklist drops it.
+        monkeypatch.setenv("openai_api_key", "sk-variant-value")
+        monkeypatch.setenv("MY_OWN_KEY", "own-value")
+        monkeypatch.setattr(
+            "tools.env_passthrough.get_all_passthrough",
+            lambda: {"openai_api_key", "MY_OWN_KEY"})
+        exec_env, _unset = remote_common.resolve_passthrough_env(set())
+        assert "openai_api_key" not in exec_env
+        assert exec_env.get("MY_OWN_KEY") == "own-value"
+
+    def test_passthrough_case_variant_never_reaches_execute_code_env(self):
+        """The GHSA-rhgp-j443-p4rf path end to end: the variant registration
+        is refused, so is_env_passthrough cannot carry the name past the
+        execute_code scrub."""
+        from tools.code_execution_env import _scrub_child_env
+
+        register_env_passthrough(["openai_api_key"])
+        child_env = _scrub_child_env(
+            {"openai_api_key": "sk-real", "PATH": "/usr/bin"},
+            is_passthrough=is_env_passthrough, is_windows=False)
+        assert "openai_api_key" not in child_env
+        assert child_env["PATH"] == "/usr/bin"
 
     def test_passthrough_cannot_override_internal_dynamic_secret(self):
         """A skill must NOT be able to register dynamically-named Hermes

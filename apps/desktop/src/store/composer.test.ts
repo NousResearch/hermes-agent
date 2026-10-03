@@ -2,19 +2,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $composerAttachments,
+  $restoredDraftNotice,
   $voiceConversationStartRequest,
   addComposerAttachment,
+  adoptGoneSessionDraft,
+  announceGoneSessionDraft,
+  clearComposerTerminalSelections,
   clearSessionDraft,
   type ComposerAttachment,
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
+  freezeComposerTransportPayload,
+  mainComposerScope,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
+  revokeAttachmentPreviewUrls,
   SESSION_DRAFTS_STORAGE_KEY,
+  setComposerTerminalSelection,
   stashSessionDraft,
   takeSessionDraft,
   takeVoiceConversationStart,
+  undoRestoredDraft,
   updateComposerAttachment
 } from './composer'
 
@@ -34,6 +43,51 @@ describe('voice conversation start requests', () => {
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }
 }
+
+function stubRevokeObjectURL() {
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', { ...URL, revokeObjectURL })
+
+  return revokeObjectURL
+}
+
+describe('blob preview URL ownership handoff', () => {
+  afterEach(() => {
+    $composerAttachments.set([])
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('direct-submit handoff keeps blob previews across clear, then revokes when the optimistic consumer is discarded', () => {
+    // Mirrors use-composer-submit: clone → clear({ retainPreviewUrls }) → dispatch clone.
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-direct-submit-1'
+    addComposerAttachment(attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl }))
+
+    const submittedAttachments = $composerAttachments.get().map(item => ({ ...item }))
+    mainComposerScope.clear({ retainPreviewUrls: true })
+
+    expect($composerAttachments.get()).toEqual([])
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(submittedAttachments[0]?.previewUrl).toBe(blobUrl)
+
+    // Optimistic bubble discarded / replaced without restoring into the composer.
+    revokeAttachmentPreviewUrls(submittedAttachments)
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+
+  it('still revokes blob previews on a normal clear (no handoff)', () => {
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-clear-1'
+    const scope = createComposerAttachmentScope()
+    scope.add(attachment({ id: 'image:x', kind: 'image', previewUrl: blobUrl }))
+
+    scope.clear()
+
+    expect(scope.$attachments.get()).toEqual([])
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+})
 
 describe('updateComposerAttachment', () => {
   afterEach(() => {
@@ -233,6 +287,14 @@ describe('session drafts', () => {
     expect(takeSessionDraft('session-a').text).toBe('session draft')
   })
 
+  it('keeps separate fresh-chat lifecycle drafts isolated', () => {
+    stashSessionDraft('__new__:first', 'first unsent chat', [])
+    stashSessionDraft('__new__:second', 'second unsent chat', [])
+
+    expect(takeSessionDraft('__new__:first').text).toBe('first unsent chat')
+    expect(takeSessionDraft('__new__:second').text).toBe('second unsent chat')
+  })
+
   it('persists draft text (not attachments) to localStorage', () => {
     stashSessionDraft('session-a', 'survives reload', [attachment({ id: 'file:a' })])
 
@@ -267,6 +329,38 @@ describe('session drafts', () => {
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
   })
 
+  it('restores a gone session draft only into an EMPTY fresh chat, and Undo puts it back where it was (#111868)', () => {
+    // Never clobber what the user is already typing in the new chat.
+    stashSessionDraft('session-a', 'from the dead session', [])
+    stashSessionDraft(null, 'already composing here', [])
+    announceGoneSessionDraft('session-a')
+
+    expect(adoptGoneSessionDraft()).toBe(false)
+    expect($restoredDraftNotice.get()).toBeNull()
+    expect(takeSessionDraft(null).text).toBe('already composing here')
+    expect(takeSessionDraft('session-a').text).toBe('from the dead session')
+
+    // Empty fresh chat → restored; Undo (text untouched) returns it to the
+    // dead key, so the same recovery path can find it again later.
+    clearSessionDraft(null)
+    announceGoneSessionDraft('session-a')
+
+    expect(adoptGoneSessionDraft()).toBe(true)
+    expect(takeSessionDraft(null).text).toBe('from the dead session')
+    expect(undoRestoredDraft('from the dead session')).toBe(true)
+    expect(takeSessionDraft(null).text).toBe('')
+    expect(takeSessionDraft('session-a').text).toBe('from the dead session')
+    expect($restoredDraftNotice.get()).toBeNull()
+
+    // Once the user has edited the restored text, Undo would destroy their
+    // work: it only dismisses.
+    announceGoneSessionDraft('session-a')
+    adoptGoneSessionDraft()
+
+    expect(undoRestoredDraft('from the dead session, edited')).toBe(false)
+    expect(takeSessionDraft(null).text).toBe('from the dead session')
+  })
+
   it('migrates a tip-keyed draft onto the post-compression tip', () => {
     const tipBefore = '20260720_062637_ad96b3'
     const tipAfter = '20260720_071049_a28905'
@@ -292,5 +386,69 @@ describe('session drafts', () => {
 
     clearSessionDraft(null)
     clearSessionDraft('to')
+  })
+})
+
+describe('freezeComposerTransportPayload', () => {
+  afterEach(() => {
+    clearComposerTerminalSelections()
+  })
+
+  it('leaves ordinary text unchanged', () => {
+    const frozen = freezeComposerTransportPayload('just a question')
+
+    expect(frozen.transportText).toBe('just a question')
+    expect(frozen.displayText).toBe('just a question')
+    expect(frozen.missingLabels).toEqual([])
+  })
+
+  it('freezes @terminal chips into fenced transport and keeps chips for display', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const frozen = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+
+    expect(frozen.transportText).toBe('```terminal\nselected terminal lines\n```\n\nlook at')
+    expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
+    expect(frozen.missingLabels).toEqual([])
+  })
+
+  it('does not expand a second time when transport is already frozen', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const once = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+    const twice = freezeComposerTransportPayload(once.transportText)
+
+    expect(twice.transportText).toBe(once.transportText)
+    expect(twice.displayText).toBe(once.transportText)
+    expect((once.transportText.match(/```terminal/g) ?? []).length).toBe(1)
+  })
+
+  it('reports unresolved chips instead of sending a bare token', () => {
+    const frozen = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+
+    expect(frozen.missingLabels).toEqual(['zsh:23-58'])
+    expect(frozen.transportText).toBe('look at @terminal:`zsh:23-58`')
+    expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
+  })
+
+  it('freezes multiple selections in document order', () => {
+    setComposerTerminalSelection('zsh:10-12', 'first block')
+    setComposerTerminalSelection('bash:3-9', 'second block')
+
+    const frozen = freezeComposerTransportPayload('compare @terminal:`bash:3-9` with @terminal:`zsh:10-12`')
+
+    expect(frozen.transportText).toBe('```terminal\nsecond block\n```\n\n```terminal\nfirst block\n```\n\ncompare with')
+    expect(frozen.displayText).toBe('compare @terminal:`bash:3-9` with @terminal:`zsh:10-12`')
+    expect(frozen.missingLabels).toEqual([])
+  })
+
+  it('idle submit and steer still freeze at the transport boundary', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const frozen = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+
+    expect(frozen.transportText).toContain('selected terminal lines')
+    expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
+    expect(freezeComposerTransportPayload(frozen.transportText).transportText).toBe(frozen.transportText)
   })
 })

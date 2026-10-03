@@ -1,5 +1,7 @@
 """Recovery changes the next HTTP request, never the durable conversation."""
 
+from copy import deepcopy
+from functools import wraps
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -10,16 +12,47 @@ import pytest
 @pytest.mark.parametrize("after_tool", [False, True], ids=["user", "tool"])
 @pytest.mark.parametrize("parts", [False, True], ids=["text", "parts"])
 @pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
-def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stream):
+@pytest.mark.parametrize("guard_continue", [False, True], ids=["tool-recovery", "intake-continue"])
+def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stream, guard_continue):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("model:\n  supports_vision: true\n")
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  supports_vision: true\n  context_length: 128000\n"
+        "auxiliary:\n  title_generation:\n    enabled: false\n"
+    )
+    import agent.conversation_loop as loop
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.usage_anchor import anchored_context_tokens
     from hermes_state import SessionDB
     from run_agent import AIAgent
 
     reasoning = "I should look this up.\n<tool_call>\nlookup({})\n</tool_call>"
     stages = (["tool"] if after_tool else []) + ["empty", "tool", "answer", "answer"]
+    if guard_continue:
+        stages.insert(2 if after_tool else 1, "scratchpad")
     requests = []
+    hinted_rebuilds = []
+
+    real_assemble = loop.assemble_api_request
+
+    @wraps(real_assemble)
+    def rebuild_request(agent, **kwargs):
+        history = deepcopy(kwargs["messages"])
+        assembled = real_assemble(agent, **kwargs)
+        hint = getattr(agent, "_empty_response_retry_hint", None)
+        if hint:
+            # A pressure/preflight pass can rebuild the same request without intake.
+            rebuilt = real_assemble(agent, **kwargs)
+            assert rebuilt.api_messages == assembled.api_messages
+            assert agent._empty_response_retry_hint == hint
+            assert kwargs["messages"] == history
+            anchored = anchored_context_tokens(history, agent._usage_anchor)
+            assert anchored is not None
+            assert rebuilt.request_pressure_tokens == anchored + estimate_tokens_rough("\n\n" + hint)
+            hinted_rebuilds.append(hint)
+        return assembled
+
+    monkeypatch.setattr(loop, "assemble_api_request", rebuild_request)
 
     class Provider(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
@@ -37,6 +70,9 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
                     "function": {"name": "lookup", "arguments": "{}"},
                 }]
                 finish = "tool_calls"
+            elif stage == "scratchpad":
+                # Intake continues before the empty-response ladder is reached.
+                message["content"] = "<REASONING_SCRATCHPAD>unfinished"
             elif stage == "empty":
                 # Clean-stop promotion is a separate policy. Exercise the existing
                 # empty ladder on main without relying on any promotion-gate PR.
@@ -114,6 +150,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
             assert retry[-1] != original[-1], "Recovery must change the outgoing request"
             assert hint in json.dumps(retry[-1])
             assert requests[retry_index + 1][:len(original)] == original
+            assert hinted_rebuilds == [hint]
 
             stored = agent._session_db.get_messages(agent.session_id)
             for history in (result["messages"], stored):
@@ -123,6 +160,9 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
                 assert not any(m.get("_thinking_prefill") or m.get("_empty_recovery_synthetic") for m in history)
                 assert sum(m["role"] == "user" for m in history) == 1
             assert agent._thinking_prefill_retries == 0
+            assert agent._empty_response_retry_hint is None
+            # An abandoned turn's pending state must also be cleared at admission.
+            agent._empty_response_retry_hint = hint
             agent.run_conversation("Next question", conversation_history=result["messages"])
             assert hint not in json.dumps(requests[-1])
             assert not stages

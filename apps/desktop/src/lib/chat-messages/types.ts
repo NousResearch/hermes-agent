@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock } from '@hermes/shared'
+import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -12,9 +12,18 @@ export interface TimelinePartMetadata {
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** A tool call the user stopped or redirected before its result arrived. */
+  interrupted?: boolean
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Stored tool result without a matching assistant call in the loaded page.
+   *  Render for history, but never treat it as authoritative Todo state. */
+  unpairedStoredToolResult?: boolean
+  /** Actual completed tool name when the assistant called a wrapper such as tool_call. */
+  storedResultToolName?: string
+  /** Durable source occurrence, even when several backend rows share a bubble. */
+  sourceRowId?: number
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -40,6 +49,14 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** The user stopped this reply before it finished; its text is partial. */
+  interrupted?: boolean
+  /** Locally recovered output not yet represented by a durable completed reply. */
+  recovered?: boolean
+  /** Whether hydration reached a final assistant source row, rather than a tool round. */
+  durableComplete?: boolean
+  /** Exact gateway receipt; whole-turn coverage is never inferred from prose. */
+  persistedTurn?: PersistedTurn
   /** Whole-turn wall-clock seconds (message.start → message.complete),
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
@@ -48,8 +65,21 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Backend transcript rows this message represents — the hydration fold
+   *  merges a turn's tool rows into the assistant message they belong to, so a
+   *  message is not one backend row. The older-page offset (transcript-tail) is
+   *  counted in backend rows, so anything that rewinds that offset must convert
+   *  through this. Absent means one row. */
+  serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** Backend-authored transcript notice rather than a message any view sent: a
+   *  model switch, an auto-continue, a background-process completion. It renders
+   *  on the timeline like any other system row but belongs to no view, so the
+   *  stale-transcript compare must not count it (see
+   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
+   *  second window ahead and refuse every send. */
+  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -68,10 +98,15 @@ export type GatewayEventPayload = {
   arguments?: unknown
   context?: string
   input?: unknown
+  labels?: ToolLabel[]
   preview?: string
   result?: unknown
   summary?: string
   error?: string | boolean
+  // error — the gateway's machine-readable cause, when it has one (currently
+  // "provider_not_configured" from a failed agent init). Absent on older
+  // gateways; consumers must fall back to string heuristics.
+  code?: string
   // message.complete with status "error" — structured {layer, code, retryable}
   // descriptor naming which stack layer failed (agent/error_surface.py).
   // Absent on older gateways; consumers must fall back to string heuristics.
@@ -83,6 +118,7 @@ export type GatewayEventPayload = {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   approval_mode?: string
@@ -104,10 +140,6 @@ export type GatewayEventPayload = {
   question?: string
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
-  choices?: string[] | null
-  multi_select?: boolean
-  // clarify.request batch form: questions replaces question/choices, and
-  // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
   // connection request (manage_connections MCP targets — inline approval card)
@@ -186,6 +218,10 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — a transform_llm_output hook rewrote the final text after streaming;
+  // it authoritatively replaces the current turn's streamed text even without a prefix match.
+  response_transformed?: MessageCompletePayload['response_transformed']
+  persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string
   // message.complete with status "error" — `text` is streamed partial output

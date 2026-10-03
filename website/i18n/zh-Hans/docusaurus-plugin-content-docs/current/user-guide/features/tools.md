@@ -6,6 +6,9 @@ description: "Hermes Agent 工具概览——可用工具、工具集工作方�
 
 # 工具与工具集
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 工具是扩展 Agent 能力的函数。它们被组织为逻辑上的**工具集**，可按平台启用或禁用。
 
 ## 可用工具
@@ -13,7 +16,7 @@ description: "Hermes Agent 工具概览——可用工具、工具集工作方�
 Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递、Home Assistant 等功能。
 
 :::note
-**Honcho 跨会话记忆**作为记忆提供者插件（`plugins/memory/honcho/`）提供，而非内置工具集。安装方式请参阅 [Plugins](./plugins.md)。
+**Honcho 跨会话记忆**作为插件目录中的记忆提供者插件提供（`hermes plugins install honcho`），而非内置工具集。参见 [Memory Providers](./memory-providers.md#honcho)。
 :::
 
 高层分类：
@@ -118,7 +121,7 @@ hermes config set terminal.singularity_image ~/python.sif
 ### Modal（无服务器云）
 
 ```bash
-uv pip install modal
+python -c "import pm; pm.sync_venv(['modal'], explicit=True)"
 modal setup
 hermes config set terminal.backend modal
 ```
@@ -126,7 +129,7 @@ hermes config set terminal.backend modal
 ### Vercel Sandbox
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 hermes config set terminal.backend vercel_sandbox
 hermes config set terminal.vercel_runtime node24
 ```

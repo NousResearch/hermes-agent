@@ -18,8 +18,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $botMeta, botMetaWriteAt, saveBotMeta } from './data'
+import { $botMeta, $lastRoster, botMentionTag, botMetaWriteAt, mergeMultiSourceRoster, saveBotMeta } from './data'
+import { editedLook } from './edit-profile-look'
+import { groupSpeakerLabel } from './group-chat'
+import { buildGroupChatTurnPrompt } from './group-round-prompt'
+import { displayName } from './labels'
 import { mergeServerMeta } from './profile-ops'
+import { botRosterMeta } from './routing'
 import type { RosterRow } from './types'
 
 const { hostMock, storageMock } = vi.hoisted(() => ({
@@ -53,6 +58,12 @@ vi.mock('./shared', () => ({ getPluginCtx: () => ({ storage: storageMock }), ID:
 vi.mock('./avatar-image', () => ({ isBackfilledFacePng: () => false }))
 vi.mock('./canonical-chat', () => ({ ensureBotMetadata: vi.fn() }))
 
+/** The backend's profile listing: a save reads the bot's server namespace
+ *  before it writes, so every profile a case saves has to exist there. */
+const SERVED_PROFILES = {
+  profiles: ['beta', 'ops', 'researcher', 'source', 'source-2'].map(name => ({ name, ui_meta_revisions: {} }))
+}
+
 /** Every `host.request` recorded, with the params frozen at call time. */
 function recordRequests(reply: (method: string) => unknown = () => ({})) {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = []
@@ -60,7 +71,7 @@ function recordRequests(reply: (method: string) => unknown = () => ({})) {
   hostMock.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params: structuredClone(params ?? {}) })
 
-    return reply(method)
+    return method === 'profiles.list' ? SERVED_PROFILES : reply(method)
   })
 
   return calls
@@ -110,6 +121,41 @@ describe('a save reports what the SERVER did, not just what the screen shows', (
 
     await expect(saveBotMeta('researcher', { custom: true, shape: 'circle' })).resolves.toMatchObject({
       serverOutcome: 'unsupported'
+    })
+  })
+})
+
+describe('a save for a bot on the pooled local backend', () => {
+  it('is admitted while warm bot backends hold every background slot', async () => {
+    // Main's pool admission, reduced: cap 3 with one slot reserved for
+    // foreground dials. Two warm bots hold both background slots and beta's
+    // backend is cold, so a dial without an explicit priority (background,
+    // main's default) waits out its slot deadline and fails.
+    hostMock.requestProfile.mockImplementation(
+      async (
+        _route: unknown,
+        method: string,
+        _params: unknown,
+        _timeoutMs?: number,
+        options?: { spawnPriority?: 'background' | 'foreground' }
+      ) => {
+        if ((options?.spawnPriority ?? 'background') === 'background') {
+          throw new Error('Local backend start for "beta" timed out while waiting for a free slot. (background)')
+        }
+
+        return method === 'profiles.configure'
+          ? { applied: { ui_meta: true } }
+          : method === 'profiles.list'
+            ? SERVED_PROFILES
+            : {}
+      }
+    )
+
+    const beta = { connectionId: 'local', connectionKind: 'local', name: 'beta', sourceScoped: true } as RosterRow
+
+    await expect(saveBotMeta(beta, { sectionId: 'sec-1', sectionName: 'Clients' })).resolves.toEqual({
+      serverOutcome: 'persisted',
+      serverPersisted: true
     })
   })
 })
@@ -316,5 +362,116 @@ describe('server metadata reconciliation', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// Two machines, both with a profile literally named `default`: the VPS bot is
+// "Agent A" on its own backend; this Desktop's local agent is "Agent B", whose
+// title still sits under the bare legacy key from its single-source days.
+describe("a bot is named by its own backend, never by another bot's cached record", () => {
+  const vps = {
+    connectionId: 'vps',
+    display_name: 'Agent A',
+    name: 'default',
+    remoteSource: true,
+    sourceScoped: true
+  } as RosterRow
+
+  it('a save writes its own patch onto the server namespace, and re-reads after losing a CAS race', async () => {
+    $botMeta.set({ 'vps::default': { color: '#ff0000', title: 'Agent B' } })
+    let revision = 3
+    const configures: Array<Record<string, unknown>> = []
+
+    hostMock.requestProfile.mockImplementation(
+      async (_route: unknown, method: string, params: Record<string, unknown>) => {
+        if (method === 'profiles.list') {
+          return {
+            profiles: [
+              {
+                name: 'default',
+                ui_meta: { 'hermes-bots': { color: '#0000ff', groups: [] } },
+                ui_meta_revisions: { 'hermes-bots': revision }
+              }
+            ]
+          }
+        }
+
+        if (method === 'profiles.configure') {
+          configures.push(structuredClone(params))
+
+          // Another writer lands between this save's read and its write, once.
+          if (configures.length === 1) {
+            revision = 4
+
+            return { applied: { ui_meta: false, ui_meta_conflicts: { 'hermes-bots': { actual: 4, expected: 3 } } } }
+          }
+
+          return { applied: { ui_meta: true } }
+        }
+
+        return {}
+      }
+    )
+
+    await expect(saveBotMeta(vps, { groups: ['room'] })).resolves.toMatchObject({ serverOutcome: 'persisted' })
+
+    expect(configures.map(params => params.ui_meta_expected_revisions)).toEqual([
+      { 'hermes-bots': 3 },
+      { 'hermes-bots': 4 }
+    ])
+    // The local cache's stale title and color never travel: only the patch rides the server's copy.
+    expect(configures.at(-1)?.ui_meta).toEqual({ 'hermes-bots': { color: '#0000ff', groups: ['room'] } })
+  })
+
+  it('names, tags, and prompts the bot with what its backend reports', () => {
+    $botMeta.set({ default: { title: 'Agent B' }, 'vps::default': { title: 'Agent B' } })
+    // `/api/profiles` reports no Bot Mode title for the VPS bot.
+    const thin = { ...vps, title: '' } as RosterRow
+
+    mergeServerMeta([thin])
+
+    expect(displayName(thin, botRosterMeta(thin, $botMeta.get()))).toBe('Agent A')
+    expect(botMentionTag(thin)).toBe('agent-a')
+
+    // Window switched to the VPS: its rows are the active source's (scoped, not remote).
+    const active = { ...vps, remoteSource: false, ui_meta_revisions: {} } as RosterRow
+
+    expect(buildGroupChatTurnPrompt({ deltaLines: [], groupName: 'g', members: [active], viewer: active })).toContain(
+      'You are @agent-a,'
+    )
+
+    // A keyed speaker with no live roster row (Bots pane not mounted).
+    $lastRoster.set([])
+    expect(groupSpeakerLabel('vps::default')).not.toBe('Agent B')
+  })
+
+  it("only a fresh answer from the bot's backend corrects its record, and a title alone never mints one", () => {
+    $botMeta.set({ 'vps::default': { color: '#00ff00', title: 'New title' } })
+    // The VPS stops answering; the pane keeps its last-painted row, which predates the rename.
+    const painted = { ...vps, title: 'Old title' } as RosterRow
+
+    const kept = mergeMultiSourceRoster(
+      { profiles: [] },
+      { agents: [], sources: [{ connectionId: 'vps', reachable: false }] },
+      'local',
+      [painted]
+    )
+
+    mergeServerMeta(kept.profiles as RosterRow[], Date.now())
+    expect($botMeta.get()['vps::default']).toEqual({ color: '#00ff00', title: 'New title' })
+
+    // No record yet (a configured alias may own this bot's look): the backend's
+    // title rides the row, and no empty record appears to shadow the alias.
+    $botMeta.set({})
+    mergeServerMeta([{ ...vps, title: 'Agent A' } as RosterRow])
+    expect($botMeta.get()).toEqual({})
+  })
+
+  it('Edit Profile sends only what the user changed since it opened', () => {
+    const opened = { color: '#ff0000', image: null, shape: 'circle' as const, title: 'Old title' }
+
+    // Renamed elsewhere meanwhile; this dialog only changes the color.
+    expect(editedLook(opened, { ...opened, color: '#0000ff' })).toEqual({ color: '#0000ff', custom: true })
+    expect(editedLook(opened, { ...opened, title: ' Old title ' })).toBeNull()
   })
 })

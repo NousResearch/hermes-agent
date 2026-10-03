@@ -20,7 +20,6 @@ survives as far as the drop pass.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -127,31 +126,30 @@ class TestThinkingPrefillTrailingTurn:
             f"Empty assistant stub(s) reached the wire: {empty_assistants}"
         )
 
-    def test_thinking_retry_does_not_append_recovery_rows(self, loop_agent):
+    @pytest.mark.parametrize("stop_after_empty", [False, True], ids=["recovered", "budget-exit"])
+    def test_thinking_retry_does_not_append_recovery_rows(self, loop_agent, stop_after_empty):
         """Failed reasoning stays out of live history as well as visible content (#111761)."""
-        import agent.turn_empty_response as ter
-
         reasoning = "Let me work through the request step by step."
         loop_agent.client.chat.completions.create.side_effect = [
             _thinking_only_response(),
             _final_response(),
         ]
-        appended = []
-        real_append = ter.append_message
-
-        def spy(messages, msg, *args, **kwargs):
-            appended.append(dict(msg))
-            return real_append(messages, msg, *args, **kwargs)
-
+        if stop_after_empty:
+            loop_agent.max_iterations = 1
         with (
-            patch.object(ter, "append_message", spy),
+            patch.object(loop_agent, "_handle_max_iterations", return_value="Budget exhausted."),
             patch.object(loop_agent, "_persist_session"),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
             result = loop_agent.run_conversation("do the thing")
 
-        assert not appended
+        assert loop_agent._empty_response_retry_hint is None
+        assert sum(m.get("role") == "user" for m in result["messages"]) == 1
+        assert not any(
+            m.get("_thinking_prefill") or m.get("_empty_recovery_synthetic")
+            for m in result["messages"]
+        )
         assert not any(
             reasoning in (m.get("reasoning") or "") or m.get("content") == reasoning
             for m in result["messages"]

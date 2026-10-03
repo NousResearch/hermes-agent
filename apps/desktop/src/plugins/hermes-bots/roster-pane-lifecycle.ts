@@ -43,12 +43,24 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
       $lastSources.set(data.sources)
     }
 
-    mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
+    // Every live row, not just the active source's: a bot on another
+    // connection reports its own title too, and skipping it left that bot
+    // named by whatever this Desktop last cached for it.
+    mergeServerMeta(
+      roster.filter(row => !row?.ghost),
+      data?.fetchedAt || 0
+    )
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)
     // React Query owns the stable server snapshot; derived arrays intentionally
     // follow that snapshot rather than retriggering on their own atom writes.
+    // Key on the `profiles`/`sources` subtrees, not the envelope: every 5 s
+    // poll stamps a fresh `fetchedAt`, so the envelope is a new object each
+    // tick while structural sharing keeps unchanged subtrees reference-stable.
+    // Keying on the envelope republished an identical roster every poll —
+    // every $lastRoster subscriber re-rendered and the avatar/meta/activity
+    // side effects re-ran with nothing changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data])
+  }, [live, data?.sources])
 }

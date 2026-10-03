@@ -158,7 +158,22 @@ HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
 
 ```bash
 hermes model
+hermes model --refresh      # 清除选择器的模型缓存，并重新获取每个 provider 的实时列表
 ```
+
+| 选项 | 说明 |
+|------|------|
+| `--refresh` | 打开选择器前清除模型选择器磁盘缓存，并重新获取每个 provider 的实时 `/v1/models` 列表。 |
+| `--portal-url URL` | Nous 登录：Portal 基础 URL（默认：生产 Portal）。 |
+| `--inference-url URL` | Nous 登录：推理 API 基础 URL（默认：生产推理 API）。 |
+| `--client-id ID` | Nous 登录：OAuth client id（默认：`hermes-cli`）。 |
+| `--scope SCOPE` | Nous 登录：请求的 OAuth scope。 |
+| `--no-browser` | Nous 登录：不自动打开浏览器。 |
+| `--timeout SECONDS` | Nous 登录：HTTP 请求超时（默认：15）。 |
+| `--ca-bundle PATH` | Nous 登录：用于 TLS 验证的 CA bundle PEM 文件。 |
+| `--insecure` | Nous 登录：禁用 TLS 验证（仅用于测试）。 |
+
+`hermes model` 需要交互式终端；通过管道或非交互式子进程运行时，它以状态码 1 退出。
 
 在以下情况使用此命令：
 - **添加新 provider**（OpenRouter、Anthropic、Copilot、DeepSeek、自定义等）
@@ -348,10 +363,11 @@ hermes auth remove openrouter 2                          # 按索引删除
 hermes auth reset openrouter                             # 清除冷却时间
 hermes auth status anthropic                             # 显示某 provider 的认证状态
 hermes auth logout anthropic                             # 登出并清除已存储的认证状态
+hermes auth upgrade                                      # 将 Nous 免费层登录到 Nous 账户，保留其连接器
 hermes auth spotify                                      # 通过 PKCE 将 Hermes 与 Spotify 认证
 ```
 
-子命令：`add`、`list`、`remove`、`reset`、`status`、`logout`、`spotify`。不带子命令调用时，启动交互式管理向导。
+子命令：`add`、`list`、`remove`、`reset`、`priority`、`refresh`、`status`、`logout`、`upgrade`、`spotify`。不带子命令调用时，启动交互式管理向导。
 
 ## `hermes status`
 

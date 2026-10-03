@@ -2384,6 +2384,8 @@ DEFAULT_CONFIG = {
     # dormant and the in-process syntax check is the only tier.
     "lsp": {
         "enabled": True,  # False disables the whole subsystem: no servers, no event loop, no cost.
+        # native = TypeScript 7's own LSP in an isolated prefix; legacy preserves tsserver plugins.
+        "typescript_backend": "legacy",
         # document = wait up to wait_timeout seconds for the current file's diagnostics; full = also
         # request workspace-wide diagnostics (slower).
         "wait_mode": "document",
@@ -2413,7 +2415,8 @@ DEFAULT_CONFIG = {
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
         # Node package manager for the npm-recipe servers: npm | pnpm | yarn. Installs still land in
-        # <HERMES_HOME>/lsp/node_modules; a configured manager that is not installed, or an unknown
+        # <HERMES_HOME>/lsp/node_modules (native TypeScript has its own subdirectory); a configured
+        # manager that is not installed, or an unknown
         # value, skips the install (no silent fallback to npm) so a pnpm/yarn supply-chain policy is
         # never bypassed.
         "package_manager": "npm",

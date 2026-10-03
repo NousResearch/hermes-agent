@@ -306,6 +306,19 @@ def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     return _make_spec(root, ctx, "typescript", [bin_path, "--stdio"], base, seed=True)
 
 
+def _spawn_typescript_native(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """TypeScript 7 speaks LSP directly; a PATH ``tsc`` could still be the legacy compiler."""
+    override = ctx.binary_overrides.get("typescript-native")
+    if override:
+        binary = _which(os.path.expanduser(override[0]))
+        command = [binary, *override[1:]] if binary else None
+    else:
+        from agent.lsp.install import try_install
+        binary = try_install("typescript-native", ctx.install_strategy)
+        command = [binary, "--lsp", "--stdio"] if binary else None
+    return _make_spec(root, ctx, "typescript-native", command) if command else None
+
+
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
     """Locate the PowerShellEditorServices bundle dir (release zip, manual install).  Resolution order:
     ``lsp.servers.powershell.command[0]`` when a directory, ``init_overrides["powershell"]["bundlePath"]``,
@@ -418,6 +431,10 @@ SERVERS: List[ServerDef] = [
     _server("typescript", (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"),
             "JavaScript/TypeScript — typescript-language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_typescript, seed=True),
+    # Selected explicitly by LSPService; the preceding legacy entry remains the default.
+    _server("typescript-native", (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"),
+            "JavaScript/TypeScript — TypeScript 7 native (opt-in)", resolve_root=_root_typescript,
+            build_spawn=_spawn_typescript_native),
     _server("vue-language-server", (".vue",), "Vue.js — @vue/language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_vue),
     _server("svelte-language-server", (".svelte",), "Svelte — svelte-language-server", resolve_root=_root_typescript,

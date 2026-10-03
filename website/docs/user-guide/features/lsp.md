@@ -219,6 +219,45 @@ one-time `vue-language-server: ... 3.x` warning; delete
 then run `hermes lsp install vue-language-server` (the recipe co-installs the
 TypeScript SDK).
 
+### TypeScript 7 native language server
+
+TypeScript 7 includes a native LSP server, launched as `tsc --lsp --stdio`.
+It is separate from `typescript-language-server` and cannot serve as that
+server's JavaScript SDK. To select it for JavaScript/TypeScript files:
+
+```yaml
+lsp:
+  typescript_backend: native   # default: legacy (typescript-language-server)
+```
+
+Run `hermes lsp install typescript-native` to provision the stable `typescript@7`
+line, or let auto-install provision it on the first edit. Its packages live in
+`<HERMES_HOME>/lsp/typescript-native`, separately from Vue and the legacy
+TypeScript 6 SDK. `hermes lsp which typescript-native` prints this installation's
+launcher; Hermes never assumes an arbitrary `tsc` on PATH supports native LSP.
+`install` reuses an existing compatible installation. For subsequent 7.x updates,
+stop its LSP clients and update `typescript@7` in that same isolated prefix using
+your configured package manager (`npm install --prefix <HERMES_HOME>/lsp/typescript-native typescript@7`,
+`pnpm add --dir <HERMES_HOME>/lsp/typescript-native typescript@7`, or
+`yarn --cwd <HERMES_HOME>/lsp/typescript-native add typescript@7`). Put any
+prefix-local package-manager policy files in that isolated directory as well.
+Per-server `command`, `env`, `initialization_options` and `disabled` overrides
+use the `typescript-native` key. An explicit command must include the LSP flags,
+for example `["/path/to/tsc", "--lsp", "--stdio"]`.
+
+Native TypeScript requires workspace trust (the usual current-directory trust
+or `lsp.trusted_workspaces`) and respects the same project-root and Deno exclusions.
+Custom servers still take precedence. Vue/Svelte/Astro keep their own servers.
+For projects requiring legacy TypeScript language-service plugins, unsupported
+native platforms or a failed native install, set `typescript_backend: legacy`
+and run `hermes lsp install typescript`. Restart the LSP service / start a new
+Hermes session after changing configuration. If the selected native server cannot
+start, post-write checks retain the existing syntax-checker fallback; Hermes does
+not silently substitute a different semantic server.
+
+See Microsoft's [TypeScript repository](https://github.com/microsoft/TypeScript)
+for native language-server and platform support.
+
 ## CLI
 
 ```
@@ -306,6 +345,9 @@ lsp:
   # log — install it once with npm, or relax block-exotic-subdeps in
   # <HERMES_HOME>/lsp/.npmrc if your policy allows it.
   package_manager: npm
+
+  # legacy = typescript-language-server + JS SDK; native = TypeScript 7's own LSP.
+  typescript_backend: legacy
 
   # How long an unused language-server client stays alive (seconds).
   # Idle servers are shut down automatically and respawned on the next

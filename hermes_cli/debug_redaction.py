@@ -7,6 +7,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import unquote_plus
 
+from agent.redact import (
+    _SENSITIVE_QUERY_PARAMS,
+    SECRET_HEADER_NAME_LIST,
+    is_secret_field_name,
+)
+
 _REDACTED = "[REDACTED]"
 _EMAIL_ADDRESS_RE = re.compile(
     r"(?<![A-Za-z0-9._%+-])"
@@ -14,34 +20,12 @@ _EMAIL_ADDRESS_RE = re.compile(
     r"(?![A-Za-z0-9._%+-])"
 )
 
-# Support uploads are a strict opt-in surface. Compact names cover snake_case,
-# kebab-case and camelCase without widening ordinary tool-output redaction.
+# Support uploads are a strict opt-in surface: agent.redact's query-param names
+# plus a few support-only extras, compared by compact name so snake_case,
+# kebab-case and camelCase match without widening ordinary tool-output redaction.
 _SENSITIVE_URL_PARAM_NAMES = frozenset(
-    {
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "authtoken",
-        "token",
-        "apikey",
-        "clientsecret",
-        "password",
-        "auth",
-        "jwt",
-        "session",
-        "secret",
-        "key",
-        "code",
-        "signature",
-        "xamzsignature",
-        "xgoogsignature",
-        "sig",
-        "privatekey",
-        "secretkey",
-        "xamzsecuritytoken",
-        "securitytoken",
-    }
-)
+    "".join(ch for ch in name if ch.isalnum()) for name in _SENSITIVE_QUERY_PARAMS
+) | {"authtoken", "privatekey", "secretkey", "xamzsecuritytoken", "securitytoken"}
 _RAW_URL_PARAM_RE = re.compile(
     r"(?P<sep>[?#&;])(?P<key>[A-Za-z0-9_.~+%\-]+)="
     r"(?P<value>[^?#&;\s\"'<>]*)"
@@ -60,13 +44,7 @@ _SENSITIVE_HEADER_NAMES = (
     "proxy-authorization",
     "cookie",
     "set-cookie",
-    "x-api-key",
-    "x-goog-api-key",
-    "api-key",
-    "apikey",
-    "x-api-token",
-    "x-auth-token",
-    "x-access-token",
+    *SECRET_HEADER_NAME_LIST,
 )
 _SENSITIVE_HEADER_COMPACT_NAMES = frozenset(
     "".join(ch for ch in name.casefold() if ch.isalnum())
@@ -289,12 +267,7 @@ def _is_secret_field(key: object, *, parent: str) -> bool:
         return compact in _SENSITIVE_HEADER_COMPACT_NAMES
     if parent == "env":
         return any(part in compact for part in _SECRET_ENV_PARTS)
-    try:
-        from agent.redact import is_secret_field_name
-
-        return is_secret_field_name(key)
-    except Exception:
-        return True
+    return is_secret_field_name(key)
 
 
 def _redact_sequence(value: Sequence[Any]) -> list[Any]:

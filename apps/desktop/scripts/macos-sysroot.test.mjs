@@ -8,7 +8,7 @@ vi.mock('node:child_process', () => ({
 }))
 
 const { execFileSync } = await import('node:child_process')
-const { macosSysroot, xcrunClangArgv } = await import('./macos-sysroot.mjs')
+const { assertUniversalMacosSdk, macosSysroot, xcrunClangArgv } = await import('./macos-sysroot.mjs')
 
 const exec = vi.mocked(execFileSync)
 const opts = env => ({ encoding: 'utf8', env, stdio: 'pipe' })
@@ -106,4 +106,26 @@ it('hands SDK selection back to xcrun when xcode-select fails or answers nothing
   exec.mockReturnValue('\n')
   expect(macosSysroot(env)).toBeNull()
   expect(warn).not.toHaveBeenCalled()
+})
+
+it('rejects only SDKs known to predate universal macOS support, with recovery instructions', () => {
+  const sdk = sdkDir(CLT_SDK)
+  for (const selected of [sdk, null]) {
+    for (const version of ['10.14', '10.15.6']) {
+      exec.mockReturnValue(`${version}\n`)
+      expect(() => assertUniversalMacosSdk(selected, env)).toThrow(`macOS SDK ${version}`)
+      expect(() => assertUniversalMacosSdk(selected, env)).toThrow(/requires macOS SDK 11 or newer/)
+      expect(() => assertUniversalMacosSdk(selected, env)).toThrow(/Command Line Tools/)
+      expect(() => assertUniversalMacosSdk(selected, env)).toThrow(/SDKROOT.*DEVELOPER_DIR/)
+      expect(() => assertUniversalMacosSdk(selected, env)).toThrow(/hermes update/)
+      expect(exec).toHaveBeenLastCalledWith('xcrun',
+        ['--sdk', selected ?? 'macosx', '--show-sdk-version'], opts(env))
+    }
+    for (const version of ['11.0', '15.4', '26.5', '', 'unavailable']) {
+      exec.mockReturnValue(version)
+      expect(() => assertUniversalMacosSdk(selected, env)).not.toThrow()
+    }
+    exec.mockImplementation(() => { throw new Error('SDK metadata unavailable') })
+    expect(() => assertUniversalMacosSdk(selected, env)).not.toThrow()
+  }
 })

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { expect, test } from 'vitest'
@@ -27,7 +27,8 @@ function olderInstalledSdk(defaultSdk) {
     const real = realpathSync(sdk)
     if (seen.has(real)) continue
     seen.add(real)
-    if (compareVersions(sdkVersion(sdk), current) < 0) return sdk
+    const version = sdkVersion(sdk)
+    if (version[0] >= 11 && compareVersions(version, current) < 0) return sdk
   }
   return null
 }
@@ -63,3 +64,31 @@ test.skipIf(process.platform !== 'darwin')('builds both universal helpers under 
     rmSync(dir, { recursive: true, force: true })
   }
 }, 180_000)
+
+test.skipIf(process.platform !== 'darwin')('both helpers explain an installed pre-universal SDK before compiling', context => {
+  const sdk = macosSysroot(env) ?? xcrun(['--sdk', 'macosx', '--show-sdk-path'])
+  const legacy = readdirSync(dirname(sdk))
+    .filter(name => /^MacOSX.*\.sdk$/.test(name))
+    .sort().reverse()
+    .map(name => resolve(dirname(sdk), name))
+    .find(candidate => sdkVersion(candidate)[0] < 11)
+  if (!legacy) return context.skip()
+  const dir = mkdtempSync(resolve(tmpdir(), 'hermes-old-sdk-'))
+  try {
+    for (const [script, relativeBinary] of helpers) {
+      const dist = resolve(dir, script)
+      const build = spawnSync(process.execPath, [resolve(import.meta.dirname, script), '--out-dir', dist], {
+        encoding: 'utf8', env: { ...env, SDKROOT: legacy }, timeout: 60_000
+      })
+      expect(build.status).not.toBe(0)
+      expect(build.stderr).toContain(`macOS SDK ${sdkVersion(legacy).join('.')}`)
+      expect(build.stderr).toContain('requires macOS SDK 11 or newer')
+      expect(build.stderr).toContain('Command Line Tools')
+      expect(build.stderr).toContain('hermes update')
+      expect(build.stderr).not.toContain('error: architecture not supported')
+      expect(existsSync(resolve(dist, relativeBinary))).toBe(false)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}, 120_000)

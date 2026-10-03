@@ -1445,6 +1445,66 @@ class TestAgentBedrockStreamRecovery:
         # Not a stale connection — client stays cached.
         assert _bedrock_runtime_client_cache.get("us-east-1") is client
 
+    @pytest.mark.parametrize("stream", [True, False])
+    @pytest.mark.parametrize("retry_fails", [False, True])
+    def test_redacted_reasoning_recovery_on_agent_call_path(self, stream, retry_fails):
+        from copy import deepcopy
+        from agent.chat_completion_helpers import _bedrock_converse_call
+
+        kwargs = deepcopy(self._KW)
+        kept_blocks = [
+            {"reasoningContent": {"reasoningText": {"text": "thinking", "signature": "sig"}}},
+            {"text": "answer"},
+            {"toolUse": {"toolUseId": "t1", "name": "read_file", "input": {}}},
+        ]
+        kwargs["messages"].append({"role": "assistant", "content": [
+            {"reasoningContent": {"redactedContent": b"sealed"}}, *deepcopy(kept_blocks),
+        ]})
+        original_messages = deepcopy(kwargs["messages"])
+        client = MagicMock()
+        method = client.converse_stream if stream else client.converse
+        events = [{"messageStart": {"role": "assistant"}},
+                  {"messageStop": {"stopReason": "end_turn"}}]
+        second_error = RuntimeError(CROSS_REGION_REJECTION)
+        method.side_effect = [RuntimeError(CROSS_REGION_REJECTION),
+                              second_error if retry_fails else (
+                                  {"stream": events} if stream else _ok_converse_response())]
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            if retry_fails:
+                with pytest.raises(RuntimeError) as error:
+                    _bedrock_converse_call(kwargs, stream=stream)
+                assert error.value is second_error
+            else:
+                result = _bedrock_converse_call(kwargs, stream=stream)
+                if stream:
+                    assert result is events
+                else:
+                    assert result.choices[0].message.content == "done"
+        assert method.call_count == 2
+        first, second = [call.kwargs for call in method.call_args_list]
+        assert first["messages"] == original_messages
+        assert second["messages"][1]["content"] == kept_blocks
+        assert second["messages"][0] == original_messages[0]
+        assert second["modelId"] == first["modelId"]
+        assert "__bedrock_region__" not in first
+        assert "__bedrock_region__" not in second
+        assert kwargs["messages"] == original_messages
+        (client.converse if stream else client.converse_stream).assert_not_called()
+
+    def test_unrelated_validation_error_is_not_retried_on_agent_stream_path(self):
+        from copy import deepcopy
+        from agent.chat_completion_helpers import _bedrock_converse_call
+
+        client = MagicMock()
+        error = RuntimeError("ValidationException: invalid model identifier")
+        client.converse_stream.side_effect = error
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            with pytest.raises(RuntimeError) as caught:
+                _bedrock_converse_call(deepcopy(self._KW), stream=True)
+        assert caught.value is error
+        client.converse_stream.assert_called_once()
+        client.converse.assert_not_called()
+
     def test_stale_connection_evicts_client_on_agent_stream_path(self):
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache

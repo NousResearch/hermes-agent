@@ -1434,7 +1434,17 @@ def _detect_linux_password_store() -> str | None:
 _A11Y_OFF_WORDS = frozenset(("0", "false", "no", "off", "disabled"))
 
 
-def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
+def _desktop_launch_options() -> tuple[list[str], str, str, str]:
+    """Keep the four-option contract consumed by external desktop launchers.
+
+    Additional launcher settings belong in the internal reader, not this tuple:
+    existing wrappers (including Omarchy's) unpack exactly four values.
+    """
+    flags, gpu, store, ozone, _renderer_a11y = _read_desktop_launch_options()
+    return flags, gpu, store, ozone
+
+
+def _read_desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
     """``desktop.*`` launch options: ``(electron_flags, disable_gpu "auto"/"1"/"0", password_store,
     ozone_hint "auto"/"x11"/"wayland", renderer_accessibility bool)``; unknown values and config
     errors yield "auto"/[]/True so a malformed config never blocks the launch."""
@@ -1668,7 +1678,7 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     env["HERMES_DESKTOP_CWD"] = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
 
     config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint, config_renderer_a11y = (
-        _desktop_launch_options())
+        _read_desktop_launch_options())
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
     if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:

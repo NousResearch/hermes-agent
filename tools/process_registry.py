@@ -306,36 +306,6 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
-# Set by the dashboard / ``serve`` web backend when it starts (``web_server.start_server``).
-# Process-local on purpose: an environment marker would be inherited by every terminal
-# child and CLI the backend spawns, which must not count as the backend itself.
-_backend_host = False
-
-
-def mark_backend_host() -> None:
-    """Mark this process as a long-lived dashboard / ``serve`` backend."""
-    global _backend_host
-    _backend_host = True
-
-
-def _is_supervised_backend_host() -> bool:
-    """Whether this process is a dashboard / ``serve`` backend run by a service manager.
-
-    Like the supervised gateway, it hosts agent turns for remote clients with nobody at a
-    terminal, so its background processes need their own scope: an OOM must not take the
-    backend down, and a kill must reach descendants that ``setsid()`` away from the PTY or
-    process group (stopping the scope reaps the whole cgroup)."""
-    if not _backend_host:
-        return False
-    try:
-        from gateway.restart import is_supervised_gateway_launch
-
-        return is_supervised_gateway_launch()
-    except Exception as exc:
-        logger.debug("Could not verify supervised backend launch: %s", exc)
-        return False
-
-
 def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
     memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
@@ -1304,9 +1274,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
         gateway and its messaging control plane)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
-        # This applies to both pipe mode and the PTY path above. See #70716. A supervised
-        # dashboard / serve backend gets the same isolation (#132358).
-        in_supervised_gateway = _IS_LINUX and (_is_supervised_gateway_process() or _is_supervised_backend_host())
+        # This applies to both pipe mode and the PTY path above. See #70716.
+        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         if in_supervised_gateway and _systemd_run_user_scope_available():
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
             return _build_systemd_scope_argv(argv, unit_suffix=unit_suffix)

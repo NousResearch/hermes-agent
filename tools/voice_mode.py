@@ -971,6 +971,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 
 # ── Audio playback (interruptable) ──
 _active_playback: Optional[subprocess.Popen] = None  # so stop_playback can interrupt it
+_stop_requests = 0  # bumped by stop_playback so a playback in progress stops trying players
 _playback_lock = threading.Lock()
 
 
@@ -982,10 +983,11 @@ def _set_active_playback(proc) -> None:
 
 def stop_playback() -> None:
     """Interrupt the currently playing audio (if any)."""
-    global _active_playback
+    global _active_playback, _stop_requests
     with _playback_lock:
         proc = _active_playback
         _active_playback = None
+        _stop_requests += 1
     if proc and proc.poll() is None:
         with suppress(Exception):
             proc.terminate()
@@ -1003,8 +1005,8 @@ def _wsl_powershell_tts_available() -> bool:
 
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
-    else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
-    Interruptible via ``stop_playback()``."""
+    else system players: afplay (macOS, Ogg/Opus decoded to WAV first), WSL2 PowerShell
+    bridge, ffplay, aplay (Linux). Interruptible via ``stop_playback()``."""
     mark_audio_output_active(True)  # ref-count real speaker output for the whole call
     try:
         return _play_audio_file_impl(file_path)
@@ -1115,14 +1117,52 @@ def _run_system_player(cmd: List[str]) -> bool:
     return False
 
 
-def _play_audio_file_impl(file_path: str) -> bool:
+# afplay stops ~2 s into an Ogg/Opus file and still exits 0, so the player loop never falls
+# through to ffplay (#122494). afconvert reads the same file to the end.
+_OGG_SUFFIXES = (".ogg", ".oga", ".opus")
+
+
+def _decode_ogg_for_afplay(file_path: str) -> Optional[str]:
+    """Temp WAV of an Ogg/Opus file, decoded by afconvert on macOS. None on other hosts, for
+    other containers, or when afconvert fails (CoreAudio before macOS 15 has no Ogg reader;
+    afplay rejects the file there too and the player loop moves on to ffplay)."""
+    if platform.system() != "Darwin" or not file_path.lower().endswith(_OGG_SUFFIXES):
+        return None
+    from tools.environments.local import hermes_subprocess_env
+    os.makedirs(_TEMP_DIR, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix="playback_", suffix=".wav", dir=_TEMP_DIR, delete=False) as tmp:
+        wav_path = tmp.name
+    try:
+        subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16", file_path, wav_path],
+                       check=True, timeout=60, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, env=hermes_subprocess_env(inherit_credentials=False))
+        return wav_path
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("afconvert could not decode %s: %s", file_path, e)
+        _unlink_quietly(wav_path)
+        return None
+
+
+def _play_audio_file_impl(file_path: str, stops: Optional[int] = None) -> bool:
+    if stops is None:
+        stops = _stop_requests
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
-    # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
+    wav_path = _decode_ogg_for_afplay(file_path)
+    if wav_path:
+        try:
+            return _play_audio_file_impl(wav_path, stops)
+        finally:
+            _unlink_quietly(wav_path)
+    # macOS skips sounddevice output (TCC media-library prompt) and plays through afplay.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
     for cmd in _system_player_candidates(file_path):
+        # A player killed by stop_playback() exits non-zero; the next one would restart the
+        # reply from the top. This also catches a stop that landed during the Ogg decode.
+        if _stop_requests != stops:
+            return False
         if shutil.which(cmd[0]) and _run_system_player(cmd):
             return True
     logger.warning("No audio player available for %s", file_path)

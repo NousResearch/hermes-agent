@@ -21,6 +21,8 @@ Hermes Agent generates images from text prompts via FAL.ai. Eleven models are su
 | `fal-ai/gpt-image-2` | ~20s | SOTA text rendering + CJK, world-aware photorealism | $0.04–0.06/image |
 | `fal-ai/ideogram/v3` | ~5s | Best typography | $0.03–0.09/image |
 | `fal-ai/recraft/v4/pro/text-to-image` | ~8s | Design, brand systems, production-ready | $0.25/image |
+| `fal-ai/recraft/v4.1/flash/text-to-image` | ~2s | Recraft design quality at draft speed | $0.007/image |
+| `bytedance/seedream/v5/flash/text-to-image` | ~3s | Fast Seedream 5.0 tier with image editing (up to 10 refs) | $0.027/image |
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
 | `fal-ai/krea/v2/medium/text-to-image` | ~15-25s | Illustration, anime, painting, expressive/artistic styles | $0.030–0.035/image |
 | `fal-ai/krea/v2/large/text-to-image` | ~25-60s | Photorealism, raw textured looks (motion blur, grain, film) | $0.060–0.065/image |

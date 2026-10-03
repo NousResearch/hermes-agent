@@ -22,6 +22,7 @@ the target holds at least as many messages). The reverse order would lose the ro
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_state_common import _id_chunks, _placeholders as _session_ids_placeholders
@@ -222,8 +223,9 @@ class SessionProfileRepairMixin:
                 suffix = f" ({session_id[-12:]})"
                 session["title"] = title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix
             session["system_prompt_hash"] = self._store_system_prompt(conn, payload.get("system_prompt"))
-            if payload.get("tool_pin") is not None or len(session.get("tool_names") or "") == 64:
+            if payload.get("tool_pin") is not None or re.fullmatch(r"[0-9a-f]{64}", session.get("tool_names") or ""):
                 # A pin hash means nothing in this store: re-store the pin, or drop an unresolvable ref.
+                # A legacy inline JSON name list (any length) is copied as is.
                 session["tool_names"] = self._store_system_prompt(conn, payload.get("tool_pin"))
             self._insert_row(conn, "sessions", session, skip=frozenset())
             for message in payload.get("messages") or []:

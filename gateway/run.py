@@ -5827,6 +5827,17 @@ async def _start_gateway_shutdown_tail(
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False) -> bool:
+    """Run the gateway without ever turning an inherited daemon TTY into an install prompt."""
+    from pm.extras import suppress_interactive_install_prompts
+
+    with suppress_interactive_install_prompts():
+        return await _start_gateway_runtime(
+            config=config, replace=replace, verbosity=verbosity, force=force
+        )
+
+
+async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace: bool = False,
+                                 verbosity: Optional[int] = 0, force: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all."""

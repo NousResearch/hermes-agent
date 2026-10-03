@@ -178,6 +178,36 @@ def _evaluate_in_runtime(marker: str, environment: dict[str, str]) -> bool:
     return result.stdout.strip() == "1"
 
 
+_INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS = 0
+
+
+def interactive_install_prompts_suppressed() -> bool:
+    """Whether this process is inside a non-interactive lazy-install scope."""
+    return _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS > 0
+
+
+def suppress_interactive_install_prompts():
+    """Process-wide scope that prevents lazy installs from reading stdin.
+
+    Gateway/dashboard runtimes may inherit a TTY from tmux or another supervisor,
+    but there is no operator waiting at stdin while adapters start. The counter is
+    process-wide (not a ContextVar) so worker threads obey the same daemon policy;
+    nesting remains safe and the interactive default is restored on exit.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        global _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS
+        _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS += 1
+        try:
+            yield
+        finally:
+            _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS -= 1
+
+    return _scope()
+
+
 def install_hint(extra: str) -> str:
     """The one command users are told to run for a missing extra."""
     return f"hermes pm install --extra {extra}"
@@ -207,6 +237,11 @@ def ensure_import(extra: str) -> None:
         from prompt_toolkit.application.current import get_app_or_none
 
         app_running = bool(getattr(get_app_or_none(), "is_running", False))
+    # A daemon suppression scope means stdin is not an interaction surface even
+    # when a supervisor/tmux left it attached to a TTY. Fold that into the
+    # existing prompt-unavailable gate so policy checks can remain orthogonal.
+    if interactive_install_prompts_suppressed():
+        app_running = True
     if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
         try:
             answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"

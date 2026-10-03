@@ -109,6 +109,23 @@ class TestUnifiedDashboardRouting:
         assert execs == []
 
 
+def test_dashboard_scopes_lazy_install_prompts(main_mod, monkeypatch):
+    from pm import extras
+
+    seen = []
+
+    def runtime(args):
+        seen.append(extras.interactive_install_prompts_suppressed())
+        return "done"
+
+    monkeypatch.setattr(main_mod, "_cmd_dashboard_runtime", runtime)
+
+    assert extras.interactive_install_prompts_suppressed() is False
+    assert main_mod.cmd_dashboard(_args()) == "done"
+    assert seen == [True]
+    assert extras.interactive_install_prompts_suppressed() is False
+
+
 class TestInteractiveDashboardAuthSetup:
 
     def test_loopback_proxy_public_url_offers_auth_setup(

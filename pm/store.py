@@ -199,16 +199,44 @@ def _tar_filter(member, dest: str):
 
     if member.issym():
         if os.path.isabs(member.linkname):
-            raise tarfile.AbsoluteLinkError(member)
+            raise tarfile.TarError(f"refusing absolute symlink target: {member.name!r}")
         name = member.name.rstrip("/")
         placed = os.path.realpath(os.path.join(dest, name))
         link_dir = os.path.dirname(name)
         target = os.path.realpath(os.path.join(dest, link_dir, member.linkname))
         for path in (placed, target):
             if os.path.commonpath([path, dest]) != dest:
-                raise tarfile.LinkOutsideDestinationError(member, path)
-        return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
-    return tarfile.data_filter(member, dest)
+                raise tarfile.TarError(f"refusing symlink escape: {member.name!r}")
+        _sanitize_member_ownership(member)
+        return member
+    if hasattr(tarfile, "data_filter"):
+        return tarfile.data_filter(member, dest)
+    # Python < 3.11.4: no data_filter — apply the same containment policy manually.
+    if member.name.startswith("/") or ".." in member.name.split("/"):
+        raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+    if member.isdev():
+        raise tarfile.TarError(f"refusing device node: {member.name!r}")
+    _sanitize_member_ownership(member)
+    return member
+
+
+def _sanitize_member_ownership(member) -> None:
+    """Strip archived ownership/privilege bits (what data_filter does). Mutates in place for old Pythons."""
+    try:
+        member.uid = os.getuid()
+        member.gid = os.getgid()
+    except Exception:
+        pass
+    try:
+        member.uname = ""
+        member.gname = ""
+    except Exception:
+        pass
+    try:
+        if member.mode is not None:
+            member.mode = member.mode & 0o0777
+    except Exception:
+        pass
 
 def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
@@ -221,7 +249,13 @@ def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        try:
+            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        except TypeError:
+            # Python < 3.12 has no filter kwarg: validate with the same policy, then extract unfiltered.
+            for member in tf.getmembers():
+                _tar_filter(member, real_dest)
+            tf.extractall(dest)
 
 
 def extract(archive: Path, dest: Path) -> None:

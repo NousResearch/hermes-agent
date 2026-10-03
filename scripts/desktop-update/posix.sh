@@ -265,6 +265,28 @@ marker_release() { # compare-and-delete; never drops a marker whose delegate is 
   MARKER_CLAIMED=0
 }
 
+marker_add_delegate() { # pid -> line 4 `delegate:<pid> ct:<ct>` under our claim (C1 rule 6)
+  # Written the moment the update child exists: killed in the second before
+  # that child takes the update lock, this script would otherwise leave a
+  # marker that reads DEAD while the update goes on. Compare-and-swap on our
+  # own lines 1-3; a marker with no ct line (v1) gets no delegate.
+  local pid="$1" ct seen tmp="$MARKER.$$.tmp"
+  [ "$MARKER_CLAIMED" -eq 1 ] || return 0
+  case "$MARKER_BODY" in *$'\n'ct:*) ;; *) return 0 ;; esac
+  ct="$(proc_ct "$pid")"
+  [ -n "$ct" ] || { log "WARNING: no creation time for update pid $pid; marker names no delegate"; return 0; }
+  seen="$(cat "$MARKER" 2>/dev/null)" || return 0
+  case "$seen"$'\n' in "$MARKER_BODY"*) ;; *) log "update marker is no longer ours; no delegate written"; return 0 ;; esac
+  marker_parse "$seen"
+  if [ -n "$M_DPID" ] && [ "$M_DPID" != "$pid" ] && marker_ident_live "$M_DPID" "$M_DCT"; then return 0; fi
+  printf '%sdelegate:%s ct:%s\n' "$MARKER_BODY" "$pid" "$ct" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  if [ "$(cat "$MARKER" 2>/dev/null)" = "$seen" ] && mv -f "$tmp" "$MARKER" 2>/dev/null; then
+    log "update marker names update pid $pid (ct $ct) as its delegate"
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+}
+
 run_bounded() { # seconds cmd... -> cmd's stdout; 124 when it had to be killed
   local secs="$1" out pid i rc
   shift
@@ -1151,11 +1173,24 @@ fi
 run_update() { # streams straight into the log (a killed run keeps its output);
   # OUT = this run's slice of the log. TERM goes back to default for the child
   # so neither it nor anything it starts (gateways) inherits our SIG_IGN.
-  local offset
+  # The child runs asynchronously only so its pid can go into the marker
+  # (marker_add_delegate) before it does anything; a HUP/INT/QUIT that lands
+  # meanwhile is handled once it exits, exactly like a foreground child.
+  local offset pid sig
   offset="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
-  ( trap - TERM; exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1
-  CODE=$?
+  PENDING_SIGNAL=""
+  for sig in HUP INT QUIT; do trap "PENDING_SIGNAL=\${PENDING_SIGNAL:-$sig}" "$sig"; done
+  ( trap - TERM; exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1 <&0 &
+  pid=$!
+  marker_add_delegate "$pid"
+  while :; do
+    wait "$pid"; CODE=$?
+    [ "$CODE" -ne 127 ] || break          # not our child any more
+    kill -0 "$pid" 2>/dev/null || break   # reaped: CODE is its exit status
+  done
+  for sig in HUP INT QUIT; do trap "on_signal $sig" "$sig"; done
   OUT="$(tail -c +"$(( ${offset:-0} + 1 ))" "$LOG" 2>/dev/null)"
+  [ -z "$PENDING_SIGNAL" ] || on_signal "$PENDING_SIGNAL"
 }
 
 log "running: ${UPDATE_INVOKE[*]} update --yes $GATEWAY_FLAG $KEEP_STASH ${TARGET_ARGS[*]}"

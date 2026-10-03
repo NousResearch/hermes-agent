@@ -28,6 +28,11 @@ with open(os.environ['HANDOFF_CAPTURE'], 'a', encoding='utf-8') as f:
     f.write(' '.join(sys.argv[1:]) + '\\n')
 if sys.argv[1:2] == ['desktop']:
     sys.exit(1)
+hold = os.environ.get('HANDOFF_HOLD')
+if hold:  # an update still running: report the pid, then wait to be released
+    Path(hold + '.pid').write_text(str(os.getpid()), encoding='utf-8')
+    while not Path(hold).exists():
+        __import__('time').sleep(0.05)
 print(os.environ.get('HANDOFF_OUTPUT', ''))
 sys.exit(int(os.environ.get('HANDOFF_EXIT', '0')))
 """
@@ -226,3 +231,63 @@ def test_interrupted_app_swap_is_rolled_back_at_the_next_run(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (app / "Contents" / "Info.plist").read_text(encoding="utf-8-sig") == "previous"
     assert not previous.exists() and not app.with_name("Hermes.app.new").exists()
+
+
+def _ancestry(pid: int) -> list[int]:
+    chain = []
+    while pid > 1:
+        chain.append(pid)
+        pid = int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(") ", 1)[1].split()[1])
+    return chain
+
+
+def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_path):
+    """C1 rule 6, written by the script itself: posix.sh dies (SIGKILL) while its `hermes update`
+    child is only starting up and has not taken the update lock. The marker must still read LIVE
+    through the child named on line 4, and turn dead once that child is gone."""
+    home, install = _install(tmp_path)
+    hold = tmp_path / "release-update"
+    marker = home / ".hermes-update-in-progress"
+    env = {**os.environ, "HOME": str(tmp_path), "TMPDIR": str(tmp_path), "HERMES_HOME": str(home),
+           "HANDOFF_CAPTURE": str(tmp_path / "calls.txt"), "HERMES_RUNTIME_DIR": str(tmp_path / "store"),
+           "HERMES_UPDATE_SHIM_GRACE_SECONDS": "0", "HANDOFF_HOLD": str(hold)}
+    for key in ("PYTHONPATH", "PYTHONHOME", "HERMES_UPDATE_STARTED_AT"):
+        env.pop(key, None)
+    script = subprocess.Popen(["bash", str(POSIX), "--daemonized", "--no-ui", "--install-root", str(install)],
+                              env=env, cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              start_new_session=True)
+    child_pid_file = Path(str(hold) + ".pid")
+    try:
+        deadline = time.monotonic() + 60
+        while not child_pid_file.exists():
+            assert time.monotonic() < deadline and script.poll() is None, "update child never started"
+            time.sleep(0.01)
+        # Kill the script the moment the delegate line is there (at most 3 s after the spawn).
+        settle = time.monotonic() + 3
+        while time.monotonic() < settle and len(marker.read_text(encoding="utf-8-sig").splitlines()) < 4:
+            time.sleep(0.005)
+        script.kill()
+        script.wait(timeout=10)
+        child = int(child_pid_file.read_text(encoding="utf-8-sig"))
+        lines = marker.read_text(encoding="utf-8-sig").splitlines()
+        assert lines[0] == str(script.pid)
+        assert len(lines) == 4 and lines[3].startswith("delegate:"), lines
+        delegate = int(lines[3].split()[0].split(":")[1])
+        assert delegate in _ancestry(child)  # the update process (or its exec-ing launcher)
+        assert lines[3] == f"delegate:{delegate} ct:{_ct(delegate)}"
+
+        # A real reader (the script itself) sees an update in progress and refuses.
+        refused = _run(tmp_path, home, install, "--self-test-marker", "--no-marker-cleanup")
+        assert refused.returncode == 2, refused.stdout + refused.stderr
+
+        hold.touch()
+        deadline = time.monotonic() + 30
+        while Path(f"/proc/{delegate}").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        reclaimed = _run(tmp_path, home, install, "--self-test-marker", "--no-marker-cleanup")
+        assert reclaimed.returncode == 0, reclaimed.stdout + reclaimed.stderr
+    finally:
+        hold.touch()
+        if script.poll() is None:
+            script.kill()
+            script.wait()

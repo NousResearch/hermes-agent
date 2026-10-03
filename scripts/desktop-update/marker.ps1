@@ -264,7 +264,8 @@ function Remove-MarkerIfOwned {
 }
 
 function Add-MarkerDelegate([int[]]$Candidates) {
-    # The tree could not be quiesced: name a still-running member as the
+    # Name a running updater process (the `hermes update` child as soon as it
+    # starts, or a member of a tree that could not be quiesced) as the
     # marker's delegate so every reader keeps it LIVE exactly as long as that
     # process lives, instead of judging it dead with this script. A2 readers
     # ignore a delegate line without a creation time, so a member whose time
@@ -279,7 +280,7 @@ function Add-MarkerDelegate([int[]]$Candidates) {
         if (-not $probe.Alive -or $null -eq $probe.Ct) { continue }
         $line = "delegate:$candidate ct:$(Format-Ct $probe.Ct)"
         if (Set-MarkerIfUnchanged $seen ((Get-MarkerHead $script:MarkerBody) + "`n" + $line + "`n")) {
-            Write-HandoffLog "update marker now names surviving updater pid $candidate as its delegate"
+            Write-HandoffLog "update marker now names updater pid $candidate as its delegate"
         }
         return
     }

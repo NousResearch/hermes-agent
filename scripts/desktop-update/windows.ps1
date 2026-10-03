@@ -1232,6 +1232,11 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         if ($null -eq $savedPythonUnbuffered) { Remove-Item Env:PYTHONUNBUFFERED -ErrorAction SilentlyContinue } else { $env:PYTHONUNBUFFERED = $savedPythonUnbuffered }
     }
     $proc = $started.Process
+    # C1 rule 6: the update child is the marker's delegate from its first
+    # instant. Killed before that child takes the update lock (about a second
+    # of Python start-up), this script would otherwise leave a marker that
+    # reads DEAD while the update goes on.
+    if ($Tag -eq 'update') { Add-MarkerDelegate @($proc.Id) }
     $stdoutReader = $started.StandardOutput
     $stderrReader = $started.StandardError
     $job = $started.Job

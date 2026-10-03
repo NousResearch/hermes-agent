@@ -24434,7 +24434,7 @@
       },
       "ProfilesListResult": {
         "additionalProperties": false,
-        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself.",
+        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;\n``install_id`` (as on ``/api/status``) names the machine that answered.",
         "properties": {
           "profiles": {
             "items": {
@@ -24447,6 +24447,11 @@
             "default": true,
             "title": "Bot Mode Protocol",
             "type": "boolean"
+          },
+          "install_id": {
+            "default": "",
+            "title": "Install Id",
+            "type": "string"
           }
         },
         "title": "ProfilesListResult",

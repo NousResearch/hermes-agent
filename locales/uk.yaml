@@ -2355,6 +2355,7 @@ cli:
     removed: "Видалено елемент черги {index}: {preview}"
     item_not_found: "Елемент черги {index} не знайдено. Поточний розмір: {size}"
     usage_edit: "Використання: /queue edit <number> <new prompt>"
+    usage_remove: "Використання: /queue rm <number>"
     updated: "Оновлено елемент черги {index}: {preview}"
     usage_move: "Використання: /queue move <from> <to>"
     move_out_of_range: "Переміщення в черзі поза межами діапазону. Поточний розмір: {size}"

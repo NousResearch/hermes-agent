@@ -49,6 +49,13 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
                                  "bytedance/seedance-2.0/mini/text-to-video", "bytedance/seedance-2.0/mini/image-to-video", aspect_ratios=_SIX_ASPECTS,
                                  resolutions=("480p", "720p"), durations=(4, 15), audio=True),
+    # Lite (Sep 30 2026) shares the 1.5 schema byte for byte (int duration 1-15, 480p-1080p, aspect on t2v only, no seed) at
+    # roughly a fifth of the per-second price (720p $0.03/s vs $0.14/s). Lives one path segment under v1.5, so the truncated-stem
+    # rule keeps "xai/grok-imagine-video/v1.5" on the full-quality family.
+    "grok-imagine-1.5-lite": _family("Grok Imagine 1.5 Lite (via FAL)", "~20-60s", "cheap", "xAI budget tier. Same 1-15s audio-native clips as 1.5 at ~1/5 the price.",
+                                     "xai/grok-imagine-video/v1.5/lite/text-to-video", "xai/grok-imagine-video/v1.5/lite/image-to-video", duration_int=True,
+                                     image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),
+                                     resolutions=("480p", "720p", "1080p"), durations=(1, 15), audio_native=True),
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": _family("Veo 3.1", "~60-120s", "premium", "Google DeepMind. Cinematic, native audio, strong prompt adherence.", "fal-ai/veo3.1",
                       "fal-ai/veo3.1/image-to-video", aspect_ratios=("16:9", "9:16"), resolutions=("720p", "1080p", "4k"), durations=(4, 8), duration_enum=(4, 6, 8),

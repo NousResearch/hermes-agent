@@ -50,7 +50,12 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
-    "gemini": 32000,      # 32k-token context window; char cap is conservative
+    # Not the 32k-token context window: ``:generateContent`` is synchronous and returns the whole
+    # clip as base64 24kHz/16-bit/mono PCM (~64,000 B/s of audio encoded), so one request is bounded
+    # by ``TTS_RESPONSE_BODY_LIMIT_BYTES`` -- 16 MiB is ~262s of speech. Budgeting a deliberately slow
+    # 10 transcript chars per second of audio (a "[very slow]" audio tag can produce that), 2000
+    # stays inside it. The request ceiling itself is ``GEMINI_MAX_REQUEST_CHARS``.
+    "gemini": 2000,
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model

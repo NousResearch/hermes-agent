@@ -4314,8 +4314,9 @@ class BasePlatformAdapter(ABC):
         record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
-        tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
+        tags only, never bare local files), video → send_video unless ``[[as_document]]``, else
+        send_document. Every failure is reported. Each send feeds ``record_delivery`` so
+        media-only turns report SUCCESS."""
         from urllib.parse import quote as _quote
 
         def _as_image(path: str) -> bool:
@@ -4334,12 +4335,17 @@ class BasePlatformAdapter(ABC):
             ext = Path(path).suffix.lower()
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                 result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
-            elif ext in _VIDEO_EXTS:
+            elif ext in _VIDEO_EXTS and not force_document_attachments:
                 if media_tag:
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
                 result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
             else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                # [[as_document]] asks the adapter to keep the upload a file where the platform
+                # server could otherwise reclassify it; plain documents keep the default.
+                file_form_kwargs = (
+                    {"disable_content_type_detection": True} if force_document_attachments else {})
+                result = await self.send_document(
+                    chat_id=chat_id, file_path=path, metadata=metadata, **file_form_kwargs)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)

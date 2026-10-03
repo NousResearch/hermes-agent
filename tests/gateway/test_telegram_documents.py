@@ -382,6 +382,48 @@ class TestSendDocument:
         assert call_kwargs["caption"] == "Here's the report"
 
     @pytest.mark.asyncio
+    async def test_send_document_keeps_server_side_detection_by_default(self, connected_adapter, tmp_path):
+        """The default payload is unchanged: server-side content-type detection stays on, so
+        an ordinary document keeps its preview/thumbnail behaviour."""
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+        )
+
+        assert result.success is True
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert "disable_content_type_detection" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_document_disables_server_side_content_type_detection_when_requested(self, connected_adapter, tmp_path):
+        """A self-hosted Bot API server reclassifies an uploaded mp4 document as a video
+        message unless content-type detection is disabled — an explicit file-form send
+        ([[as_document]]) passes the flag so the upload arrives as a file."""
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 102
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            disable_content_type_detection=True,
+        )
+
+        assert result.success is True
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert call_kwargs["disable_content_type_detection"] is True
+
+    @pytest.mark.asyncio
     async def test_send_document_custom_filename(self, connected_adapter, tmp_path):
         """The file_name parameter overrides the basename for display."""
         test_file = tmp_path / "doc_abc123_ugly.csv"

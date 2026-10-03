@@ -54,6 +54,41 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
     save_config(config)
 
 
+def clear_disabled_skill(skill_name: str) -> bool:
+    """Remove a departed/reinstalled skill from global and per-platform disabled lists.
+
+    Hub uninstall must not leave a tombstone that silently disables a later install with the
+    same name. Running this on install as well repairs residue written by older releases or
+    left behind after an out-of-band directory removal. Returns whether config was persisted.
+    """
+    if not skill_name:
+        return False
+    config = load_config()
+    skills_cfg = config.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return False
+
+    changed = False
+    disabled = _normalize_skill_names(skills_cfg.get("disabled"))
+    if skill_name in disabled:
+        disabled.remove(skill_name)
+        skills_cfg["disabled"] = sorted(disabled)
+        changed = True
+
+    platform_disabled = skills_cfg.get("platform_disabled")
+    if isinstance(platform_disabled, dict):
+        for platform, values in platform_disabled.items():
+            names = _normalize_skill_names(values)
+            if skill_name in names:
+                names.remove(skill_name)
+                platform_disabled[platform] = sorted(names)
+                changed = True
+
+    if changed:
+        save_config(config)
+    return changed
+
+
 def _list_all_skills() -> List[dict]:
     """Return all installed skills (ignoring disabled state)."""
     try:

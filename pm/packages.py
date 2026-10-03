@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1143,6 +1144,9 @@ def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
 _release_digest_cache: dict[tuple, dict] = {}
 
 
+_cuda_infix_cache: dict[tuple[str, str], str] = {}
+
+
 @register
 class LlamaCppCuda(LlamaCpp):
     """Windows only: upstream publishes no prebuilt Linux CUDA archive at
@@ -1150,17 +1154,69 @@ class LlamaCppCuda(LlamaCpp):
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
+    # Upstream renames the CUDA line between tags (b10964 built 13.3-x64;
+    # b11370 moved to 13.4-x64), so the infix is read from the release's own
+    # asset list rather than hardcoded -- a stale line here 404s the whole
+    # pin step. These defaults are the offline fallback and track the newest
+    # upstream line.
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
+
+    def _cuda_infix(self, version: str, target: str) -> str:
+        """The `win-cuda-<line>-<arch>` infix upstream built for this tag.
+
+        Upstream renames the CUDA line between tags (b10964 built 13.3-x64;
+        b11370 moved to 13.4-x64), so a hardcoded infix 404s the whole pin
+        step as soon as upstream moves. Resolution order: the lock's own pin
+        (authoritative for an already-locked version, and the offline path
+        tests take), then the release's asset list, then the static default.
+        """
+        default = self.assets[target]
+        arch = default.rsplit("-", 1)[-1]
+        key = (version, arch)
+        if key not in _cuda_infix_cache:
+            _cuda_infix_cache[key] = (
+                self._locked_infix(version, target)
+                or self._release_infix(version, arch)
+                or default
+            )
+        return _cuda_infix_cache[key]
+
+    def _locked_infix(self, version: str, target: str) -> str:
+        """The full `win-cuda-<line>-<arch>` infix the lock pins for this version."""
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path
+
+        lock = Lockfile(lockfile_path())
+        if lock.version(self.name) != version:
+            return ""
+        pattern = re.compile(rf"llama-b{re.escape(version)}-bin-(win-cuda-.+)\.zip")
+        for row in lock.artifacts(self.name, target):
+            match = pattern.fullmatch(row["url"].rsplit("/", 1)[-1])
+            if match:
+                return match.group(1)
+        return ""
+
+    def _release_infix(self, version: str, arch: str) -> str:
+        """The full infix the release's own asset list advertises for this tag."""
+        head, tail = f"llama-b{version}-bin-", f"-{arch}.zip"
+        return next(
+            (
+                name[len(head) : -len(".zip")]
+                for name in _github_release_digests("ggml-org/llama.cpp", f"b{version}")
+                if name.startswith(head) and name.endswith(tail)
+            ),
+            "",
+        )
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
+        infix = self._cuda_infix(version, target)
+        cudart = infix.removeprefix("win-cuda-")
+        return [
+            f"llama-b{version}-bin-{infix}.zip",
+            f"cudart-llama-bin-win-cuda-{cudart}.zip",
         ]
 
 

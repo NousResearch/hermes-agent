@@ -40,6 +40,7 @@ _REGISTRY_LOCK = threading.RLock()
 _BUILTIN_SOURCES = (
     ("agent.secret_sources.bitwarden", "BitwardenSource", "Bitwarden"),
     ("agent.secret_sources.onepassword", "OnePasswordSource", "1Password"),
+    ("agent.secret_sources.keepass", "KeePassSource", "KeePassXC"),
     ("agent.secret_sources.command", "CommandSource", "command"),
 )
 

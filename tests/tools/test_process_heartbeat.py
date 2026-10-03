@@ -131,3 +131,30 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+
+
+@pytest.mark.parametrize("stray", [{"heartbeat": 60}, {"notify": True}, {"notify": ["READY"], "heartbeat": 90}])
+def test_foreground_refusal_names_args_whose_removal_runs_the_call(monkeypatch, stray):
+    """Regression for #121634: the refusal must name the exact background-only
+    args the model sent, and dropping just those must run the same call in the
+    foreground — so the model corrects once instead of re-sending it verbatim
+    or moving a short command into the background."""
+    from tools import terminal_tool as tt
+
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"output": "/tmp", "exit_code": 0})
+
+    monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
+    call = {"command": "pwd", "background": False, "timeout": 20, **stray}
+
+    refused = json.loads(tt._handle_terminal(call))["error"]
+    named = [name for name in stray if f"{name}={json.dumps(stray[name])}" in refused]
+    assert named == list(stray)
+    assert not captured
+
+    retried = {k: v for k, v in call.items() if k not in named}
+    assert not json.loads(tt._handle_terminal(retried)).get("error")
+    assert captured["background"] is False and captured["notify_on_complete"] is False

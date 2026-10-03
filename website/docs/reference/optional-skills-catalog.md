@@ -144,6 +144,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**fitness-nutrition**](../user-guide/skills/optional/health/health-fitness-nutrition.md) | Workout planning, macros, and body metrics via wger/USDA. |
+| [**hermes-companion**](../user-guide/skills/optional/health/health-hermes-companion.md) | Requires the Companion iPhone app for place and health. |
 | [**neuroskill-bci**](../user-guide/skills/optional/health/health-neuroskill-bci.md) | Use live BCI cognitive and mood state from NeuroSkill. |
 
 ## mcp

@@ -83,6 +83,8 @@ model_catalog:
 
 Set `enabled: false` to disable remote fetch entirely and always use the in-repo snapshot (this also disables the gateway's background refresh). `ttl_minutes` sets both the cache lifetime and the gateway refresh cadence; the legacy `ttl_hours` key is still honoured if you set it explicitly.
 
+This opt-out also stops the managed **Local Models** starter-catalog refresh, including forced refresh calls. Local model browsing, selection, and explicit downloads remain available using the current in-memory catalog (initially the packaged snapshot). The opt-out does not erase a catalog already refreshed in this process. When enabled, this separate starter catalog retains its six-hour refresh interval; `ttl_minutes` does not change it. This setting is not a global network switch and does not disable models.dev metadata requests.
+
 ### Per-provider override URLs
 
 Third parties can self-host their own curation list using the same schema. Point a provider at a custom URL:

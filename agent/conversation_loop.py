@@ -1381,6 +1381,32 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any
     )
 
 
+def _reset_per_turn_state(agent, *, persist_user_display_kind: Optional[str] = None) -> None:
+    """Clear the per-turn agent fields the gateway's cached agent must not carry forward.
+
+    The gateway caches one agent across turns, so this state is per user turn. The
+    exception is an **auto-continue** turn (``display_kind="auto_continue"``): that turn is
+    the crash-recovery re-run of the turn that was just interrupted, not a new request from
+    the user, so the set of interim texts already delivered to the client is still the
+    record of what is on screen. Clearing it there let the re-run deliver the interrupted
+    turn's final message again as a new bubble (observed 2026-10-01 in session
+    20261001_160012_21b96d, where a ~145k-token Codex turn was interrupted and its answer
+    reached the desktop several times). Preserving it lets
+    ``StreamDeliveryMixin._interim_text_was_delivered`` suppress that second copy.
+
+    Every other turn — including a ``model_switch`` system row and any real user message —
+    still starts clean, so a user who genuinely repeats a phrase is still answered.
+    """
+    if persist_user_display_kind != "auto_continue":
+        agent._delivered_interim_texts = set()
+    agent._incremental_persistence_failed = False
+    agent._last_persistence_error_cause = None
+    agent._compression_adoption_failed = False
+    agent._ephemeral_reasoning_off = False
+    agent._auth_pool_refresh_counts = {}
+    agent._last_turn_usage = None
+
+
 @dataclass
 class _LoopState:
     """Every local the turn loop threads through the phase helpers in ``agent/turn_*.py``.
@@ -1604,13 +1630,7 @@ def _run_conversation_turn(
     # thinking-only-truncation one-shot must not survive an interrupted turn; credential-
     # pool refresh tallies cap same-entry refreshes on a persistent 401 (#26080); usage
     # for on_turn_complete() stays None on turns that never reach a response.
-    agent._delivered_interim_texts = set()
-    agent._incremental_persistence_failed = False
-    agent._last_persistence_error_cause = None
-    agent._compression_adoption_failed = False
-    agent._ephemeral_reasoning_off = False
-    agent._auth_pool_refresh_counts = {}
-    agent._last_turn_usage = None
+    _reset_per_turn_state(agent, persist_user_display_kind=persist_user_display_kind)
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

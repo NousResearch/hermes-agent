@@ -167,6 +167,13 @@ MCP_TOOL_NAME_PREFIX = "mcp__"
 _MCP_TOOL_NAME_MAX_LENGTH = 64
 _MCP_TOOL_NAME_HASH_LENGTH = 8
 _clamped_names_warned: set[str] = set()
+# Maps clamped wire name -> original (unclamped) "server.tool" for human surfacing in tool_search.
+_clamped_name_originals: dict[str, str] = {}
+
+
+def mcp_tool_original_name(clamped_name: str) -> str | None:
+    """Return the original ``server.tool`` form when *clamped_name* was hash-truncated, else ``None``."""
+    return _clamped_name_originals.get(clamped_name)
 
 
 def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
@@ -176,11 +183,13 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     if len(full_name) <= _MCP_TOOL_NAME_MAX_LENGTH:
         return full_name
     suffix = "_" + hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
+    clamped = full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
+    _clamped_name_originals[clamped] = f"{sanitize_mcp_name_component(server_name)}.{sanitize_mcp_name_component(tool_name)}"
     if full_name not in _clamped_names_warned:  # recomputed on every health refresh; warn once
         _clamped_names_warned.add(full_name)
         logger.warning("MCP tool name %r (%d chars) exceeds the %d-char provider limit; shortened to a "
                        "deterministic hash-suffixed name", full_name, len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)
-    return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
+    return clamped
 
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:

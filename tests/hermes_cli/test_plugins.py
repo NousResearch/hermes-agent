@@ -211,14 +211,22 @@ class TestPluginDiscovery:
 
         [qualified] = manager.list_plugin_skill_metadata()
         assert qualified["name"].endswith(":summarize")
-        # Skills keep the digest namespace (collision-free without coordination); the MCP server does
-        # not: it is named what mcp.json calls it, like a config.yaml server, so ``mcp__<server>__<tool>``
-        # fits the 64-char provider cap with the tool verb intact instead of being hash-clamped.
+        # Skills keep the digest namespace (collision-free without coordination). Non-catalog-pinned
+        # portable plugins also get the ``agent-plugin-<slug>-<digest>_`` prefix to disambiguate
+        # URL/--ref installs with the same source; catalog-pinned installs drop it for shorter
+        # tool names (#119307).
         [internal_name] = manager.get_portable_mcp_servers()
-        assert internal_name == "worker"
-        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        assert internal_name == "agent-plugin-portable-test-0a495cde_worker"
+        from tools.mcp_tool_schema import mcp_prefixed_tool_name, mcp_tool_original_name
         wire = mcp_prefixed_tool_name(internal_name, "nvapp_client_get_driver_status")
-        assert wire.endswith("__nvapp_client_get_driver_status") and len(wire) <= 64
+        # Non-catalog installs carry the full namespace prefix, so long names are hash-clamped;
+        # mcp_tool_original_name surfaces the human-readable form for tool_search (#119307).
+        assert len(wire) <= 64
+        if len(f"mcp__{internal_name}__nvapp_client_get_driver_status") > 64:
+            assert wire != f"mcp__{internal_name}__nvapp_client_get_driver_status"
+            assert mcp_tool_original_name(wire) == "agent_plugin_portable_test_0a495cde_worker.nvapp_client_get_driver_status"
+        else:
+            assert wire.endswith("__nvapp_client_get_driver_status")
         assert manager._plugins["portable.test"].enabled is True
         assert manager._plugins["native"].enabled is True
         assert manager._plugins["native"].module is not None
@@ -232,8 +240,9 @@ class TestPluginDiscovery:
         assert liveness_for(internal_name) is None
 
     def test_two_portable_plugins_with_the_same_server_name_do_not_both_load(self, tmp_path, monkeypatch):
-        """Readable server names can clash where the old digest could not: the second plugin's server
-        is skipped with a warning naming the first, and the first's config is the one served."""
+        """When two non-catalog plugins share an MCP server name, the ``agent-plugin-<slug>-<digest>_``
+        namespace makes each server name unique, so both load (#119307).  The second plugin's server
+        is still skipped if the fully-qualified name collides (same source, same server)."""
         from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
         from hermes_cli import plugins as plugins_mod
 
@@ -259,8 +268,10 @@ class TestPluginDiscovery:
         manager.discover_and_load()
 
         servers = manager.get_portable_mcp_servers()
-        assert list(servers) == ["shared"]
-        assert servers["shared"]["command"] in {"python-a", "python-b"}
+        # With the plugin-identity namespace, both servers have unique names and both load.
+        assert len(servers) == 2
+        for name in servers:
+            assert name.endswith("_shared")
 
     def test_disabled_portable_plugin_registers_nothing(self, tmp_path, monkeypatch):
         from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1

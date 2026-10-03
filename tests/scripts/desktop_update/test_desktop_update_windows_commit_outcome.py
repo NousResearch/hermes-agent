@@ -21,7 +21,7 @@ from tests.installation_launcher_fixture import publish_fixture_launcher
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
 CLI = """
-import json, os, subprocess, sys, time
+import ctypes, json, os, subprocess, sys, time
 from pathlib import Path
 def main():
     if '--version' in sys.argv:
@@ -43,9 +43,17 @@ def main():
         child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         Path(os.environ['HANDOFF_DELEGATE']).write_text(str(child.pid))
+        # update_lock's delegate line: pid + creation time (GetProcessTimes, limited rights).
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = ctypes.c_void_p
+        handle = ctypes.c_void_p(k32.OpenProcess(0x1000, False, child.pid))
+        times = [ctypes.c_ulonglong() for _ in range(4)]
+        k32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times])
+        k32.CloseHandle(handle)
+        ct = times[0].value / 1e7 - 11644473600
         marker = Path(os.environ['HERMES_HOME']) / '.hermes-update-in-progress'
         head = marker.read_bytes().decode().split('\\n')[:3]
-        marker.write_bytes(('\\n'.join(head) + '\\ndelegate:%d\\n' % child.pid).encode())
+        marker.write_bytes(('\\n'.join(head) + '\\ndelegate:%d ct:%.3f\\n' % (child.pid, ct)).encode())
     if os.environ.get('HANDOFF_HANG'):
         print(os.environ['HANDOFF_HANG'], flush=True)
         time.sleep(300)
@@ -59,7 +67,7 @@ if __name__ == '__main__':
 def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 150, **env: str):
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, CLI)
-    (install / 'hermes_cli/desktop_update_verify.py').write_text(verify)
+    (install / 'hermes_cli/desktop_update_verify.py').write_text(verify, encoding='utf-8')
     home = tmp_path / 'home'; home.mkdir()
     calls = tmp_path / 'calls.jsonl'
     proc = subprocess.Popen(
@@ -75,7 +83,7 @@ def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 
         subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True)
         out, _ = proc.communicate()
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
-    argv = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+    argv = [json.loads(line) for line in calls.read_text(encoding='utf-8-sig').splitlines()] if calls.exists() else []
     result = json.loads((home / '.hermes-update-result.json').read_text(encoding='utf-8-sig'))
     return proc.returncode, out, argv, result, home
 
@@ -108,10 +116,10 @@ def test_marker_with_a_live_delegate_is_kept_at_finish(tmp_path: Path) -> None:
         code, out, _, result, home = _handoff(tmp_path, HANDOFF_DELEGATE=str(pid_file))
         assert code == 0, out
         marker = (home / '.hermes-update-in-progress').read_bytes().decode().split('\n')
-        assert marker[3] == f'delegate:{pid_file.read_text()}', marker
+        assert marker[3].startswith(f"delegate:{pid_file.read_text(encoding='utf-8-sig')} ct:"), marker
     finally:
         if pid_file.exists():
-            subprocess.run(['taskkill', '/F', '/PID', pid_file.read_text()], capture_output=True)
+            subprocess.run(['taskkill', '/F', '/PID', pid_file.read_text(encoding='utf-8-sig')], capture_output=True)
 
 
 @pytest.mark.platforms('windows')
@@ -137,7 +145,7 @@ def test_cpu_busy_pipe_silent_update_is_not_killed_by_the_idle_watchdog(tmp_path
 @pytest.mark.platforms('windows')
 def test_hanging_update_help_probe_is_bounded(tmp_path: Path) -> None:
     code, out, argv, result, _ = _handoff(
-        tmp_path, '-NoGateway', timeout=120, HANDOFF_HELP_HANG='1', HERMES_UPDATE_PROBE_TIMEOUT_SECONDS='10',
+        tmp_path, '-NoGateway', '-ProbeTimeoutSeconds', '10', timeout=120, HANDOFF_HELP_HANG='1',
     )
     assert code == 0, out
     assert argv[0][:2] == ['update', '--yes'] and '--keep-stash' not in argv[0], argv

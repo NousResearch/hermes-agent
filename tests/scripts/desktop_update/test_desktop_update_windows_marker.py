@@ -43,13 +43,26 @@ def sleeper():
 
 
 def _creation_time(pid: int) -> str:
+    # Limited query rights (what Python/Rust readers use): works for every process.
     out = subprocess.run(
         ['powershell', '-NoProfile', '-Command',
-         f"[DateTimeOffset]::new((Get-Process -Id {pid}).StartTime.ToUniversalTime())"
-         ".ToUnixTimeMilliseconds().ToString()"],
+         f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
+         "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()"],
         capture_output=True, text=True, timeout=60, check=True,
     ).stdout.strip()
     return f'{int(out) / 1000:.3f}'
+
+
+def _protected_pid() -> int:
+    """A live pid whose StartTime Windows PowerShell cannot read (SYSTEM / protected)."""
+    out = subprocess.run(
+        ['powershell', '-NoProfile', '-Command',
+         "foreach ($n in 'csrss','wininit','services','smss','lsass') { foreach ($p in @(Get-Process -Name $n "
+         "-ErrorAction SilentlyContinue)) { try { $null = $p.StartTime } catch { $p.Id; exit 0 } } }"],
+        capture_output=True, text=True, timeout=60,
+    ).stdout.split()
+    assert out, 'no process with an unreadable StartTime on this host'
+    return int(out[0])
 
 
 def _dead_pid() -> int:
@@ -101,13 +114,81 @@ def test_live_foreign_owner_refuses_and_reused_pid_is_reclaimed(
     if ct_matches:
         assert code == 2, out
         assert (tmp_path / MARKER).read_bytes() == body
-        result = _result(tmp_path)
-        assert (result['ok'], result['exit_code']) == (False, 2)
-        assert 'Nothing was changed' in result['message']
+        # A refused run changed nothing and owns no result (A4): the other update reports.
+        assert not (tmp_path / '.hermes-update-result.json').exists()
     else:
         assert code == 0, out
         lines = (tmp_path / MARKER).read_bytes().decode().split('\n')
         assert lines[0] == str(pid) and lines[2].startswith('ct:'), lines
+
+
+@pytest.mark.platforms('windows')
+@pytest.mark.parametrize('ct_matches', [True, False])
+def test_owner_creation_time_is_read_for_system_processes(tmp_path: Path, ct_matches: bool) -> None:
+    """A1: a marker naming a SYSTEM/protected pid (a reused pid after a reboot) is judged by its
+    real creation time, not treated as live forever because StartTime is access-denied."""
+    owner = _protected_pid()
+    ct = _creation_time(owner) if ct_matches else '1000.000'
+    body = f'{owner}\n{int(time.time())}\nct:{ct}\n'.encode()
+    (tmp_path / MARKER).write_bytes(body)
+    pid, code, out = _run(tmp_path, '-SelfTestMarker', '-NoMarkerCleanup')
+    if ct_matches:
+        assert code == 2, out
+        assert (tmp_path / MARKER).read_bytes() == body
+    else:
+        assert code == 0, out
+        assert (tmp_path / MARKER).read_bytes().decode().split('\n')[0] == str(pid)
+
+
+_BODIES = {   # contract A2: identical verdicts in every reader
+    'crlf-bom-v2': ('\ufeff{pid}\r\n{now}\r\nct:{ct}\r\n', 'live'),
+    'missing-line-2': ('{pid}\n', 'dead'),
+    'garbled-line-2': ('{pid}\nsoon\nct:{ct}\n', 'dead'),
+    'fractional-started-at': ('{pid}\n{now}.5\nct:{ct}\n', 'dead'),
+    'garbled-ct-is-v1-fresh': ('{pid}\n{now}\nct:garbage\n', 'live'),
+    'garbled-ct-is-v1-past-20min': ('{pid}\n{old}\nct:garbage\n', 'dead'),
+    'delegate-without-ct-is-ignored': ('999999\n{now}\nct:1.000\ndelegate:{pid}\n', 'dead'),
+}
+
+
+@pytest.mark.platforms('windows')
+@pytest.mark.parametrize('case', sorted(_BODIES))
+def test_marker_bodies_are_parsed_positionally_like_every_other_reader(
+    tmp_path: Path, sleeper: subprocess.Popen, case: str,
+) -> None:
+    template, verdict = _BODIES[case]
+    now = int(time.time())
+    body = template.format(pid=sleeper.pid, now=now, old=now - 1300, ct=_creation_time(sleeper.pid)).encode()
+    (tmp_path / MARKER).write_bytes(body)
+    pid, code, out = _run(tmp_path, '-SelfTestMarker', '-NoMarkerCleanup')
+    if verdict == 'live':
+        assert code == 2, out
+        assert (tmp_path / MARKER).read_bytes() == body
+    else:
+        assert code == 0, out
+        assert (tmp_path / MARKER).read_bytes().decode().split('\n')[0] == str(pid)
+
+
+@pytest.mark.platforms('windows')
+@pytest.mark.parametrize('bridge', ['absent', 'someone-else'])
+def test_desktop_started_handoff_only_adopts_its_bridge(
+    tmp_path: Path, sleeper: subprocess.Popen, bridge: str,
+) -> None:
+    """A4: the Desktop gave up on a late script: it must not claim fresh, run, or leave a result."""
+    other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])
+    try:
+        body = f'{other.pid}\n{int(time.time())}\nct:{_creation_time(other.pid)}\n'.encode()
+        if bridge == 'someone-else':
+            (tmp_path / MARKER).write_bytes(body)
+        _, code, out = _run(tmp_path, '-DesktopPid', str(sleeper.pid))
+    finally:
+        other.kill(); other.wait()
+    assert code == 2, out
+    assert not (tmp_path / '.hermes-update-result.json').exists()
+    if bridge == 'absent':
+        assert not (tmp_path / MARKER).exists()
+    else:
+        assert (tmp_path / MARKER).read_bytes() == body
 
 
 @pytest.mark.platforms('windows')
@@ -142,6 +223,8 @@ def test_desktop_that_never_exits_is_not_relaunched_over(
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, CLI)
     home = tmp_path / 'home'; home.mkdir()
+    # The Desktop's bridge claim, which a -DesktopPid hand-off adopts (A4).
+    (home / MARKER).write_bytes(f'{sleeper.pid}\n{int(time.time())}\nct:{_creation_time(sleeper.pid)}\n'.encode())
     relaunch = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'hostname.exe'
     _, code, out = _run(home, '-DesktopPid', str(sleeper.pid), '-RelaunchExe', str(relaunch),
                         install=install, timeout=180)

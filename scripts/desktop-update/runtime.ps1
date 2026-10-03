@@ -3,11 +3,8 @@ function Invoke-HermesProbe {
     # Every launcher probe is bounded (60 s): a launcher that hangs (a stuck
     # import, an AV scan) fails the probe instead of parking the hand-off
     # forever after the Desktop already closed. Timeout kills the probe tree.
-    $timeout = 60
-    $parsed = 0
-    if ($env:HERMES_UPDATE_PROBE_TIMEOUT_SECONDS -and [int]::TryParse($env:HERMES_UPDATE_PROBE_TIMEOUT_SECONDS, [ref]$parsed) -and $parsed -gt 0) {
-        $timeout = $parsed
-    }
+    # windows.ps1 -ProbeTimeoutSeconds sets the bound for tests.
+    $timeout = if ($HermesProbeTimeoutSeconds -gt 0) { $HermesProbeTimeoutSeconds } else { 60 }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = (@($Arguments) | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '

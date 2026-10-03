@@ -512,11 +512,54 @@ def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session
         logger.debug("approval.cancelled broadcast failed", exc_info=True)
 
 
+def _notify_runtime_session_teardown(
+    session: dict | None,
+    reason: str,
+) -> None:
+    """Notify plugins that one in-memory runtime identity is destroyed.
+
+    This event is intentionally independent from durable-session finalization.
+    A failed deferred resume can destroy its runtime without ending the stored
+    conversation.
+    """
+    if not session:
+        return
+
+    runtime_session_id = str(session.get("_sid") or "")
+    if not runtime_session_id:
+        return
+
+    if session.get("_runtime_teardown_notified"):
+        return
+
+    session["_runtime_teardown_notified"] = True
+
+    agent = session.get("agent")
+    canonical_session_id = (
+        getattr(agent, "session_id", None)
+        or session.get("session_key")
+        or ""
+    )
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "on_session_runtime_teardown",
+            runtime_session_id=runtime_session_id,
+            canonical_session_id=str(canonical_session_id),
+            reason=str(reason or ""),
+        )
+    except Exception:
+        pass
+
+
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
     """Fully tear down a session: finalize, unregister notifier, close agent (``session.close`` + WS reaper). The
     slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
     if not session:
         return
+    _notify_runtime_session_teardown(session, end_reason)
     _finalize_session(session, end_reason=end_reason)
     _announce_session_reclaimed(session, end_reason)
     with contextlib.suppress(Exception):

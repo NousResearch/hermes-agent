@@ -67,11 +67,11 @@ const DIFF_BOX_CLASS =
   '-mx-1.5 -mb-1.5 max-h-[12rem] max-w-none min-w-0 overflow-auto overscroll-x-contain overscroll-y-auto font-mono text-[0.7rem] leading-relaxed text-(--ui-text-secondary)'
 
 function diffKind(line: string): DiffKind {
-  if (line.startsWith('+') && !line.startsWith('+++')) {
+  if (line.startsWith('+')) {
     return 'add'
   }
 
-  if (line.startsWith('-') && !line.startsWith('---')) {
+  if (line.startsWith('-')) {
     return 'remove'
   }
 
@@ -136,7 +136,11 @@ function parseHunks(diff: string): ParsedHunk[] {
   const hunks: ParsedHunk[] = []
   let active: null | ParsedHunk = null
 
-  for (const line of stripDiffFileHeaders(diff).split('\n')) {
+  const lines = stripDiffFileHeaders(diff).split('\n')
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
     if (line.startsWith('@@')) {
       const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
 
@@ -148,6 +152,17 @@ function parseHunks(diff: string): ParsedHunk[] {
 
       active = { oldStart: Number(match[1]), newStart: Number(match[2]), lines: [] }
       hunks.push(active)
+
+      continue
+    }
+
+    if (
+      line.startsWith('--- ')
+      && lines[index + 1]?.startsWith('+++ ')
+      && lines[index + 2]?.startsWith('@@')
+    ) {
+      active = null
+      index += 1
 
       continue
     }

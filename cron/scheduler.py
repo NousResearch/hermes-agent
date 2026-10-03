@@ -2088,6 +2088,17 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     # Raise so the except handler below builds the proper failure tuple. (issue #17855)
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
+    # A tool-guardrail halt ends the turn with an *explanation of the halt* in `final_response`,
+    # leaving `failed`/`completed` untouched. Interactive surfaces deliberately show that text, but
+    # for a scheduled job it is not the report the job was asked to produce: delivering it ships
+    # guardrail internals to the recipient and records the run as `last_status: "ok"`, so no health
+    # check ever notices the job produced nothing. Fail it like the paths below, keeping the
+    # guardrail's own code and tool in the error for diagnosis.
+    if turn_exit_reason == "guardrail_halt":
+        guardrail = result.get("guardrail")
+        guardrail = guardrail if isinstance(guardrail, dict) else {}
+        detail = ", ".join(f"{key}={guardrail[key]}" for key in ("code", "tool_name") if guardrail.get(key))
+        raise RuntimeError("agent run halted by tool guardrail" + (f" ({detail})" if detail else ""))
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")

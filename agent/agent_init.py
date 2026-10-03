@@ -377,7 +377,7 @@ class CompressionSettings(SimpleNamespace):
 
 _EXPLICIT_API_MODES = {
     "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
+    "codex_app_server", "antigravity_runtime",
 }
 
 
@@ -1028,7 +1028,13 @@ def _build_client(agent, api_key, base_url, fallback_model):
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
-    if agent.api_mode == "anthropic_messages":
+    if agent.api_mode == "antigravity_runtime":
+        # The delegated CLI owns model/auth/tool execution; no OpenAI-compatible client exists.
+        agent.client = None
+        agent._client_kwargs = {}
+        agent.api_key = api_key or ""
+        agent.base_url = base_url or ""
+    elif agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":
         _init_moa_client(agent, api_key)
@@ -1227,10 +1233,19 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
     agent._parent_session_id = parent_session_id
+    route = {
+        "provider": agent.provider or None,
+        "base_url": agent.base_url or None,
+        "api_mode": agent.api_mode or None,
+    }
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
+        "provider": agent.provider or None,
+        "base_url": agent.base_url or None,
+        "api_mode": agent.api_mode or None,
+        "gateway_runtime": route if agent.provider else None,
     }
     # Process-scoped --yolo is persisted so `hermes --resume` restores the bypass
     # (SessionDB.session_yolo_enabled); session-scoped /yolo toggles persist separately.

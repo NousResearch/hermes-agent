@@ -257,6 +257,10 @@ class GatewayTurnMixin:
                 thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
             )
+            platform_cfg = getattr(cfg, "platforms", {}).get(source.platform) if hasattr(cfg, "platforms") and isinstance(cfg.platforms, dict) else None
+            plat_model = getattr(platform_cfg, "model", None) or (platform_cfg.extra.get("model") if platform_cfg and hasattr(platform_cfg, "extra") else None)
+            plat_provider = getattr(platform_cfg, "provider", None) or (platform_cfg.extra.get("provider") if platform_cfg and hasattr(platform_cfg, "extra") else None)
+
             if ch:
                 if ch.model:
                     model = ch.model
@@ -266,6 +270,14 @@ class GatewayTurnMixin:
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
+            elif plat_model or plat_provider:
+                if plat_model:
+                    model = plat_model
+                if plat_provider:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(plat_provider, target_model=model or None)
+                    plat_runtime_model = runtime_kwargs.pop("model", None)
+                    if plat_runtime_model and not plat_model:
+                        model = plat_runtime_model
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

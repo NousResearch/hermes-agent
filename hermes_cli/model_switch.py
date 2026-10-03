@@ -432,6 +432,8 @@ def resolve_startup_model_route(
         provider = prefix
     elif canonical.lower() in configured:
         provider = canonical
+    elif canonical.lower() == "google-antigravity":
+        provider = canonical
     else:
         return None
     return None if is_aggregator(canonical) else StartupModelRoute(model=model, provider=provider)

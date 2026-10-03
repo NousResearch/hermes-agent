@@ -368,7 +368,7 @@ describe('server metadata reconciliation', () => {
 // Two machines, both with a profile literally named `default`: the VPS bot is
 // "Agent A" on its own backend; this Desktop's local agent is "Agent B", whose
 // title still sits under the bare legacy key from its single-source days.
-describe('a bot is named by its own backend, never by another bot\'s cached record', () => {
+describe("a bot is named by its own backend, never by another bot's cached record", () => {
   const vps = {
     connectionId: 'vps',
     display_name: 'Agent A',
@@ -382,34 +382,36 @@ describe('a bot is named by its own backend, never by another bot\'s cached reco
     let revision = 3
     const configures: Array<Record<string, unknown>> = []
 
-    hostMock.requestProfile.mockImplementation(async (_route: unknown, method: string, params: Record<string, unknown>) => {
-      if (method === 'profiles.list') {
-        return {
-          profiles: [
-            {
-              name: 'default',
-              ui_meta: { 'hermes-bots': { color: '#0000ff', groups: [] } },
-              ui_meta_revisions: { 'hermes-bots': revision }
-            }
-          ]
-        }
-      }
-
-      if (method === 'profiles.configure') {
-        configures.push(structuredClone(params))
-
-        // Another writer lands between this save's read and its write, once.
-        if (configures.length === 1) {
-          revision = 4
-
-          return { applied: { ui_meta: false, ui_meta_conflicts: { 'hermes-bots': { actual: 4, expected: 3 } } } }
+    hostMock.requestProfile.mockImplementation(
+      async (_route: unknown, method: string, params: Record<string, unknown>) => {
+        if (method === 'profiles.list') {
+          return {
+            profiles: [
+              {
+                name: 'default',
+                ui_meta: { 'hermes-bots': { color: '#0000ff', groups: [] } },
+                ui_meta_revisions: { 'hermes-bots': revision }
+              }
+            ]
+          }
         }
 
-        return { applied: { ui_meta: true } }
-      }
+        if (method === 'profiles.configure') {
+          configures.push(structuredClone(params))
 
-      return {}
-    })
+          // Another writer lands between this save's read and its write, once.
+          if (configures.length === 1) {
+            revision = 4
+
+            return { applied: { ui_meta: false, ui_meta_conflicts: { 'hermes-bots': { actual: 4, expected: 3 } } } }
+          }
+
+          return { applied: { ui_meta: true } }
+        }
+
+        return {}
+      }
+    )
 
     await expect(saveBotMeta(vps, { groups: ['room'] })).resolves.toMatchObject({ serverOutcome: 'persisted' })
 
@@ -443,7 +445,7 @@ describe('a bot is named by its own backend, never by another bot\'s cached reco
     expect(groupSpeakerLabel('vps::default')).not.toBe('Agent B')
   })
 
-  it('only a fresh answer from the bot\'s backend corrects its record, and a title alone never mints one', () => {
+  it("only a fresh answer from the bot's backend corrects its record, and a title alone never mints one", () => {
     $botMeta.set({ 'vps::default': { color: '#00ff00', title: 'New title' } })
     // The VPS stops answering; the pane keeps its last-painted row, which predates the rename.
     const painted = { ...vps, title: 'Old title' } as RosterRow

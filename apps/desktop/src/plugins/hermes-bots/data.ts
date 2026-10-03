@@ -333,7 +333,11 @@ interface ServerBotMeta {
 /** How many times a save re-reads the server after losing a CAS race. */
 const BOT_META_CAS_ATTEMPTS = 3
 
-async function readServerBotMeta(bot: RosterRow, name: string, route: null | ProfileRoute): Promise<null | ServerBotMeta> {
+async function readServerBotMeta(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute
+): Promise<null | ServerBotMeta> {
   const params = { include_sessions: false }
 
   // The read is the first half of a user's save: it dials foreground like the write.

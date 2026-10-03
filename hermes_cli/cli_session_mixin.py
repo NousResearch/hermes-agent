@@ -631,8 +631,7 @@ class CLISessionMixin:
         """
         from cli import datetime
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, drop_undone_rows, export_projection, normalize_save_format,
-            render_session_for_save)
+            SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
 
         parts = cmd.split()[1:]
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -655,19 +654,14 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
-            if fmt not in SAVE_TRANSCRIPT_FORMATS:
-                from hermes_state import SessionExportTooLargeError
-                try:
-                    _db.assert_export_safe(_sid)  # the JSON backup loads every stored row, like `sessions export`
-                except SessionExportTooLargeError as e:
-                    print(f"(._.) {e}")
-                    return
+            from hermes_state import SessionExportTooLargeError
             try:
-                session_data = _db.export_session(_sid, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
+                session_data = load_save_snapshot(_db, _sid, fmt)
+            except SessionExportTooLargeError as e:
+                print(f"(._.) {e}")
+                return
             except Exception:
                 session_data = None
-            if session_data and fmt not in SAVE_TRANSCRIPT_FORMATS:
-                drop_undone_rows(session_data)
         if not session_data:
             if not self.conversation_history:
                 print(t("cli.session.save_nothing"))

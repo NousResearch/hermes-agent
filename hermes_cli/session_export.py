@@ -227,6 +227,19 @@ def drop_undone_rows(export: Dict[str, Any]) -> Dict[str, Any]:
     return export
 
 
+def load_save_snapshot(db: Any, session_id: str, fmt: str) -> Optional[Dict[str, Any]]:
+    """The stored session a ``/save <fmt>`` writes, or None when it has no row. A JSON snapshot loads every
+    stored row in memory, so it is refused past ``sessions.max_export_messages`` (raises
+    ``SessionExportTooLargeError``), like ``hermes sessions export``."""
+    transcript = fmt in SAVE_TRANSCRIPT_FORMATS
+    if not transcript:
+        db.assert_export_safe(session_id)
+    export = db.export_session(session_id, **export_projection(transcript))
+    if export and not transcript:
+        drop_undone_rows(export)
+    return export
+
+
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]
 

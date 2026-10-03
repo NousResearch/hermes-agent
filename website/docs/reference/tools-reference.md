@@ -180,6 +180,14 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 |------|-------------|----------------------|
 | `memory` | Save important information to persistent memory that survives across sessions. Your memory appears in your system prompt at session start -- it's how you remember things about the user and your environment between conversations. WHEN TO SA… | — |
 
+## `profiles` toolset
+
+Off by default. The tool is only registered into the schema when the active profile explicitly lists `profiles` in its `toolsets` (the `all`/`*` wildcard does **not** enable it), and it is never exposed to `delegate_task` children. See [Bot Mode](/user-guide/bot-mode#creating-bots-from-a-conversation).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `profile_manage` | Create, configure, and list Hermes profiles (Bots) from inside a session — turn a discussion into a roster of specialist agents without driving the desktop UI. Actions: `list` (enumerate before creating), `create` (name, display_name, description, SOUL.md, optional `clone_from`/`no_skills`), `configure` (update an existing profile). Profile **deletion is deliberately excluded**. | opt-in `profiles` toolset |
+
 ## `setup` toolset
 
 Granted only to sessions of the desktop setup profile (`role: setup` in its `profile.yaml`); never configurable.

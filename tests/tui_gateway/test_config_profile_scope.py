@@ -8,9 +8,11 @@ launch profile's config.yaml for every focused profile.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import hermes_yaml as yaml
+import pytest
 
 import tui_gateway.server as server
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -71,6 +73,90 @@ def _set(params: dict) -> dict:
 
 def _read_yaml(home: Path) -> dict:
     return yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+
+
+@pytest.fixture
+def canonical_rpc_homes(tmp_path: Path, monkeypatch):
+    """A launch home plus one real named profile, with live sessions for both."""
+    launch = tmp_path / ".hermes"
+    worker = launch / "profiles" / "code"
+    _write_cfg(launch, LAUNCH_CWD, LAUNCH_ROOTS)
+    _write_cfg(worker, WORKER_CWD, WORKER_ROOTS)
+    os.utime(launch / "config.yaml", (1_700_000_001, 1_700_000_001))
+    os.utime(worker / "config.yaml", (1_700_000_002, 1_700_000_002))
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr(server, "_sessions", {
+        "session-a": {"profile_home": None, "session_key": "session-a", "agent": None},
+        "session-b": {"profile_home": str(worker), "session_key": "session-b", "agent": None},
+    })
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    _reset_cfg_cache()
+    return launch, worker
+
+
+def _dispatch_config(method: str, params: dict, rid: str = "config-rpc") -> dict:
+    response = getattr(server, "dispatch")(
+        {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+    )
+    assert isinstance(response, dict)
+    return response
+
+
+def test_config_get_resolves_full_profile_and_mtime_a_b_a(canonical_rpc_homes):
+    launch, worker = canonical_rpc_homes
+
+    def read(session_id: str, profile: str | None = None) -> tuple[str, str, float]:
+        scope = {"session_id": session_id, **({"profile": profile} if profile else {})}
+        full = _dispatch_config("config.get", {**scope, "key": "full"})
+        profile_result = _dispatch_config("config.get", {**scope, "key": "profile"})
+        mtime = _dispatch_config("config.get", {**scope, "key": "mtime"})
+        assert "error" not in full and "error" not in profile_result and "error" not in mtime
+        return (
+            full["result"]["config"]["terminal"]["cwd"],
+            profile_result["result"]["home"],
+            mtime["result"]["mtime"],
+        )
+
+    assert read("session-a") == (LAUNCH_CWD, str(launch), 1_700_000_001)
+    assert read("session-b", "code") == (WORKER_CWD, str(worker), 1_700_000_002)
+    assert read("session-a") == (LAUNCH_CWD, str(launch), 1_700_000_001)
+
+
+def test_config_rpc_rejects_unresolved_or_conflicting_profile_scope(canonical_rpc_homes):
+    launch, worker = canonical_rpc_homes
+
+    # A sessionless Desktop draft remains valid when it names its profile explicitly.
+    valid = _dispatch_config("config.set", {"profile": "code", "key": "busy", "value": "steer"})
+    assert valid["result"]["value"] == "steer"
+    assert _read_yaml(worker)["display"]["busy_input_mode"] == "steer"
+    assert _dispatch_config("config.get", {"profile": "code", "key": "profile"})["result"]["home"] == str(worker)
+
+    # Once the backend serves both homes, an unbound config RPC cannot silently select launch A.
+    for method, params in (
+        ("config.get", {"key": "full"}),
+        ("config.get", {"session_id": "stale-session", "key": "full"}),
+        ("config.set", {"key": "busy", "value": "interrupt"}),
+        ("config.set", {"session_id": "stale-session", "key": "busy", "value": "interrupt"}),
+    ):
+        response = _dispatch_config(method, params)
+        assert response.get("error", {}).get("code") == 4001, response
+    assert _read_yaml(launch)["display"]["busy_input_mode"] == "queue"
+
+    # An explicit B selector cannot override a live session owned by A.
+    for method, params in (
+        ("config.get", {"profile": "code", "session_id": "session-a", "key": "full"}),
+        ("config.set", {"profile": "code", "session_id": "session-a", "key": "busy", "value": "interrupt"}),
+    ):
+        response = _dispatch_config(method, params)
+        assert response.get("error", {}).get("code") == 4001, response
+    assert _read_yaml(worker)["display"]["busy_input_mode"] == "steer"
 
 
 def test_config_get_full_reads_params_profile_yaml_not_launch(tmp_path, monkeypatch):

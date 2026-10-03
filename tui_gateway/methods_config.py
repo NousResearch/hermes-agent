@@ -9,7 +9,7 @@ import threading
 from .method_ctx import HandlerRegistry, bind_module
 from ._env import env_int
 
-from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, get_hermes_home
 from hermes_constants import display_hermes_home as _display_hermes_home
 
 _registry = HandlerRegistry()
@@ -244,7 +244,7 @@ def _cfg_get_thinking_mode(params):
 
 
 def _cfg_get_mtime(params):
-    cfg_path = _hermes_home / "config.yaml"
+    cfg_path = get_hermes_home() / "config.yaml"
     try:
         mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
     except Exception:
@@ -254,10 +254,15 @@ def _cfg_get_mtime(params):
     return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
 
 
+def _cfg_get_profile(params):
+    home = get_hermes_home()
+    return {"home": str(home), "display": _display_hermes_home()}
+
+
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
-    "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
+    "profile": _cfg_get_profile,
     "project": _cfg_get_project,
     "full": lambda params: {"config": _load_cfg()},
     "prompt": lambda params: {"prompt": _load_cfg().get("custom_prompt", "")},
@@ -297,6 +302,11 @@ def _(rid, params: dict) -> dict:
         if key not in _CONFIG_GET_ERR:
             raise
         return _err(rid, _CONFIG_GET_ERR[key], str(e))
+
+
+# Read by server._profile_scoped at registry install time. A single-profile TUI keeps its legacy
+# unbound calls; once this backend multiplexes, config reads need an explicit profile or live session.
+setattr(_, "_hermes_profile_sensitive", True)
 
 
 # ── setup readiness

@@ -91,8 +91,8 @@ def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_c
         get_secret("A_ONLY_TOKEN")
     assert os.environ["A_ONLY_TOKEN"] == A_VAL  # never mutated
 
-    # The launch profile is a profile too: its RPC keeps its own .env AND its injected env.
-    probe_a = _probe(None)
+    # Once multiplexing is active the launch profile must be selected explicitly too.
+    probe_a = _probe("default")
     assert probe_a["a_ref"] == A_VAL
     assert probe_a["env_ref"] == ENV_VAL
     assert probe_a["b_ref"] == "${B_ONLY_TOKEN}"

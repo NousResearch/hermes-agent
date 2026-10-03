@@ -556,11 +556,15 @@ def _db_unavailable_error(rid, *, code: int):
 
 # ── Per-session profile scoping: the desktop's app-global remote mode points every profile at this
 # backend, so calls carry ``profile`` → open that profile's db and bind its HERMES_HOME (ContextVar
-# override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
+# override) so config/skills/model/persistence resolve to it.
 class ProfileUnavailableError(FileNotFoundError):
     """An explicit ``profile`` param names no live profile on this host. Raised out of the method
     (never a silent fall-back to the launch profile); ``handle_request`` turns it into JSON-RPC 4064
     so a client holding a deleted profile gets a typed error instead of a ws dispatch crash (#107829)."""
+
+
+class ProfileScopeError(ValueError):
+    """An RPC supplied no safe profile selector, or supplied selectors that disagree."""
 
 
 def _profile_home(profile: str | None) -> Path | None:
@@ -592,6 +596,42 @@ def _profile_home(profile: str | None) -> Path | None:
 _served_profile_homes: set[Path] = set()
 
 
+def _resolve_rpc_profile_home(params: dict, *, profile_sensitive: bool = False) -> str | None:
+    """Resolve the one profile scope named by an RPC's explicit profile and/or live session.
+
+    An explicit profile remains valid without a session (Desktop drafts and settings). A live
+    session remains valid without an explicit profile (TUI/session controls). When both are present
+    they are assertions about the same owner, never precedence choices. Profile-sensitive methods
+    also reject stale session ids and, once this process multiplexes, requests with neither selector;
+    silently treating either as the launch profile is a cross-profile confused-deputy write/read.
+    """
+    requested_profile = str(params.get("profile") or "").strip()
+    session_id = str(params.get("session_id") or "").strip()
+    explicit_home = _profile_home(requested_profile) if requested_profile else None
+    with _sessions_lock:
+        session = _sessions.get(session_id) if session_id else None
+    live_session = isinstance(session, dict)
+    session_home = (str(session.get("profile_home") or "").strip() or None) if live_session else None
+
+    if requested_profile and live_session:
+        explicit_key = Path(explicit_home or _hermes_home).resolve()
+        session_key = Path(session_home or _hermes_home).resolve()
+        if explicit_key != session_key:
+            raise ProfileScopeError("profile and session_id resolve to different profiles")
+    if live_session:
+        return session_home
+    if requested_profile:
+        return str(explicit_home) if explicit_home is not None else None
+    if profile_sensitive and session_id:
+        raise ProfileScopeError("profile-sensitive RPC requires an explicit profile when session_id is not live")
+    if profile_sensitive:
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            raise ProfileScopeError(
+                "profile-sensitive RPC requires profile or a live session_id on a multi-profile backend")
+    return None
+
+
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s full runtime scope (HERMES_HOME + secrets + terminal policy) around a
     handler, so config.yaml ``${VAR}`` refs, provider credential checks and ``.env`` writes resolve to
@@ -607,16 +647,18 @@ def _profile_scoped(handler):
     No ``profile`` param but a ``session_id`` naming a live session: that session's ``profile_home``
     is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
     session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
-    LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
+    LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669). If both selectors are
+    supplied they must resolve to the same home. Handlers marked ``_hermes_profile_sensitive`` also
+    require one usable selector once multiplexing is active.
     """
+    profile_sensitive = bool(getattr(handler, "_hermes_profile_sensitive", False))
+
     def wrapper(rid, params):
         p = params if isinstance(params, dict) else {}
-        if str(p.get("profile") or "").strip():
-            home = _profile_home(p.get("profile"))
-            profile_home = str(home) if home else None
-        else:
-            session = _sessions.get(str(p.get("session_id") or ""))
-            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+        try:
+            profile_home = _resolve_rpc_profile_home(p, profile_sensitive=profile_sensitive)
+        except ProfileScopeError as exc:
+            return _err(rid, 4001, str(exc))
         with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper

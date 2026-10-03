@@ -504,5 +504,10 @@ def _(rid, params: dict) -> dict:
     return handler(rid, params, key, value, session)
 
 
+# Read by server._profile_scoped at registry install time. A single-profile TUI keeps its legacy
+# unbound calls; once this backend multiplexes, config writes need an explicit profile or live session.
+setattr(_, "_hermes_profile_sensitive", True)
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

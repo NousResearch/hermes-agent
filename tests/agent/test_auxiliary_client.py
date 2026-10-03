@@ -3034,12 +3034,17 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert "extra_body" not in captured
 
     def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        messages_client = AnthropicAuxiliaryClient(
+            SimpleNamespace(), "claude-fable-5", "fixture-key", "https://example.test/v1")
         anthropic_kwargs = _build_call_kwargs(
             "anthropic",
             "claude-fable-5",
             [{"role": "user", "content": "hi"}],
             reasoning_config={"enabled": True, "effort": "medium"},
             base_url="https://api.anthropic.com/v1",
+            client=messages_client,
         )
         assert anthropic_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
 
@@ -3049,6 +3054,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
             [{"role": "user", "content": "hi"}],
             reasoning_config={"enabled": True, "effort": "medium"},
             base_url="https://example.test/anthropic/v1",
+            client=messages_client,
         )
         assert proxy_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
 
@@ -3070,9 +3076,13 @@ class TestAnthropicAuxiliaryReasoningTranslation:
 
         assert providers.get_provider_profile("commandcode-anthropic") is not None
         rc = {"enabled": False}
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+        client = AnthropicAuxiliaryClient(
+            SimpleNamespace(), "claude-haiku-4-5-20251001", "fixture-key",
+            "https://api.commandcode.ai/provider/v1")
         kwargs = _build_call_kwargs(
             "commandcode-anthropic", "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}],
-            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1", client=client,
         )
         assert kwargs["_reasoning_config"] == rc
         chat_kwargs = _build_call_kwargs(

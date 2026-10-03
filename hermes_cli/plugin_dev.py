@@ -143,7 +143,13 @@ def _load_model_provider(copied: Path, manifest):
     before = dict(providers._REGISTRY)
     before_aliases = dict(providers._ALIASES)
     try:
-        providers._import_plugin_dir(copied, "user")
+        try:
+            providers._import_plugin_dir(copied, "user", strict=True)
+        except Exception as exc:
+            # Discovery swallows this into a warning; a validator must not. A plugin that raises
+            # after register_provider(...) still leaves a profile behind, so the registration
+            # check below cannot tell it apart from a plugin that loaded cleanly.
+            raise _DoctorLoadError(f"import raised {type(exc).__name__}: {exc}") from exc
         registered = tuple(sorted(
             name for name, profile in providers._REGISTRY.items() if before.get(name) is not profile))
         if not registered:

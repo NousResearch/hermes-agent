@@ -390,10 +390,14 @@ def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
 
 
-def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> None:
+def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "",
+                       strict: bool = False) -> None:
     """Import a single plugin directory so it self-registers.
 
     ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
+    ``strict=True`` re-raises the import exception after the same ``sys.modules`` cleanup, so a
+    validating caller can report the failure instead of judging the plugin by whatever it
+    registered before it raised.
     """
     global _current_source
     init_file = plugin_dir / "__init__.py"
@@ -427,6 +431,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+        if strict:
+            raise
     finally:
         _current_source = None
 

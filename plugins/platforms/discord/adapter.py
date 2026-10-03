@@ -80,6 +80,9 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+# Hermes's own auto-thread title renames must not re-key the pinned prompt
+# (fixes #131242): cap remembered renames so the dict stays bounded.
+_SEMANTIC_THREAD_RENAMES_MAX = 2000
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -1113,6 +1116,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # (replaced_name, hermes_set_name) per thread id for Hermes's own title
+        # renames; _format_thread_chat_name masks the set name back to the
+        # replaced name so turn 2 keeps the pinned prompt (fixes #131242).
+        # Retirement of moderator-overwritten records is #131614 (follow-up).
+        self._semantic_thread_renames: Dict[str, tuple] = {}
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -5456,6 +5464,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Renamed Discord thread %s from %r to %r",
                 self.name, thread_id, current_name, cleaned,
             )
+            renames = getattr(self, "_semantic_thread_renames", None)
+            if renames is not None and current_name:
+                renames[str(thread_id)] = (current_name, cleaned)
+                while len(renames) > _SEMANTIC_THREAD_RENAMES_MAX:
+                    renames.pop(next(iter(renames)))
             return True
         except Exception:
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
@@ -5795,6 +5808,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
+        renamed = getattr(self, "_semantic_thread_renames", {}).get(str(getattr(thread, "id", "")))
+        if renamed and renamed[1] == thread_name:
+            thread_name = renamed[0]
         parent = getattr(thread, "parent", None)
         guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
         guild_name = getattr(guild, "name", None)

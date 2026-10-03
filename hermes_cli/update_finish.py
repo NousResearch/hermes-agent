@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -46,6 +47,26 @@ def _restore_plan(data):
     values["runtimes"] = [RuntimeRecord(**{key: value for key, value in row.items() if key in names})
                           for row in data.get("runtimes", [])]
     return UpdatePlan(**values)
+
+
+def _completion_failure_detail(exc: BaseException, *, limit: int = 12) -> str:
+    """Render a takeover-completion failure with its captured output tail.
+
+    Build steps raise CalledProcessError carrying the failure tail, but
+    str(exc) keeps only the argv/exit status, so receipts logged a bare
+    exit code (npm 1 / 4294967295) with nothing diagnosable (#124040).
+    Plain exceptions pass through unchanged."""
+    # ponytail: last-`limit`-lines tail; widen the cap if build logs need more context.
+    base = str(exc)
+    blob = ""
+    if isinstance(exc, subprocess.CalledProcessError):
+        blob = exc.stderr or exc.output or ""
+        if isinstance(blob, bytes):
+            blob = blob.decode("utf-8", "replace")
+    lines = [line for line in str(blob).splitlines() if line.strip()]
+    if not lines:
+        return base
+    return base + "\nLast output:\n" + "\n".join(lines[-limit:])
 
 
 def main(context: Path, result: Path) -> int:
@@ -117,7 +138,7 @@ def main(context: Path, result: Path) -> int:
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:
-        update_receipt.record_step("historical_completion", False, str(exc))
+        update_receipt.record_step("historical_completion", False, _completion_failure_detail(exc))
         print(f"Update completion failed: {exc}", file=sys.stderr, flush=True)
     finally:
         if code and request.get("gateway_mode"):

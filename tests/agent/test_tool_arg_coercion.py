@@ -247,3 +247,71 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Deep-nesting depth budget (#132016) ────────────────────────────────────
+
+
+class TestDeepNestingBudget:
+    """Deep (schema, args) pairs must not exhaust the Python stack in the
+    schema-guided normalizer. json.loads already accepts ~1000 nesting levels,
+    so the payload reaches this walker with its depth intact; deep fixtures are
+    built by iteration (not json.loads) because the C scanner is the first to
+    die on some Python versions, which would mask the walker's own budget."""
+
+    def test_deep_object_chain_does_not_recursion_error(self):
+        schema = {"type": "string"}
+        for _ in range(5_000):
+            schema = {"type": "object", "properties": {"x": schema}}
+        value = "leaf"
+        for _ in range(5_000):
+            value = {"x": value}
+        out = _normalize_json_strings_for_schema(value, schema)
+        assert isinstance(out, dict) and "x" in out
+
+    def test_within_budget_deep_json_string_still_parsed(self):
+        # 99 containers sit inside the budget: the JSON-encoded object string at
+        # the deepest position must still be parsed (budget is not a blanket no-op).
+        schema = {"type": "object", "properties": {"k": {"type": "integer"}}}
+        value = '{"k": 1}'
+        for _ in range(99):
+            schema = {"type": "object", "properties": {"x": schema}}
+            value = {"x": value}
+        out = _normalize_json_strings_for_schema(value, schema)
+        node = out
+        for _ in range(99):
+            node = node["x"]
+        assert node == {"k": 1}
+
+    def test_past_budget_deep_json_string_left_as_is(self):
+        # Past the 100-container budget the walker stops descending: the deep
+        # JSON-encoded string survives unparsed while a shallow sibling is still
+        # normalized (conservative truncation, not a blanket rejection).
+        deep_schema = {"type": "object", "properties": {"k": {"type": "integer"}}}
+        deep_value = '{"k": 1}'
+        for _ in range(150):
+            deep_schema = {"type": "object", "properties": {"x": deep_schema}}
+            deep_value = {"x": deep_value}
+        schema = {"type": "object", "properties": {
+            "x": deep_schema,
+            "shallow": {"type": "object", "properties": {"k": {"type": "integer"}}},
+        }}
+        out = _normalize_json_strings_for_schema(
+            {"x": deep_value, "shallow": '{"k": 2}'}, schema)
+        assert out["shallow"] == {"k": 2}
+        node = out["x"]
+        for _ in range(150):
+            node = node["x"]
+        assert node == '{"k": 1}'
+
+    def test_coerce_tool_args_deep_pair_end_to_end(self):
+        schema = {"type": "string"}
+        for _ in range(5_000):
+            schema = {"type": "object", "properties": {"x": schema}}
+        value = "leaf"
+        for _ in range(5_000):
+            value = {"x": value}
+        full = {"parameters": {"type": "object", "properties": {"x": schema}}}
+        with patch("tools.arg_coercion.registry.get_schema", return_value=full):
+            out = coerce_tool_args("probe_deep", {"x": value})
+        assert isinstance(out, dict) and "x" in out

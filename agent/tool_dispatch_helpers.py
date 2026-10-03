@@ -69,6 +69,11 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
+# The marker scan walks the model-emitted tool arguments, whose nesting depth is untrusted
+# (json.loads accepts ~1000 levels); past this budget the scan simply stops descending
+# instead of exhausting the Python stack (#132016).
+_MAX_ARG_WALK_DEPTH = 100
+
 def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     """Paths whose values contain model-visible context-compression artifacts.
 
@@ -83,20 +88,24 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
 
     found: list[str] = []
 
-    def _walk(value: Any, path: str) -> None:
+    def _walk(value: Any, path: str, depth: int = 0) -> None:
         if isinstance(value, str):
             if _COMPRESSION_MARKER_ARTIFACT_RE.search(value):
                 found.append(path)
             return
         if isinstance(value, dict):
+            if depth >= _MAX_ARG_WALK_DEPTH:
+                return
             for key, child in value.items():
                 key_text = str(key)
                 child_path = f"{path}.{key_text}" if key_text.isidentifier() else f"{path}[{key_text!r}]"
-                _walk(child, child_path)
+                _walk(child, child_path, depth + 1)
             return
         if isinstance(value, (list, tuple)):
+            if depth >= _MAX_ARG_WALK_DEPTH:
+                return
             for index, child in enumerate(value):
-                _walk(child, f"{path}[{index}]")
+                _walk(child, f"{path}[{index}]", depth + 1)
 
     _walk(args, "$")
     return found

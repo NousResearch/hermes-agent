@@ -16,6 +16,12 @@ from tools.registry import registry
 # that name and log-based tooling filters on it.
 logger = logging.getLogger("model_tools")
 
+# Tool schemas come from untrusted providers (MCP servers / plugins) and the model's
+# arguments are equally untrusted; json.loads accepts ~1000 levels of nesting, so the
+# schema-guided walker below needs its own budget or a deep pair exhausts the Python
+# stack (#132016). Past the budget deeper containers are left as-is (conservative).
+_MAX_ARG_DEPTH = 100
+
 
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
@@ -91,12 +97,13 @@ def _schema_accepts_kind(schema: Any, kind: str) -> bool:
                for union_key in ("anyOf", "oneOf", "allOf"))
 
 
-def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
+def _normalize_json_strings_for_schema(value: Any, schema: Any, depth: int = 0) -> Any:
     """Recursively parse JSON-encoded strings where the schema expects array/object.
 
     Schema-guided: a string is only parsed when its schema position expects a
     container, so legitimate JSON-looking ``type: string`` fields survive.
     Returns the same object when nothing changed (identity = cheap no-op check).
+    Recursion is bounded by ``_MAX_ARG_DEPTH``; deeper containers pass through.
 
     Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
     """
@@ -121,17 +128,25 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         items_schema = schema.get("items")
         if not isinstance(items_schema, dict):
             return value
-        out = [_normalize_json_strings_for_schema(item, items_schema) for item in value]
+        if depth >= _MAX_ARG_DEPTH:
+            logger.warning("coerce_tool_args: argument nesting reaches %d levels; "
+                           "deeper JSON-encoded strings are left untouched", _MAX_ARG_DEPTH)
+            return value
+        out = [_normalize_json_strings_for_schema(item, items_schema, depth + 1) for item in value]
         return out if any(n is not o for n, o in zip(out, value)) else value
 
     if isinstance(value, dict):
         props = schema.get("properties")
         if not isinstance(props, dict):
             return value
+        if depth >= _MAX_ARG_DEPTH:
+            logger.warning("coerce_tool_args: argument nesting reaches %d levels; "
+                           "deeper JSON-encoded strings are left untouched", _MAX_ARG_DEPTH)
+            return value
         out = dict(value)
         for k, prop_schema in props.items():
             if k in value and isinstance(prop_schema, dict):
-                out[k] = _normalize_json_strings_for_schema(value[k], prop_schema)
+                out[k] = _normalize_json_strings_for_schema(value[k], prop_schema, depth + 1)
         return out if any(out[k] is not v for k, v in value.items()) else value
 
     return value

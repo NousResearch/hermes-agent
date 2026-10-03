@@ -19,6 +19,30 @@ def _tool(name: str, parameters: dict) -> dict:
     return {"type": "function", "function": {"name": name, "parameters": parameters}}
 
 
+def test_unrename_tool_args_deep_nesting_budget():
+    """#132016: a deep (schema, args) pair must not exhaust the stack in the
+    reverse-key mapper; past the budget deeper values pass through as-is."""
+    from tools.schema_sanitizer import unrename_tool_args
+
+    node = {"type": "string"}
+    for _ in range(5_000):
+        node = {"type": "object", "properties": {"x": node}}
+    params = {"type": "object", "properties": {"x": node}}
+    args = "leaf"
+    for _ in range(5_000):
+        args = {"x": args}
+    out = unrename_tool_args(params, args)  # must not raise RecursionError
+    assert isinstance(out, dict) and "x" in out
+
+
+def test_unrename_tool_args_shallow_rename_still_applied():
+    """Inside the budget the reverse mapping still restores wire names."""
+    from tools.schema_sanitizer import unrename_tool_args
+
+    params = {"type": "object", "properties": {"a b": {"type": "string"}}}
+    assert unrename_tool_args(params, {"a_b": "v"}) == {"a b": "v"}
+
+
 def test_object_without_properties_gets_empty_properties():
     tools = [_tool("t", {"type": "object"})]
     out = sanitize_tool_schemas(tools)

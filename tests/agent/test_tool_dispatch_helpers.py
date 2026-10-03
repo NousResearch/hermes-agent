@@ -18,6 +18,32 @@ from agent.tool_dispatch_helpers import (
 )
 
 
+class TestContextPrunedArgumentPathsDepthBudget:
+    """#132016: the compression-marker scan walks untrusted model-emitted args
+    and is depth-bounded — deep nesting must not exhaust the Python stack."""
+
+    MARKER = ("⟪HERMES-CONTEXT-COMPRESSION: 12 of 34 chars omitted here by "
+              "Hermes's context compressor.⟫")
+
+    @staticmethod
+    def _deep(levels: int, leaf):
+        node = leaf
+        for _ in range(levels):
+            node = {"x": node}
+        return node
+
+    def test_deep_args_do_not_recursion_error(self):
+        from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+        out = _context_pruned_argument_paths("probe_deep_tool", self._deep(5_000, "leaf"))
+        assert out == []
+
+    def test_shallow_marker_still_detected_alongside_deep_sibling(self):
+        from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+        args = {"shallow": self.MARKER, "deep": self._deep(200, "leaf")}
+        out = _context_pruned_argument_paths("probe_deep_tool", args)
+        assert out == ["$.shallow"]
+
+
 # =========================================================================
 # Tool classification
 # =========================================================================

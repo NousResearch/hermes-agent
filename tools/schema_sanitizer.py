@@ -21,6 +21,11 @@ _PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
 _UNION_KEYS = ("anyOf", "oneOf")
 _UNION_META_KEYS = ("title", "description", "default", "examples")  # copied onto replacements
 
+# Reverse-mapping recurses over the ORIGINAL registry schema and the model-emitted args —
+# both untrusted (MCP servers / plugins). json.loads accepts ~1000 nesting levels, so this
+# walker needs its own budget: past it, deeper keys simply keep their sanitized names (#132016).
+_MAX_UNRENAME_DEPTH = 100
+
 
 def _empty_object() -> dict:
     return {"type": "object", "properties": {}, "required": []}
@@ -58,9 +63,14 @@ def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
     return renames
 
 
-def unrename_tool_args(params_schema: Any, args: Any) -> Any:
+def unrename_tool_args(params_schema: Any, args: Any, depth: int = 0) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
-    ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
+    ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through.
+    Recursion is bounded by ``_MAX_UNRENAME_DEPTH``; deeper values keep their sanitized keys."""
+    if depth >= _MAX_UNRENAME_DEPTH:
+        logger.warning("schema_sanitizer: argument nesting reaches %d levels; "
+                       "deeper keys keep their sanitized names", _MAX_UNRENAME_DEPTH)
+        return args
     props = params_schema.get("properties") if isinstance(params_schema, dict) else None
     if not isinstance(props, dict) or not isinstance(args, dict):
         return args
@@ -70,9 +80,9 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
         orig = reverse.get(key, key)
         sub = props.get(orig) if isinstance(props.get(orig), dict) else {}
         if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value)
+            value = unrename_tool_args(sub, value, depth + 1)
         elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item) if isinstance(item, dict) else item
+            value = [unrename_tool_args(sub["items"], item, depth + 1) if isinstance(item, dict) else item
                      for item in value]
         out[orig] = value
     return out

@@ -15,6 +15,9 @@ import pytest
         ({"error": "provider refused"}, "provider refused"),
         ({"failed": False, "error": None, "final_response": "nothing to change"}, None),
         ({"final_response": ""}, None),
+        ("lock", None),
+        ("transient_block", None),
+        ({"failed": True, "compression_deferred": True, "error": "provider refused", "final_response": "partial work"}, "provider refused"),
         (RuntimeError("provider raised"), "error: provider raised"),
     ],
 )
@@ -22,6 +25,15 @@ def test_review_outcome_reaches_durable_reports(result, expected_error, tmp_path
     from agent import curator
     from tools import skill_usage
     import run_agent
+
+    if isinstance(result, str):
+        from types import SimpleNamespace
+        from agent.conversation_loop import _compression_deferred_result
+
+        result = _compression_deferred_result(
+            SimpleNamespace(session_id="review-fixture", _flush_status_buffer=lambda: None),
+            [], 1, reason=result,
+        )
 
     home = tmp_path / "home"
     skill = home / "skills" / "sample"
@@ -63,6 +75,10 @@ def test_review_outcome_reaches_durable_reports(result, expected_error, tmp_path
         assert "error" in summaries[-1].lower()
     else:
         assert payload["llm_summary"] == (result["final_response"] or "no change")
+        assert "LLM pass error:" not in markdown
+        if result.get("compression_deferred"):
+            assert result["final_response"] in markdown
+            assert result["final_response"] in state["last_run_summary"]
     if not isinstance(result, Exception):
         assert payload["llm_final"] == result.get("final_response", "")
         assert payload["tool_call_counts"] == {"skill_view": 1}

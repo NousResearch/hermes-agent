@@ -1123,7 +1123,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
         error = conv_result.get("error") if isinstance(conv_result, dict) else None
-        if isinstance(conv_result, dict) and (conv_result.get("failed") or error):
+        # Deferred compression carries its retry notice in `error`, but is not
+        # a failed review. An explicit failure still takes precedence.
+        deferred = isinstance(conv_result, dict) and conv_result.get("compression_deferred")
+        if isinstance(conv_result, dict) and (conv_result.get("failed") or (error and not deferred)):
             result_meta["error"] = str(error or "review failed")
             summary = f"error: {result_meta['error']}"
         else:

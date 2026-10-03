@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -14,6 +15,13 @@ import httpx
 DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
 DEFAULT_TOKEN_SKEW_SECONDS = 120
+
+# Defensive body-size cap for Microsoft Graph token-endpoint responses.  Tokens are small
+# JSON payloads (typically < 4 KB), but a hostile, broken, or proxy-interposed endpoint
+# could stream an unbounded body before ``response.json()`` raises.  The cap is enforced
+# while reading the streamed body (see ``_read_capped_body``), so the provider never buffers
+# more than this from a single response.  (#54974)
+_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES = 64 * 1024
 
 _REQUIRED_ENV = ("MSGRAPH_TENANT_ID", "MSGRAPH_CLIENT_ID", "MSGRAPH_CLIENT_SECRET")
 
@@ -129,13 +137,23 @@ class MicrosoftGraphTokenProvider:
         data = {"grant_type": "client_credentials", "client_id": self.credentials.client_id,
                 "client_secret": self.credentials.client_secret, "scope": self.credentials.scope}
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout), transport=self._transport) as client:
-            response = await client.post(self.credentials.token_url, data=data,
-                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
-        if response.status_code >= 400:
-            raise MicrosoftGraphTokenError("Microsoft Graph token request failed with HTTP "
-                                           f"{response.status_code}: {_extract_error_detail(response)}")
+            # Streamed, not ``client.post``: the cap has to gate the read itself.  Reading
+            # ``response.content`` first would buffer the whole body and only then measure it,
+            # which is exactly what #54974 asks us not to do.  Body and status are taken inside
+            # the context manager because a streamed response is only readable there.
+            async with client.stream("POST", self.credentials.token_url, data=data,
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"}) as response:
+                status_code, (body, seen) = response.status_code, await _read_capped_body(response)
+        if status_code >= 400:
+            raise MicrosoftGraphTokenError(
+                f"Microsoft Graph token request failed with HTTP {status_code}: "
+                f"{_extract_error_detail(body, seen)}")
+        if body is None:
+            raise MicrosoftGraphTokenError(
+                "Microsoft Graph token response body exceeds cap "
+                f"({seen} > {_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES} bytes)")
         try:
-            payload = response.json()
+            payload = json.loads(body)
         except ValueError as exc:
             raise MicrosoftGraphTokenError("Microsoft Graph token response was not valid JSON.") from exc
         access_token = str(payload.get("access_token") or "").strip()
@@ -150,13 +168,41 @@ class MicrosoftGraphTokenProvider:
                                  str(payload.get("token_type") or "Bearer").strip() or "Bearer")
 
 
-def _extract_error_detail(response: httpx.Response) -> str:
-    """Best human-readable detail from a token-endpoint error body: ``error_description``,
-    then the Graph-style ``error`` object/string, then a bare ``code``, then raw text."""
+async def _read_capped_body(response: httpx.Response) -> tuple[bytes | None, int]:
+    """Read ``response``'s decoded body, stopping at ``_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES``.
+
+    Returns ``(body, seen)``.  ``body is None`` means the response exceeds the cap and was
+    deliberately left unread past it; ``seen`` is the byte count observed up to the abort (a
+    lower bound on the real body, or the advertised ``Content-Length`` when that is honest).
+    Decoded, not raw, bytes are counted, so a ``Content-Encoding`` that inflates past the cap
+    is rejected at its inflated size.
+    """
+    cap = _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES
+    declared = response.headers.get("content-length", "").strip()
+    if declared.isdigit() and int(declared) > cap:
+        return None, int(declared)  # honest oversize: refuse before reading a single byte
+    chunks: list[bytes] = []
+    seen = 0
+    async for chunk in response.aiter_bytes():
+        seen += len(chunk)
+        if seen > cap:
+            return None, seen
+        chunks.append(chunk)
+    return b"".join(chunks), seen
+
+
+def _extract_error_detail(body: bytes | None, seen: int) -> str:
+    """Best human-readable detail from an already-read token-endpoint error body:
+    ``error_description``, then the Graph-style ``error`` object/string, then a bare ``code``,
+    then raw text.  ``body is None`` (over-cap, unbounded, or proxy-interposed) yields a
+    cap-notice instead of decoding an oversized body."""
+    if body is None:
+        return (f"(token-error body exceeds {_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES}-byte cap; "
+                f"{seen} bytes seen)")
     try:
-        payload = response.json()
+        payload = json.loads(body)
     except ValueError:
-        return response.text.strip() or "unknown error"
+        return body.decode("utf-8", errors="replace").strip() or "unknown error"
     if not isinstance(payload, dict):
         return str(payload)
     if isinstance(payload.get("error_description"), str):

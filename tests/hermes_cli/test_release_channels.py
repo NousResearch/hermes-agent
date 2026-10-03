@@ -140,6 +140,27 @@ def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     assert len(calls) == 1
     assert waits == []
 
+def test_geo_blocked_object_is_unavailable_not_missing(monkeypatch):
+    """A 403 behind a proxy or geo-block hides records that exist.
+
+    Callers that may legitimately fall back to Git have to see "could not read"
+    apart from "was never published"; folding both into ChannelNotFound would
+    make a blocked archive indistinguishable from a retired channel.
+    """
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import (
+        ChannelError, ChannelNotFound, ChannelReader, ChannelUnavailable)
+
+    def opener(request, timeout):
+        raise HTTPError(request.full_url, 403, "Forbidden", Message(), None)
+
+    reader = ChannelReader("https://releases.example", opener=opener)
+    with pytest.raises(ChannelUnavailable, match="HTTP 403"):
+        reader.read_bytes("releases/channels/main.json")
+    assert issubclass(ChannelUnavailable, ChannelError)
+    assert not issubclass(ChannelUnavailable, ChannelNotFound)
+
 
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json

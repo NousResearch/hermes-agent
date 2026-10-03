@@ -27,6 +27,15 @@ class ChannelNotFound(ChannelError):
     pass
 
 
+class ChannelUnavailable(ChannelError):
+    """The archive could not be read: transport failure, DNS, or an HTTP status other than 404.
+
+    Deliberately distinct from ChannelNotFound. An unreadable object is not evidence that the
+    record is unpublished: a proxy, corporate firewall or geo-block answering 403 hides records
+    that do exist, so a caller allowed to fall back to Git has to tell the two apart.
+    """
+
+
 def _match(pattern: str, value: object, label: str) -> str:
     if not isinstance(value, str) or re.fullmatch(pattern, value, re.ASCII) is None:
         raise ChannelError(f"Invalid {label}")
@@ -300,9 +309,9 @@ class ChannelReader:
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
-            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
+            raise ChannelUnavailable(f"Channel read unavailable: HTTP {exc.code}") from exc
         except (OSError, URLError) as exc:
-            raise ChannelError("Channel read unavailable") from exc
+            raise ChannelUnavailable("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:
             raise ChannelError("Channel metadata exceeds size limit")
         if sha256 is not None and hashlib.sha256(body).hexdigest() != sha256:

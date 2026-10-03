@@ -171,6 +171,25 @@ def test_unpublished_main_record_keeps_following_the_git_branch(source, monkeypa
     with pytest.raises(ChannelNotFound):
         source_releases.resolve_source_target("stable", ["git"], source.root)
 
+def test_unreadable_main_record_keeps_following_the_git_branch(source, monkeypatch):
+    """A 403 from the archive (proxy, firewall, geo-block) is not evidence that
+    main was unpublished, so the default channel must stay updatable by git
+    instead of failing the check — while other channels stay fail-closed."""
+    from hermes_cli import source_check
+    from hermes_cli.release_channels import ChannelUnavailable
+
+    set_install_channel("main", source.root)
+    def unreadable(name, repository):
+        raise ChannelUnavailable("Channel read unavailable: HTTP 403")
+    monkeypatch.setattr(source_releases, "_resolve_channel", unreadable)
+    target = source_releases.resolve_source_target("main", ["git"], source.root)
+    assert target.branch == "main" and target.commit is None
+    status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
+    assert "error" not in status, status
+    assert status["targetSha"] == source.commits[2]
+    with pytest.raises(ChannelUnavailable):
+        source_releases.resolve_source_target("stable", ["git"], source.root)
+
 
 def test_passive_check_reports_retirement_without_adopting_it(source, monkeypatch):
     from hermes_cli import source_check, banner

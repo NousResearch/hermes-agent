@@ -12,6 +12,7 @@ Resolution order:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -92,19 +93,48 @@ def _parse_nonnegative(value: str | None) -> int | None:
     return parsed if parsed >= 0 else None
 
 
+_CALVER_TAG_RE = re.compile(r"^v(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.\d+)*$")
+
+
+def _newest_calver_tag(repo_dir: Path) -> str | None:
+    """The newest CalVer release tag merged into HEAD, or None when there is none.
+
+    ponytail: NOT ``git describe``, which reports the tag with the fewest commits
+    to HEAD. On a history that merges release lines that is not the newest release
+    the tree contains — on this repo it named 0.21.3 while 0.21.5 was already
+    merged into HEAD — and an under-reported base version makes every
+    ``requires_hermes`` floor above it skip a plugin the running code supports.
+    The tag name IS the release date, so the greatest (year, month, day) is the
+    newest release; only that one tag's pyproject is read, keeping this at the
+    two git probes describe already cost on the startup-banner path.
+    """
+    tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v2[0-9][0-9][0-9].*")
+    if not tags:
+        return None
+    newest: tuple[tuple[int, int, int], str] | None = None
+    for line in tags.splitlines():
+        tag = line.strip()
+        match = _CALVER_TAG_RE.match(tag)
+        if match is None:
+            continue
+        key = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if newest is None or key > newest[0]:
+            newest = (key, tag)
+    return newest[1] if newest else None
+
+
 def _calver_release_version(repo_dir: Path) -> tuple[str, int] | None:
-    """The version the nearest CalVer release shipped, and the commits since it.
+    """The version the newest CalVer release shipped, and the commits since it.
 
     Releases before semver tags existed are tagged ``vYYYY.M.D`` only; the
     version users actually run is in that tag's pyproject. Without this, a
     checkout past such a release would compare as "unknown" against plugins'
     ``requires_hermes``.
     """
-    described = _run_git(repo_dir, "describe", "--tags", "--long", "--match", "v2[0-9][0-9][0-9].*", "HEAD")
-    if not described:
+    tag = _newest_calver_tag(repo_dir)
+    if tag is None:
         return None
-    tag, count, _ = described.rsplit("-", 2)
-    distance = _parse_nonnegative(count)
+    distance = _parse_nonnegative(_run_git(repo_dir, "rev-list", "--count", f"{tag}..HEAD"))
     try:
         project = tomllib.loads(_run_git(repo_dir, "show", f"{tag}:pyproject.toml") or "").get("project", {})
     except tomllib.TOMLDecodeError:

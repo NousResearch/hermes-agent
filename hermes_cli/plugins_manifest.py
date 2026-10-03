@@ -463,6 +463,14 @@ def version_satisfies(spec: str, current: str) -> bool:
     versions are permissive — no PEP 440 dependency for a one-field manifest gate."""
     cur = _version_tuple(current)
     if cur is None:
+        # ponytail: FAIL OPEN, deliberately. A checkout with no stamp and no
+        # readable release tag resolves to "unknown" (CI's tagless clone, a
+        # source ZIP), and this gate is the only thing standing between that
+        # tree and a plugin. Fail-closed would silently drop capability the user
+        # never chose to give up, with no way to tell them why; fail-open loads
+        # the plugin, and a genuinely incompatible one fails loudly at import
+        # where the plugin's own name is in the trace. Unknowable version, not
+        # a known-bad one.
         return True
     ops = {">=": cur.__ge__, "<=": cur.__le__, "==": cur.__eq__, "!=": cur.__ne__, ">": cur.__gt__, "<": cur.__lt__}
     for clause in filter(None, (c.strip() for c in spec.split(","))):

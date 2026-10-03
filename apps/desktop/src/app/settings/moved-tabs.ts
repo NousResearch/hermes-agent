@@ -7,6 +7,17 @@ const MOVED_TO_CAPABILITIES: Record<string, { param: string; tab: string }> = {
 
 export function movedSettingsTabRedirect(search: string): null | string {
   const params = new URLSearchParams(search)
+
+  if (
+    params.get('tab') === 'config:advanced' &&
+    (params.get('page') === 'delegation' || params.get('field')?.startsWith('delegation.'))
+  ) {
+    params.set('tab', 'config:model')
+    params.set('page', 'delegation')
+
+    return `/settings?${params}`
+  }
+
   const moved = MOVED_TO_CAPABILITIES[params.get('tab') ?? '']
 
   if (moved === undefined) {

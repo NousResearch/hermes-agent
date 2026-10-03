@@ -11,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { confirm } from '@/store/confirm'
+import { $activeConnectionId } from '@/store/connections'
 import {
   $dataUrlReadMaxMb,
   clampDataUrlReadMaxMb,
@@ -69,12 +70,13 @@ export function ConfigSettings({
   // when the target profile changes — the same guarantee useOnProfileSwitch
   // provides for app-wide switches, without hand-clearing each piece.
   const scopeProfile = useStore($settingsRequestProfile)
+  const connectionId = useStore($activeConnectionId)
 
   return (
     <ConfigSettingsInner
       activeSectionId={activeSectionId}
       importInputRef={importInputRef}
-      key={scopeProfile ?? '__active__'}
+      key={JSON.stringify([connectionId, scopeProfile ?? '__active__'])}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
       scopeProfile={scopeProfile}
@@ -376,7 +378,7 @@ function ConfigSettingsInner({
   const renderPage = (children: ReactNode) => (
     <SettingsContent>
       <SettingsProfileScope className="mb-5" />
-      {activeSectionId === 'model' && (
+      {activeSectionId === 'model' && subpage !== 'delegation' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
           <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
         </div>
@@ -434,6 +436,11 @@ function ConfigSettingsInner({
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
 
+  const filteredVisibleFields =
+    activeSectionId === 'model' && (subpage === undefined || subpage === 'delegation')
+      ? visibleFields.filter(([key]) => key !== 'delegation.provider')
+      : visibleFields
+
   const showEmptyState =
     visibleFields.length === 0 &&
     (subpage === undefined
@@ -483,11 +490,17 @@ function ConfigSettingsInner({
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : visibleFields.length === 0 ? null : (
+      ) : filteredVisibleFields.length === 0 ? null : (
         <div className="grid gap-1">
-          {visibleFields.map(([key, field]) => (
+          {filteredVisibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
+                delegationBaseUrl={
+                  key === 'delegation.model' ? String(getNested(config, 'delegation.base_url') ?? '') : undefined
+                }
+                delegationProvider={
+                  key === 'delegation.model' ? String(getNested(config, 'delegation.provider') ?? '') : undefined
+                }
                 descriptionExtra={
                   key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                     <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
@@ -499,9 +512,23 @@ function ConfigSettingsInner({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
+                onDelegationChange={({ model: nextModel, provider: nextProvider, resetDirectEndpoint }) => {
+                  let next = setNested(
+                    setNested(config, 'delegation.model', nextModel),
+                    'delegation.provider',
+                    nextProvider
+                  )
+
+                  if (resetDirectEndpoint) {
+                    next = setNested(setNested(next, 'delegation.base_url', ''), 'delegation.api_key', '')
+                  }
+
+                  updateConfig(next)
+                }}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}
+                scope={writeScope ?? scopeProfile}
                 value={getNested(config, key)}
               />
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (

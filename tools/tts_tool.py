@@ -40,11 +40,13 @@ from tools.tts_command_provider import (
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
-    _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
+    _repair_ogg_container, _resolve_audio_delivery_profile, _section, _split_text_for_tts)
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
-from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from tools.tts_tool_local import (
+    _generate_kittentts, _generate_neutts, _generate_piper_tts, _neutts_output_format,
+)
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
@@ -282,7 +284,8 @@ def _session_platform() -> tuple:
 
 
 def _resolve_output_base(
-    output_path: Optional[str], provider: str, command_provider_config: Optional[Dict[str, Any]], want_opus: bool,
+    output_path: Optional[str], provider: str, command_provider_config: Optional[Dict[str, Any]],
+    want_opus: bool, tts_config: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Pick the output file -> ``(Path, None)`` or ``(None, error_json)``.
 
@@ -315,6 +318,8 @@ def _resolve_output_base(
     else:
         if command_provider_config is not None:
             ext = _get_command_tts_output_format(command_provider_config)
+        elif provider == "neutts":
+            ext = _neutts_output_format(_section(tts_config, "neutts"))
         else:
             ext = "ogg" if want_opus and provider in _NATIVE_OPUS_PROVIDERS else "mp3"
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -448,7 +453,7 @@ def text_to_speech_tool(
     platform, want_opus = _session_platform()
     delivery_profile = _resolve_audio_delivery_profile(platform, tts_config)
     base_path, error = _resolve_output_base(
-        output_path, provider, command_provider_config, want_opus)
+        output_path, provider, command_provider_config, want_opus, tts_config)
     if error:
         return error
     generated_artifacts: set[str] = set()

@@ -90,6 +90,37 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+def test_recursive_delete_requires_a_locked_root(local_files_client):
+    client, home = local_files_client
+    target = home / "scratch"
+    nested = target / "nested" / "keep.txt"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("keep", encoding="utf-8")
+
+    response = client.request(
+        "DELETE", "/api/files", json={"path": str(target), "recursive": True},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Recursive directory deletion requires a managed files root"
+    assert nested.read_text(encoding="utf-8") == "keep"
+
+
+def test_recursive_delete_stays_available_within_locked_root(forced_files_client):
+    client, root = forced_files_client
+    target = root / "scratch"
+    nested = target / "nested" / "delete.txt"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("delete", encoding="utf-8")
+
+    response = client.request(
+        "DELETE", "/api/files", json={"path": str(target), "recursive": True},
+    )
+
+    assert response.status_code == 200
+    assert not target.exists()
+
+
 
 
 @pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])

@@ -81,6 +81,7 @@ gateway:
     running_processes: "**Выполняющиеся фоновые процессы:** {count}"
     async_jobs: "**Асинхронные задачи шлюза:** {count}"
     background_delegations: "**Фоновые делегирования:** {count}"
+    plugin_status: "**Статус плагинов:** {count}"
     none: "Нет активных агентов или выполняющихся задач."
     state_starting: "запускается"
     state_running: "выполняется"

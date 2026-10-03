@@ -86,6 +86,7 @@ gateway:
     running_processes: "**Processus d'arrière-plan en cours :** {count}"
     async_jobs: "**Tâches asynchrones du gateway :** {count}"
     background_delegations: "**Délégations en arrière-plan :** {count}"
+    plugin_status: "**État des plugins :** {count}"
     none: "Aucun agent actif ni tâche en cours."
     state_starting: "démarrage"
     state_running: "en cours"

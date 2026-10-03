@@ -23,6 +23,48 @@ logger = logging.getLogger("gateway.run")
 
 _LIST_CAP = 12  # /agents shows at most this many rows per section
 
+# Bounded plugin status lines for /agents (background-work status providers).
+# Providers receive ONLY the session key (session isolation: no agent object,
+# no cross-session data) and return a line or list of lines. Malformed output
+# (non-string payloads, Nones) and raising providers are ignored fail-open.
+AGENTS_PLUGIN_PROVIDER_CAP = 4  # at most this many providers consulted
+AGENTS_PLUGIN_LINES_CAP = 6  # at most this many plugin lines rendered
+AGENTS_PLUGIN_LINE_CHARS = 160  # per-line clip
+
+_agents_status_providers: list = []
+
+
+def register_agents_status_provider(fn) -> None:
+    if callable(fn) and not any(fn is existing for existing in _agents_status_providers):
+        _agents_status_providers.append(fn)
+
+
+def reset_agents_status_providers_for_tests() -> None:
+    del _agents_status_providers[:]
+
+
+def agents_plugin_status_lines(session_key: str) -> list:
+    lines: list = []
+    for provider in list(_agents_status_providers)[:AGENTS_PLUGIN_PROVIDER_CAP]:
+        try:
+            result = provider(session_key)
+        except Exception:
+            continue
+        if isinstance(result, str):
+            result = [result]
+        if not isinstance(result, (list, tuple)):
+            continue
+        for item in result:
+            if not isinstance(item, str):
+                continue
+            text = item.strip()
+            if not text:
+                continue
+            lines.append(_clip(text, AGENTS_PLUGIN_LINE_CHARS))
+            if len(lines) >= AGENTS_PLUGIN_LINES_CAP:
+                return lines
+    return lines
+
 
 def _clean_str(value: Any) -> str:
     """Strip and return a non-empty string value, or empty string."""
@@ -486,7 +528,11 @@ class GatewayStatusCommandsMixin:
         if delegations:
             lines += ["", t("gateway.agents.background_delegations", count=len(delegations))]
             lines += _capped_rows(delegations, _agents_delegation_lines)
-        if not (agent_rows or running_processes or background_tasks or delegations):
+        plugin_lines = _quiet_sync(lambda: agents_plugin_status_lines(current_session_key), [])
+        if plugin_lines:
+            lines += ["", t("gateway.agents.plugin_status", count=len(plugin_lines))]
+            lines += [f"- {line}" for line in plugin_lines]
+        if not (agent_rows or running_processes or background_tasks or delegations or plugin_lines):
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)
 

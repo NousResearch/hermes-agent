@@ -147,11 +147,11 @@ def test_whatsapp_identity_fails_closed_without_live_self_chat(monkeypatch, tmp_
     }
 
 
-def test_whatsapp_identity_fails_closed_for_digit_bearing_lid_self_chat(monkeypatch, tmp_path):
+def test_whatsapp_identity_fails_closed_for_lid_self_chat(monkeypatch, tmp_path):
     session_dir = tmp_path / "session"
     session_dir.mkdir()
     (session_dir / "creds.json").write_text(
-        '{"me":{"id":"12345:1@lid","name":"Hermes Self Chat"}}',
+        '{"me":{"id":"15551234567890:1@lid","name":"Hermes Self Chat"}}',
         encoding="utf-8",
     )
     monkeypatch.setattr(_rt_messaging, "_whatsapp_session_path", lambda: session_dir)

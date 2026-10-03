@@ -786,7 +786,14 @@ export function rehydrateLiveSessionStatuses(
     // information. The stream path refuses to clear busy in exactly this window
     // (`awaitingResponse && !sawAssistantPayload`); without the same refusal
     // here a poll lands between submit and first token and darkens the row.
-    const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
+    const localSubmitPending = Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
+    const busy = working || localSubmitPending
+    // A retained runtime can report idle without disappearing from active_list.
+    // That is a terminal turn fact, not merely a spinner update: settle the
+    // stream state too, or the chat keeps awaiting a reply after its row goes
+    // idle. The local-submit guard above prevents an older idle snapshot from
+    // cancelling a turn that has not emitted its first payload yet.
+    const ended = session.status === 'idle' && !localSubmitPending
 
     // Avoid re-arming the watchdog on every poll. Publish only when the
     // authoritative live snapshot differs from the renderer mirror; normal
@@ -795,13 +802,24 @@ export function rehydrateLiveSessionStatuses(
       !existing ||
       existing.storedSessionId !== storedSessionId ||
       existing.busy !== busy ||
-      existing.needsInput !== needsInput
+      existing.needsInput !== needsInput ||
+      (ended && (existing.awaitingResponse || existing.turnLive || existing.streamId !== null))
     ) {
       publishSessionState(runtimeSessionId, {
         ...(existing ?? createClientSessionState(storedSessionId)),
         busy,
         needsInput,
-        storedSessionId
+        storedSessionId,
+        ...(ended && existing
+          ? {
+              awaitingResponse: false,
+              turnLive: false,
+              streamId: null,
+              turnStartedAt: null,
+              pendingBranchGroup: null,
+              messages: sealOpenToolParts(existing.messages)
+            }
+          : {})
       })
     }
 

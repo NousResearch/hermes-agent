@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
+from pydantic import BaseModel
 
 import acp
 from acp.agent.router import build_agent_router
@@ -14,9 +15,11 @@ from acp.schema import (
     InitializeResponse,
     PromptResponse,
     ResumeSessionResponse,
-    SessionModelState,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionModeState,
     SetSessionConfigOptionResponse,
+    SetSessionModeResponse,
     SessionInfo,
     TextContentBlock,
     ToolCallProgress,
@@ -44,10 +47,31 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
-    resp = await agent.new_session(cwd="/tmp")
+async def test_new_session_advertises_modes_and_model_config_option(monkeypatch):
+    """Config-option clients get both selectors; mode-API clients retain the same policy choices."""
+    manager = SessionManager(
+        agent_factory=lambda: SimpleNamespace(
+            model="gpt-5.4", provider="openrouter"
+        )
+    )
+    acp_agent = HermesACPAgent(session_manager=manager)
+    picker_context = MagicMock()
+    picker_context.with_overrides.return_value = picker_context
+    payload = {
+        "providers": [
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "models": ["gpt-5.4"],
+            },
+        ],
+    }
+    monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: picker_context)
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", lambda *a, **k: payload)
 
-    assert resp.config_options is None
+    resp = await acp_agent.new_session(cwd="/tmp")
+
+    assert resp.modes is not None
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -56,9 +80,22 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
         "dont_ask",
     ]
 
+    assert resp.config_options is not None
+    assert len(resp.config_options) == 2
+    model_option = resp.config_options[0]
+    assert isinstance(model_option, SessionConfigOptionSelect)
+    assert model_option.id == "model"
+    assert model_option.current_value == "openrouter:gpt-5.4"
+    assert any(opt.value == "openrouter:gpt-5.4" for opt in model_option.options)
+    assert model_option.category == "model_config"
+    approval = resp.config_options[1]
+    assert approval.id == "edit_approval_policy" and approval.category == "mode"
+    assert approval.current_value == "ask"
+    assert [option.value for option in approval.options] == ["ask", "workspace_session", "session"]
+
 
 @pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+async def test_set_config_option_persists_edit_approval_policy_and_returns_all_options(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
         "edit_approval_policy",
@@ -68,7 +105,8 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    assert [option.id for option in update.config_options] == ["model", "edit_approval_policy"]
+    assert update.config_options[1].current_value == "workspace_session"
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -163,7 +201,7 @@ class TestAuthenticate:
 class TestSessionOps:
 
     @pytest.mark.asyncio
-    async def test_new_session_returns_authenticated_cross_provider_model_state(self):
+    async def test_new_session_returns_authenticated_cross_provider_model_config(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
                 model="gpt-5.4",
@@ -198,13 +236,24 @@ class TestSessionOps:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert isinstance(resp.models, SessionModelState)
-        assert resp.models.current_model_id == "openai-codex:gpt-5.4"
-        assert [model.model_id for model in resp.models.available_models] == [
+        assert resp.config_options is not None
+        assert len(resp.config_options) == 2
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        assert model_option.id == "model"
+        assert model_option.current_value == "openai-codex:gpt-5.4"
+        assert [opt.value for opt in model_option.options] == [
             "anthropic:claude-sonnet-4-6",
             "openai-codex:gpt-5.4",
             "openai-codex:gpt-5.4-mini",
         ]
+        assert [opt.name for opt in model_option.options] == [
+            "Anthropic · claude-sonnet-4-6",
+            "OpenAI Codex · gpt-5.4",
+            "OpenAI Codex · gpt-5.4-mini",
+        ]
+        assert model_option.options[1].description is not None
+        assert "current" in model_option.options[1].description
         picker_context.with_overrides.assert_called_once_with(
             current_provider="openai-codex",
             current_model="gpt-5.4",
@@ -345,7 +394,68 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        assert [option["id"] for option in config_result["configOptions"]] == ["model", "edit_approval_policy"]
+        assert config_result["configOptions"][1]["currentValue"] == "workspace_session"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["session/new", "session/load", "session/resume", "session/fork"])
+    async def test_router_session_responses_keep_both_config_selectors(self, method):
+        manager = SessionManager(agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex"))
+        agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/original")
+        router = build_agent_router(agent, use_unstable_protocol=True)
+        params = {"cwd": "/original", "mcpServers": []}
+        if method != "session/new":
+            params["sessionId"] = state.session_id
+        result = await router(method, params, False)
+        if isinstance(result, BaseModel):
+            result = result.model_dump(by_alias=True, exclude_none=True)
+        assert "models" not in result
+        model, approval = result["configOptions"]
+        assert model["id"] == "model" and model["currentValue"] == "openai-codex:gpt-5.4"
+        assert approval["category"] == "mode" and approval["currentValue"] == "ask"
+        if method == "session/fork":
+            assert result["sessionId"] != state.session_id
+
+    @pytest.mark.asyncio
+    async def test_router_config_updates_preserve_selectors_and_boolean_values(self, monkeypatch):
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        manager = SessionManager(agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex"))
+        agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        router = build_agent_router(agent)
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
+            success=True, new_model=kw["raw_input"], target_provider="openai-codex"))
+        with patch.object(manager, "save_session", wraps=manager.save_session) as save:
+            for config_id, value in (("edit_approval_policy", "workspace_session"), ("model", "openai-codex:gpt-5.4-mini")):
+                response = await router("session/set_config_option", {
+                    "sessionId": state.session_id, "configId": config_id, "value": value,
+                }, False)
+                model, approval = response["configOptions"]
+                assert model["id"] == "model"
+                assert model["currentValue"] == f"openai-codex:{state.model}"
+                assert approval["category"] == "mode" and approval["currentValue"] == "workspace_session"
+            assert state.model == "gpt-5.4-mini"
+            assert save.call_count == 2, "each update persists once"
+        await router("session/set_config_option", {
+            "sessionId": state.session_id, "configId": "custom_toggle", "type": "boolean", "value": True,
+        }, False)
+        assert getattr(state, "config_options")["custom_toggle"] is True
+        with pytest.raises(acp.RequestError) as exc:
+            await router("session/set_config_option", {
+                "sessionId": state.session_id, "configId": "model", "type": "boolean", "value": True,
+            }, False)
+        assert exc.value.code == -32602 and state.model == "gpt-5.4-mini"
+
+    @pytest.mark.asyncio
+    async def test_router_rejects_unsupported_sdk_requests_and_ignores_extension_notifications(self, agent):
+        router = build_agent_router(agent, use_unstable_protocol=True)
+        for method, params in (("session/close", {"sessionId": "s"}), ("_unknown", {})):
+            with pytest.raises(acp.RequestError) as exc:
+                await router(method, params, False)
+            assert exc.value.code == -32601 and exc.value.data == {"method": method}
+        assert await router("_unknown", {}, True) is None
 
 
 

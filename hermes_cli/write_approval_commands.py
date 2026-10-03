@@ -22,11 +22,15 @@ def _fmt_pending_list(subsystem: str) -> str:
     for r in records:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
+        digest = wa.payload_sha256(r.get("payload", {}))
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        lines.append(f"      review token: {digest}")
         if subsystem == wa.MEMORY:
             lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
     lines.append("")
-    lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
+    lines.append(f"Apply one reviewed write: /{subsystem} approve <id> <review-token>")
+    lines.append(f"Apply every write pending right now: /{subsystem} approve all")
+    lines.append(f"Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
@@ -58,7 +62,19 @@ def handle_pending_subcommand(
 
 
 def _usage(subsystem: str) -> str:
-    return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
+    return (f"Usage: /{subsystem} approve <id> <review-token> | "
+            f"/{subsystem} approve all | /{subsystem} reject <id>")
+
+
+def _review_again(subsystem: str, rec) -> str:
+    """Show the live payload token. Applying requires the caller to echo it back."""
+    digest = wa.payload_sha256(rec.get("payload", {}))
+    return (
+        f"Not applied. Pending {subsystem} write '{rec['id']}' is now:\n"
+        f"  {rec.get('summary', '')}\n"
+        f"  review token: {digest}\n"
+        f"Re-run: /{subsystem} approve {rec['id']} {digest}"
+    )
 
 
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
@@ -69,23 +85,36 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     if not records:
         return f"No pending {subsystem} writes."
     if target.lower() == "all":
-        targets = list(records)
+        if len(rest) > 1:
+            return "approve all cannot take a review token; approve one id, or approve all with no token."
+        targets = [(rec, None) for rec in records]
     else:
         rec = wa.get_pending(subsystem, target)
         if not rec:
             return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
+        if len(rest) < 2:
+            return _review_again(subsystem, rec)
+        if len(rest) > 2:
+            return _usage(subsystem)
+        targets = [(rec, rest[1].strip().lower())]
 
-    applied, failed, overwritten, removed = 0, [], [], []
-    for rec in targets:
-        ok, msg, result = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
+    applied, failed, retained, overwritten, removed = 0, [], [], [], []
+    for rec, token in targets:
+        outcome = wa.apply_pending_record(
+            subsystem, rec["id"],
+            lambda current, _subsystem=subsystem, _store=memory_store: _apply_one(_subsystem, current, _store),
+            expected_payload_sha256=token,
+        )
+        if outcome.applied:
             applied += 1
-            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
-            removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
+            overwritten.extend(
+                f"  {rec['id']}: {text}" for text in _changed_entries(outcome.result, "replaced"))
+            removed.extend(
+                f"  {rec['id']}: {text}" for text in _changed_entries(outcome.result, "removed"))
+            if not outcome.consumed:
+                retained.append(f"  {rec['id']}: {outcome.message}")
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            failed.append(f"{rec['id']}: {outcome.message}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if overwritten:
@@ -96,6 +125,9 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     if removed:
         out.append("Removed entry (re-add anything you still need):")
         out.extend(removed)
+    if retained:
+        out.append("Applied, but a newer pending record was kept:")
+        out.extend(retained)
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
@@ -154,7 +186,13 @@ def _diff(rest: List[str]) -> str:
     rec = wa.get_pending(wa.SKILLS, rest[0])
     if not rec:
         return f"No pending skill write with id '{rest[0]}'."
-    return f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n\n" + wa.skill_pending_diff(rec)
+    digest = wa.payload_sha256(rec.get("payload", {}))
+    return (
+        f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n"
+        f"review token: {digest}\n"
+        f"Apply: /skills approve {rec['id']} {digest}\n\n"
+        + wa.skill_pending_diff(rec)
+    )
 
 
 _APPROVAL_VALUES = {

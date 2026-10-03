@@ -297,6 +297,30 @@ class TestProvidersDictApiModeAnthropicMessages:
         )
         assert async_model == "claude-opus-4-7"
 
+    def test_resolve_provider_client_restores_dual_surface_v1(self, tmp_path, monkeypatch):
+        """A dual-surface host stored with its OpenAI ``/v1`` base_url must get the
+        ``/anthropic`` Messages surface restored on the anthropic_messages arm (#128830)."""
+        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
+        _write_config(tmp_path, {
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://api.minimax.io/v1",
+                    "key_env": "MYRELAY_API_KEY",
+                    "api_mode": "anthropic_messages",
+                    "default_model": "claude-opus-4-7",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+        sync_client, _ = resolve_provider_client("myrelay", async_mode=False)
+
+        assert isinstance(sync_client, AnthropicAuxiliaryClient), (
+            f"expected AnthropicAuxiliaryClient, got {type(sync_client).__name__}"
+        )
+        assert sync_client.base_url == "https://api.minimax.io/anthropic"
+
 
 
 

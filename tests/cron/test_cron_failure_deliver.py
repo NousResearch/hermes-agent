@@ -462,3 +462,162 @@ class TestPreflightAndDashboardLanes:
             {"failure_deliver": ""}, tmp_path
         )
         assert cleared["failure_deliver"] is None
+
+
+class TestProfileFailureNoticeDeliver:
+    """Profile-level fallback ``cron.failure_notice_deliver`` (issue #112609).
+
+    A profile whose jobs post into a user-facing channel routes every job's
+    failure notices elsewhere (or suppresses them with ``local``) with one
+    config line. Precedence: per-job ``failure_deliver`` → profile value →
+    the job's ``deliver``. Unset = byte-identical to pre-feature behavior.
+    """
+
+    @staticmethod
+    def _profile(monkeypatch, value):
+        monkeypatch.setattr(
+            s, "load_config", lambda: {"cron": {"failure_notice_deliver": value}}
+        )
+
+    @staticmethod
+    def _outcome(state):
+        assert state["finished"], "finish_execution never called"
+        _a, kw = state["finished"][-1]
+        return kw.get("delivery_outcome")
+
+    def test_default_config_declares_the_key(self):
+        """The knob is a real config surface, defaulting to 'unset'."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["cron"]["failure_notice_deliver"] == ""
+
+    def test_profile_value_routes_failure_away_from_deliver(
+        self, run_env, monkeypatch
+    ):
+        """Failure notice goes to the profile target, never the job's
+        user-facing deliver channel."""
+        self._profile(monkeypatch, "slack:D0ALERTS")
+        monkeypatch.setattr(s, "run_job", _failing_run_job())
+
+        s.run_one_job({"id": "p1", "name": "scout", "deliver": "slack:D0FAMILY"})
+
+        assert [c["chat_id"] for c in run_env["send"]] == ["D0ALERTS"]
+        assert "failed" in run_env["send"][0]["message"].lower()
+
+    def test_job_failure_deliver_beats_profile_value(self, run_env, monkeypatch):
+        """Job-level override wins: the profile key is only a fallback."""
+        self._profile(monkeypatch, "slack:D0PROFILE")
+        monkeypatch.setattr(s, "run_job", _failing_run_job())
+
+        s.run_one_job({
+            "id": "p2", "name": "scout",
+            "deliver": "slack:D0FAMILY", "failure_deliver": "slack:D0JOB",
+        })
+
+        assert [c["chat_id"] for c in run_env["send"]] == ["D0JOB"]
+
+    def test_profile_local_suppresses_and_records_suppressed(
+        self, run_env, monkeypatch
+    ):
+        """``local`` = incident + ledger only: nothing sent, output still
+        saved, failure still marked, delivery outcome 'suppressed'."""
+        self._profile(monkeypatch, "local")
+        alerted = []
+        monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(s, "run_job", _failing_run_job())
+
+        s.run_one_job({"id": "p3", "name": "scout", "deliver": "slack:D0FAMILY"})
+
+        assert run_env["send"] == []
+        assert run_env["saved"] == ["p3"]
+        assert self._outcome(run_env) == "suppressed"
+        assert alerted == []
+        args, _kw = run_env["marked"][0]
+        assert args[0] == "p3" and args[1] is False
+        assert "provider exploded" in args[2]
+
+    def test_profile_local_leaves_success_path_on_deliver(
+        self, run_env, monkeypatch
+    ):
+        """The knob is failure-only: success output keeps going to deliver."""
+        self._profile(monkeypatch, "local")
+        monkeypatch.setattr(s, "run_job", _succeeding_run_job())
+
+        ok = s.run_one_job({"id": "p4", "name": "scout", "deliver": "slack:D0FAMILY"})
+
+        assert ok is True
+        assert [c["chat_id"] for c in run_env["send"]] == ["D0FAMILY"]
+        assert self._outcome(run_env) == "delivered"
+
+    def test_escaped_exception_path_honors_profile_value(
+        self, run_env, monkeypatch
+    ):
+        """The scheduler-layer crash handler reads the same lane."""
+        self._profile(monkeypatch, "slack:D0ALERTS")
+        monkeypatch.setattr(
+            s, "run_job",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                RuntimeError("cannot import name X")
+            ),
+        )
+
+        ok = s.run_one_job({"id": "p5", "name": "scout", "deliver": "slack:D0FAMILY"})
+
+        assert ok is False
+        assert [c["chat_id"] for c in run_env["send"]] == ["D0ALERTS"]
+
+    def test_resolution_uses_profile_lane_for_failures_only(self, monkeypatch):
+        """Same grammar/graph as deliver, failure lane only."""
+        self._profile(monkeypatch, "slack:D0ALERTS,telegram:-1001:17")
+        job = {"deliver": "slack:D0FAMILY"}
+
+        assert [
+            (t["platform"], t["chat_id"], t.get("thread_id"))
+            for t in _resolve_delivery_targets(job, for_failure=True)
+        ] == [("slack", "D0ALERTS", None), ("telegram", "-1001", "17")]
+        assert [(t["platform"], t["chat_id"]) for t in _resolve_delivery_targets(job)] == [
+            ("slack", "D0FAMILY")
+        ]
+
+    def test_profile_local_yields_zero_failure_targets(self, monkeypatch):
+        self._profile(monkeypatch, "local")
+        job = {"deliver": "slack:D0FAMILY"}
+        assert _resolve_delivery_targets(job, for_failure=True) == []
+        assert [(t["platform"], t["chat_id"]) for t in _resolve_delivery_targets(job)] == [
+            ("slack", "D0FAMILY")
+        ]
+
+    def test_unset_or_blank_profile_value_keeps_deliver_lane(
+        self, run_env, monkeypatch
+    ):
+        """Default unchanged: absent/blank/None/wrong-shaped = today's path."""
+        for value in ("", "   ", None):
+            self._profile(monkeypatch, value)
+            run_env["send"].clear()
+            monkeypatch.setattr(s, "run_job", _failing_run_job())
+
+            s.run_one_job({"id": "p6", "name": "scout", "deliver": "slack:D0FAMILY"})
+
+            assert [c["chat_id"] for c in run_env["send"]] == ["D0FAMILY"], value
+
+    def test_unreadable_config_never_breaks_failure_delivery(self, monkeypatch):
+        """A config-read blowup degrades to 'no profile override'."""
+        def _boom():
+            raise RuntimeError("config.yaml is unreadable")
+
+        monkeypatch.setattr(s, "load_config", _boom)
+        assert sched_delivery._cron_failure_notice_deliver() == ""
+
+    def test_preflight_validates_the_profile_lane(self, monkeypatch):
+        """A typo'd profile target is caught at preflight, like deliver's.
+
+        ``deliver: local`` so the job's own lane contributes nothing — the
+        report can only come from the profile fallback being read.
+        """
+        self._profile(monkeypatch, "nonexistent-platform:C1")
+        monkeypatch.setattr(sched_delivery, "_is_known_delivery_platform", lambda _p: False)
+
+        err = sched_preflight._preflight_check_delivery({
+            "id": "p7", "deliver": "local",
+        })
+        assert err is not None and "not a known" in err

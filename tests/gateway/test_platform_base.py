@@ -1182,6 +1182,29 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_split_retreats_before_a_markdown_link(self):
+        # A natural-space split can land inside a link's label
+        # ("…[Mission Control issue|7](…)"), stranding half a link per chunk
+        # (#125885). The split must retreat to before the "[" so one chunk
+        # carries the whole link.
+        adapter = self._adapter()
+        link = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+        prose = "w " * 2024  # 4048 chars: the 4096-10-4 budget lands inside the link
+        chunks = adapter.truncate_message(prose + link, max_length=4096)
+        assert len(chunks) > 1
+        assert any(link in chunk for chunk in chunks), chunks
+        assert all(len(chunk) <= 4096 for chunk in chunks)
+
+    def test_split_treats_escaped_brackets_as_plain_text(self):
+        # MarkdownV2 formatters escape literal brackets, so "\[…\]" is plain text:
+        # an escape must not read as an unclosed link and push the split backwards.
+        adapter = self._adapter()
+        content = "w " * 2035 + r"\[not a link really\] tail text"
+        chunks = adapter.truncate_message(content, max_length=4096)
+        assert len(chunks) == 2
+        assert chunks[0].startswith("w ")  # not retreated to the text start
+        assert all(len(chunk) <= 4096 for chunk in chunks)
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay
@@ -1290,6 +1313,18 @@ class TestTruncateMessageUtf16:
             assert utf16_len(chunk) <= 4096, (
                 f"Chunk {i} exceeds 4096 UTF-16 units: {utf16_len(chunk)}"
             )
+
+    def test_utf16_split_keeps_a_formatted_telegram_link_whole(self):
+        # Telegram MarkdownV2 output: prose dots escaped ("source\."), brackets in
+        # the link left raw. The 4096-10-4 UTF-16 budget lands inside the label and
+        # the natural-space split picks a space INSIDE the label (#125885) — the
+        # split must retreat so one chunk carries the complete link.
+        link = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+        content = "This synthetic statement is supported by a retained source\\. " * 66 + link
+        chunks = BasePlatformAdapter.truncate_message(content, 4096, len_fn=utf16_len)
+        assert len(chunks) > 1
+        assert any(link in chunk for chunk in chunks), chunks
+        assert all(utf16_len(chunk) <= 4096 for chunk in chunks)
 
 
 class TestProxyKwargsForAiohttp:

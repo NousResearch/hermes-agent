@@ -250,6 +250,35 @@ def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
 
 
+def _open_link_bracket(text: str) -> int:
+    """Index of the ``[`` opening a Markdown link still unclosed at *text* end, else -1.
+
+    Escaped brackets are plain text: platform formatters (Telegram MarkdownV2) escape
+    literal ``[]()`` in prose, so an unescaped ``[...](…)`` run really is a link.
+    """
+    i, open_at, in_dest = 0, -1, False
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2  # skip the escaped char (or an escaped backslash)
+            continue
+        if in_dest:
+            if ch == ")":
+                in_dest = False
+                open_at = -1
+        elif ch == "[":
+            if open_at < 0:
+                open_at = i
+        elif ch == "]":
+            if open_at >= 0 and text.startswith("(", i + 1):
+                in_dest = True
+                i += 1
+            else:
+                open_at = -1  # lone "]" without "(" — not a link start
+        i += 1
+    return open_at
+
+
 def is_network_accessible(host: str) -> bool:
     """True if *host* would expose the server beyond loopback (incl. IPv4-mapped
     ::ffff:127.0.0.1); hostnames are resolved and DNS failure fails closed (True)."""
@@ -4921,6 +4950,15 @@ class BasePlatformAdapter(ABC):
                         candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
+            # Don't split inside a Markdown link either: a cut between "[" and the
+            # closing ")" strands a half link in each chunk; retreat to before the "[".
+            candidate = remaining[:split_at]  # re-slice: the backtick guard may have moved it
+            link_lb = _open_link_bracket(candidate)
+            if link_lb > 0:
+                safe_split = max(
+                    candidate.rfind(" ", 0, link_lb), candidate.rfind("\n", 0, link_lb))
+                if safe_split > _cp_limit // 4:
+                    split_at = safe_split
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
             full_chunk = prefix + chunk_body

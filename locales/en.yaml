@@ -820,7 +820,7 @@ gateway:
     info_model: "◆ Model: `{model}`"
     info_provider: "◆ Provider: {provider}"
     info_context: "◆ Context: {tokens} tokens ({source})"
-    info_acting_model: "◆ Acting model (billed for the run): {provider}:{model}"
+    info_acting_model: "◆ Acting model: {provider}:{model} (reference calls billed separately)"
     info_endpoint: "◆ Endpoint: {url}"
 
   proxy:
@@ -2037,7 +2037,7 @@ cli:
   model:
     # /model switch summary (labels shared with the gateway live under gateway.model.*)
     switched: "✓ Model switched: {model}"
-    acting_model: "Acting model (billed for the run): {model}"
+    acting_model: "Acting model: {model} (reference calls billed separately)"
     reasoning_effort: "Reasoning effort: {effort}"
     reasoning_effort_saved: "Reasoning effort: {effort} (saved to config)"
     saved: "Saved to config.yaml"

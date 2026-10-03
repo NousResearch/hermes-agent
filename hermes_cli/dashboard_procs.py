@@ -763,11 +763,17 @@ def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None) -> list[tuple[int, str]]:
     """Historical main export: stop old updaters without scanning live shims.
 
-    PM stages a fresh generation instead of replacing a mapped hermes.exe.
-    Returning an empty list would let old callers continue into that mutation.
+    Hand off inside a real updater (frame-scoped, #124881): returning an empty
+    list would let old callers continue into a mapped-``hermes.exe`` mutation
+    PM avoids by staging a fresh generation. A live current-tree caller gets
+    that inert empty answer instead of exiting its healthy serve/dashboard
+    into an update-rebuild loop; live Windows checks use the real detector in
+    ``update_cmd_windows`` instead of this name.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+    if in_historical_update():
+        stop_for_relaunch()
+    return []
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:

@@ -22,9 +22,19 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 
 def _prepare_updated_checkout(project_root: Path, *, desktop: bool) -> None:
-    """Historical updater hook: never complete inside the pre-swap interpreter."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch(incomplete=True)
+    """Historical updater hook: never complete inside the pre-swap interpreter.
+
+    Hand off inside a real updater; a live current-tree caller is refused
+    instead of told its update is incomplete (there is no update to finish,
+    and the historical wording also exits the process — #124881).
+    """
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+    if in_historical_update():
+        stop_for_relaunch(incomplete=True)
+    raise ImportError(
+        "hermes_cli.update_cmd_maint._prepare_updated_checkout is retired; "
+        "checkout preparation belongs to PM's updater."
+    )
 
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
@@ -63,16 +73,24 @@ def _load_updates_cfg() -> dict:
 
 
 def _purge_stale_hermes_modules() -> None:
-    """Historical updater hook; module-graph surgery cannot complete an update."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch(incomplete=True)
+    """Historical updater hook; module-graph surgery cannot complete an update.
+
+    Hand off inside a real updater; no-op for any live caller — purging
+    ``sys.modules`` in a running process cannot help it (#124881).
+    """
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+    if in_historical_update():
+        stop_for_relaunch(incomplete=True)
 
 
 def _reload_updated_runtime_modules() -> None:
-    # Historical updater hook: dependency activation belongs to the next process.
-    from hermes_cli._old_updater import stop_for_relaunch
+    # Hand off inside a real updater; a live process must never reload its
+    # module graph mid-run (the mixed-sys.modules failure class), so this is a
+    # no-op rather than a refusal — callers treat "nothing reloaded" as fine.
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
 
-    stop_for_relaunch()
+    if in_historical_update():
+        stop_for_relaunch()
 
 
 def _print_curator_first_run_notice() -> None:
@@ -254,18 +272,27 @@ def _format_time_ago(iso_ts: str) -> str:
 
 
 def _reload_process_scan_modules() -> None:
-    """Historical updater hook; scans now run only in fresh completion Python."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch(incomplete=True)
+    """Historical updater hook; scans now run only in fresh completion Python.
+
+    Hand off inside a real updater; no-op for a live caller (see
+    _reload_updated_runtime_modules).
+    """
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+    if in_historical_update():
+        stop_for_relaunch(incomplete=True)
 
 
 def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: "set[str] | None" = None
 ) -> None:
-    """Historical updater hook; do not continue a pre-PM update after the swap."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    """Historical updater hook; do not continue a pre-PM update after the swap.
 
-    stop_for_relaunch()
+    Hand off inside a real updater; no-op for a live caller — there is no
+    dashboard cleanup to finish outside an update (#124881).
+    """
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+    if in_historical_update():
+        stop_for_relaunch()
 
 
 def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
@@ -408,10 +435,15 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
 
 
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
-    """Historical updater hook; old soft-build results cannot establish completion."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    """Historical updater hook; old soft-build results cannot establish completion.
 
-    stop_for_relaunch()
+    Hand off inside a real updater; outside one there is no update to summarize,
+    so report "not established" instead of exiting the backend (#124881).
+    """
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+    if in_historical_update():
+        stop_for_relaunch()
+    return False
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:

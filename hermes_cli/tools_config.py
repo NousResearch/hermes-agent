@@ -49,10 +49,17 @@ logger = logging.getLogger(__name__)
 
 def install_cua_driver(*args, **kwargs) -> NoReturn:
     # A running pre-PM updater can still import the vendor installer here.
-    # Stop it before any old retry or completion branch can run.
-    from hermes_cli._old_updater import stop_for_relaunch
+    # Hand off inside a real updater (frame-scoped, #124881); a live caller is
+    # refused instead of stopped, never sent down an old retry or completion
+    # branch.
+    from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
 
-    stop_for_relaunch()
+    if in_historical_update():
+        stop_for_relaunch()
+    raise ImportError(
+        "hermes_cli.tools_config.install_cua_driver is retired; the cua "
+        "driver is installed by PM, not in-process."
+    )
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: Set[str] = set()

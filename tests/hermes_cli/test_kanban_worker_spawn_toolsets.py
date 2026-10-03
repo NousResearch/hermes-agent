@@ -122,6 +122,7 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     workspace.mkdir()
     task = _make_task(kb, assignee="elias")
     task.model_override = "gpt-5.6-sol"
+    task.provider_override = "openai-codex"
     kbd._default_spawn(task, str(workspace))
 
     parser, _subparsers, _chat_parser = build_top_level_parser()
@@ -133,7 +134,21 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"
+    assert args.provider == "openai-codex"
     assert args.query == "work kanban task t_spawn_tools"
+
+
+def test_resolve_worker_argv_prefers_current_installation_over_path(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    rogue = tmp_path / "hermes"
+    rogue.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    rogue.chmod(0o755)
+    monkeypatch.setenv("HERMES_BIN", "")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(kbd, "_current_installation_argv", lambda: ["/install/.hermes/bin/hermes"])
+
+    assert kbd._resolve_hermes_argv() == ["/install/.hermes/bin/hermes"]
 
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):

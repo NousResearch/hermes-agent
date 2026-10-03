@@ -92,32 +92,29 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
-    async def test_resolve_hermes_bin_module_argv(self):
-        """_resolve_hermes_bin uses the running interpreter's module argv when hermes_cli is
-        importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
-        lookup would re-exec an attacker-planted executable on /update and /restart)."""
-        import sys
+    async def test_resolve_hermes_bin_prefers_installation_command(self):
+        """A PATH binary must not shadow the current install on /update or /restart."""
+        from hermes_cli import _launchers
         from gateway.run import _resolve_hermes_bin
 
-        fake_spec = MagicMock()
-        with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
-             patch("importlib.util.find_spec", return_value=fake_spec):
+        with patch.object(_launchers, "current_installation_command", return_value=["/install/hermes"]), \
+             patch("shutil.which", return_value="/tmp/attacker/hermes"):
             result = _resolve_hermes_bin()
 
-        assert result == [sys.executable, "-m", "hermes_cli.main"]
+        assert result == ["/install/hermes"]
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):
-        """Without an importable hermes_cli the argv degrades to PATH, then to None — never a
-        bare ``hermes`` string that a hostile PATH entry could shadow."""
+        """PATH is consulted only when the install-bound launcher/bootstrap fails."""
+        from hermes_cli import _launchers
         from gateway.run import _resolve_hermes_bin
 
-        with patch("shutil.which", return_value="/usr/local/bin/hermes"), \
-             patch("importlib.util.find_spec", return_value=None):
+        with patch.object(_launchers, "current_installation_command", side_effect=RuntimeError), \
+             patch("shutil.which", return_value="/usr/local/bin/hermes"):
             assert _resolve_hermes_bin() == ["/usr/local/bin/hermes"]
 
-        with patch("shutil.which", return_value=None), \
-             patch("importlib.util.find_spec", side_effect=ImportError):
+        with patch.object(_launchers, "current_installation_command", side_effect=RuntimeError), \
+             patch("shutil.which", return_value=None):
             assert _resolve_hermes_bin() is None
 
 

@@ -120,6 +120,74 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
+function applySelectAll(editable: HTMLElement) {
+  if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+    editable.select()
+
+    return
+  }
+
+  const range = document.createRange()
+
+  range.selectNodeContents(editable)
+
+  const selection = window.getSelection()
+
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+function guardEditableSelection(editable: HTMLElement) {
+  const started = performance.now()
+  let attempts = 0
+  let frame: number
+
+  const verify = () => {
+    if (!editable.isConnected) {
+      cancelAnimationFrame(frame)
+      clearTimeout(finalCheck)
+
+      return false
+    }
+
+    const selection = window.getSelection()
+
+    const hasSelection =
+      editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement
+        ? editable.selectionStart !== editable.selectionEnd
+        : selection && !selection.isCollapsed && editable.contains(selection.anchorNode)
+
+    if (document.activeElement !== editable || !hasSelection) {
+      editable.focus()
+      applySelectAll(editable)
+    }
+
+    return true
+  }
+
+  // Menu animation delays DOM removal past our initial frame, stealing focus
+  // and collapsing the selection. Keep a final check past that unmount window,
+  // even when early checks pass or the bounded frame retries finish first.
+  const finalCheck = setTimeout(() => {
+    cancelAnimationFrame(frame)
+    verify()
+  }, 500)
+
+  const retry = () => {
+    if (performance.now() - started >= 450 || !verify()) {
+      return
+    }
+
+    attempts += 1
+
+    if (attempts < 12) {
+      frame = requestAnimationFrame(retry)
+    }
+  }
+
+  frame = requestAnimationFrame(retry)
+}
+
 function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
   const copy = t.contextMenu
   const { spellcheck, target } = open
@@ -156,25 +224,17 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   // (the edit composer re-parents focus on blur) it selected the whole
   // transcript. A renderer range cannot escape the field.
   const selectAllInEditable = () => {
-    withEditableFocus(() => {
-      const editable = target.editable
+    const editable = target.editable
 
-      if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
-        editable.select()
-
+    closeContextMenu()
+    requestAnimationFrame(() => {
+      if (!editable?.isConnected) {
         return
       }
 
-      if (editable) {
-        const range = document.createRange()
-
-        range.selectNodeContents(editable)
-
-        const selection = window.getSelection()
-
-        selection?.removeAllRanges()
-        selection?.addRange(range)
-      }
+      editable.focus()
+      applySelectAll(editable)
+      guardEditableSelection(editable)
     })
   }
 

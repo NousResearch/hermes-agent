@@ -12386,6 +12386,36 @@ def test_session_status_falls_back_to_agent_before_first_host_frame(monkeypatch)
     assert "Model: live-model (live-provider)" in resp["result"]["output"]
 
 
+def test_session_status_reports_remote_reasoning_and_fast(monkeypatch):
+    server._sessions["sid"] = _session(agent=None, running=False)
+    server._sessions["sid"].update(
+        {
+            "agent": None,
+            "_compute_host_active": True,
+            "_metadata_mirror": {"model": "gpt-5", "provider": "openai"},
+            "create_reasoning_override": {"enabled": True, "effort": "high"},
+            "create_service_tier_override": "priority",
+        }
+    )
+
+    class _DB:
+        def get_session(self, _key):
+            return {"started_at": 1_700_000_000}
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert isinstance(resp, dict) and "result" in resp, resp
+    out = resp["result"]["output"]
+    assert "Reasoning: high" in out
+    assert "Fast: Yes" in out
+
+
 def test_skills_reload_runs_in_gateway_process(monkeypatch):
     import agent.skill_commands as skill_commands
 
@@ -21762,12 +21792,41 @@ def test_fallback_session_info_reports_session_cwd_not_launch_dir(monkeypatch):
     monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
     monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "bb/feature")
     monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "gpt-5")
 
-    info = server._fallback_session_info({"cwd": "/projects/session-own-repo"})
+    info = server._fallback_session_info(
+        {
+            "agent": None,
+            "cwd": "/projects/session-own-repo",
+            "create_reasoning_override": {"enabled": True, "effort": "high"},
+            "create_service_tier_override": "priority",
+        }
+    )
 
     assert info["cwd"] == "/projects/session-own-repo"
     assert info["branch"] == "bb/feature"
+    assert info["reasoning_effort"] == "high"
+    assert info["fast"] is True
+    assert info["model"] == "gpt-5"
+
+
+def test_fallback_session_info_uses_own_profile_default_and_preserves_live_model(tmp_path, monkeypatch):
+    homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+    models = ["profile-a-model", "profile-b-model"]
+    for home, model in zip(homes, models):
+        home.mkdir()
+        (home / "config.yaml").write_text(f"model:\n  default: {model}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.setattr(server, "_hermes_home", str(homes[0]))
+    monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "")
+    monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
+    for home, expected in [(homes[0], models[0]), (homes[1], models[1]), (homes[0], models[0])]:
+        session = {"agent": None, "profile_home": str(home), "cwd": str(tmp_path)}
+        assert server._fallback_session_info(session)["model"] == expected
+        session["_metadata_mirror"] = {"model": "live-model", "provider": "openai"}
+        assert server._fallback_session_info(session)["model"] == "live-model"
+        session["pending_model_switch"] = {"display_model": "next-model"}
+        assert server._fallback_session_info(session)["model"] == "next-model"
 
 
 def test_fallback_session_info_always_emits_branch(monkeypatch):
@@ -21779,7 +21838,7 @@ def test_fallback_session_info_always_emits_branch(monkeypatch):
     monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
     monkeypatch.setattr(server.git_probe, "branch", lambda cwd: "")
     monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "gpt-5")
 
     info = server._fallback_session_info({"cwd": "/plain/folder"})
 

@@ -1982,11 +1982,15 @@ def _(rid, params: dict, session: dict) -> dict:
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
         home=session.get("profile_home"),
     )
+    info = _session_info(agent, session)
     project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [
         "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
         *([f"Project: {project['name']}"] if project else []),
-        *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
+        *status_lines(fields, "title", "model"),
+        f"Reasoning: {info.get('reasoning_effort') or 'default'}",
+        f"Fast: {'Yes' if info.get('fast') else 'No'}",
+        *status_lines(fields, "created", "last_activity", "tokens", "agent_running")]
     return _ok(rid, {"output": "\n".join(lines)})
 
 

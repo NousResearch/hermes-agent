@@ -2341,12 +2341,19 @@ def _session_info(agent, session: dict | None = None) -> dict:
     cwd = _display_session_cwd(session)
     session_key = str(sess.get("session_key") or getattr(agent, "session_id", "") or "")
     personality = sess.get("personality", _display_cfg().get("personality") or "")
-    reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = ""
-    if isinstance(reasoning_config, dict):
+    reasoning_config = (getattr(agent, "reasoning_config", None) if agent is not None
+                        else sess.get("create_reasoning_override"))
+    reasoning_effort = str(mirror.get("reasoning_effort") or "") if agent is None else ""
+    if not reasoning_effort and isinstance(reasoning_config, dict):
         # Disabled must differ from unset ("" = provider default) or the desktop loses "thinking off" after turn 1.
         reasoning_effort = "none" if reasoning_config.get("enabled") is False else str(reasoning_config.get("effort", "") or "")
-    service_tier = getattr(agent, "service_tier", None) or mirror.get("service_tier") or ""
+    service_tier = getattr(agent, "service_tier", None)
+    if service_tier is None:
+        service_tier = mirror.get("service_tier")
+    if service_tier is None and agent is None:
+        service_tier = sess.get("create_service_tier_override")
+    # Empty means explicit normal; only None inherits a lower-priority source.
+    service_tier = service_tier or ""
     # yolo ORs the same three sources check_all_command_guards() does (approvals.mode=off, the process
     # --yolo env, the per-session flag): the session flag alone would show "off" while config auto-approves.
     try:
@@ -2368,6 +2375,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         with _profile_build_scope(sess.get("profile_home") or _hermes_home):
             provider = _runtime_model_config(agent).get("provider", provider)
     model = pending_model or mirror.get("model", getattr(agent, "model", ""))
+    if not model and agent is None:
+        model = _session_default_model(sess)
     # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
     # Hermes-internal step (#61634) as a wire level the route does not have.
@@ -2385,6 +2394,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
+        "lazy": agent is None and not mirror,
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
         "terminal_backend": _effective_terminal_backend(), "personality": str(personality or ""),
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
@@ -3082,18 +3092,10 @@ def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
-    # The SESSION's own workspace, not the launch dir (wrong project in the desktop Files pane). `branch` is
-    # always emitted ("" outside git) so a stale label clears; `desktop_contract` missing reads as "out of date".
-    # Reporting `_default_session_cwd()` here told a lazily-resumed session's client that its workspace was
-    # wherever the gateway process happened to start, so the desktop Files pane painted the wrong project
-    # even after the renderer rebound correctly (#71254). `branch` is always emitted ("" outside a git repo)
-    # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
-    # above already follows.
     cwd = _session_cwd(session)
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-    }
+    info = _session_info(None, session)
+    info.update(cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd), lazy=True)
+    return info
 
 
 def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) -> list[dict]:

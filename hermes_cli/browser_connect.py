@@ -311,6 +311,37 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     return detect.get(system or platform.system(), _detect_default_linux)()
 
 
+def installed_chromium_browsers(system: str | None = None) -> list[tuple[str, str]]:
+    """``[(key, executable)]`` for every supported Chromium browser installed on this
+    machine, in launch-candidate order. Used by ``hermes browser select``."""
+    return [(b.key, exe) for b in _BROWSERS
+            if (exe := chromium_executable(b.key, system)) is not None]
+
+
+def resolve_real_profile_browser() -> tuple[str | None, str | None]:
+    """``(browser, error)`` for real-profile browsing: an explicit, valid
+    ``browser.preferred_browser`` wins over OS-default detection (None = unset).
+
+    Unknown keys and valid-but-not-installed preferences fail closed with a message;
+    an unset preference falls through to ``detect_default_chromium()`` (which may itself
+    return None or UNSUPPORTED_CHANNEL with error None — the caller keeps its own
+    messaging for those)."""
+    preferred = _browser_setting("preferred_browser")
+    if preferred is not None and str(preferred).strip():
+        key = str(preferred).strip().lower()
+        if key not in _BROWSER_BY_KEY:
+            valid = ", ".join(b.key for b in _BROWSERS)
+            return None, (f"browser.preferred_browser is set to '{preferred}' which is not a "
+                          f"supported browser ({valid}). Pick one with "
+                          f"`hermes browser select`, or clear it to follow the OS default.")
+        if chromium_executable(key) is None:
+            return None, (f"browser.preferred_browser is set to '{key}' but no {key} binary was "
+                          f"found on this machine. Install it, or pick an installed browser with "
+                          f"`hermes browser select`.")
+        return key, None
+    return detect_default_chromium(), None
+
+
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------
 # Never drive the live default user-data-dir: Chromium ≥136 (Google builds) refuses remote
 # debugging on it, and the user's running browser holds it (SingletonLock). Instead snapshot

@@ -213,6 +213,29 @@ browser:
 A pin naming a profile directory that doesn't exist fails closed with a
 fixable message — it never silently falls back to the last-used profile.
 
+#### Choosing which browser Hermes uses
+
+Real-profile browsing follows your **OS default browser** — but when that isn't
+the browser you want the agent to use (or the default is a browser Hermes can't
+drive), pick one explicitly:
+
+```bash
+hermes browser select
+```
+
+The picker lists your installed Chromium browsers (Chrome, Edge, Brave, Brave
+Origin, Chromium) and saves the choice as `browser.preferred_browser`. It wins
+over OS-default detection everywhere the real profile is resolved, including
+`hermes browser close-profile`. Clear it to follow the OS default again:
+
+```bash
+hermes config unset browser.preferred_browser
+```
+
+An unknown key, or a browser that isn't installed on the machine doing the
+browsing, fails closed with a fixable message instead of silently driving the
+wrong profile.
+
 When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.

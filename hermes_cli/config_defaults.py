@@ -466,6 +466,11 @@ DEFAULT_CONFIG = {
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
         # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
         "real_profile_pin": "",
+        # Pick WHICH installed Chromium browser real-profile browsing (and `hermes browser
+        # close-profile`) uses, e.g. "chrome". Empty = your OS default browser. Set it with
+        # `hermes browser select` instead of editing this by hand; an unknown key or a browser
+        # that isn't installed fails closed at use time.
+        "preferred_browser": "",
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
         # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
         # is the legacy override that bypasses that denylist entirely.

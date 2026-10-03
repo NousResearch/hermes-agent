@@ -728,6 +728,20 @@ hermes memory setup
 
 **Config reference:** [nexusyn/hermes-nexusyn](https://github.com/nexusyn/hermes-nexusyn) (standalone plugin repo)
 
+**MCP:** The same engine is also published as a remote MCP server (Streamable HTTP, bearer auth). This path does not set `memory.provider` and does not run the plugin's prefetch or session capture — Hermes calls the tools when it decides to. Add it under `mcp_servers` in `config.yaml`:
+
+```yaml
+mcp_servers:
+  nexusyn:
+    url: "https://api.nexusyn.ai/v1/mcp"
+    headers:
+      Authorization: "Bearer ${NEXUSYN_API_KEY}"
+```
+
+**MCP tools (7):** `add_memory` (persist a fact), `search_memory` (hybrid recall with sources), `update_memory` (edit in place), `delete_memory` (drop from recall), `get_guideline` (standing org guidelines), `get_related` (knowledge-graph neighbors), `graph_overview` (graph snapshot).
+
+**Published at:** [Smithery `@nexusyn/nexusyn`](https://smithery.ai/servers/@nexusyn/nexusyn) · [Glama `nexusyn/engine`](https://glama.ai/mcp/servers/nexusyn/engine). Server card: `https://api.nexusyn.ai/.well-known/mcp/server-card.json`.
+
 ### Memori
 
 Structured long-term memory using Memori Cloud, with background completed-turn capture, tool-aware turn context, and explicit recall tools for facts, summaries, quota, signup, and feedback.

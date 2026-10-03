@@ -1,0 +1,21 @@
+name: usage-ledger
+repo: https://github.com/3DPrintPioneers/hermes-usage-ledger
+sha: a86ab64a4cb3ce7872fb2dfc7242484fc2b8c20b
+description: Local-only content-free usage tally and native Desktop statusline (Windows beta).
+maintainer: 3DPrintPioneers
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/3DPrintPioneers/hermes-usage-ledger/blob/a86ab64a4cb3ce7872fb2dfc7242484fc2b8c20b/README.md
+version: "0.4.3"
+readme: true
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_api_request
+    - post_llm_call
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

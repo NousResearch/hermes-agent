@@ -229,6 +229,31 @@ def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = N
     )
 
 
+def clear_orphaned_pack_indexes(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
+    """Remove ``pack-*.idx`` files whose ``.pack`` is gone; same contract as clear_stale_git_locks.
+
+    A fold's ``repack -d`` deletes a pack's ``.pack``, but on Windows it cannot unlink an ``.idx``
+    that a concurrent git process still has memory-mapped — git warns "unable to unlink ...:
+    Invalid argument" and the index is orphaned (#131444). Until a later repack happens to revisit
+    it, every git invocation in the checkout warns "no corresponding .pack", and an update-time
+    sweep of our own is what reclaims it.
+    """
+    pack_dir = _pack_dir(repo_root)
+
+    def _candidates():
+        try:
+            return [idx for idx in pack_dir.glob("pack-*.idx") if not idx.with_suffix(".pack").exists()]
+        except OSError:
+            return []
+
+    return _sweep_stale(
+        pack_dir, _candidates,
+        min_age_seconds=min_age_seconds, default_age=STALE_TMP_PACK_MIN_AGE_SECONDS,
+        skip_msg="git process running; skipping orphaned pack-index sweep",
+        log_removed=lambda p, _size: logger.info("Removed orphaned pack index %s", p),
+    )
+
+
 def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
     """Run a read-only git query in ``repo_root``; [] on any failure."""
     try:

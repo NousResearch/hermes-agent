@@ -31,21 +31,25 @@ def _uc():
 
 
 def clear_git_debris(root: Path) -> None:
-    """Remove abandoned git locks and aborted-fetch pack temps before fetching.
+    """Remove abandoned git locks, aborted-fetch pack temps and orphaned pack indexes before fetching.
 
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
-    A partial clone's on-demand fetches also strand one small packfile each — fold those
-    back in (#129712).
+    A fold that lost its unlink race on Windows strands ``pack-*.idx`` files whose pack is gone
+    (#131444); sweep those back out. A partial clone's on-demand fetches also strand one small
+    packfile each — fold those back in (#129712).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import clear_orphaned_pack_indexes, clear_stale_git_locks, clear_stale_tmp_packs
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    orphaned = clear_orphaned_pack_indexes(root)
+    if orphaned:
+        print(f"  (removed {len(orphaned)} orphaned pack index file(s))")
     fold_lazy_fetch_packs(root)
 
 

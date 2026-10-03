@@ -4,24 +4,26 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Final, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import companion  # noqa: E402
+from companion import PlaceRecord, ResolvedLocation
 
-
-NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-HOME = {
+NOW: Final[datetime] = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+HOME: Final[PlaceRecord] = {
     "id": "home",
     "name": "Home",
     "category": "home",
     "activity": "at home",
     "latitude": 52.53,
     "longitude": 13.41,
-    "radius_meters": 120,
+    "radius_meters": 120.0,
 }
 
 
@@ -29,19 +31,16 @@ def iso(delta_seconds: int) -> str:
     return (NOW - timedelta(seconds=delta_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def location(**overrides):
-    raw = {
+def location(**overrides: object) -> ResolvedLocation:
+    raw: dict[str, object] = {
         "latitude": 52.53005,
         "longitude": 13.41005,
         "timestamp": iso(3 * 3600),
-        "horizontal_accuracy": 8,
-        "speed_mps": -1,
+        "horizontal_accuracy": 8.0,
         "movement_reason": "moved",
         "motion_activity": "stationary",
         "motion_confidence": "high",
         "motion_timestamp": iso(20),
-        "battery_level": 0.8,
-        "battery_state": "unplugged",
     }
     raw.update(overrides)
     return companion.resolve_location(raw, [HOME], NOW, "fixture")
@@ -65,16 +64,50 @@ def test_walking_at_home() -> None:
     loc = location(motion_activity="walking", motion_timestamp=iso(12))
     check("walking stays at home", loc["place_name"] == "Home" and loc["is_moving_now"] is True)
     check("walking code kept", loc["motion_activity"] == "walking" and loc["activity"] == "walking")
+    check("moving walking is not still there", loc["still_there"] is False and loc["still_there_status"] == "no")
 
 
 def test_driving_is_transit() -> None:
-    loc = location(motion_activity="automotive", motion_timestamp=iso(8), speed_mps=12)
+    loc = location(motion_activity="automotive", motion_timestamp=iso(8))
     check("automotive leaves the place label", loc["place_name"] == "In Transit" and loc["place_category"] == "transit")
+    check("driving in transit is not still there", loc["still_there"] is False and loc["still_there_status"] == "no")
 
 
 def test_unlisted() -> None:
     loc = location(latitude=48.1, longitude=11.5, motion_activity="stationary")
     check("unknown coordinate stays unlisted", loc["place_name"] == "Unlisted place" and loc["is_at_known_place"] is False)
+    check("unlisted stationary with fresh motion is still there", loc["still_there"] is True and loc["still_there_status"] == "yes")
+
+
+def test_unlisted_stale_unconfirmed() -> None:
+    # Unlisted place with stale fix and no fresh motion
+    loc = location(latitude=48.1, longitude=11.5, motion_activity="stationary", motion_timestamp=iso(3 * 3600))
+    check("unlisted stale fix without fresh motion is unconfirmed", loc["still_there"] is False and "unconfirmed" in loc["still_there_status"])
+
+
+def test_profile_places_isolation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fresh_home = Path(tmp) / "profiles" / "fresh_user"
+        old_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(fresh_home)
+        try:
+            target = companion.default_places_file()
+            expected = fresh_home / "state" / "places.json"
+            check("default_places_file isolates fresh profile", target == expected)
+        finally:
+            if old_env is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old_env
+
+
+def test_invalid_timestamp_graceful() -> None:
+    check("corrupt timestamp returns None", companion.age_seconds("corrupt-date", NOW) is None)
+    check("missing timestamp returns None", companion.age_seconds(None, NOW) is None)
+    loc = location(timestamp="not-a-date")
+    check("corrupt timestamp does not fake 0 age", loc["age_seconds"] is None)
+    check("corrupt timestamp does not fake 0 minutes", loc["minutes_since_last_move"] is None)
+    check("corrupt timestamp marks unconfirmed", loc["still_there"] is False and "unconfirmed" in loc["still_there_status"])
 
 
 def test_files_roundtrip() -> None:
@@ -115,11 +148,14 @@ def test_files_roundtrip() -> None:
         code = companion.main(["--icloud-dir", str(root), "--places", str(places)], now=NOW)
         check("where exits 0", code == 0)
         raw, path = companion.first_reading([root], "latest_location.json")
+        assert raw is not None and path is not None
         resolved = companion.resolve_location(raw, companion.load_places(places), NOW, str(path))
         check("file resolves to Home", resolved["place_name"] == "Home")
         check("no_motion_reading kept", resolved["movement_reason"] == "no_motion_reading")
         health_raw, health_path = companion.first_reading([root], "latest_health.json")
+        assert health_raw is not None and health_path is not None
         health = companion.resolve_health(health_raw, NOW, str(health_path))
+        assert health["sleep"] is not None
         check("sleep duration kept", health["sleep"]["formatted_duration"] == "7h 40m")
 
 
@@ -152,14 +188,80 @@ def test_text_has_no_english_script() -> None:
     check("health text keeps the code", "recovery_status: fatigued" in health_text and "protein" not in health_text)
 
 
+def test_timeline_and_history() -> None:
+    gym: PlaceRecord = {
+        "id": "gym",
+        "name": "Gym",
+        "category": "gym",
+        "activity": "working out",
+        "latitude": 52.52,
+        "longitude": 13.40,
+        "radius_meters": 150.0,
+    }
+    places = [HOME, gym]
+
+    records: list[dict[str, object]] = [
+        {"timestamp": iso(4 * 3600), "latitude": 52.53, "longitude": 13.41, "motion_activity": "stationary"},
+        {"timestamp": iso(3 * 3600), "latitude": 52.53, "longitude": 13.41, "motion_activity": "stationary"},
+        {"timestamp": iso(2 * 3600), "latitude": 52.525, "longitude": 13.405, "motion_activity": "walking"},
+        {"timestamp": iso(3600), "latitude": 52.52, "longitude": 13.40, "motion_activity": "stationary"},
+        {"timestamp": iso(1800), "latitude": 52.52, "longitude": 13.40, "motion_activity": "stationary"},
+        {"timestamp": iso(60), "latitude": 52.53, "longitude": 13.41, "motion_activity": "stationary"},
+    ]
+
+    timeline = companion.build_timeline(records, places, NOW)
+    check("timeline has events", timeline["events_count"] >= 3)
+    check("current place is Home", timeline["current_place"] == "Home")
+
+    rows = companion.query_history_sqlite(records, places, "SELECT COUNT(*) as c FROM locations WHERE place_name = 'Gym'")
+    check("sqlite found gym records", rows[0]["c"] == 2)
+
+    text = companion.format_timeline(timeline)
+    check("timeline formatting has facts", "facts_only:" in text and "stay: Gym" in text)
+
+
+def test_bug_md_scenario_gap_detection() -> None:
+    places: list[PlaceRecord] = [
+        {"id": "home", "name": "Home", "category": "home", "latitude": 48.815047, "longitude": 9.232482, "radius_meters": 120.0},
+        {"id": "cannstatt", "name": "Cannstatt", "category": "general", "latitude": 48.812884, "longitude": 9.221555, "radius_meters": 200.0},
+    ]
+
+    records: list[dict[str, object]] = [
+        {"timestamp": "2026-10-02T16:48:25Z", "latitude": 48.815159, "longitude": 9.231775, "motion_activity": "stationary"},
+        {"timestamp": "2026-10-02T18:29:06Z", "latitude": 48.812884, "longitude": 9.221555, "motion_activity": "walking"},
+    ]
+    now_moment = companion.parse_utc("2026-10-02T18:40:00Z")
+    assert now_moment is not None
+    timeline = companion.build_timeline(records, places, now_moment)
+
+    cannstatt_event = timeline["events"][-1]
+    check("cannstatt reached", cannstatt_event.get("place_name") == "Cannstatt")
+    check("gap detected before cannstatt", "silent for 100m" in str(timeline) or "silent for 101m" in str(timeline) or "silent" in str(cannstatt_event.get("telemetry_gap_before")))
+
+    fix_at_1801 = {
+        "latitude": 48.815159,
+        "longitude": 9.231775,
+        "timestamp": "2026-10-02T16:48:25Z",
+        "motion_activity": "stationary",
+        "motion_timestamp": "2026-10-02T16:48:25Z",
+    }
+    resolved = companion.resolve_location(fix_at_1801, places, companion.parse_utc("2026-10-02T18:01:00Z") or NOW, "fixture")
+    check("still_there is unconfirmed when old without fresh motion", resolved["still_there"] is False and "unconfirmed" in resolved["still_there_status"])
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
     test_driving_is_transit()
     test_unlisted()
+    test_unlisted_stale_unconfirmed()
+    test_profile_places_isolation()
+    test_invalid_timestamp_graceful()
     test_files_roundtrip()
     test_text_has_no_english_script()
     test_battery_is_not_reported()
+    test_timeline_and_history()
+    test_bug_md_scenario_gap_detection()
     print("ok")
     return 0
 

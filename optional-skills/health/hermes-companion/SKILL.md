@@ -2,14 +2,13 @@
 name: hermes-companion
 description: Requires the Companion iPhone app for place and health.
 version: 1.2.0
-author: danielmain, Hermes Agent
+author: danielmain
 license: MIT
 platforms: [macos]
 metadata:
   hermes:
     tags: [Location, Health, iPhone, iCloud, Apple]
     category: health
-    related_skills: []
     config:
       - key: hermes-companion.places_file
         description: JSON file of named places with latitude, longitude, and radius
@@ -55,6 +54,7 @@ Run the bundled script with the `terminal` tool. `${HERMES_SKILL_DIR}` is the sk
 
 ```bash
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --timeline
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --health
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --context
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --json
@@ -77,8 +77,9 @@ Save a place only when the user asks, using the coordinates from the latest scri
 | Question | Command | Fields to trust |
 | --- | --- | --- |
 | Where are they? | `companion.py` | `place_name`, `place_category`, `still_there` |
+| Visits today & history | `companion.py --timeline` | `timeline_events`, arrival/departures, dwell times, gaps |
 | Moving right now? | `companion.py` | `motion_activity`, `motion_fresh`, `is_moving_now` |
-| How long in this place? | `companion.py` | `minutes_since_last_move` |
+| How long in this place? | `companion.py` | `dwell_time`, `arrived_at`, `minutes_since_last_move` |
 | Sleep, workout, recovery | `companion.py --health` | `sleep_duration`, `sleep_quality`, `workout_type`, `recovery_status` |
 | Both | `companion.py --context` | the two blocks together |
 
@@ -97,12 +98,13 @@ This file is English because the model reads it. The user never sees it.
 
 ## Procedure
 
-1. Run `companion.py` for place and motion, `--health` for body metrics, or `--context` when the answer needs both. Completion: the command prints a `place_name:` or `recovery_status:` line, or an explicit "no file yet" line. On "no file yet", tell the user the Hermes Companion iPhone app has to be installed and synced, then stop.
-2. Treat `place_name` as where they are now. `minutes_since_last_move` is how long the phone has kept that coordinate. A large number at a known place means they are still there. Say that in the present tense, in the user's language.
-3. Treat `motion_activity` when `motion_fresh` is `yes` as what the body is doing this minute. Walking at a saved place with an old GPS age is still that place, walking around, not lost and not in transit.
-4. Treat a fresh `recorded_at` as an accepted move. It does not say they arrived, left, or came back. Do not announce an arrival unless they said so.
-5. For health, use only lines present in this run. `age_seconds` is when that snapshot was saved. Steps and calories are from that time. Sleep is for the morning, or a short night mentioned in the evening. Do not recap last night's hours in the afternoon. A workout in progress gets one short line. A workout finished within about 90 minutes can include how it felt and protein or water as care. Recovery `fatigued` is the only case for urging rest.
-6. If `place_name` is `Unlisted place`, ask what to call it. Do not name it home, work, or a gym from the coordinates alone.
+1. Run `companion.py` for place and motion, `--timeline` for today's visits/movements, `--health` for body metrics, or `--context` when the answer needs both. Completion: the command prints a `place_name:`, `timeline_events:`, or `recovery_status:` line, or an explicit "no file yet" line. On "no file yet", tell the user the Hermes Companion iPhone app has to be installed and synced, then stop.
+2. Treat `place_name` as where they are now. If `still_there` is `yes`, say they are still there. If `still_there` starts with `unconfirmed`, tell the user they were last seen there but telemetry has been silent (e.g. phone backgrounded or no recent ping), rather than asserting they are definitely still there.
+3. Use `--timeline` when the user asks where they have been, when they left, how long they stayed at a place, or what trips they took today.
+4. Treat `motion_activity` when `motion_fresh` is `yes` as what the body is doing this minute. Walking at a saved place with an old GPS age is still that place, walking around, not lost and not in transit.
+5. Treat a fresh `recorded_at` as an accepted move. It does not say they arrived, left, or came back. Do not announce an arrival unless they said so.
+6. For health, use only lines present in this run. `age_seconds` is when that snapshot was saved. Steps and calories are from that time. Sleep is for the morning, or a short night mentioned in the evening. Do not recap last night's hours in the afternoon. A workout in progress gets one short line. A workout finished within about 90 minutes can include how it felt and protein or water as care. Recovery `fatigued` is the only case for urging rest.
+7. If `place_name` is `Unlisted place`, ask what to call it. Do not name it home, work, or a gym from the coordinates alone.
 
 ## Place and Motion Rules
 
@@ -114,8 +116,6 @@ The phone rewrites `latest_location.json` only when a move clears the persist ga
 
 CoreMotion is refreshed on its own. Trust `is_moving_now` plus `motion_activity` for moving versus staying. Trust `place` for which place. Automotive motion is in transit even inside a saved radius. Walking, running, or cycling inside a saved radius stays at that place.
 
-`is_stale` on older readers means a long stay, not a lost fix. This script prints `still_there: yes` for every accepted file.
-
 Field notes live in `references/files.md`. Load that file only when a raw key is unclear.
 
 ## Pitfalls
@@ -124,7 +124,7 @@ Field notes live in `references/files.md`. Load that file only when a raw key is
 - The simulator has no CoreMotion. `motion_activity: unknown` and `motion_fresh: no` are expected there.
 - Motion & Fitness must be allowed or `motion_activity` stays `unknown`.
 - Coordinates are for saving a place or when the user asks for them. Do not recite them in a normal reply.
-- Ignore `battery_level` and `battery_state` if a file still has them. Phone battery is not part of this skill.
+- Ignore `battery_level`, `battery_state`, and `speed` if an older file still has them. Battery percentage and speed are omitted from data and are not part of this app or skill.
 - Two Macs on the same Apple ID share the container. Read the local file; do not fetch it from the network.
 - The script does not reverse-geocode. An unlisted coordinate stays unlisted until the user names it.
 

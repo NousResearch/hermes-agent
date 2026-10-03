@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Read Hermes Companion iPhone telemetry from the local iCloud folder.
 
-The iOS app writes latest_location.json and latest_health.json into its
-iCloud container. macOS materialises those files on disk. This script turns
+The iOS app writes latest_location.json, location_history.json, and latest_health.json
+into its iCloud container. macOS materialises those files on disk. This script turns
 them into the place, motion, sleep, and workout facts the Hermes skill speaks
 from. It uses the Python standard library only.
 
@@ -13,6 +13,7 @@ person is still there.
 Usage:
   python3 companion.py
   python3 companion.py --json
+  python3 companion.py --timeline
   python3 companion.py --health
   python3 companion.py --context
   python3 companion.py --list
@@ -26,23 +27,41 @@ import argparse
 import json
 import math
 import os
+import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import (
+    Final,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypedDict,
+    Union,
+    cast,
+)
 
-MOTION_FRESH_SECONDS = 300
-LONG_STAY_SECONDS = 600
-MOVING_ACTIVITIES = ("walking", "running", "cycling", "automotive")
-MOTION_LABELS = {
+MOTION_FRESH_SECONDS: Final[int] = 300
+LONG_STAY_SECONDS: Final[int] = 600
+MOVING_ACTIVITIES: Final[Tuple[str, ...]] = ("walking", "running", "cycling", "automotive")
+MOTION_LABELS: Final[Mapping[str, str]] = {
     "walking": "walking",
     "running": "running",
     "cycling": "cycling",
     "automotive": "driving",
 }
-CATEGORIES = ("home", "work", "gym", "cafe", "outdoors", "general")
+CATEGORIES: Final[Tuple[str, ...]] = ("home", "work", "gym", "cafe", "outdoors", "general")
+PROSE_HEALTH_KEYS: Final[Tuple[str, ...]] = (
+    "sleep_insight",
+    "workout_insight",
+    "nutrition_reminder",
+    "suggested_openers",
+    "suggestedOpeners",
+)
 
-ICLOUD_DIRS = (
+ICLOUD_DIRS: Final[Tuple[Path, ...]] = (
     Path.home() / "Library/Mobile Documents/iCloud~com~hermes~HermesCompanion/Documents",
     Path.home() / "Library/Mobile Documents/iCloud~com~hermes~HermesCompanion",
     Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/HermesCompanion",
@@ -50,12 +69,173 @@ ICLOUD_DIRS = (
 )
 
 
+# ==============================================================================
+# Typed Data Transfer Objects (no Any)
+# ==============================================================================
+
+class PlaceRecord(TypedDict, total=False):
+    id: str
+    name: str
+    category: str
+    activity: str
+    latitude: float
+    longitude: float
+    radius_meters: float
+    notes: str
+    distance_meters: float
+
+
+class SleepFacts(TypedDict, total=False):
+    formatted_duration: Optional[str]
+    total_sleep_minutes: Optional[Union[int, float]]
+    quality_rating: Optional[str]
+
+
+class WorkoutFacts(TypedDict, total=False):
+    workout_type: Optional[str]
+    is_currently_active: Optional[bool]
+    phase: Optional[str]
+    duration_minutes: Optional[Union[int, float]]
+    minutes_since_completion: Optional[Union[int, float]]
+    active_calories: Optional[Union[int, float]]
+
+
+class HealthFacts(TypedDict):
+    sleep: Optional[SleepFacts]
+    workout: Optional[WorkoutFacts]
+
+
+class ResolvedHealth(TypedDict):
+    status: str
+    source_file: str
+    recorded_at: Optional[str]
+    age_seconds: Optional[int]
+    age_human: str
+    recovery_status: str
+    step_count_today: Union[int, float]
+    active_calories_today: Union[int, float]
+    resting_heart_rate_bpm: Optional[Union[int, float]]
+    current_heart_rate_bpm: Optional[Union[int, float]]
+    heart_rate_variability_sdnn: Optional[Union[int, float]]
+    sleep: Optional[SleepFacts]
+    workout: Optional[WorkoutFacts]
+
+
+class ResolvedLocation(TypedDict, total=False):
+    status: str
+    source_file: str
+    latitude: float
+    longitude: float
+    coordinates: str
+    accuracy_meters: Optional[float]
+    recorded_at: Optional[str]
+    age_seconds: Optional[int]
+    age_human: str
+    minutes_since_last_move: Optional[int]
+    movement_reason: Optional[str]
+    is_stale: bool
+    still_there: bool
+    still_there_status: str
+    place_name: str
+    place_category: str
+    activity: str
+    is_at_known_place: bool
+    known_place_id: Optional[str]
+    distance_to_center_meters: Optional[float]
+    motion_activity: str
+    motion_confidence: Optional[str]
+    motion_age_seconds: Optional[int]
+    motion_fresh: bool
+    is_moving_now: bool
+    trigger_source: Optional[str]
+    app_state: Optional[str]
+    arrived_at: str
+    dwell_time: str
+    previous_place: str
+    telemetry_gap: str
+
+
+class TimelineStayEvent(TypedDict, total=False):
+    type: str
+    place_name: str
+    place_category: str
+    arrived_at: Optional[str]
+    departed_at: Optional[str]
+    dwell_minutes: int
+    dwell_human: str
+    records_count: int
+    is_current: bool
+    telemetry_gap_before: Optional[str]
+    start_timestamp: datetime
+    last_timestamp: datetime
+
+
+class TimelineTransitEvent(TypedDict, total=False):
+    type: str
+    from_place: str
+    to_place: str
+    place_name: str
+    place_category: str
+    started_at: Optional[str]
+    ended_at: Optional[str]
+    distance_meters: float
+    duration_minutes: int
+    activity: str
+    is_current: bool
+    telemetry_gap: Optional[str]
+    start_timestamp: datetime
+    last_timestamp: datetime
+
+
+TimelineEvent = Union[TimelineStayEvent, TimelineTransitEvent]
+
+
+class TimelinePayload(TypedDict, total=False):
+    status: str
+    total_records: int
+    events_count: int
+    current_place: str
+    current_category: str
+    current_motion: str
+    latest_recorded_at: Optional[str]
+    latest_age_seconds: Optional[int]
+    latest_age_human: str
+    events: List[TimelineEvent]
+    source_file: str
+
+
+# ==============================================================================
+# Pure Functional Helpers & Utilities
+# ==============================================================================
+
 def log(level: str, message: str) -> None:
     print(f"{level} hermes-companion: {message}", file=sys.stderr)
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _to_float(val: object, default: float = 0.0) -> float:
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+
+def _to_int(val: object, default: int = 0) -> int:
+    if isinstance(val, (int, float)):
+        return int(val)
+    if isinstance(val, str):
+        try:
+            return int(float(val))
+        except ValueError:
+            pass
+    return default
 
 
 def parse_utc(value: Optional[str]) -> Optional[datetime]:
@@ -114,7 +294,7 @@ def icloud_directories(override: Optional[str]) -> List[Path]:
     return list(ICLOUD_DIRS)
 
 
-def read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+def read_json_file(path: Path) -> Optional[Mapping[str, object]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -131,30 +311,26 @@ def read_json_file(path: Path) -> Optional[Dict[str, Any]]:
     return data
 
 
-def first_reading(directories: Sequence[Path], filename: str) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
-    seen = False
+def first_reading(directories: Sequence[Path], filename: str) -> Tuple[Optional[Mapping[str, object]], Optional[Path]]:
     for directory in directories:
         path = directory / filename
         if not path.is_file():
             continue
-        seen = True
         data = read_json_file(path)
         if data is not None:
             return data, path
-    if not seen:
-        log("WARN", f"{filename} is not in the iCloud container yet")
+    log("WARN", f"{filename} is not in the iCloud container yet")
     return None, None
 
 
 def default_places_file() -> Path:
+    """Places file for this machine, respecting active profile with no branch leak."""
     env = os.environ.get("HERMES_COMPANION_PLACES", "").strip()
     if env:
         return expand(env)
     hermes_home = os.environ.get("HERMES_HOME", "").strip()
     if hermes_home:
-        profile_places = expand(hermes_home) / "state" / "places.json"
-        if profile_places.is_file() or (expand(hermes_home) / "state").is_dir():
-            return profile_places
+        return expand(hermes_home) / "state" / "places.json"
     profiles = Path.home() / ".hermes" / "profiles"
     found = sorted(profiles.glob("*/state/places.json")) if profiles.is_dir() else []
     if len(found) == 1:
@@ -162,7 +338,7 @@ def default_places_file() -> Path:
     return Path.home() / ".hermes" / "hermes-companion" / "places.json"
 
 
-def load_places(path: Path) -> List[Dict[str, Any]]:
+def load_places(path: Path) -> List[PlaceRecord]:
     if not path.is_file():
         return []
     try:
@@ -173,80 +349,131 @@ def load_places(path: Path) -> List[Dict[str, Any]]:
     if not isinstance(data, list):
         log("ERROR", f"places file {path} must be a JSON list")
         return []
-    return [item for item in data if isinstance(item, dict)]
+    return [
+        PlaceRecord(
+            id=str(item.get("id", "")),
+            name=str(item.get("name", "")),
+            category=str(item.get("category", "general")),
+            activity=str(item.get("activity", f"at {item.get('name', 'place')}")),
+            latitude=_to_float(item.get("latitude")),
+            longitude=_to_float(item.get("longitude")),
+            radius_meters=_to_float(item.get("radius_meters"), 150.0),
+            notes=str(item.get("notes", "")),
+        )
+        for item in data
+        if isinstance(item, dict) and "latitude" in item and "longitude" in item
+    ]
 
 
-def save_places(path: Path, places: Sequence[Dict[str, Any]]) -> None:
+def save_places(path: Path, places: Sequence[PlaceRecord]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(list(places), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     log("INFO", f"wrote {len(places)} place(s) to {path}")
 
 
-def match_place(latitude: float, longitude: float, places: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    best: Optional[Dict[str, Any]] = None
-    best_distance = float("inf")
-    for place in places:
-        try:
-            distance = haversine_meters(latitude, longitude, float(place["latitude"]), float(place["longitude"]))
-            radius = float(place.get("radius_meters") or 150)
-        except (KeyError, TypeError, ValueError):
-            continue
-        if distance <= radius and distance < best_distance:
-            best = place
-            best_distance = distance
-    if best is None:
+def match_place(latitude: float, longitude: float, places: Sequence[PlaceRecord]) -> Optional[PlaceRecord]:
+    valid_matches = [
+        (dist, place)
+        for place in places
+        for dist in [haversine_meters(latitude, longitude, float(place["latitude"]), float(place["longitude"]))]
+        if dist <= float(place.get("radius_meters", 150.0))
+    ]
+
+    if not valid_matches:
         return None
-    return {**best, "distance_meters": round(best_distance, 1)}
+
+    best_dist, best_place = min(valid_matches, key=lambda item: item[0])
+    return {**best_place, "distance_meters": round(best_dist, 1)}
+
+
+def determine_still_there(
+    at_known: bool,
+    moving_now: bool,
+    is_transit: bool,
+    gps_age: Optional[int],
+    motion_fresh: bool,
+    motion_moving: bool,
+) -> Tuple[bool, str]:
+    """Pure functional resolution of whether the user is still at their last fix."""
+    if moving_now or is_transit:
+        return False, "no"
+    if gps_age is None:
+        return False, "unconfirmed (missing or invalid timestamp)"
+    if motion_fresh and not motion_moving:
+        return True, "yes"
+    if gps_age <= 1800:
+        return True, "yes"
+    return False, f"unconfirmed (no fresh ping in {human_age(gps_age)})"
 
 
 def resolve_location(
-    raw: Dict[str, Any],
-    places: Sequence[Dict[str, Any]],
+    raw: Mapping[str, object],
+    places: Sequence[PlaceRecord],
     now: datetime,
     source: str,
-) -> Dict[str, Any]:
-    latitude = float(raw["latitude"])
-    longitude = float(raw["longitude"])
-    recorded_at = raw.get("timestamp") or raw.get("recorded_at")
-    gps_age = age_seconds(recorded_at, now) or 0
-    speed_mps = float(raw.get("speed_mps", raw.get("speed", -1.0)) or -1.0)
-    speed_kmh = round(speed_mps * 3.6, 1) if speed_mps > 0 else 0.0
+) -> ResolvedLocation:
+    latitude = _to_float(raw.get("latitude"))
+    longitude = _to_float(raw.get("longitude"))
+    recorded_at = str(raw.get("timestamp") or raw.get("recorded_at") or "") or None
+    gps_age = age_seconds(recorded_at, now)
+
     motion = str(raw.get("motion_activity") or "unknown")
-    motion_age = age_seconds(raw.get("motion_timestamp"), now)
+    motion_ts_val = raw.get("motion_timestamp")
+    motion_age = age_seconds(str(motion_ts_val), now) if motion_ts_val else None
     motion_age_value = motion_age if motion_age is not None else 999_999
+
     valid_motion = motion in ("stationary", *MOVING_ACTIVITIES)
     motion_fresh = valid_motion and motion_age_value <= MOTION_FRESH_SECONDS
     motion_moving = motion in MOVING_ACTIVITIES
-    long_stay = gps_age > LONG_STAY_SECONDS
-    fix_moving = speed_kmh > 3.0
-    moving_now = motion_moving if motion_fresh else (fix_moving and not long_stay)
+    long_stay = gps_age is None or gps_age > LONG_STAY_SECONDS
+    moving_now = motion_moving if motion_fresh else False
     known = match_place(latitude, longitude, places)
     label = MOTION_LABELS.get(motion)
-    minutes = gps_age // 60
+    minutes = (gps_age // 60) if gps_age is not None else None
 
     if moving_now and known and label in ("walking", "running", "cycling"):
         place_name = str(known.get("name") or "Known place")
         category = str(known.get("category") or "general")
         activity = label
         at_known = True
+        is_transit = False
     elif moving_now:
         place_name = "In Transit"
         category = "transit"
         activity = motion if motion in MOVING_ACTIVITIES else "moving"
         at_known = False
+        is_transit = True
         known = None
     elif known:
         place_name = str(known.get("name") or "Known place")
         category = str(known.get("category") or "general")
         activity = str(known.get("activity") or category)
         at_known = True
+        is_transit = False
     else:
         place_name = "Unlisted place"
         category = "unlisted"
         activity = "unlisted"
         at_known = False
+        is_transit = False
 
-    accuracy = raw.get("horizontal_accuracy", raw.get("accuracy"))
+    raw_acc = raw.get("horizontal_accuracy", raw.get("accuracy"))
+    accuracy = _to_float(raw_acc) if raw_acc is not None else None
+
+    still_there, still_there_txt = determine_still_there(
+        at_known=at_known,
+        moving_now=moving_now,
+        is_transit=is_transit,
+        gps_age=gps_age,
+        motion_fresh=motion_fresh,
+        motion_moving=motion_moving,
+    )
+
+    reason = str(raw["movement_reason"]) if raw.get("movement_reason") else None
+    motion_conf = str(raw["motion_confidence"]) if raw.get("motion_confidence") else None
+    trig_src = str(raw["source"]) if raw.get("source") else None
+    app_st = str(raw["app_state"]) if raw.get("app_state") else None
+
     return {
         "status": "ok",
         "source_file": source,
@@ -258,9 +485,10 @@ def resolve_location(
         "age_seconds": gps_age,
         "age_human": human_age(gps_age),
         "minutes_since_last_move": minutes,
-        "movement_reason": raw.get("movement_reason"),
+        "movement_reason": reason,
         "is_stale": long_stay,
-        "still_there": True,
+        "still_there": still_there,
+        "still_there_status": still_there_txt,
         "place_name": place_name,
         "place_category": category,
         "activity": activity,
@@ -268,47 +496,54 @@ def resolve_location(
         "known_place_id": known.get("id") if known else None,
         "distance_to_center_meters": known.get("distance_meters") if known else None,
         "motion_activity": motion if valid_motion else "unknown",
-        "motion_confidence": raw.get("motion_confidence"),
-        "motion_age_seconds": None if motion_age is None else motion_age,
+        "motion_confidence": motion_conf,
+        "motion_age_seconds": motion_age,
         "motion_fresh": motion_fresh,
         "is_moving_now": moving_now,
-        "speed_kmh": speed_kmh,
-        "trigger_source": raw.get("source"),
-        "app_state": raw.get("app_state"),
+        "trigger_source": trig_src,
+        "app_state": app_st,
     }
 
 
-PROSE_HEALTH_KEYS = ("sleep_insight", "workout_insight", "nutrition_reminder", "suggested_openers", "suggestedOpeners")
-
-
-def health_facts(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Numbers and codes only. English sentences in older files are not forwarded."""
-    ctx = raw.get("conversational_context") if isinstance(raw.get("conversational_context"), dict) else {}
+def health_facts(raw: Mapping[str, object]) -> HealthFacts:
+    """Numbers and codes only. English prose fields are filtered out."""
+    raw_ctx = raw.get("conversational_context")
+    ctx: Mapping[str, object] = raw_ctx if isinstance(raw_ctx, Mapping) else {}
     leftover = [key for key in PROSE_HEALTH_KEYS if ctx.get(key) or raw.get(key)]
     if leftover:
         log("INFO", "ignoring health prose fields: " + ", ".join(leftover))
-    sleep = raw.get("sleep") if isinstance(raw.get("sleep"), dict) else None
-    workout = raw.get("workout") if isinstance(raw.get("workout"), dict) else None
-    return {
-        "sleep": None if sleep is None else {
-            "formatted_duration": sleep.get("formatted_duration"),
-            "total_sleep_minutes": sleep.get("total_sleep_minutes"),
-            "quality_rating": sleep.get("quality_rating"),
-        },
-        "workout": None if workout is None else {
-            "workout_type": workout.get("workout_type"),
-            "is_currently_active": workout.get("is_currently_active"),
-            "phase": workout.get("phase"),
-            "duration_minutes": workout.get("duration_minutes"),
-            "minutes_since_completion": workout.get("minutes_since_completion"),
-            "active_calories": workout.get("active_calories"),
-        },
-    }
+
+    raw_sleep = raw.get("sleep")
+    sleep: Optional[Mapping[str, object]] = raw_sleep if isinstance(raw_sleep, Mapping) else None
+
+    raw_workout = raw.get("workout")
+    workout: Optional[Mapping[str, object]] = raw_workout if isinstance(raw_workout, Mapping) else None
+
+    sleep_facts: Optional[SleepFacts] = None
+    if sleep is not None:
+        sleep_facts = {
+            "formatted_duration": str(sleep["formatted_duration"]) if sleep.get("formatted_duration") else None,
+            "total_sleep_minutes": _to_float(sleep.get("total_sleep_minutes")),
+            "quality_rating": str(sleep["quality_rating"]) if sleep.get("quality_rating") else None,
+        }
+
+    workout_facts: Optional[WorkoutFacts] = None
+    if workout is not None:
+        workout_facts = {
+            "workout_type": str(workout["workout_type"]) if workout.get("workout_type") else None,
+            "is_currently_active": bool(workout["is_currently_active"]) if "is_currently_active" in workout else None,
+            "phase": str(workout["phase"]) if workout.get("phase") else None,
+            "duration_minutes": _to_float(workout.get("duration_minutes")),
+            "minutes_since_completion": _to_float(workout.get("minutes_since_completion")),
+            "active_calories": _to_float(workout.get("active_calories")),
+        }
+
+    return {"sleep": sleep_facts, "workout": workout_facts}
 
 
-def resolve_health(raw: Dict[str, Any], now: datetime, source: str) -> Dict[str, Any]:
-    recorded_at = raw.get("timestamp") or raw.get("recorded_at")
-    seconds = age_seconds(recorded_at, now) or 0
+def resolve_health(raw: Mapping[str, object], now: datetime, source: str) -> ResolvedHealth:
+    recorded_at = str(raw.get("timestamp") or raw.get("recorded_at") or "") or None
+    seconds = age_seconds(recorded_at, now)
     facts = health_facts(raw)
     return {
         "status": "ok",
@@ -316,54 +551,68 @@ def resolve_health(raw: Dict[str, Any], now: datetime, source: str) -> Dict[str,
         "recorded_at": recorded_at,
         "age_seconds": seconds,
         "age_human": human_age(seconds),
-        "recovery_status": raw.get("recovery_status", "unknown"),
-        "step_count_today": raw.get("step_count_today", 0),
-        "active_calories_today": raw.get("active_calories_today", 0),
-        "resting_heart_rate_bpm": raw.get("resting_heart_rate_bpm"),
-        "current_heart_rate_bpm": raw.get("current_heart_rate_bpm"),
-        "heart_rate_variability_sdnn": raw.get("heart_rate_variability_sdnn"),
+        "recovery_status": str(raw.get("recovery_status", "unknown")),
+        "step_count_today": _to_float(raw.get("step_count_today")),
+        "active_calories_today": _to_float(raw.get("active_calories_today")),
+        "resting_heart_rate_bpm": _to_float(raw["resting_heart_rate_bpm"]) if raw.get("resting_heart_rate_bpm") is not None else None,
+        "current_heart_rate_bpm": _to_float(raw["current_heart_rate_bpm"]) if raw.get("current_heart_rate_bpm") is not None else None,
+        "heart_rate_variability_sdnn": _to_float(raw["heart_rate_variability_sdnn"]) if raw.get("heart_rate_variability_sdnn") is not None else None,
         "sleep": facts["sleep"],
         "workout": facts["workout"],
     }
 
 
-def format_location(loc: Dict[str, Any]) -> str:
+def format_location(loc: ResolvedLocation) -> str:
     motion_age = loc.get("motion_age_seconds")
     motion_age_text = "none" if motion_age is None else str(motion_age)
+    still_there_txt = loc.get("still_there_status") or ("yes" if loc.get("still_there") else "no")
+    minutes_text = "unknown" if loc.get("minutes_since_last_move") is None else str(loc["minutes_since_last_move"])
+    age_seconds_text = "unknown" if loc.get("age_seconds") is None else str(loc["age_seconds"])
+
     lines = [
         "facts_only: reply in the user's language; do not quote this block",
-        f"place_name: {loc['place_name']}",
-        f"place_category: {loc['place_category']}",
-        f"still_there: yes",
-        f"minutes_since_last_move: {loc['minutes_since_last_move']}",
+        f"place_name: {loc.get('place_name', 'unknown')}",
+        f"place_category: {loc.get('place_category', 'general')}",
+        f"still_there: {still_there_txt}",
+        f"minutes_since_last_move: {minutes_text}",
         f"movement_reason: {loc.get('movement_reason') or 'absent'}",
-        f"motion_activity: {loc['motion_activity']}",
+        f"motion_activity: {loc.get('motion_activity', 'unknown')}",
         f"motion_fresh: {'yes' if loc.get('motion_fresh') else 'no'}",
         f"motion_age_seconds: {motion_age_text}",
-        f"is_moving_now: {'yes' if loc['is_moving_now'] else 'no'}",
-        f"recorded_at: {loc.get('recorded_at')}",
-        f"age_seconds: {loc['age_seconds']}",
-        f"coordinates: {loc['coordinates']}",
-        f"source: {loc['source_file']}",
+        f"is_moving_now: {'yes' if loc.get('is_moving_now') else 'no'}",
+        f"recorded_at: {loc.get('recorded_at') or 'unknown'}",
+        f"age_seconds: {age_seconds_text}",
+        f"coordinates: {loc.get('coordinates', 'unknown')}",
+        f"source: {loc.get('source_file', 'unknown')}",
     ]
+    if loc.get("arrived_at"):
+        lines.append(f"arrived_at: {loc['arrived_at']}")
+    if loc.get("dwell_time"):
+        lines.append(f"dwell_time: {loc['dwell_time']}")
+    if loc.get("previous_place"):
+        lines.append(f"previous_place: {loc['previous_place']}")
+    if loc.get("telemetry_gap"):
+        lines.append(f"telemetry_gap: {loc['telemetry_gap']}")
     return "\n".join(lines)
 
 
-def format_health(health: Dict[str, Any]) -> str:
+def format_health(health: ResolvedHealth) -> str:
     lines = [
         "facts_only: reply in the user's language; do not quote this block",
         f"recovery_status: {health.get('recovery_status')}",
-        f"recorded_at: {health.get('recorded_at')}",
-        f"age_seconds: {health.get('age_seconds')}",
+        f"recorded_at: {health.get('recorded_at') or 'unknown'}",
+        f"age_seconds: {'unknown' if health.get('age_seconds') is None else health['age_seconds']}",
     ]
-    sleep = health.get("sleep") or None
-    if isinstance(sleep, dict):
-        lines.append(f"sleep_duration: {sleep.get('formatted_duration') or sleep.get('total_sleep_minutes') or 'unknown'}")
+    sleep = health.get("sleep")
+    if sleep:
+        dur = sleep.get("formatted_duration") or sleep.get("total_sleep_minutes") or "unknown"
+        lines.append(f"sleep_duration: {dur}")
         lines.append(f"sleep_quality: {sleep.get('quality_rating') or 'unknown'}")
     else:
         lines.append("sleep_duration: none")
-    workout = health.get("workout") or None
-    if isinstance(workout, dict):
+
+    workout = health.get("workout")
+    if workout:
         lines.append(f"workout_type: {workout.get('workout_type') or 'unknown'}")
         lines.append(f"workout_active: {'yes' if workout.get('is_currently_active') else 'no'}")
         lines.append(f"workout_phase: {workout.get('phase') or 'unknown'}")
@@ -372,17 +621,335 @@ def format_health(health: Dict[str, Any]) -> str:
             lines.append(f"minutes_since_workout: {workout.get('minutes_since_completion')}")
     else:
         lines.append("workout_type: none")
-    lines.append(f"steps_today: {health.get('step_count_today') or 0}")
-    lines.append(f"active_calories_today: {int(float(health.get('active_calories_today') or 0))}")
+
+    lines.append(f"steps_today: {_to_int(health.get('step_count_today'))}")
+    lines.append(f"active_calories_today: {_to_int(health.get('active_calories_today'))}")
     if health.get("resting_heart_rate_bpm") is not None:
-        lines.append(f"resting_heart_rate_bpm: {health['resting_heart_rate_bpm']}")
+        lines.append(f"resting_heart_rate_bpm: {_to_int(health['resting_heart_rate_bpm'])}")
     if health.get("heart_rate_variability_sdnn") is not None:
-        lines.append(f"hrv_sdnn_ms: {health['heart_rate_variability_sdnn']}")
+        lines.append(f"hrv_sdnn_ms: {_to_int(health['heart_rate_variability_sdnn'])}")
     lines.append(f"source: {health['source_file']}")
     return "\n".join(lines)
 
 
-def emit(payload: Dict[str, Any], as_json: bool, text: str) -> int:
+def read_history(directories: Sequence[Path]) -> Tuple[List[Mapping[str, object]], Optional[Path]]:
+    raw, path = first_reading(directories, "location_history.json")
+    if raw is None or path is None:
+        return [], None
+    records = raw.get("records") if isinstance(raw, dict) else raw
+    if not isinstance(records, list):
+        return [], path
+    valid: List[Mapping[str, object]] = [
+        item for item in records if isinstance(item, dict) and "latitude" in item and "longitude" in item
+    ]
+    valid.sort(key=lambda r: str(r.get("timestamp") or r.get("recorded_at") or ""))
+    return valid, path
+
+
+def parse_since(since_str: Optional[str], now: datetime) -> Optional[datetime]:
+    if not since_str:
+        return None
+    val = since_str.strip().lower()
+    if val == "today":
+        return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    if val.endswith("h"):
+        try:
+            return now - timedelta(hours=float(val[:-1]))
+        except ValueError:
+            pass
+    if val.endswith("d"):
+        try:
+            return now - timedelta(days=float(val[:-1]))
+        except ValueError:
+            pass
+    if val.endswith("m"):
+        try:
+            return now - timedelta(minutes=float(val[:-1]))
+        except ValueError:
+            pass
+    return parse_utc(since_str)
+
+
+def build_timeline(
+    records: Sequence[Mapping[str, object]],
+    places: Sequence[PlaceRecord],
+    now: datetime,
+    since: Optional[datetime] = None,
+) -> TimelinePayload:
+    filtered_records = [
+        r
+        for r in records
+        if not since or (parse_utc(str(r.get("timestamp") or r.get("recorded_at") or "")) or now) >= since
+    ]
+
+    if not filtered_records:
+        return {"events": [], "events_count": 0, "status": "no_records", "total_records": 0}
+
+    events: List[TimelineEvent] = []
+    current_stay: Optional[TimelineStayEvent] = None
+    current_transit: Optional[TimelineTransitEvent] = None
+    last_record: Optional[Mapping[str, object]] = None
+    last_place_name: Optional[str] = None
+
+    for r in filtered_records:
+        lat = _to_float(r.get("latitude"))
+        lon = _to_float(r.get("longitude"))
+        ts_str = str(r.get("timestamp") or r.get("recorded_at") or "")
+        ts = parse_utc(ts_str) or now
+        motion = str(r.get("motion_activity") or "unknown")
+        known = match_place(lat, lon, places)
+
+        gap_detected = False
+        gap_minutes = 0
+        if last_record:
+            last_ts = parse_utc(str(last_record.get("timestamp") or last_record.get("recorded_at") or "")) or now
+            delta_sec = (ts - last_ts).total_seconds()
+            dist = haversine_meters(_to_float(last_record.get("latitude")), _to_float(last_record.get("longitude")), lat, lon)
+            if delta_sec > 1800 and dist > 100:
+                gap_detected = True
+                gap_minutes = int(delta_sec // 60)
+
+        is_place = known is not None
+        place_name = known["name"] if known else "Unlisted place"
+        place_cat = known["category"] if known else "unlisted"
+
+        if is_place:
+            if current_transit is not None:
+                events.append(current_transit)
+                current_transit = None
+
+            if current_stay and current_stay["place_name"] == place_name:
+                dwell_sec = max(0, int((ts - current_stay["start_timestamp"]).total_seconds()))
+                current_stay = {
+                    **current_stay,
+                    "departed_at": ts_str,
+                    "records_count": current_stay["records_count"] + 1,
+                    "last_timestamp": ts,
+                    "dwell_minutes": dwell_sec // 60,
+                    "dwell_human": human_age(dwell_sec),
+                    "telemetry_gap_before": f"silent for {gap_minutes}m before this point" if gap_detected else current_stay.get("telemetry_gap_before"),
+                }
+            else:
+                if current_stay:
+                    events.append(current_stay)
+                if last_record:
+                    last_known = match_place(_to_float(last_record.get("latitude")), _to_float(last_record.get("longitude")), places)
+                    from_name = last_known["name"] if last_known else (last_place_name or "Transit")
+                    dist = haversine_meters(_to_float(last_record.get("latitude")), _to_float(last_record.get("longitude")), lat, lon)
+                    if from_name != place_name and dist > 50:
+                        transit_event: TimelineTransitEvent = {
+                            "type": "transit",
+                            "from_place": from_name,
+                            "to_place": place_name,
+                            "started_at": str(last_record.get("timestamp") or last_record.get("recorded_at")),
+                            "ended_at": ts_str,
+                            "distance_meters": round(dist, 1),
+                            "duration_minutes": max(1, int((ts - (parse_utc(str(last_record.get("timestamp") or last_record.get("recorded_at"))) or ts)).total_seconds() // 60)),
+                            "activity": motion if motion in MOVING_ACTIVITIES else "moving",
+                            "telemetry_gap": f"silent for {gap_minutes}m during transit" if gap_detected else None,
+                        }
+                        events.append(transit_event)
+
+                current_stay = {
+                    "type": "stay",
+                    "place_name": place_name,
+                    "place_category": place_cat,
+                    "arrived_at": ts_str,
+                    "departed_at": ts_str,
+                    "start_timestamp": ts,
+                    "last_timestamp": ts,
+                    "dwell_minutes": 0,
+                    "dwell_human": "just arrived",
+                    "records_count": 1,
+                    "is_current": False,
+                    "telemetry_gap_before": f"silent for {gap_minutes}m before arrival" if gap_detected else None,
+                }
+        else:
+            if current_stay:
+                events.append(current_stay)
+                current_stay = None
+
+            dist = haversine_meters(_to_float(last_record.get("latitude")), _to_float(last_record.get("longitude")), lat, lon) if last_record else 0.0
+            if current_transit is None:
+                current_transit = {
+                    "type": "transit",
+                    "place_name": "In Transit",
+                    "place_category": "transit",
+                    "from_place": last_place_name or "Unknown",
+                    "to_place": "Moving",
+                    "started_at": ts_str,
+                    "ended_at": ts_str,
+                    "start_timestamp": ts,
+                    "last_timestamp": ts,
+                    "distance_meters": round(dist, 1),
+                    "duration_minutes": 0,
+                    "activity": motion if motion in MOVING_ACTIVITIES else "moving",
+                    "is_current": False,
+                    "telemetry_gap": f"silent for {gap_minutes}m" if gap_detected else None,
+                }
+            else:
+                updated_dist = round(current_transit.get("distance_meters", 0.0) + dist, 1)
+                duration_m = max(1, int((ts - current_transit["start_timestamp"]).total_seconds() // 60))
+                current_transit = {
+                    **current_transit,
+                    "ended_at": ts_str,
+                    "last_timestamp": ts,
+                    "distance_meters": updated_dist,
+                    "duration_minutes": duration_m,
+                }
+
+        last_record = r
+        last_place_name = place_name
+
+    final_events = list(events)
+    if current_stay:
+        dwell_now = max(0, int((now - current_stay["start_timestamp"]).total_seconds()))
+        active_stay: TimelineStayEvent = {
+            **current_stay,
+            "is_current": True,
+            "dwell_minutes": dwell_now // 60,
+            "dwell_human": human_age(dwell_now),
+            "departed_at": None,
+        }
+        final_events.append(active_stay)
+    elif current_transit:
+        active_transit: TimelineTransitEvent = {
+            **current_transit,
+            "is_current": True,
+        }
+        final_events.append(active_transit)
+
+    clean_events: List[TimelineEvent] = []
+    for ev in final_events:
+        clean_ev = dict(ev)
+        clean_ev.pop("start_timestamp", None)
+        clean_ev.pop("last_timestamp", None)
+        clean_events.append(cast(TimelineEvent, clean_ev))
+
+    latest = filtered_records[-1]
+    latest_lat = _to_float(latest.get("latitude"))
+    latest_lon = _to_float(latest.get("longitude"))
+    latest_known = match_place(latest_lat, latest_lon, places)
+    latest_ts_str = str(latest.get("timestamp") or latest.get("recorded_at") or "")
+    latest_ts = parse_utc(latest_ts_str) or now
+    age_now = int((now - latest_ts).total_seconds())
+
+    return {
+        "status": "ok",
+        "total_records": len(filtered_records),
+        "events_count": len(clean_events),
+        "current_place": latest_known["name"] if latest_known else "Unlisted place",
+        "current_category": latest_known["category"] if latest_known else "unlisted",
+        "current_motion": str(latest.get("motion_activity") or "unknown"),
+        "latest_recorded_at": latest_ts_str or None,
+        "latest_age_seconds": age_now,
+        "latest_age_human": human_age(age_now),
+        "events": clean_events,
+    }
+
+
+def query_history_sqlite(
+    records: Sequence[Mapping[str, object]],
+    places: Sequence[PlaceRecord],
+    sql_query: str,
+) -> List[Mapping[str, object]]:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE locations (
+            id TEXT,
+            timestamp TEXT,
+            latitude REAL,
+            longitude REAL,
+            altitude REAL,
+            horizontal_accuracy REAL,
+            course REAL,
+            source TEXT,
+            app_state TEXT,
+            motion_activity TEXT,
+            motion_confidence TEXT,
+            motion_timestamp TEXT,
+            movement_reason TEXT,
+            device_name TEXT,
+            place_name TEXT,
+            place_category TEXT
+        )
+        """
+    )
+    for r in records:
+        lat = _to_float(r.get("latitude"))
+        lon = _to_float(r.get("longitude"))
+        known = match_place(lat, lon, places)
+        p_name = known["name"] if known else None
+        p_cat = known["category"] if known else None
+        cur.execute(
+            """
+            INSERT INTO locations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(r.get("id", "")),
+                str(r.get("timestamp") or r.get("recorded_at") or ""),
+                lat,
+                lon,
+                _to_float(r.get("altitude")),
+                _to_float(r.get("horizontal_accuracy") or r.get("accuracy")),
+                _to_float(r.get("course"), -1.0),
+                str(r.get("source") or ""),
+                str(r.get("app_state") or ""),
+                str(r.get("motion_activity") or "unknown"),
+                str(r.get("motion_confidence") or ""),
+                str(r.get("motion_timestamp") or ""),
+                str(r.get("movement_reason") or ""),
+                str(r.get("device_name") or ""),
+                p_name,
+                p_cat,
+            ),
+        )
+    conn.commit()
+    cur.execute(sql_query)
+    rows = cur.fetchall()
+    results: List[Mapping[str, object]] = [dict(row) for row in rows]
+    conn.close()
+    return results
+
+
+def format_timeline(timeline: TimelinePayload) -> str:
+    lines = [
+        "facts_only: reply in the user's language; do not quote this block",
+        f"current_place: {timeline.get('current_place', 'unknown')}",
+        f"current_motion: {timeline.get('current_motion', 'unknown')}",
+        f"latest_fix_age: {timeline.get('latest_age_human', 'unknown')}",
+        f"events_count: {timeline.get('events_count', 0)}",
+        "timeline_events:",
+    ]
+    events = timeline.get("events", [])
+    if not events:
+        lines.append("  (no events in this time window)")
+    for ev in events:
+        ev_type = ev.get("type", "event")
+        if ev_type == "stay":
+            stay_ev = cast(TimelineStayEvent, ev)
+            curr_tag = " [current]" if stay_ev.get("is_current") else ""
+            dep = f" -> departed {stay_ev.get('departed_at')}" if stay_ev.get("departed_at") else " -> now"
+            gap = f" [{stay_ev['telemetry_gap_before']}]" if stay_ev.get("telemetry_gap_before") else ""
+            lines.append(
+                f"  • stay: {stay_ev.get('place_name', 'unknown')} ({stay_ev.get('place_category', 'general')}) | arrived {stay_ev.get('arrived_at')}{dep} | dwell: {stay_ev.get('dwell_human')}{curr_tag}{gap}"
+            )
+        elif ev_type == "transit":
+            transit_ev = cast(TimelineTransitEvent, ev)
+            gap = f" [{transit_ev['telemetry_gap']}]" if transit_ev.get("telemetry_gap") else ""
+            dist = f"~{int(_to_float(transit_ev.get('distance_meters')))}m" if transit_ev.get("distance_meters") else "transit"
+            lines.append(
+                f"  • transit: {transit_ev.get('activity', 'moving')} {dist} from {transit_ev.get('from_place')} to {transit_ev.get('to_place')} | {transit_ev.get('started_at')} -> {transit_ev.get('ended_at')} ({transit_ev.get('duration_minutes')}m){gap}"
+            )
+        else:
+            lines.append(f"  • {ev_type}: {ev}")
+    return "\n".join(lines)
+
+
+def emit(payload: Mapping[str, object], as_json: bool, text: str) -> int:
     if as_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
@@ -390,14 +957,73 @@ def emit(payload: Dict[str, Any], as_json: bool, text: str) -> int:
     return 0
 
 
+# ==============================================================================
+# CLI Commands
+# ==============================================================================
+
 def command_where(args: argparse.Namespace, now: datetime) -> int:
-    raw, path = first_reading(icloud_directories(args.icloud_dir), "latest_location.json")
+    directories = icloud_directories(args.icloud_dir)
+    raw, path = first_reading(directories, "latest_location.json")
     if raw is None or path is None or "latitude" not in raw or "longitude" not in raw:
         print("No accepted location file from the iPhone yet.")
         return 0
     places = load_places(args.places)
     loc = resolve_location(raw, places, now, str(path))
+
+    history_records, _ = read_history(directories)
+    if history_records:
+        timeline = build_timeline(history_records, places, now)
+        events = timeline.get("events", [])
+        if events:
+            current_ev = events[-1] if events[-1].get("is_current") else None
+            enrichments: dict[str, str] = {}
+            if current_ev and current_ev.get("type") == "stay":
+                stay_item = cast(TimelineStayEvent, current_ev)
+                if stay_item.get("arrived_at"):
+                    enrichments["arrived_at"] = str(stay_item["arrived_at"])
+                if stay_item.get("dwell_human"):
+                    enrichments["dwell_time"] = str(stay_item["dwell_human"])
+                if stay_item.get("telemetry_gap_before"):
+                    enrichments["telemetry_gap"] = str(stay_item["telemetry_gap_before"])
+            stays = [cast(TimelineStayEvent, ev) for ev in events if ev.get("type") == "stay"]
+            if len(stays) >= 2 and stays[-1].get("is_current"):
+                prev = stays[-2]
+                enrichments["previous_place"] = f"{prev.get('place_name')} (departed {prev.get('departed_at')})"
+            if enrichments:
+                for k, v in enrichments.items():
+                    loc[k] = v  # type: ignore[literal-required]
+
     return emit(loc, args.json, format_location(loc))
+
+
+def command_timeline(args: argparse.Namespace, now: datetime) -> int:
+    directories = icloud_directories(args.icloud_dir)
+    history_records, path = read_history(directories)
+    if not history_records or path is None:
+        print("No location history file from the iPhone yet.")
+        return 0
+    places = load_places(args.places)
+    since_dt = parse_since(args.since, now)
+
+    if args.sql:
+        results = query_history_sqlite(history_records, places, args.sql)
+        payload = {"count": len(results), "query": args.sql, "results": results}
+        if args.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        if not results:
+            print("No rows returned by query.")
+            return 0
+        headers = list(results[0].keys())
+        print(f"SQL Results ({len(results)} rows):")
+        print(" | ".join(headers))
+        for row in results:
+            print(" | ".join(str(row.get(h, "")) for h in headers))
+        return 0
+
+    timeline = build_timeline(history_records, places, now, since=since_dt)
+    timeline_with_source: TimelinePayload = {**timeline, "source_file": str(path)}
+    return emit(timeline_with_source, args.json, format_timeline(timeline_with_source))
 
 
 def command_health(args: argparse.Namespace, now: datetime) -> int:
@@ -414,16 +1040,17 @@ def command_context(args: argparse.Namespace, now: datetime) -> int:
     loc_raw, loc_path = first_reading(directories, "latest_location.json")
     health_raw, health_path = first_reading(directories, "latest_health.json")
     loc = None
-    if loc_raw and loc_path and "latitude" in loc_raw:
+    if loc_raw and loc_path and "latitude" in loc_raw and "longitude" in loc_raw:
         loc = resolve_location(loc_raw, load_places(args.places), now, str(loc_path))
     health = resolve_health(health_raw, now, str(health_path)) if health_raw and health_path else None
     payload = {"location": loc, "health": health}
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
-    parts = []
-    parts.append(format_location(loc) if loc else "facts_only: reply in the user's language; do not quote this block\nplace_name: unavailable")
-    parts.append(format_health(health) if health else "facts_only: reply in the user's language; do not quote this block\nrecovery_status: unavailable")
+    parts = [
+        format_location(loc) if loc else "facts_only: reply in the user's language; do not quote this block\nplace_name: unavailable",
+        format_health(health) if health else "facts_only: reply in the user's language; do not quote this block\nrecovery_status: unavailable",
+    ]
     print("\n\n".join(parts))
     return 0
 
@@ -444,9 +1071,9 @@ def command_list(args: argparse.Namespace) -> int:
                 name=place.get("name", "Unnamed"),
                 category=place.get("category", "general"),
                 activity=place.get("activity") or f"at {place.get('name', 'place')}",
-                lat=float(place.get("latitude") or 0),
-                lon=float(place.get("longitude") or 0),
-                radius=float(place.get("radius_meters") or 150),
+                lat=float(place.get("latitude", 0.0)),
+                lon=float(place.get("longitude", 0.0)),
+                radius=float(place.get("radius_meters", 150.0)),
             )
         )
     return 0
@@ -462,7 +1089,7 @@ def command_add(args: argparse.Namespace) -> int:
         return 2
     places = load_places(args.places)
     place_id = slug(args.name)
-    record = {
+    record: PlaceRecord = {
         "id": place_id,
         "name": args.name,
         "category": category,
@@ -472,14 +1099,11 @@ def command_add(args: argparse.Namespace) -> int:
         "radius_meters": args.radius,
         "notes": args.notes or "",
     }
-    replaced = False
-    updated: List[Dict[str, Any]] = []
-    for place in places:
-        if place.get("id") == place_id or place.get("name") == args.name:
-            updated.append(record)
-            replaced = True
-        else:
-            updated.append(place)
+    updated = [
+        record if (p.get("id") == place_id or p.get("name") == args.name) else p
+        for p in places
+    ]
+    replaced = any(p.get("id") == place_id or p.get("name") == args.name for p in places)
     if not replaced:
         updated.append(record)
     save_places(args.places, updated)
@@ -505,6 +1129,10 @@ def command_remove(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read Hermes Companion location and health from iCloud")
     parser.add_argument("--json", action="store_true", help="Print the raw facts as JSON")
+    parser.add_argument("--timeline", action="store_true", help="Print chronological timeline of visits, stays, and movements")
+    parser.add_argument("--history", action="store_true", help="Alias for --timeline")
+    parser.add_argument("--since", help="Filter history events: 'today', '24h', '7d', '60m', or ISO-8601 UTC")
+    parser.add_argument("--sql", help="Run an in-memory SQL query against history records")
     parser.add_argument("--health", action="store_true", help="Print the Apple Health snapshot")
     parser.add_argument("--context", action="store_true", help="Print place and health together")
     parser.add_argument("--list", action="store_true", help="List known places")
@@ -535,6 +1163,8 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
         return command_remove(args)
     if args.list:
         return command_list(args)
+    if args.timeline or args.history or args.sql:
+        return command_timeline(args, moment)
     if args.context:
         return command_context(args, moment)
     if args.health:

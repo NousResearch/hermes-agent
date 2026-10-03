@@ -47,14 +47,20 @@ class ForeignSession:
 
 def _read_json_lines(path: Path):
     """Yield parsed JSON objects, silently skipping unparseable lines."""
-    with contextlib.suppress(OSError), open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
 
 
 def _block_text(block: Any) -> str:
@@ -329,66 +335,3 @@ def run_sessions_import(args, db=None) -> Optional[str]:
     print(f"✓ Imported {_SOURCE_LABELS.get(source, source)} session as {session_id}")
     print(f"  Continue it with:  hermes --resume {session_id}")
     return session_id
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def list_claude_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
-    """Discover Claude Code sessions under ``~/.claude/projects``."""
-    root = Path(root) if root else Path.home() / ".claude" / "projects"
-    results: List[ForeignSession] = []
-    if not root.is_dir():
-        return results
-    for jsonl in sorted(root.glob("*/*.jsonl")):
-        try:
-            mtime = jsonl.stat().st_mtime
-        except OSError:
-            continue
-        parsed = parse_claude_session(jsonl)
-        if not parsed["turns"]:
-            continue
-        results.append(
-            ForeignSession(
-                source="claude",
-                path=jsonl,
-                mtime=mtime,
-                cwd=parsed["cwd"],
-                title_guess=parsed["title_guess"],
-                turn_count=len(parsed["turns"]),
-                session_id=parsed["session_id"],
-            )
-        )
-    results.sort(key=lambda s: s.mtime, reverse=True)
-    return results
-
-def list_codex_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
-    """Discover Codex CLI rollouts under ``~/.codex/sessions``."""
-    root = Path(root) if root else Path.home() / ".codex" / "sessions"
-    results: List[ForeignSession] = []
-    if not root.is_dir():
-        return results
-    for jsonl in sorted(root.rglob("rollout-*.jsonl")):
-        try:
-            mtime = jsonl.stat().st_mtime
-        except OSError:
-            continue
-        parsed = parse_codex_session(jsonl)
-        if not parsed["turns"]:
-            continue
-        results.append(
-            ForeignSession(
-                source="codex",
-                path=jsonl,
-                mtime=mtime,
-                cwd=parsed["cwd"],
-                title_guess=parsed["title_guess"],
-                turn_count=len(parsed["turns"]),
-                session_id=parsed["session_id"],
-            )
-        )
-    results.sort(key=lambda s: s.mtime, reverse=True)
-    return results
-# ---- END PLUGIN-COMPAT ----

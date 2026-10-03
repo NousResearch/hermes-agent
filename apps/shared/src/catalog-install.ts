@@ -30,11 +30,6 @@ export function skillCatalogInstallUrl(skill: SkillCatalogTarget): string | null
   return identifier ? `hermes://skill/install?${new URLSearchParams({ identifier })}` : null
 }
 
-export function pluginCatalogInstallUrl(plugin: { name: string; repo: string; subdir?: string; sha: string }): string {
-  return `hermes://plugin/install?${new URLSearchParams({
-    repo: plugin.subdir ? `${plugin.repo}#${plugin.subdir}` : plugin.repo,
-    catalog_name: plugin.name,
-    sha: plugin.sha,
-    enable: '1'
-  })}`
+export function pluginCatalogInstallUrl(plugin: { name: string }): string {
+  return `hermes://plugin/install?${new URLSearchParams({ catalog: plugin.name })}`
 }

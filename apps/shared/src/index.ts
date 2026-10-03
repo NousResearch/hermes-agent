@@ -27,6 +27,7 @@ export type {
   UsageBarData,
   UsageModelData
 } from './billing-types'
+export { groupCatalogPlugins, PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from './catalog-browse'
 export { pluginCatalogInstallUrl, skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
 export {
   driveChargeSettlement,
@@ -90,6 +91,7 @@ export {
   wireFrameText
 } from './json-rpc-channel'
 export {
+  APPROVAL_RESPOND_TIMEOUT_MS,
   type ConnectionState,
   type GatewayClientOptions,
   GatewayEventHub,
@@ -106,7 +108,12 @@ export {
   type ReasoningEffort,
   type ReasoningEffortValue
 } from './reasoning-effort'
-export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
+export {
+  isStableOpen,
+  RECONNECT_STABLE_OPEN_MS,
+  reconnectBackoffDelayMs,
+  type ReconnectBackoffOptions
+} from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

@@ -84,3 +84,61 @@ def test_both_transports_failing_names_both_and_suggests_config(monkeypatch):
         asyncio.run(task._run_http(dict(_CONFIG)))
     assert calls == ["HTTP", "SSE"] or calls == ["legacy HTTP", "SSE"]
     assert task._sse_fallback is False  # failed fallback must not latch
+
+
+def test_opaque_sdk_rejection_is_reported_with_the_servers_status_and_body(monkeypatch, caplog):
+    """mcp >= 2.0 folds a non-JSON 4xx into ``-32603 Server returned an error response``; the
+    warning and the both-transports ConnectionError must still name the HTTP status, the URL that
+    was requested and the body the server sent (#114350, #113359). A root that already carries the
+    status (httpx ``HTTPStatusError``) is left alone — no duplicated detail."""
+    from tools.mcp_tool_errors import _make_http_rejection_recorder
+    from tools.mcp_tool import sdk_httpx
+
+    httpx2 = sdk_httpx()
+    body = '{"jsonrpc":"2.0","error":{"code":-32020,"message":"Unsupported MCP-Protocol-Version"}}'
+
+    async def _real_client_roundtrip(status, content_type):
+        """The recorder on a real SDK-httpx client, through the streaming API the SDK uses; the
+        SDK's own later ``aread()`` must still see the bytes."""
+        sink: dict = {}
+        transport = httpx2.MockTransport(
+            lambda req: httpx2.Response(status, text=body, headers={"content-type": content_type}))
+        async with httpx2.AsyncClient(transport=transport, event_hooks={
+                "response": [_make_http_rejection_recorder(sink)]}) as client:
+            async with client.stream("POST", "http://127.0.0.1:1/mcp", json={}) as resp:
+                assert (await resp.aread()).decode() == body
+        return sink
+
+    assert asyncio.run(_real_client_roundtrip(200, "application/json")) == {}  # 2xx: nothing recorded
+    recorded = asyncio.run(_real_client_roundtrip(400, "text/plain; charset=utf-8"))
+    assert recorded == {"status": 400, "method": "POST", "url": "http://127.0.0.1:1/mcp", "body": body}
+
+    def _connect_sees(rejection):
+        task, _calls = _task(monkeypatch, ExceptionGroup("g", [_SdkInternalError()]),
+                             sse_exc=ConnectionRefusedError("no sse"))
+        monkeypatch.setattr(MCPServerTask, "_streamable_http_transport",
+                            lambda self, *a, **k: self._http_rejection.update(rejection) or object())
+        with pytest.raises(ConnectionError) as info:
+            asyncio.run(task._run_http(dict(_CONFIG)))
+        return str(info.value)
+
+    with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+        message = _connect_sees(recorded)
+    detail = "Server returned an error response (HTTP 400 from POST http://127.0.0.1:1/mcp: " + body + ")"
+    assert detail in message and "SSE: no sse" in message
+    assert any(detail in rec.getMessage() for rec in caplog.records), caplog.text
+
+    # No rejection observed (the hook never fired): the SDK text stands alone, no fabricated detail.
+    assert "Streamable HTTP: Server returned an error response; SSE" in _connect_sees({})
+
+
+def test_opaque_rejection_without_fallback_surfaces_the_status(monkeypatch):
+    """After a proven session the SSE fallback is off; the opaque SDK error still leaves ``_run_http``
+    naming the recorded rejection instead of the bare ``Server returned an error response``."""
+    task, calls = _task(monkeypatch, ExceptionGroup("g", [_SdkInternalError()]))
+    task._ever_connected = True
+    monkeypatch.setattr(MCPServerTask, "_streamable_http_transport", lambda self, *a, **k: self._http_rejection.update(
+        status=503, method="POST", url="http://127.0.0.1:1/mcp", body="upstream down") or object())
+    with pytest.raises(ConnectionError, match=r"HTTP 503 from POST http://127\.0\.0\.1:1/mcp: upstream down"):
+        asyncio.run(task._run_http(dict(_CONFIG)))
+    assert "SSE" not in calls

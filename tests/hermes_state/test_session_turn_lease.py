@@ -366,7 +366,9 @@ def test_acquire_turn_lease_honors_should_abort(tmp_path):
 
 
 def test_acquire_turn_lease_retries_sqlite_lock(tmp_path, monkeypatch):
-    """Write-lock exhaustion is contended, not a hard abort of the wait."""
+    """Write-lock exhaustion is retried, not a hard abort of the wait, and is not a lease wait:
+    it reports on_contended instead of on_wait and does not sit out a poll interval on top of
+    the patience it already spent."""
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")
     holder = f"pid={os.getpid()}:turn=waiter"
@@ -383,15 +385,37 @@ def test_acquire_turn_lease_retries_sqlite_lock(tmp_path, monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(db, "try_acquire_session_turn_lease", flaky_acquire)
+    notices, contended = [], []
+    started = time.monotonic()
     assert db.acquire_session_turn_lease(
         "shared",
         holder,
-        wait_seconds=2,
-        poll_interval_seconds=0.02,
+        wait_seconds=10,
+        poll_interval_seconds=5,
+        on_wait=notices.append,
+        on_contended=lambda: contended.append(True),
         acquire_patience_s=0.05,
     )
+    assert time.monotonic() - started < 2.0
+    assert (notices, contended) == ([], [True])
     assert attempts["n"] >= 2
     db.release_session_turn_lease("shared", holder)
+
+
+def test_acquire_turn_lease_locked_for_the_whole_wait_times_out(tmp_path, monkeypatch):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "try_acquire_session_turn_lease", locked)
+    notices = []
+    assert not db.acquire_session_turn_lease(
+        "shared", f"pid={os.getpid()}:turn=waiter", wait_seconds=0.3, poll_interval_seconds=5,
+        on_wait=notices.append,
+    )
+    assert notices == []
 
 
 def test_acquire_turn_lease_reraises_non_lock_sqlite_error(tmp_path, monkeypatch):
@@ -507,6 +531,34 @@ def test_turn_lease_revives_expired_row_still_owned_by_writer(tmp_path):
     assert not db.try_acquire_session_turn_lease(
         "shared", f"pid={os.getpid()}:turn=contender", ttl_seconds=5
     )
+
+
+def test_turn_lease_acquisition_sweeps_long_expired_rows_of_other_conversations(tmp_path):
+    """A holder that died without releasing leaves its row behind; the next acquisition anywhere
+    removes rows expired past the grace, and keeps recent expiries their live owner may renew."""
+    db = SessionDB(tmp_path / "state.db")
+    for sid in ("abandoned", "recent", "within-grace", "fresh"):
+        db.create_session(sid, source="test")
+    raw = sqlite3.connect(tmp_path / "state.db")
+    with raw:
+        raw.executemany(
+            "INSERT INTO session_turn_leases (conversation_id, holder, acquired_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            [("abandoned", "pid=1:turn=crashed", time.time() - 86400 - 120, time.time() - 86400 - 60),
+             ("recent", f"pid={os.getpid()}:turn=starved", time.time() - 60, time.time() - 10),
+             ("within-grace", "pid=1:turn=suspended", time.time() - 86400, time.time() - 86400 + 60)])
+
+    assert db.try_acquire_session_turn_lease("fresh", f"pid={os.getpid()}:turn=next", ttl_seconds=5)
+
+    rows = dict(raw.execute("SELECT conversation_id, holder FROM session_turn_leases").fetchall())
+    raw.close()
+    assert rows == {"recent": f"pid={os.getpid()}:turn=starved",
+                    "within-grace": "pid=1:turn=suspended",
+                    "fresh": f"pid={os.getpid()}:turn=next"}
+    assert db.append_messages_batch(
+        "recent", [{"role": "assistant", "content": "after a starved refresher"}],
+        turn_lease_holder=f"pid={os.getpid()}:turn=starved", turn_lease_ttl_seconds=5,
+    ) == 1
 
 
 def test_turn_lease_fences_flush_when_row_is_absent(tmp_path):

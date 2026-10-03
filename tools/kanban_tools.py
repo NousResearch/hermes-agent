@@ -577,7 +577,8 @@ def heartbeat_current_worker_from_env() -> bool:
         from hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
-                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid),
+                                           "worker_session_id": os.environ.get("HERMES_SESSION_ID")}))
             succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__
@@ -941,7 +942,8 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
         ok = kbd.heartbeat_worker(
-            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
+            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid),
+            worker_session_id=os.environ.get("HERMES_SESSION_ID"))
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
 

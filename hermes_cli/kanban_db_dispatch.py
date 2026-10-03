@@ -613,6 +613,7 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    worker_session_id: Optional[str] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -639,10 +640,113 @@ def heartbeat_worker(
             conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
         _kb._append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            _heartbeat_payload(note, worker_session_id),
             run_id=run_id,
         )
     return True
+
+
+def _heartbeat_payload(note: Optional[str], worker_session_id: Optional[str]) -> Optional[dict]:
+    payload: dict[str, Any] = {}
+    if note:
+        payload["note"] = note
+    if worker_session_id:
+        payload["worker_session_id"] = worker_session_id
+    return payload or None
+
+
+def _latest_worker_session_id(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
+) -> Optional[str]:
+    """Latest worker session id recorded for a run (heartbeat payloads, then terminal metadata)."""
+    import json as _json
+
+    for kind in ("heartbeat", "reclaimed", "timed_out"):
+        sql = "SELECT payload FROM task_events WHERE task_id = ? AND kind = ?"
+        params: tuple = (task_id, kind)
+        if run_id is not None:
+            sql += " AND run_id = ?"
+            params += (int(run_id),)
+        sql += " ORDER BY id DESC LIMIT 20"
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return None
+        for r in rows:
+            try:
+                pl = _json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                continue
+            if isinstance(pl, dict):
+                sid = pl.get("worker_session_id")
+                if sid:
+                    return str(sid)
+    return None
+
+
+def finalize_killed_worker_session(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: Optional[int],
+    assignee: Optional[str],
+    reason: str,
+) -> None:
+    """End a killed worker's live session (compression tip) from the dispatcher.
+
+    Best-effort: never raises, never blocks the reclaim. Call AFTER the kanban
+    write txn commits so the two DB locks are never held together.
+
+    Windows caveat: until the tree-kill fix (#124362 / #128384) lands, reclaim
+    can kill only the launcher and leave the real worker running. We still stamp
+    ``ended_at`` here, which turns that worker's own ``end_session`` into a no-op
+    and loses its real outcome — a bounded window, closed by landing tree-kill.
+    # ponytail: heartbeat-payload lookup only, no task_runs column migration.
+    """
+    try:
+        sid = _latest_worker_session_id(conn, task_id, run_id)
+        if not sid or not assignee:
+            return
+        from hermes_cli.profiles import resolve_profile_env
+
+        try:
+            home = resolve_profile_env(str(assignee))
+        except Exception:
+            _kb._log.debug(
+                "kanban: finalize skipped for %s run %s: profile %r unresolved",
+                task_id, run_id, assignee, exc_info=True,
+            )
+            return
+        from pathlib import Path as _Path
+
+        db_path = _Path(home) / "state.db"
+        if not db_path.is_file():
+            return
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=db_path)
+        try:
+            try:
+                tip = db.get_compression_tip(sid) or sid
+            except Exception:
+                tip = sid
+            try:
+                db.end_session(tip, reason)
+            except Exception:
+                _kb._log.debug(
+                    "kanban: finalize failed for %s run %s (session %s)",
+                    task_id, run_id, tip, exc_info=True,
+                )
+                return
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+    except Exception:
+        try:
+            _kb._log.debug("kanban: finalize killed worker session skipped", exc_info=True)
+        except Exception:
+            pass
 
 
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
@@ -660,7 +764,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.assignee "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -737,6 +841,9 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
             )
+            finalize_killed_worker_session(
+                conn, tid, run_id, _kb._row_get(row, "assignee"), "kanban_timed_out",
+            )
     return timed_out
 
 
@@ -766,9 +873,11 @@ def detect_stale_running(
 
     now = int(time.time())
     reclaimed: list[str] = []
+    killed_sessions: list[tuple[str, Optional[int], Optional[str]]] = []
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, t.last_heartbeat_at, t.claim_lock, "
+        "       t.assignee, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -838,6 +947,11 @@ def detect_stale_running(
             )
             _kb._append_event(conn, tid, "stale", payload, run_id=run_id)
             reclaimed.append(tid)
+            killed_sessions.append((tid, run_id, _kb._row_get(row, "assignee")))
+
+    # Post-commit: a stale worker was killed without flushing its own session.
+    for task_id, run_id, assignee in killed_sessions:
+        finalize_killed_worker_session(conn, task_id, run_id, assignee, "kanban_stale_reclaim")
 
     return reclaimed
 
@@ -1141,6 +1255,9 @@ class _CrashSweep:
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
+    # ``(task_id, run_id, assignee)`` of workers that died without flushing
+    # their own session; the dispatcher ends those after the txn commits.
+    killed_sessions: list[tuple[str, Optional[int], Optional[str]]] = field(default_factory=list)
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
@@ -1185,6 +1302,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 metadata=dict(dead.event_payload),
             )
             _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
+            sweep.killed_sessions.append((row["id"], run_id, row["assignee"]))
             sweep.exited_hook_payloads.append({
                 "task_id": row["id"],
                 "assignee": row["assignee"],
@@ -1304,6 +1422,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
+    # Post-commit: these workers died without flushing their own session.
+    for task_id, run_id, assignee in sweep.killed_sessions:
+        finalize_killed_worker_session(conn, task_id, run_id, assignee, "kanban_crashed")
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;

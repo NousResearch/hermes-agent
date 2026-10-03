@@ -62,7 +62,7 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
                       runtimes=[RuntimeRecord(kind="serve", profile="default", pid=99999999,
                                               supervisor="manual-serve")])
     monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: plan)
-    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: token)
+    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda *_, **__: token)
     monkeypatch.setattr("atexit.register", lambda *args: None)
     monkeypatch.setattr(main, "_desktop_packaged_executable", lambda root: None)
     monkeypatch.setattr(main, "_desktop_dist_exists", lambda root: False)

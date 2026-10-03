@@ -1458,10 +1458,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+    if opts.no_gateway_restart:
+        _windows_gateway_resume = None
+        _record_update_skip("windows_gateway_pause", "--no-gateway-restart: pause skipped, gateways keep running")
+        print("Gateway pause skipped (--no-gateway-restart); gateways keep running during the update.")
+    else:
+        _windows_gateway_resume = _m()._pause_windows_gateways_for_update(gateway_mode=gateway_mode)
+        if _windows_gateway_resume:
+            import atexit as _atexit
+            _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
 
 
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"

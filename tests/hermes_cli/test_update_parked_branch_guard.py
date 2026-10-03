@@ -227,7 +227,7 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None)
     monkeypatch.setattr(main_web_build, "_record_bytecode_fingerprint", lambda *a, **k: None)
     monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda *_, **__: None)
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )

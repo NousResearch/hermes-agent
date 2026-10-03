@@ -313,6 +313,8 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
     identifier = str(answer["identifier"]).strip()
+    from agent.vault_store import identifier_warning
+    warning = identifier_warning(identifier)
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
     try:
         meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
@@ -324,6 +326,7 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
+                       **({"identifier_warning": warning + " Tell the user and offer to re-save it."} if warning else {}),
                        "next": "Type the identifier into the username field if the form has one, then submit."},
                       ensure_ascii=False)
 

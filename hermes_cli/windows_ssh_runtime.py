@@ -438,6 +438,18 @@ def _write_lock_op(ownership_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+def list_profiles() -> dict[str, Any]:
+    """Inventory Hermes profiles on this host without spawning any backend.
+
+    Delegates to the canonical profile registry so the roster Desktop sees is
+    exactly what this installation serves: canonical ``default`` plus every
+    live named profile directory under the Hermes root.
+    """
+    from hermes_cli.profiles import list_profile_names
+
+    return {"profiles": list_profile_names()}
+
+
 # operation -> (argument count or None for "any", handler(*args)).
 _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "probe": (None, _probe),
@@ -450,6 +462,7 @@ _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "remove-log": (2, lambda o, n: {"removed": remove_artifact(_log_path(o, n))}),
     "spawn": (None, lambda *_: spawn_backend(_read_json_stdin())),
     "inspect": (1, inspect_hermes),
+    "list-profiles": (0, list_profiles),
     "process-state": (4, lambda p, c, h, n: process_state(int(p), int(c), h, n)),
     "terminate": (4, lambda p, c, h, n: {"terminated": terminate_owned(int(p), int(c), h, n)})}
 

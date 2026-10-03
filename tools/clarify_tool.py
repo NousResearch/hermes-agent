@@ -116,9 +116,14 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
+    from tools.clarify_gateway import check_wait_scope
+    check_wait_scope()
     try:
-        return _result(normalized, callback(normalized))
+        response = callback(normalized)
+        check_wait_scope()
+        return _result(normalized, response)
     except Exception as exc:
+        check_wait_scope()
         return tool_error(f"Failed to get user input: {exc}")
 
 
@@ -189,7 +194,16 @@ registry.register(
     name="clarify",
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
-    handler=lambda args, **kw: clarify_tool(args.get("questions"), callback=kw.get("callback")),
+    # The callback comes only from framework kwargs, never from model ``args``.
+    # Prefer the threaded ``clarify_callback``; fall back to the legacy
+    # ``callback`` kwarg for direct registry callers. Absent both, fail closed.
+    handler=lambda args, **kw: clarify_tool(
+        args.get("questions"),
+        callback=(
+            kw["clarify_callback"]
+            if kw.get("clarify_callback") is not None
+            else kw.get("callback")
+        )),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

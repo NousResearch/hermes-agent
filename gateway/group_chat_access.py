@@ -32,6 +32,7 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 logger = logging.getLogger(__name__)
 GRANT_PREFIX = 'gateway.messaging.chat.v1:'
+NOTICE_PREFIX = 'gateway.messaging.notices.v1:'  # what a chat was told about its groups (group_chat_notices)
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 CODE_TTL_SECONDS = 600
 MAX_PENDING_CODES = 64
@@ -245,6 +246,27 @@ def room_for_ref(grant: dict, ref: int) -> str | None:
     return next((room for room, value in grant['refs'].items() if value == ref), None)
 
 
+def chat_target(runner, grant: dict):
+    """``(adapter, metadata)`` to message a granted chat through its own Bot, or None while that Bot
+    isn't connected."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    try:
+        platform = Platform(grant['platform'])
+        adapter = runner._adapters_for_profile(grant['bot']).get(platform)
+    except Exception:
+        return None
+    if adapter is None:
+        return None
+    try:
+        metadata = runner._thread_metadata_for_source(SessionSource(
+            platform=platform, chat_id=grant['chat_id'], chat_type='dm' if grant['kind'] == 'private' else 'group',
+            user_id=grant['user_id'], thread_id=grant['thread_id'], scope_id=grant['scope_id']))
+    except Exception:
+        metadata = None
+    return adapter, metadata
+
+
 # ---- the owner's CLI, over the authenticated control socket --------------------------------
 
 def _view(chat: Chat | dict, profile_id: str) -> dict:
@@ -386,7 +408,8 @@ def _revoke(runner, params, subject, loop):
         current = _load(conn, grant['grant_id'])
         if current is None or current['owner'] != subject:
             raise RuntimeStoreError('unknown_grant')
-        conn.execute('DELETE FROM state_meta WHERE key=?', (GRANT_PREFIX + grant['grant_id'],))
+        conn.execute('DELETE FROM state_meta WHERE key IN (?,?)',
+                     (GRANT_PREFIX + grant['grant_id'], NOTICE_PREFIX + grant['grant_id']))
         from gateway.group_chat_rules import forget_grant
         forget_grant(conn, grant['grant_id'])  # its "always allow" approvals end with it
     authority.db._execute_write(write)

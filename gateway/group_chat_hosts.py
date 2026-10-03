@@ -5,7 +5,8 @@ are called by name through the same dispatch as every other ``/group`` command, 
 when ``groups.capabilities`` advertises them. Messaging shows the state and offers the one
 action the gateway allows:
 
-* ``/group N`` gains the host line and the computers that can continue the group;
+* ``/group N`` gains the host line, the computers that can continue the group and whether
+  it moves by itself (automatic takeover), or why its host paused it to stay safe;
 * ``/group N continue`` shows what continuing on this computer involves (``prepare``). Only
   ``/group N continue confirm``, or the button where the chat has one, then calls
   ``promote`` with that summary's ``preview_id``;
@@ -163,6 +164,68 @@ def reconnect(status) -> list[str]:
             if isinstance(b, dict) and b.get('readiness') == 'needs_reauthorization']
 
 
+def _names(entries, status) -> list[str]:
+    """Computer names given as labels or as ``{install_id, name}`` entries."""
+    names = [safe(e, 48) if isinstance(e, str) else computer(e, status) if isinstance(e, dict) else ''
+             for e in entries or ()]
+    return [name for name in names if name]
+
+
+def readiness(status) -> str | None:
+    """Whether the group moves by itself when a computer goes offline (``automatic``), in one line."""
+    automatic = _obj(status.get('automatic'))
+    # The owner's change waits until the other computers have taken it on (``pending``, requested).
+    if automatic.get('enabled') is True and automatic.get('pending') is False:
+        return 'Moving by itself: turning off… (waiting for the other computers)'
+    if automatic.get('enabled') is False and automatic.get('pending') is True:
+        return 'Moving by itself: turning on… (waiting for the other computers)'
+    state = automatic.get('state')
+    if state == 'ready':
+        return (f'Keeps running if a computer goes offline: ready '
+                f'({computer(automatic.get("standby"), status)} takes over).')
+    if state == 'not_ready':
+        offline = _names(automatic.get('offline'), status)
+        return f'Not automatic right now: {join(offline)} offline.' if offline else 'Not automatic right now.'
+    if state == 'unavailable':
+        needed = _number(automatic.get('needed'))
+        more = 'one more always-on computer' if needed <= 1 else f'{needed} more always-on computers'
+        return f'Not automatic yet: add {more} in Hermes Desktop.'
+    if state == 'off':
+        return 'Moves only when you choose.'
+    return None
+
+
+def _unreachable(status) -> tuple[str, str]:
+    """For a host paused to stay safe: the computers it can't reach, and when it resumes."""
+    names = _names(_obj(status.get('paused')).get('waiting_for'), status)
+    if not names:
+        return 'the other computers', 'one of them is back'
+    return join(names), (f'{names[0]} is back' if len(names) == 1 else 'one of them is back')
+
+
+def _paused(status) -> tuple[str, str, str]:
+    """Why a host paused its group to stay safe: what follows "{host}" in a notice, the line that
+    explains it in ``/group N``, and when it resumes. All empty for a reason this version doesn't
+    know, which shows the pause alone."""
+    host = cap(computer(status.get('host'), status, 'the host'))
+    reason = _obj(status.get('paused')).get('reason')
+    if reason == 'lost_majority':
+        who, back = _unreachable(status)
+        return (f'can’t reach {who}', f'{host} can’t reach {who}, so it can’t be sure another computer hasn’t '
+                f'taken over. It resumes as soon as {back}.', f'It resumes as soon as {back}.')
+    if reason == 'no_lease_layer':
+        cause = 'can’t take part in automatic moves right now. Its connection to the other computers isn’t ready'
+        return cause, f'{host} {cause}.', ''
+    return '', '', ''
+
+
+def paused_notice(status, group: str) -> str:
+    """The proactive notice, and the reply to continue, while the host has paused the group."""
+    cause = _paused(status)[0]
+    host = computer(status.get('host'), status, 'the host')
+    return f'{group} is paused to stay safe: {host} {cause}.' if cause else f'{group} is paused to stay safe.'
+
+
 def moving(status) -> str:
     move = _obj(status.get('moving'))
     target = computer(move.get('to'), status)
@@ -171,7 +234,9 @@ def moving(status) -> str:
         return f'Moving to {target} after the replies in progress finish{f" ({running})" if running else ""}.'
     step = _STEPS.get(move.get('step'))
     host = computer(status.get('host'), status, 'the host')
-    return f'Continuing on {target}… {step.format(host=host)}.' if step else f'Continuing on {target}…'
+    text = f'{cap(host)} went offline. Moving to {target}…' if move.get('reason') == 'automatic' \
+        else f'Continuing on {target}…'
+    return f'{text} {step.format(host=host)}.' if step else text
 
 
 def moved(status) -> list[str]:
@@ -212,6 +277,9 @@ def host_lines(status, *, group: str, g: str, may_act: bool) -> list[str]:
         return [conflict(status, group, g, may_act=may_act)]
     if state == 'moved_away':
         return moved(status)
+    if state == 'paused':
+        explained = _paused(status)[1]
+        return [f'Host: {host}, paused to stay safe.', *([explained] if explained else [])]
     if state == 'host_unreachable':
         since = when(_obj(status.get('host')).get('since'))
         lines = [f'Host: {host}, offline since {since}. Paused.' if since else f'Host: {host}, offline. Paused.']
@@ -223,13 +291,37 @@ def host_lines(status, *, group: str, g: str, may_act: bool) -> list[str]:
         return []
     lines.append(eligibility(status))
     lines.extend(reconnect(status))
+    if readiness(status):
+        lines.append(readiness(status))
+    lines.extend(back_again(status))
     if state == 'host_unreachable' and may_act and continues_here(status):
         here = computer(status.get('this_install'), status, 'this computer')
         lines.append(f'Reply {g} continue to continue it on {here}.')
+    elif state == 'host_unreachable' and status.get('unavailable_reason') == 'takeover_waiting':
+        lines.append(deciding(status))
     elif state == 'host_unreachable' and _eligible(status) and (
             not may_act or status.get('unavailable_reason') == 'not_owner'):
         lines.append(f'Only {_owner(status)} can continue this group on another computer.')
     return lines
+
+
+def back_again(status) -> list[str]:
+    """Bots left on the computer the group moved away from, now reachable again: moving back (in
+    Desktop or the CLI) would bring them back."""
+    left: dict[str, tuple[str, list[str]]] = {}
+    for bot in status.get('unavailable_bots') or ():
+        on = _obj(_obj(bot).get('on'))
+        if on.get('reachable') is True and isinstance(on.get('install_id'), str):
+            name = safe(bot.get('name'), 48) or safe(bot.get('member_id'), 48) or 'a Bot'
+            left.setdefault(on['install_id'], (computer(on, status), []))[1].append(name)
+    return [f'{join(names)} can take part again if the group moves back to {computer_name} '
+            '(in Hermes Desktop or `hermes groups move`).' for computer_name, names in left.values()]
+
+
+def deciding(status) -> str:
+    """While the other computers decide by themselves which one takes over (``takeover_waiting``)."""
+    host = cap(computer(status.get('host'), status, 'the host'))
+    return f'{host} went offline. The other computers are deciding which one takes over; this can take a few minutes.'
 
 
 def _cannot_continue(status, group: str, g: str) -> str | None:
@@ -246,6 +338,9 @@ def _cannot_continue(status, group: str, g: str) -> str | None:
         return conflict(status, group, g, may_act=True)
     if state == 'moved_away':
         return ' '.join(moved(status))
+    if state == 'paused':
+        resumes = _paused(status)[2]
+        return f'{paused_notice(status, group)} {resumes}' if resumes else paused_notice(status, group)
     if _this(status) is not None and _obj(status.get('host')).get('install_id') == _this(status):
         return f'{group} is already hosted on {computer(status.get("this_install"), status, "this computer")}.'
     if state == 'ok' or status.get('unavailable_reason') == 'host_reachable':
@@ -254,6 +349,8 @@ def _cannot_continue(status, group: str, g: str) -> str | None:
         return f'{group} can’t be continued right now. Send {g} to check.'
     if continues_here(status):
         return None
+    if status.get('unavailable_reason') == 'takeover_waiting':
+        return deciding(status)
     names = _eligible(status, besides=_this(status))
     if names:
         return f'This computer can’t continue {group}. It can continue on: {", ".join(names)}.'
@@ -580,10 +677,8 @@ async def keep_command(cmd, command):
 async def continue_refs(runner, room_id) -> list[tuple]:
     """``[(adapter, chat_id, metadata, n)]``: the room owner's private chats on this computer, each
     with the number ``/group n continue`` reaches the room by there (given now if it had none)."""
-    from gateway.config import Platform
-    from gateway.group_chat_access import ensure_ref, grants
+    from gateway.group_chat_access import chat_target, ensure_ref, grants
     from gateway.group_chat_slash import connection_for
-    from gateway.session import SessionSource
     from gateway.session_authorities import all_authorities
     from gateway.session_group_controls import dispatch_group_control
     found = []
@@ -599,21 +694,12 @@ async def continue_refs(runner, room_id) -> list[tuple]:
                 if not isinstance(listed, list) or STATUS not in listed:
                     break  # this profile's gateway can't continue groups: none of its chats can
                 current = await dispatch_group_control(connection, STATUS, {'room_id': room_id})
-                if not isinstance(current, dict) or current.get('unavailable_reason') == 'not_owner':
-                    continue
-                platform = Platform(grant['platform'])
-                adapter = runner._adapters_for_profile(grant['bot']).get(platform)
-                if adapter is None:
-                    continue  # that Bot isn't connected right now
+                target = chat_target(runner, grant)
+                if not isinstance(current, dict) or current.get('unavailable_reason') == 'not_owner' or target is None:
+                    continue  # not the owner here, or that Bot isn't connected right now
                 n = await asyncio.to_thread(ensure_ref, authority, grant, room_id)
             except Exception:
                 logger.debug('A Group Chat continue reference was skipped', exc_info=True)
                 continue
-            try:
-                metadata = runner._thread_metadata_for_source(SessionSource(
-                    platform=platform, chat_id=grant['chat_id'], chat_type='dm', user_id=grant['user_id'],
-                    thread_id=grant['thread_id'], scope_id=grant['scope_id']))
-            except Exception:
-                metadata = None
-            found.append((adapter, grant['chat_id'], metadata, n))
+            found.append((target[0], grant['chat_id'], target[1], n))
     return found

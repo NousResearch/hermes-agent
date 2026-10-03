@@ -41,6 +41,8 @@ _CAPABILITIES = frozenset({'session:read', 'session:submit', 'session:control', 
 PAUSED = 'Group Chats are paused while the gateway starts or stops. Try again in a moment.'
 TOO_FAST = 'Too many Group Chat commands. Wait a minute and try again.'
 ACCESS_CHANGED = 'This chat’s access to Group Chats changed. Send {prefix}group to check.'
+# This computer isn't running the group right now: paused to stay safe, or the host that stopped.
+_HOST_PAUSED = frozenset({'room_host_paused', 'room_authority_conflict'})
 _NAME_ESCAPES = str.maketrans({c: chr(ord(c) + 0xFEE0) for c in r'@`*_[]<>\:#&|~()!/+='})
 
 
@@ -182,6 +184,11 @@ class GroupChatSlashCommandsMixin:
         from gateway.group_chat_hosts import continue_refs
         return await continue_refs(self, room_id)
 
+    async def _group_chat_notice_watcher(self, interval: float | None = None) -> None:
+        """Supervised: owners hear in their private chats when a group moved or paused by itself."""
+        from gateway.group_chat_notices import WATCH_SECONDS, watch
+        await watch(self, WATCH_SECONDS if interval is None else interval)
+
 
 class _GroupCommand:
     def __init__(self, runner, event, authority, chat, grant, prefix):
@@ -246,6 +253,10 @@ class _GroupCommand:
                 raise Refused(PAUSED) from exc
             if method == 'groups.approve' and exc.reason == 'stale_generation':
                 raise Refused(self._gone(ref)) from exc
+            if method == 'groups.send' and exc.reason in _HOST_PAUSED:
+                from gateway.group_chat_hosts import _room
+                group, _, _ = await _room(self, ref, params['room_id'])
+                raise Refused(f'{group} is paused to stay safe; your message wasn’t sent.') from exc
             raise Refused(f'Group {ref} didn’t accept that. Send {self.prefix}group {ref} to see why.') from exc
         except RuntimeError as exc:
             if method == 'groups.approve' and str(exc) == 'room approval is no longer pending':

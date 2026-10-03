@@ -33,6 +33,51 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
 _DEFAULT_USER_ID = "hermes-user"
 
+# Non-interactive agent contexts (cron jobs, subagents) are autonomous: they have no user
+# question for recall to answer, yet the prefetched block lands in the transcript and rides
+# along on EVERY later call of that session. Skip the recall round-trip there; ``mem0_search``
+# stays available to the agent as an explicit backstop. Override with
+# ``prefetch_skip_contexts`` in mem0.json — a blank value or
+# ``none`` prefetches in every context. ``flush`` is included defensively: the core does not
+# emit it today (agent_init.py maps flush-like platforms to "primary"), but if it ever does,
+# a flush run is exactly the autonomous case this gate exists for.
+_PREFETCH_SKIP_CONTEXTS = frozenset({"cron", "subagent", "flush"})
+_KNOWN_CONTEXTS = frozenset({"primary", "cron", "subagent", "flush", "none"})
+
+
+def _parse_skip_contexts(raw: Any) -> frozenset:
+    """Parse the ``prefetch_skip_contexts`` setting into a set of context names.
+
+    Accepts a list or a comma/space-separated string. Unset/blank keeps the built-in
+    default, so the gate stays ON unless someone opts out explicitly; the exact value
+    ``none`` (alone) disables the gate, so it cannot be smuggled into a mixed list.
+    Unrecognized names are dropped with a warning — a typo like ``crom`` must not
+    silently switch the gate OFF, so an all-unknown value falls back to the default.
+    """
+    if raw is None:
+        return _PREFETCH_SKIP_CONTEXTS
+    if isinstance(raw, (list, tuple, set)):
+        items = [str(i) for i in raw]
+        if not items:
+            return _PREFETCH_SKIP_CONTEXTS
+    else:
+        if not str(raw).strip():
+            return _PREFETCH_SKIP_CONTEXTS
+        items = str(raw).replace(",", " ").split()
+    parsed = frozenset(i.strip().lower() for i in items if i.strip())
+    if parsed == {"none"}:
+        return frozenset()
+    parsed -= {"none"}  # 'none' is an opt-out token, never a context name
+    unknown = parsed - _KNOWN_CONTEXTS
+    if unknown:
+        logger.warning(
+            "mem0: ignoring unrecognized prefetch_skip_contexts name(s) %s; "
+            "keeping the built-in default %s",
+            sorted(unknown), sorted(_PREFETCH_SKIP_CONTEXTS),
+        )
+        parsed -= unknown
+    return parsed or _PREFETCH_SKIP_CONTEXTS
+
 # sync_turn sends the whole turn to the backend for fact extraction. OSS embedding
 # models often have small context windows (bge-small-zh-v1.5: 512 tokens ≈ 500 chars;
 # jina-embeddings-v3: 8192), and oversized turns make backend.add() raise — Ollama
@@ -131,6 +176,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
         self._sync_max_chars = _SYNC_MSG_MAX_CHARS
+        # Recall prefetch gate: contexts that skip the per-turn memory round-trip.
+        self._agent_context, self._prefetch_skip_contexts = "primary", _PREFETCH_SKIP_CONTEXTS
+        self._migration_notice_shown = False
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
@@ -235,6 +283,20 @@ class Mem0MemoryProvider(MemoryProvider):
         _rr = cfg.get("rerank", False)
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
+        # "primary" on interactive surfaces; "cron"/"subagent"/"flush" for autonomous runs
+        # (see MemoryProvider.initialize). Drives the recall-prefetch gate below.
+        self._agent_context = str(kwargs.get("agent_context") or "primary")
+        self._prefetch_skip_contexts = _parse_skip_contexts(cfg.get("prefetch_skip_contexts"))
+        # Migration notice, once per process: this changes a default, so say so and how to get
+        # the old behaviour back (plugins/AGENTS.md: default changes need an existing-config signal).
+        if (self._prefetch_skip_contexts and not self._prefetch_allowed()
+                and not self._migration_notice_shown and cfg.get("prefetch_skip_contexts") is None):
+            logger.info(
+                "mem0: recall prefetch is now skipped in non-interactive contexts (%s); "
+                "set prefetch_skip_contexts=none in mem0.json to restore the previous behaviour",
+                sorted(self._prefetch_skip_contexts),
+            )
+            self._migration_notice_shown = True
         self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -256,7 +318,19 @@ class Mem0MemoryProvider(MemoryProvider):
         rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
         return f"# Mem0 Memory\nActive. Mode: {mode_label}. User: {self._user_id}.\n{_PROMPT_BODY}{rerank_note}"
 
+    def _prefetch_allowed(self) -> bool:
+        """False in non-interactive contexts (cron/subagent/flush by default).
+
+        An autonomous run has no user question for recall to answer, and the injected
+        block is re-sent on every later call of that session — context cost for no gain.
+        The context is normalized: the core emits lowercase names today, but a future
+        caller that hands us "Cron" should not quietly re-enable the round-trip.
+        """
+        return self._agent_context.strip().lower() not in self._prefetch_skip_contexts
+
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        if not self._prefetch_allowed():
+            return  # non-interactive: no recall round-trip and no injected block
         self._start_prefetch(message)
 
     def _consume_prefetch_result(self, query: str) -> str | None:
@@ -290,6 +364,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall memories for the CURRENT question with a short hot-path wait."""
+        if not self._prefetch_allowed():
+            return ""  # non-interactive context: no injection (mem0_search is the backstop)
         if (cached := self._consume_prefetch_result(query)) is not None:
             return cached
         self._start_prefetch(query)

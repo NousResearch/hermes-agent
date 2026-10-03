@@ -58,6 +58,20 @@ def fixture_tree(tmp_path, monkeypatch):
     return repo, home, interpreter
 
 
+def test_task_store_cannot_replace_shared_launchers(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    local = repo / ".hermes" / "bin"
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    original = {path.name: path.read_bytes() for path in local.iterdir()}
+
+    task_store = tmp_path.parent / (tmp_path.name + "-task") / "tools"
+    task_store.mkdir(parents=True)
+    (task_store / "facts.json").write_text((home / "tools" / "facts.json").read_text())
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(task_store))
+    assert _launchers.ensure_install_launchers(repo, local) == []
+    assert {path.name: path.read_bytes() for path in local.iterdir()} == original
+
+
 def select_generation(repo, name, value):
     selected = install_state_dir(repo) / 'environments' / str(name) / 'venv'
     site = site_packages(selected)

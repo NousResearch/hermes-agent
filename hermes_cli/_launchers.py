@@ -391,6 +391,10 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
+    # A task-local PM store may be removed while this checkout's launchers
+    # remain on the user's PATH. Never publish that interpreter globally.
+    if not store_root(root).is_relative_to(root.parent):
+        return []
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
     written = [str(path) for name in WINDOWS_BIN_LAUNCHERS

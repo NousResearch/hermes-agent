@@ -80,6 +80,46 @@ def test_profile_action_environment_binds_launch_scope_before_scrubbing(pooled_s
     assert entered == ["enter", "exit"]
 
 
+def test_profile_action_does_not_forward_managed_scope_secret_to_child_profile(pooled_served_process, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+    import hermes_cli.managed_scope as managed_scope
+    import hermes_cli.web_server_gateway as web_server_gateway
+    import tools.env_passthrough as env_passthrough
+    import tui_gateway.launch_profile_policy as launch_policy
+    from agent import secret_scope
+
+    managed_dir = pooled_served_process / "managed"
+    managed_dir.mkdir()
+    (managed_dir / ".env").write_text("MANAGED_ONLY_TOKEN=managed-secret-value\n")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    managed_scope.invalidate_managed_cache()
+    assert managed_scope.load_managed_env() == {"MANAGED_ONLY_TOKEN": "managed-secret-value"}
+    monkeypatch.setattr(env_loader, "_MANAGED_DOTENV_KEYS", {"MANAGED_ONLY_TOKEN"})
+    monkeypatch.delenv("MANAGED_ONLY_TOKEN", raising=False)
+    env_passthrough.register_env_passthrough(["MANAGED_ONLY_TOKEN"])
+
+    @contextlib.contextmanager
+    def _launch_scope():
+        token = secret_scope.set_secret_scope(
+            {"MANAGED_ONLY_TOKEN": "managed-secret-value"},
+            profile_home=str(pooled_served_process),
+        )
+        try:
+            yield
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    monkeypatch.setattr(launch_policy, "launch_profile_scope_if_multiplexed", _launch_scope)
+    active_token = secret_scope.set_multiplex_context(True)
+    try:
+        env = web_server_gateway._profile_action_environment(["-p", "alpha", "doctor"])
+    finally:
+        secret_scope.reset_multiplex_context(active_token)
+
+    assert env["HERMES_HOME"] == str(pooled_served_process / "profiles" / "alpha")
+    assert "MANAGED_ONLY_TOKEN" not in env
+
+
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
     # `stop` on a served profile PARKS it under the host (no refusal); `start` while unparked refuses.

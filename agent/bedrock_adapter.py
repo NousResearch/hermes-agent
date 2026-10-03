@@ -733,8 +733,36 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
                     content_blocks.append({"reasoningContent": {"redactedContent": redacted}})
         elif "toolUse" in block and isinstance(block["toolUse"], dict):
             tu = block["toolUse"]
-            content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
+            content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), _replayed_tool_name(tu.get("name")), tu.get("input", {})))
     return content_blocks
+
+
+# Converse validates toolUse.name and toolSpec.name against [a-zA-Z0-9_-]{1,64}, and it revalidates the
+# WHOLE history on every request -- so one malformed name recorded in a past assistant turn 400s every
+# later request in the session, a plain "hi" included, and the session stays broken until it is abandoned
+# (#90008). Measured against zai.glm-4.7-flash in us-east-2 through this module: the pattern violation
+# reports at 'messages.N.member.content.M.member.toolUse.name' (RequestId
+# c7ba8744-619a-49e5-90c1-3321ebd3465a) and the cap reports "length less than or equal to 64" (RequestId
+# 57594bc1-3671-4ef6-8193-b0e25ef360a9). The hyphen is accepted, exactly as the pattern says, so it is
+# kept rather than folded (RequestId b837dffa-02ee-4f7a-889e-7134fef982cf).
+_BEDROCK_TOOL_NAME_DISALLOWED = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _replayed_tool_name(name) -> str:
+    """A *replayed* ``toolUse.name`` coerced into Converse's ``[a-zA-Z0-9_-]{1,64}``.
+
+    Applied only where a past tool call is replayed, and deliberately not to ``toolConfig``. A replayed
+    name has no reader left: the call already carries its ``toolResult``, and Converse pairs those by
+    ``toolUseId`` rather than by name -- measured, a folded name that appears in no ``toolConfig.tools``
+    entry is accepted and the turn completes normally (RequestId
+    85adb3e8-971b-490c-8e78-e31881e415e4). A toolSpec name is not interchangeable that way: the model
+    would call back under the folded name and ``tools/registry.py`` resolves by exact name, so folding
+    there needs a reverse mapping and is left to a separate change.
+
+    Names are recorded verbatim; this normalizes at the wire boundary only.
+    """
+    folded = _BEDROCK_TOOL_NAME_DISALLOWED.sub("_", str(name or ""))[:64]
+    return folded or "tool"
 
 
 def _parse_tool_args(args) -> Any:
@@ -762,7 +790,7 @@ def _assistant_blocks(msg: Dict, content) -> List[Dict]:
         content_blocks.extend(_convert_content_to_converse(content))
     for tc in (msg.get("tool_calls", []) or []):
         fn = tc.get("function", {})
-        content_blocks.append(_tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}"))))
+        content_blocks.append(_tool_use_block(tc.get("id", ""), _replayed_tool_name(fn.get("name")), _parse_tool_args(fn.get("arguments", "{}"))))
     return content_blocks
 
 

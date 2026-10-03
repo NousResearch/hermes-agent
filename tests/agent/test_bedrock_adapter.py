@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import re
 from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -1686,3 +1687,109 @@ class TestSealedReasoningResendOnce:
             with pytest.raises(Exception, match="ValidationException"):
                 call_converse(region="us-east-1", model="m", messages=[{"role": "user", "content": "hi"}])
         assert client.converse.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Replayed toolUse.name vs Converse's [a-zA-Z0-9_-]{1,64} (#90008)
+#
+# Converse revalidates the whole history on every request, so a malformed tool
+# name recorded once keeps 400ing every later request in the session. All the
+# constraints asserted here were measured against zai.glm-4.7-flash in
+# us-east-2 (RequestIds are in the module comment next to the fix).
+# ---------------------------------------------------------------------------
+
+CONVERSE_TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+MALFORMED_NAME = "brain</arg_value>"  # verbatim from the report: markup swallowed into the tool name
+
+
+def _wire_tool_names(messages):
+    """Every toolUse.name that ``convert_messages_to_converse`` would put on the wire."""
+    from agent.bedrock_adapter import convert_messages_to_converse
+    _system, converse_msgs = convert_messages_to_converse(messages)
+    return [b["toolUse"]["name"] for m in converse_msgs for b in m["content"] if "toolUse" in b]
+
+
+def _history_with_tool_call(name):
+    """The reported shape: a malformed call, its error result, then a plain follow-up."""
+    return [
+        {"role": "user", "content": "use the brain tool"},
+        {"role": "assistant", "content": "ok",
+         "tool_calls": [{"id": "tu1", "type": "function", "function": {"name": name, "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "tu1", "content": "Unknown tool"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+class TestReplayedToolNameConformsToConverse:
+    def test_the_reported_malformed_name_is_folded(self):
+        assert _wire_tool_names(_history_with_tool_call(MALFORMED_NAME)) == ["brain__arg_value_"]
+
+    def test_a_malformed_name_in_the_ordered_sidecar_is_folded_too(self):
+        """The sidecar replay path is separate from the tool_calls path and needs the same guard."""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None, "bedrock_content_blocks": [
+                {"text": "calling"},
+                {"toolUse": {"toolUseId": "tu1", "name": MALFORMED_NAME, "input": {}}}]},
+            {"role": "tool", "tool_call_id": "tu1", "content": "Unknown tool"},
+            {"role": "user", "content": "hi"},
+        ]
+        assert _wire_tool_names(messages) == ["brain__arg_value_"]
+
+    @pytest.mark.parametrize("name", ["brain", "brain-v2", "read_file", "get-weather_2", "a", "A9_-"])
+    def test_a_conforming_name_is_replayed_verbatim(self, name):
+        """Including the hyphen: Converse accepts it, so folding it would rename tools needlessly."""
+        assert _wire_tool_names(_history_with_tool_call(name)) == [name]
+
+    def test_a_name_over_the_cap_is_truncated_to_64(self):
+        wire = _wire_tool_names(_history_with_tool_call("a" * 100))
+        assert wire == ["a" * 64]
+        assert CONVERSE_TOOL_NAME.fullmatch(wire[0])
+
+    @pytest.mark.parametrize("name", ["", None, "   ", "<|>", 12])
+    def test_no_input_yields_a_name_the_api_accepts(self, name):
+        """An empty name violates the pattern too (it needs at least one character)."""
+        wire = _wire_tool_names(_history_with_tool_call(name))
+        assert len(wire) == 1 and CONVERSE_TOOL_NAME.fullmatch(wire[0])
+
+    def test_the_tool_result_still_pairs_by_id(self):
+        """Converse pairs toolResult to toolUse by toolUseId, so folding the name must not touch the id."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        _system, converse_msgs = convert_messages_to_converse(_history_with_tool_call(MALFORMED_NAME))
+        uses = [b["toolUse"] for m in converse_msgs for b in m["content"] if "toolUse" in b]
+        results = [b["toolResult"] for m in converse_msgs for b in m["content"] if "toolResult" in b]
+        assert [u["toolUseId"] for u in uses] == [r["toolUseId"] for r in results] == ["tu1"]
+
+    def test_the_tool_spec_list_is_left_alone(self):
+        """Deliberate scope: the model calls back under the spec name and tools/registry.py resolves by
+        exact name, so folding a spec needs a reverse mapping. Out of scope here, asserted so a later
+        change has to say it is changing this."""
+        from agent.bedrock_adapter import convert_tools_to_converse
+        specs = convert_tools_to_converse([{"type": "function", "function": {
+            "name": MALFORMED_NAME, "description": "d", "parameters": {"type": "object", "properties": {}}}}])
+        assert specs[0]["toolSpec"]["name"] == MALFORMED_NAME
+
+    def test_an_inbound_name_is_recorded_verbatim(self):
+        """Normalization records what the model actually said; folding happens at the wire boundary only."""
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {"output": {"message": {"role": "assistant", "content": [
+            {"toolUse": {"toolUseId": "tu1", "name": MALFORMED_NAME, "input": {}}}]}},
+            "stopReason": "tool_use", "usage": {}}
+        message = normalize_converse_response(response).choices[0].message
+        assert message.tool_calls[0].function.name == MALFORMED_NAME
+        assert message.bedrock_content_blocks[0]["toolUse"]["name"] == MALFORMED_NAME
+
+    def test_every_name_in_a_mixed_history_conforms(self):
+        """The wedge is one bad entry among many: assert the whole payload, not one block."""
+        messages = [{"role": "user", "content": "hi"}]
+        for index, name in enumerate(["read_file", MALFORMED_NAME, "mcp.github.search", "ok-2"]):
+            messages += [
+                {"role": "assistant", "content": "c",
+                 "tool_calls": [{"id": f"tu{index}", "type": "function",
+                                 "function": {"name": name, "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": f"tu{index}", "content": "r"},
+            ]
+        wire = _wire_tool_names(messages)
+        assert len(wire) == 4
+        assert all(CONVERSE_TOOL_NAME.fullmatch(n) for n in wire), wire
+        assert wire == ["read_file", "brain__arg_value_", "mcp_github_search", "ok-2"]

@@ -500,7 +500,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        """Start (or adopt) the Node.js bridge and wait for it to be ready.
+
+        On a reconnect, first try a matching live bridge before cold startup.
+        """
         if find_node_executable("node") is None:
             import pm
 
@@ -520,10 +523,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
+            # Acquire session ownership before adopting the bridge, but avoid
+            # npm, pidfile and port cleanup when a reconnect can reuse it.
+            if is_reconnect and lock_acquired and await self._reuse_running_bridge(bridge_path):
+                return True
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            if await self._reuse_running_bridge(bridge_path):
+            if not is_reconnect and await self._reuse_running_bridge(bridge_path):
                 return True
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)

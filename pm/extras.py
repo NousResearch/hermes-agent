@@ -199,6 +199,7 @@ def ensure_import(extra: str) -> None:
             f"(gate: {marker!r}); the adapter degrades without it",
         )
     import sys
+    from pm.install import lazy_installs_allowed
     from pm.package import InstallError
 
     # prompt_toolkit already owns stdin during a CLI turn; never read from it.
@@ -207,7 +208,8 @@ def ensure_import(extra: str) -> None:
         from prompt_toolkit.application.current import get_app_or_none
 
         app_running = bool(getattr(get_app_or_none(), "is_running", False))
-    if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
+    if (not app_running and sys.stdin.isatty() and sys.stdout.isatty()
+            and lazy_installs_allowed()):
         try:
             answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"
                            "Install it now? [Y/n] ").strip().lower()

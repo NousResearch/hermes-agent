@@ -872,6 +872,10 @@ class _ChildRun:
             if not future.done():
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
                 raise FuturesTimeoutError()
+            # The worker's terminal answer is fixed from here on; everything after this return is
+            # parent-side teardown. The flag freezes this child's clock in the batch progress token
+            # so a wedged teardown lets the stale monitor close the unit (#113222).
+            child._delegate_result_collected = True
             return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
@@ -938,6 +942,9 @@ class _ChildRun:
         close_deferred = is_timeout and not future.done()
         if close_deferred:
             _defer_close_after_timeout(child, future)
+        # Same terminal handoff as the success path: the entry below is the child's final answer,
+        # so its clock no longer counts as batch progress (#113222).
+        child._delegate_result_collected = True
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:

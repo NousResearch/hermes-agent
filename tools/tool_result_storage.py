@@ -27,6 +27,18 @@ _BUDGET_TOOL_NAME = "__budget_enforcement__"
 # The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
 # keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
+# The terminal tool's result envelope (tools/terminal_tool.py::_error_json and the yielded-to-
+# background return, tools/terminal_tool_result.py::finalize_foreground_result,
+# tools/terminal_tool_guards.py, agent/transports/codex_event_projector.py): always
+# ``output``/``exit_code`` plus this sibling vocabulary. Persisted verbatim it was ONE escaped-JSON
+# line, so the read_file offset/limit paging the <persisted-output> block recommends could not page
+# a command's actual output (#79818).
+_TERMINAL_ENVELOPE_KEYS = frozenset({
+    "output", "exit_code", "error", "status", "cwd", "environment_recreated",
+    "output_total_chars", "full_output_path", "truncation_note", "verification_evidence",
+    "approval", "exit_code_meaning", "hint", "sudo_auth_failed", "sudo_cache_cleared",
+    "traceback", "session_id", "pid", "notify_on_complete", "note",
+})
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
 _ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -180,37 +192,68 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
 
 
 def _pageable_text(content: str) -> str:
-    """Rewrite an MCP handler result envelope into the text it wraps, else return *content*.
+    """Rewrite a terminal-tool or MCP-handler result envelope into the text it wraps, else return
+    *content* unchanged.
 
-    ``tools/mcp_tool_handlers.py::_render_call_tool_result`` hands the model a JSON string
-    (``{"result": <text>, ...}``) so structured metadata survives inline delivery. Persisting
-    that string verbatim put a multi-hundred-KB document on ONE line with escaped newlines, so
-    the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
-    not be used at all (#90426).
+    Two envelopes arrive as JSON strings that put the whole payload on ONE line with escaped
+    newlines, so the ``read_file`` offset/limit pagination the ``<persisted-output>`` block
+    recommends could not be used at all:
 
-    Recognized by SHAPE, not by tool name: the envelope is the only JSON object in the codebase
-    whose keys are a subset of ``{"result", "structuredContent", "_meta"}`` with a non-empty
-    string ``result``. That keeps opaque JSON from any other tool verbatim, and it also covers
-    the aggregate path (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``, so a
-    ``mcp__``-prefix test would miss exactly the results it has to fix).
+    * ``tools/mcp_tool_handlers.py::_render_call_tool_result`` hands the model
+      ``{"result": <text>, ...}`` so structured metadata survives inline delivery (#90426).
+    * the terminal tool's result (``tools/terminal_tool.py``, ``tools/terminal_tool_result.py``)
+      hands the model ``{"output": <text>, "exit_code": N, ...}`` — a multi-hundred-KB stdout
+      arrived as one escaped line (#79818).
+
+    Both are recognized by SHAPE, not by tool name: a key set inside the envelope's vocabulary
+    plus a non-empty string text member (``result`` / ``output``) — and for the terminal shape an
+    int-or-None ``exit_code`` — is that producer's own envelope, never an arbitrary tool's JSON
+    payload. That keeps opaque JSON from any other tool verbatim, and it also covers the aggregate
+    path (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``, so a ``mcp__``-prefix or
+    ``terminal``-name test would miss exactly the results it has to fix).
 
     Sibling members are appended after the text in a delimited metadata block instead of being
-    dropped: they are the structured payloads ``_render_call_tool_result`` deliberately keeps
-    for the model (#115430), and the spill file is the only copy left once the envelope is
-    replaced by the preview. Anything unrecognized — unparseable JSON, a non-object, an unknown
-    key, a missing/empty/non-string ``result`` (e.g. a structuredContent-only result, which has
-    no pageable text) — is persisted verbatim, exactly as before.
+    dropped: they are the structured payloads the producers deliberately keep for the model
+    (#115430), and the spill file is the only copy left once the envelope is replaced by the
+    preview. Anything unrecognized — unparseable JSON, a non-object, an unknown key, a
+    missing/empty/non-string text member (e.g. a structuredContent-only result, which has no
+    pageable text) — is persisted verbatim, exactly as before.
     """
     try:
         payload = json.loads(content)
     except (TypeError, ValueError):
         return content
-    if not isinstance(payload, dict) or not payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
+    if not isinstance(payload, dict) or not payload:
         return content
-    text = payload.get("result")
+    if set(payload) <= _MCP_ENVELOPE_KEYS:
+        unwrapped = _envelope_pageable_text(payload, "result")
+    elif _is_terminal_envelope(payload):
+        unwrapped = _envelope_pageable_text(payload, "output")
+    else:
+        return content
+    return unwrapped or content
+
+
+def _is_terminal_envelope(payload: dict) -> bool:
+    """True for the terminal tool's result JSON: ``output``/``exit_code`` plus only known sibling
+    keys (see ``_TERMINAL_ENVELOPE_KEYS``). An unknown key, a non-string ``output``, or a bool
+    ``exit_code`` (JSON ``true``/``false``) means some other tool's payload — stay verbatim."""
+    exit_code = payload.get("exit_code")
+    return (
+        set(payload) <= _TERMINAL_ENVELOPE_KEYS
+        and isinstance(payload.get("output"), str)
+        and (exit_code is None or (isinstance(exit_code, int) and not isinstance(exit_code, bool)))
+    )
+
+
+def _envelope_pageable_text(payload: dict, text_key: str) -> str:
+    """Pageable text for a recognized envelope, or "" when its text member is missing/empty (the
+    caller then persists the original content verbatim). Siblings become the delimited metadata
+    block (see ``_pageable_text``)."""
+    text = payload.get(text_key)
     if not isinstance(text, str) or not text:
-        return content
-    extras = {key: value for key, value in payload.items() if key != "result"}
+        return ""
+    extras = {key: value for key, value in payload.items() if key != text_key}
     if not extras:
         return text
     try:

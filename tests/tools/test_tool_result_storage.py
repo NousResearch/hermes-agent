@@ -241,7 +241,8 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
 
     def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+        """Opaque (non-envelope) content is persisted verbatim — no JSON extraction. The terminal
+        envelope IS extracted now (#79818, see TestTerminalEnvelopeSpillover)."""
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -253,7 +254,8 @@ class TestMaybePersistToolResult:
         ]
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
-        content = json.dumps({"output": raw, "exit_code": 0, "error": None})
+        # Unknown sibling key -> some other tool's opaque payload, never the terminal envelope.
+        content = json.dumps({"output": raw, "count": 3})
         result = maybe_persist_tool_result(
             content=content,
             tool_name="terminal",
@@ -521,7 +523,8 @@ class TestSpillover:
 # ── MCP envelope unwrapping (#90426) ──────────────────────────────────
 
 class TestPageableText:
-    """Only the MCP handler's own envelope shape is unwrapped; every other JSON stays opaque."""
+    """MCP handler and terminal envelopes are unwrapped into their text; every other JSON stays
+    opaque."""
 
     def test_single_result_envelope_is_unwrapped(self):
         assert _pageable_text(json.dumps({"result": "line one\nline two"})) == "line one\nline two"
@@ -536,7 +539,6 @@ class TestPageableText:
     @pytest.mark.parametrize(
         "content",
         [
-            json.dumps({"output": "line\n", "exit_code": 0}),      # ordinary tool JSON
             json.dumps({"result": "line\n", "exit_code": 0}),      # unknown sibling key
             json.dumps([{"result": "line\n"}]),                    # not an object
             json.dumps({"result": {"blob": "line\n"}}),            # structuredContent-only style
@@ -547,6 +549,57 @@ class TestPageableText:
         ],
     )
     def test_unrecognized_content_is_verbatim(self, content):
+        assert _pageable_text(content) == content
+
+
+class TestTerminalEnvelopePageableText:
+    """The terminal tool's ``{"output": ..., "exit_code": N, ...}`` envelope is unwrapped too,
+    so oversized stdout spills as pageable text instead of one escaped JSON line (#79818)."""
+
+    def test_success_envelope_is_unwrapped(self):
+        envelope = json.dumps({"output": "line one\nline two\n", "exit_code": 0, "error": None})
+        text, marker, tail = _pageable_text(envelope).partition("\n\n<mcp-result-metadata>\n")
+        assert text == "line one\nline two\n"
+        assert marker
+        assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"exit_code": 0, "error": None}
+
+    def test_error_envelope_with_extras_keeps_metadata(self):
+        envelope = json.dumps({
+            "output": "some stdout\n", "exit_code": 124,
+            "error": "Command timed out after 30 seconds",
+            "status": "error", "exit_code_meaning": None,
+        })
+        text, marker, tail = _pageable_text(envelope).partition("\n\n<mcp-result-metadata>\n")
+        assert text == "some stdout\n"
+        assert marker
+        metadata = json.loads(tail.split("\n</mcp-result-metadata>")[0])
+        assert metadata["exit_code"] == 124
+        assert metadata["status"] == "error"
+        # JSON null siblings are preserved, not dropped.
+        assert metadata["exit_code_meaning"] is None
+
+    def test_yielded_to_background_envelope_is_unwrapped(self):
+        envelope = json.dumps({
+            "output": "streaming\n", "exit_code": None, "error": None,
+            "status": "yielded_to_background", "session_id": "s1", "pid": 42,
+            "notify_on_complete": True, "note": "collect with read_terminal_output",
+        })
+        text, _, tail = _pageable_text(envelope).partition("\n\n<mcp-result-metadata>\n")
+        assert text == "streaming\n"
+        assert json.loads(tail.split("\n</mcp-result-metadata>")[0])["pid"] == 42
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"output": "line\n", "count": 3}),             # unknown sibling key
+            json.dumps({"output": "line\n", "exit_code": "0"}),      # exit_code not int/None
+            json.dumps({"output": "line\n", "exit_code": True}),     # bool exit_code
+            json.dumps({"output": {"blob": "line\n"}, "exit_code": 0}),  # non-string output
+            json.dumps({"output": "", "exit_code": 1, "error": "x"}),    # empty output (error envelope)
+            json.dumps({"exit_code": 0}),                             # no output at all
+        ],
+    )
+    def test_unrecognized_terminal_shapes_are_verbatim(self, content):
         assert _pageable_text(content) == content
 
 class TestMcpEnvelopeSpillover:
@@ -589,7 +642,9 @@ class TestMcpEnvelopeSpillover:
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
     def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
+        # Not every JSON payload with an ``output`` key is the terminal envelope: an unknown
+        # sibling key means some other tool's opaque payload and stays verbatim.
+        content = json.dumps({"output": "line\n" * 8_000, "count": 3})
         maybe_persist_tool_result(
             content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
             env=None, threshold=30_000)
@@ -629,3 +684,50 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+
+class TestTerminalEnvelopeSpillover:
+    """An oversized terminal result spills its real stdout, not one escaped JSON line (#79818)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+        yield
+
+    def test_terminal_result_spills_real_newlines(self):
+        stdout = "# build log\n" + "compiling module.py\n" * 4_000
+        envelope = json.dumps({"output": stdout, "exit_code": 0, "error": None})
+        assert len(envelope) > 30_000
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_text",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        spill_file = get_spillover_dir() / "tc_term_text.txt"
+        text, _, tail = spill_file.read_text(encoding="utf-8").partition("\n\n<mcp-result-metadata>\n")
+        assert text == stdout
+        assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"exit_code": 0, "error": None}
+        # read_file offset/limit is only usable if the preview is the output text too.
+        preview = result.split("Preview (first", 1)[1]
+        assert "# build log" in preview
+        assert "\\n" not in preview
+
+    def test_turn_budget_spill_unwraps_terminal_envelope(self):
+        """The aggregate layer persists under __budget_enforcement__, so a tool-name gate would
+        miss the very results it must fix; the shape gate still applies."""
+        stdout = "budgeted line\n" * 3_000
+        msgs = [{
+            "role": "tool", "name": "terminal", "tool_call_id": "tc_budget_term",
+            "content": json.dumps({"output": stdout, "exit_code": 0, "error": None}),
+        }]
+
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=10_000))
+
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        spill = (get_spillover_dir() / "tc_budget_term.txt").read_text(encoding="utf-8")
+        text, _, tail = spill.partition("\n\n<mcp-result-metadata>\n")
+        assert text == stdout
+        assert json.loads(tail.split("\n</mcp-result-metadata>")[0])["exit_code"] == 0

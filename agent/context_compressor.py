@@ -3751,9 +3751,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return summary
 
     @classmethod
-    def _bound_summary_input(cls, content: str) -> str:
-        """Cap total summarizer input, keeping head and tail and marking the omitted middle."""
-        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
+    def _bound_summary_input(cls, content: str, max_chars: int | None = None) -> str:
+        """Cap total summarizer input, keeping head and tail and marking the omitted middle.
+        *max_chars* overrides the class cap (the iterative path splits one budget across
+        its two inputs, #128561)."""
+        cap = cls._SUMMARY_INPUT_MAX_CHARS if max_chars is None else max_chars
+        if len(content) <= cap:
             return content
 
         marker_template = (
@@ -3764,12 +3767,29 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         omitted = len(content)
         for _ in range(2):
             marker = marker_template.format(omitted=omitted)
-            remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
+            remaining = max(cap - len(marker), 0)
             head_chars = int(remaining * 0.45)
             tail_chars = remaining - head_chars
             omitted = max(len(content) - head_chars - tail_chars, 0)
         tail = content[-tail_chars:].lstrip() if tail_chars else ""
         return content[:head_chars].rstrip() + marker + tail
+
+    @classmethod
+    def _bound_iterative_summary_inputs(cls, previous_summary: str, new_turns: str) -> tuple[str, str]:
+        """Share ONE _SUMMARY_INPUT_MAX_CHARS budget between the iterative prompt's two
+        inputs. Bounding each independently let the assembled prompt reach 2x the cap —
+        ~80K tokens against a 64K aux window, a hard input failure (#128561). Each side
+        claims at most half; unused budget flows to the other side before it is trimmed,
+        so a small previous summary never starves the new turns."""
+        total = cls._SUMMARY_INPUT_MAX_CHARS
+        if len(previous_summary) + len(new_turns) <= total:
+            return previous_summary, new_turns
+        half = total // 2
+        prev_budget = min(len(previous_summary), half)
+        new_budget = min(len(new_turns), total - prev_budget)
+        prev_budget = min(len(previous_summary), total - new_budget)
+        return (cls._bound_summary_input(previous_summary, prev_budget),
+                cls._bound_summary_input(new_turns, new_budget))
 
     # Lean-mode sampling slice count: 8 keeps slices ~20K chars at the 160K cap.
     _SAMPLED_INPUT_SLICES = 8
@@ -4127,8 +4147,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
         if self._previous_summary:
-            # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
-            _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
+            # Iterative update. The two inputs share ONE budget: bounding each
+            # independently let the assembled prompt reach 2x the cap (#128561).
+            _bounded_previous_summary, content_to_summarize = self._bound_iterative_summary_inputs(
+                self._previous_summary, content_to_summarize)
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.

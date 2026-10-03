@@ -298,11 +298,12 @@ class _Heartbeat:
         from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
         touch = getattr(parent_agent, "_touch_activity", None) if parent_agent is not None else None
-        if not touch:
-            return None
+        # NOTE: the stale accounting below runs even when the parent exposes no ``_touch_activity``
+        # (W2): returning early here disarmed the only stale verdict for such parents, wedging the
+        # child's wait — and its registry entry — for process life. Only the touch call is guarded.
         desc = f"delegate_task: subagent {task_index} working"
         try:
-            child_summary = child.get_activity_summary()
+            child_summary = child.get_activity_summary() or {}
             child_tool = child_summary.get("current_tool")
             child_iter = child_summary.get("api_call_count", 0)
             child_max = child_summary.get("max_iterations", 0)
@@ -333,9 +334,23 @@ class _Heartbeat:
             elif child_summary.get("last_activity_desc", ""):
                 desc = f"delegate_task: subagent {child_summary.get('last_activity_desc', '')} (iteration {child_iter}/{child_max})"
         except Exception:
-            pass
-        with _quiet(None):
-            touch(desc)
+            # A summary read that keeps failing is indistinguishable from frozen progress: fail
+            # closed — count the cycle stale so a permanently unreadable child still reaches the
+            # stale verdict instead of hiding from it forever (W3). Same threshold the success
+            # path reads; the warning names the real cause so an operator is not told "stale".
+            last_seen["stale"] += 1
+            stale_cycles = _HEARTBEAT_STALE_CYCLES_IN_TOOL if last_seen["tool"] else _HEARTBEAT_STALE_CYCLES_IDLE
+            if last_seen["stale"] >= stale_cycles:
+                logger.warning(
+                    "Subagent %d activity unreadable (%d heartbeat cycles) — abandoning its wait",
+                    task_index, last_seen["stale"],
+                )
+                self.stale_threshold_seconds = stale_cycles * _HEARTBEAT_INTERVAL
+                self.settled.set()
+                return False
+        if touch:
+            with _quiet(None):
+                touch(desc)
         return None
 
 
@@ -1022,7 +1037,10 @@ class _ChildRun:
         interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
         no turn is active."""
         child = self.child
-        heartbeat.stop()
+        # The registry release below is the ONLY removal from ``_active_subagents`` and nothing
+        # retries it: a raising stop must never skip it (W4). Order stays stop → unregister.
+        with _quiet("heartbeat stop failed before registry release: %s"):
+            heartbeat.stop()
 
         # Safe even if the child was never registered (ID missing on test doubles).
         if self.subagent_id:

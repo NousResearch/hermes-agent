@@ -1367,10 +1367,12 @@ DEFAULT_CONFIG = {
         # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
         # lost). 0 disables the ceiling; the dynamic budget still applies.
         "max_summary_chars": 24000,
-        # Inactivity cap per child (seconds, floor 30) — time with NO progress, not total runtime. 0 = no cap:
-        # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
-        # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
-        "child_timeout_seconds": 0,
+        # Inactivity cap per child (seconds, floor 30) — time with NO progress, not total runtime.
+        # None = the built-in 1h cap (delegate_tool_config.DEFAULT_CHILD_TIMEOUT); 0 or negative
+        # disables the cap (heartbeat staleness monitoring stays active either way). A progressing
+        # child (including one waiting on a multi-minute completion) restarts the window; a frozen
+        # one is caught.
+        "child_timeout_seconds": None,
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
         # "none" (empty = inherit)
         "reasoning_effort": "",

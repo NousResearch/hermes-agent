@@ -189,6 +189,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "0 disables the deadline; values above 600 are clamped."
         ),
     },
+    "delegation.child_timeout_seconds": {
+        "type": "number",
+        "description": (
+            "Inactivity cap per child (seconds, floor 30) — time with NO progress, not total runtime. "
+            "Blank keeps the built-in 1h cap; 0 disables the cap (heartbeat staleness monitoring stays active)."
+        ),
+    },
 }
 
 # Small categories fold into a bigger tab to avoid one-field orphan tabs. Several sources

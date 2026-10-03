@@ -2997,6 +2997,14 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
         assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
+    def test_child_timeout_field_stays_numeric_in_the_settings_schema(self):
+        """Regression: the bounded default (None = built-in cap) must not flip the desktop
+        field to a text input — the explicit override keeps it numeric."""
+        schema = self.client.get("/api/config/schema").json()["fields"]
+        entry = schema["delegation.child_timeout_seconds"]
+        assert entry["type"] == "number"
+        assert "0 disables" in entry["description"]
+
     def test_desktop_terminal_font_round_trip_preserves_terminal_config(self):
         """The Appearance picker persists a font without replacing sibling settings."""
         from hermes_cli.config import load_config

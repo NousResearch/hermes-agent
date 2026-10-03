@@ -1,0 +1,5 @@
+name: kosmik-provider
+kind: model-provider
+version: 1.0.0
+description: Kosmik / KosCompute — European AI compute infrastructure & inference
+author: Nous Research

@@ -71,6 +71,8 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "arcee": HermesOverlay(base_url_override="https://api.arcee.ai/api/v1", base_url_env_var="ARCEE_BASE_URL"),
     "gmi": HermesOverlay(extra_env_vars=("GMI_API_KEY",), base_url_override="https://api.gmi-serving.com/v1",
                          base_url_env_var="GMI_BASE_URL"),
+    "kosmik": HermesOverlay(extra_env_vars=("KOSMIK_API_KEY", "KOSCOMPUTE_API_KEY"), base_url_override="https://api.koscompute.com/v1",
+                            base_url_env_var="KOSMIK_BASE_URL"),
     "fireworks": HermesOverlay(extra_env_vars=("FIREWORKS_API_KEY",),
                                base_url_override="https://api.fireworks.ai/inference/v1"),
     "actual": HermesOverlay(transport="chat_completions", extra_env_vars=("ACTUAL_API_KEY",),
@@ -128,7 +130,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "xiaomi": ("mimo", "xiaomi-mimo"), "tencent-tokenhub": ("tencent", "tokenhub", "tencent-cloud", "tencentmaas"),
     "tencent-tokenplan": ("tokenplan", "tencent-lkeap"),
     "bedrock": ("aws", "aws-bedrock", "amazon-bedrock", "amazon"), "arcee": ("arcee-ai", "arceeai"),
-    "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
+    "gmi": ("gmi-cloud", "gmicloud"), "kosmik": ("koscompute", "kosmik-ai", "kos"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
     "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
@@ -143,7 +145,7 @@ ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
-    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
+    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud", "kosmik": "Kosmik",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",

@@ -2394,12 +2394,51 @@ def _(rid, params: dict) -> dict:
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")
         if _session_uses_compute_host(session):
+            host_unreachable = False
+            with session["history_lock"]:
+                inflight_at_interrupt = session.get("inflight_turn")
+                interrupted_claim = session.get("_turn_claim")
             try:
                 _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
             except Exception as exc:
-                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+                host_unreachable = True
+                logger.warning("session.interrupt: compute-host interrupt failed for %s: %s", sid, exc)
+            # The host operation can need history_lock, so probe it before acquiring that lock.
+            pending_for_sid = True
+            if host_unreachable:
+                try:
+                    pending_for_sid = _get_compute_host_supervisor().has_pending_turn(sid)
+                except Exception as exc:
+                    logger.warning(
+                        "session.interrupt: compute-host pending-turn probe failed for %s: %s", sid, exc
+                    )
+                    pending_for_sid = True
+            with session["history_lock"]:
+                if not _owns_turn_claim(session, interrupted_claim):
+                    return _ok(rid, {"status": "interrupted", "turn_isolation": True})
+                session["_turn_cancel_requested"] = True
+                session["queued_prompt"] = None
+                session.pop("queued_prompts", None)
+                session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+                inflight_now = session.get("inflight_turn")
+                if (
+                    host_unreachable
+                    and not pending_for_sid
+                    and session.get("running")
+                    and inflight_now is not None
+                    and inflight_now is inflight_at_interrupt
+                ):
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+            _clear_pending(sid)
+            try:
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+            except Exception:
+                pass
             return _ok(rid, {"status": "interrupted", "turn_isolation": True})
-        session, err = _sess(params, rid)
+        # Stop must inspect the session without waiting for its deferred agent build.
+        session, err = _sess_building(params, rid)
         if err:
             return err
         _interrupt_session_turn(sid, session)

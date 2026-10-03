@@ -90,7 +90,7 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
     session = _session(agent=agent, running=True)
 
     with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-        server._run_prompt_submit("rid", "ui-sid", session, SECRETISH_PROMPT)
+        server._run_prompt_submit("rid", "ui-sid", session, SECRETISH_PROMPT, turn_claim=server._claim_session_turn(session))
 
     accepted = _records(caplog, "tui prompt accepted")
     finished = _records(caplog, "tui turn finished")

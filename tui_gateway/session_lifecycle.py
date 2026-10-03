@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 import contextlib
+import threading
 
 from .method_ctx import bind_module
 
@@ -21,29 +22,95 @@ def _session_turn_admission(session: dict):
         yield admitted
 
 
-def _start_session_work(target, *, name: str, session: dict | None = None):
-    """Reserve before spawning; release only after the worker (including cleanup) has unwound."""
+def _claim_session_turn(session: dict) -> int:
+    """Mark the session's turn as claimed and return the claim's token. The caller holds ``history_lock`` and has
+    seen ``running`` False."""
+    session["running"] = True
+    claim = session["_turn_claim"] = int(session.get("_turn_claim", 0)) + 1
+    session["_turn_cancel_requested"] = False
+    return claim
+
+
+def _owns_turn_claim(session: dict, claim: int | None) -> bool:
+    """Whether no later claim has replaced ``claim``. The caller holds ``history_lock``."""
+    return session.get("_turn_claim") == claim
+
+
+def _holds_turn_claim(session: dict, claim: int | None) -> bool:
+    """Whether ``claim`` is still live: no Stop has released it and no later claim has replaced it. The caller
+    holds ``history_lock``."""
+    return bool(session.get("running")) and _owns_turn_claim(session, claim)
+
+
+def _release_session_turn(session: dict, claim: int | None) -> None:
+    """Clear ``running`` for ``claim``, unless a later claim has replaced it."""
+    with session["history_lock"]:
+        if _owns_turn_claim(session, claim):
+            session["running"] = False
+
+
+def _decide_turn_thread(session: dict, thread, claim: int | None, decision: list[bool]) -> bool:
+    """Decide once whether the started worker can run its claim.
+
+    The worker and its starter share the result. If the worker has finished before the starter checks, its
+    released claim must not make the starter report that the worker never ran."""
+    with session["history_lock"]:
+        if not decision:
+            decision.append(_holds_turn_claim(session, claim) and not session.get("_turn_cancel_requested"))
+            if decision[0]:
+                session["_run_thread"] = thread
+                session["_run_thread_claim"] = claim
+        return decision[0]
+
+
+def _start_session_work(target, *, name: str, session: dict | None = None, turn_claim: int | None = None):
+    """Reserve process admission until the worker has unwound.
+
+    With a session, publish only a started worker for the current claim. The worker and its starter share
+    one admission decision because either thread can check first."""
     from agent.memory_provider import spawn_context_thread
     from hermes_cli.backend_retirement import retirement
 
     if not retirement.acquire():
         return None
+    decision: list[bool] = []
 
     def run():
         try:
-            target()
+            if session is None or _decide_turn_thread(session, thread, turn_claim, decision):
+                target()
         finally:
             retirement.release()
 
     try:
         thread = spawn_context_thread(run, name=name)
-        if session is not None:
-            session["_run_thread"] = thread
         thread.start()
-        return thread
     except BaseException:
         retirement.release()
         raise
+    if session is not None and not _decide_turn_thread(session, thread, turn_claim, decision):
+        return None
+    return thread
+
+
+_turn_thread_publish_lock = threading.Lock()
+
+
+def _start_turn_thread(session: dict, thread: threading.Thread, turn_claim: int) -> bool:
+    """Start the submit dispatch thread, then publish it if its claim has not been replaced.
+
+    Keep a worker which the dispatcher has already published. Other threads call ``join()`` on the handle,
+    so publication must follow ``start()``. The caller must not already have acquired ``history_lock``."""
+    previous = session.get("_run_thread")
+    thread.start()
+    with session["history_lock"], _turn_thread_publish_lock:
+        if not _owns_turn_claim(session, turn_claim):
+            return False
+        current = session.get("_run_thread")
+        if current is previous or current is threading.current_thread():
+            session["_run_thread"] = thread
+            session["_run_thread_claim"] = turn_claim
+    return True
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
@@ -122,14 +189,19 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
-    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
-    if session.get("active_session_lease") is not None:
+    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream. A closing
+    session returns None without acquiring a lease; the caller's closing checks prevent its turn
+    from starting."""
+    if session.get("active_session_lease") is not None or session.get("_closing"):
         return None
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
         _attach_lease(session, lease)
+        if session.get("_closing"):
+            # Close may have finalized while this claim ran; until the orphan sweep, nothing else releases the lease.
+            _release_active_session_slot(session)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
@@ -169,7 +241,7 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     """
     from hermes_cli.active_sessions import transfer_active_session
     with _session_resume_lock, _sessions_lock:
-        if (found := _detached_lease_holder(session, key)) is None:
+        if session.get("_closing") or (found := _detached_lease_holder(session, key)) is None:
             return False
         other_sid, other = found
         lease = other["active_session_lease"]
@@ -480,7 +552,9 @@ def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
         logger.debug("session.reclaimed broadcast failed", exc_info=True)
 
 
-def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session_id: str = "") -> None:
+def _announce_cancelled_gateway_approvals(
+    session: dict, reason: str, *, session_id: str = "", pending: list[dict] | None = None,
+) -> None:
     """Tell connected clients pending gateway approvals are being dropped (interrupt/reap/teardown, #106678).
 
     Broadcast, not session-targeted: reap/interrupt run on timer threads with no live transport or contextvar,
@@ -491,12 +565,13 @@ def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session
     session_key = str(session.get("session_key") or "")
     if not session_key:
         return
-    try:
-        from tools.approval import list_gateway_approvals
-        pending = list_gateway_approvals(session_key)
-    except Exception:
-        logger.debug("list_gateway_approvals failed", exc_info=True)
-        return
+    if pending is None:
+        try:
+            from tools.approval import list_gateway_approvals
+            pending = list_gateway_approvals(session_key)
+        except Exception:
+            logger.debug("list_gateway_approvals failed", exc_info=True)
+            return
     if not pending:
         return
     request_ids = [str(item.get("request_id") or "") for item in pending]
@@ -692,21 +767,32 @@ def _interrupt_session_turn(
     ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
     """
+    from tui_gateway import server_requests
+    from tools.approval import list_gateway_approvals, resolve_gateway_approval
+
     use_compute_host = _session_uses_compute_host(session)
-    should_interrupt = bool(session.get("running"))
-    run_thread_alive = False
-    if use_compute_host:
-        # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
-        # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
-        if should_interrupt or session.get("_compute_host_active"):
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
-    else:
-        run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
+        interrupted_agent = session.get("agent")
+        interrupted_session_key = str(session.get("session_key") or "")
+        pending_request_ids = {request["id"] for request in server_requests.open_requests(sid)}
+        pending_approvals = list_gateway_approvals(interrupted_session_key) if interrupted_session_key else []
+        interrupted_claim = session.get("_turn_claim")
+        should_interrupt = bool(session.get("running"))
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+
+    def still_current() -> bool:
+        with session["history_lock"]:
+            return _owns_turn_claim(session, interrupted_claim)
+
+    if use_compute_host:
+        # Host I/O must stay outside history_lock because the interrupted operation can require that lock.
+        if should_interrupt or session.get("_compute_host_active"):
+            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+    if not still_current():
+        return use_compute_host
     if should_interrupt:
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
@@ -718,15 +804,19 @@ def _interrupt_session_turn(
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
-                    "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                    "agent_loop_stopped", session_key=interrupted_session_key, platform="tui",
                     reason="user_stop", invalidation_reason="session_interrupt",
                 )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+    if not still_current():
+        return use_compute_host
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
+            request_hard_interrupt(interrupted_agent)
+        if not still_current():
+            return use_compute_host
         # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
         # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
         # interrupted completion with its partial output.
@@ -734,34 +824,41 @@ def _interrupt_session_turn(
             from tools.async_delegation import interrupt_for_session
             interrupt_for_session(
                 origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
-                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
-        if not run_thread_alive:
-            with session["history_lock"]:
-                if session.get("running"):
-                    session["running"] = False
-                    _clear_inflight_turn(session)
-    # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
-    # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
-    # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated
-    # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
-    # post-turn review is still running (the common case: the main turn already finished) would see
-    # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
-    # and in-process turns) since the review is always local to this process.
-    if (agent_for_review := session.get("agent")) is not None:
+                parent_session_id=str(getattr(interrupted_agent, "session_id", "") or ""))
+        if not still_current():
+            return use_compute_host
+        with session["history_lock"]:
+            # A dispatcher can be alive before its claim's worker starts; only the worker executes the turn.
+            run_thread = session.get("_run_thread")
+            claim_thread_alive = (
+                session.get("_run_thread_claim") == interrupted_claim and run_thread is not None
+                and run_thread.is_alive())
+            if (session.get("running") and _owns_turn_claim(session, interrupted_claim)
+                    and not claim_thread_alive):
+                session["running"] = False
+                _clear_inflight_turn(session)
+    # Background memory reviews run outside the foreground turn and need separate interruption.
+    if not still_current():
+        return use_compute_host
+    if interrupted_agent is not None:
         with contextlib.suppress(Exception):
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
-                agent_for_review, message="session interrupted", tool_reason="session interrupted")
-    _clear_pending(sid)
+                interrupted_agent, message="session interrupted", tool_reason="session interrupted")
+    if not still_current():
+        return use_compute_host
+
+    _clear_pending(sid, request_ids=pending_request_ids)
+    if not still_current():
+        return use_compute_host
     with contextlib.suppress(Exception):
-        # Deny-resolve every pending approval so no agent thread blocks on the queue. The
-        # deny is silent without the broadcast: a reconnecting client sees a bare 4001 on
-        # approval.pending and the prompt looks lost rather than cancelled (#106678).
-        # Announce BEFORE the queue is drained, or there is nothing left to name.
         reason = "ws_orphan_reap" if orphan else "interrupt"
-        _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
-        from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        _announce_cancelled_gateway_approvals(session, reason, session_id=sid, pending=pending_approvals)
+        if not still_current():
+            return use_compute_host
+        for approval in pending_approvals:
+            if request_id := approval.get("request_id"):
+                resolve_gateway_approval(interrupted_session_key, "deny", request_id=request_id)
     return use_compute_host
 
 

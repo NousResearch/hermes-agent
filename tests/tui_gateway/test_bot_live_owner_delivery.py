@@ -3,7 +3,8 @@ import threading
 from types import SimpleNamespace
 
 from tui_gateway.method_ctx import rebind
-from tui_gateway.session_lifecycle import _session_turn_admission
+from tui_gateway.session_lifecycle import (
+    _claim_session_turn, _holds_turn_claim, _owns_turn_claim, _release_session_turn, _session_turn_admission)
 from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
@@ -29,7 +30,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "threading": threading, "time": time, "logger": logging.getLogger(__name__),
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
-        "_admit_prompt_turn": lambda *args: ([], agent),
+        "_admit_prompt_turn": lambda *args, **kwargs: ([], agent),
         "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
@@ -45,11 +46,14 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_reopen_routed_session_row": noop,
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,
+        "_owns_turn_claim": _owns_turn_claim, "_release_session_turn": _release_session_turn,
+        "_holds_turn_claim": _holds_turn_claim, "_cancel_pending_prompt_turn": noop,
     })
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],
                                   error=outcome.get("error", ""))
-    assert submit(None, "live", session, "refused input", terminal_callback=terminal)
+    assert submit(None, "live", session, "refused input", terminal_callback=terminal,
+                  turn_claim=_claim_session_turn(session))
     session["_run_thread"].join(timeout=5)
     assert not session["_run_thread"].is_alive()
     assert mailbox.read_delivery_result(tmp_path, queued["id"])["status"] == "failed"
@@ -85,7 +89,7 @@ def test_local_work_blocks_mailbox_claim_without_consuming_envelope(monkeypatch,
         "_session_home": lambda session: tmp_path,
         "_session_turn_admission": _session_turn_admission,
         "_run_prompt_submit": submit,
-        "_notif_release_turn": lambda session: session.update(running=False),
+        "_claim_session_turn": _claim_session_turn, "_release_session_turn": _release_session_turn,
     })
     mailbox._root(tmp_path).mkdir(parents=True)  # a delivery was admitted for this profile
     session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
@@ -164,7 +168,7 @@ def test_mailbox_poll_delivers_past_a_schema_damaged_ticket(monkeypatch, tmp_pat
         "_session_home": lambda session: tmp_path,
         "_session_turn_admission": _session_turn_admission,
         "_run_prompt_submit": submit,
-        "_notif_release_turn": lambda session: session.update(running=False),
+        "_claim_session_turn": _claim_session_turn, "_release_session_turn": _release_session_turn,
     })
     session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
                "active_session_lease": SimpleNamespace(lease_id="lease", released=False)}

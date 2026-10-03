@@ -59,6 +59,25 @@ def catalog_source(name: str) -> Optional[str]:
     return entry.name if entry is not None else None
 
 
+def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Optional[str]:
+    """``hermes [-p <profile>] plugins install <name>`` when this checkout's catalog ships plugin
+    *name* (of *category*, when given), else None.
+
+    Recovery copy for a provider that left core and is not installed (offline, lazy installs off, a
+    failed migration): doctor, ``memory status``, ``memory setup <name>`` and the CLI's unknown-command
+    error point at the one command that fixes it. In-tree catalog only, never the network — these run
+    offline and on error paths."""
+    try:
+        from hermes_cli.plugin_catalog import get_catalog_entry
+        entry = get_catalog_entry(name) if name else None
+    except Exception:
+        return None
+    if entry is None or (category is not None and entry.category != category):
+        return None
+    from hermes_constants import get_hermes_home
+    return _install_command(name, get_hermes_home())
+
+
 def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str]:
     """The provider *home* needs from the catalog, or None (nothing to do, or a catalog miss already
     reported through *say*). Read-only."""

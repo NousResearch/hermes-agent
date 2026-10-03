@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import random
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -456,9 +455,11 @@ class SimplexAdapter(BasePlatformAdapter):
         """Send text; ``MEDIA:<path>`` tags (TTS / audio tools) are stripped and sent as native voice
         notes or documents. The text send is fire-and-forget: the daemon doesn't always return a corrId
         reply for chat commands, and waiting would serialise all outbound traffic behind a 30s timeout."""
-        media_paths = re.findall(r"MEDIA:(\S+)", content)
-        if media_paths:
-            content = re.sub(r"MEDIA:\S+", "", content).strip()
+        # The shared extractor + delivery filter, never a local regex: callers hand send() text whose
+        # refused tags (credential paths, code-fenced examples) were deliberately left in as text.
+        with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
+            media_files, content = self.extract_media(content)
+            media_paths = [path for path, _is_voice in self.filter_media_delivery_paths(media_files)]
         if content:
             cmd_str = _send_cmd(chat_id, [{"msgContent": {"type": "text", "text": content}}])
             await self._send_ws({"corrId": self._make_corr_id(), "cmd": cmd_str})

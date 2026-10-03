@@ -1443,6 +1443,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print(f"  Finish it or run `git {git_operation} --abort`, then re-run `hermes update`.")
         sys.exit(1)
 
+    from hermes_cli.update_cmd_common import foreign_install_shadow_warning
+
+    _shadow_warning = foreign_install_shadow_warning()
+    if _shadow_warning:
+        print(_shadow_warning)
+        print()
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

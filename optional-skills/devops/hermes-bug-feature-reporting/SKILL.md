@@ -1,6 +1,6 @@
 ---
 name: hermes-bug-feature-reporting
-description: "Hermes bug & feature reporting: Discord triage, then a verified GitHub issue. Enforces a pre-report gate (real evidence, no duplicates, no non-Hermes noise)."
+description: "Hermes bug/feature reporting: Discord triage, GitHub gate"
 version: 1.0.0
 author: Schrauberhirn (NousResearch Discord), Hermes Agent
 license: MIT
@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Bug-Reporting, GitHub, Discord, Triage, Hermes, Verification-Gate]
-    related_skills: [hermes-agent]
+    related_skills: [obsidian]
 ---
 
 # Hermes Bug & Feature Reporting
@@ -110,7 +110,7 @@ Before opening a new issue, check it is not already filed.
 2. Preferred: `gh` CLI if authenticated (`gh search issues --repo NousResearch/hermes-agent "<kw>" --state open --limit 25`, `gh issue view <n>`, `gh pr view <n>` for merge status). Path on Windows: `C:\Program Files\GitHub CLI\gh.exe` (not on MSYS PATH).
    - **If the user blocks inline `powershell.exe -Command '... gh ...'` wrappers**, do NOT retry or rephrase — fall back to web_search/web_extract and state "gh check skipped (command blocked)".
    - Note: `gh search issues --state` only accepts `open` or `closed`, never `all` — run both states to cover everything.
-3. `web_extract` on the specific issue URL once found — confirm state (open/closed), linked PRs, and whether a fix was MERGED (`gh pr view <n> --json merged` or the issue's "Development"/PR section).
+3. `web_extract` on the specific issue URL once found — confirm state (open/closed), linked PRs, and whether a fix was MERGED (`gh pr view <n> --json mergedAt` or the issue's "Development"/PR section).
 
 **Interpreting results:**
 - Duplicate Hermes issue found → do NOT open new; report existing URL + (optionally) add new repro as comment.
@@ -130,7 +130,7 @@ Before opening a new issue, check it is not already filed.
 - If the report matures into a PR: branch `fix/<desc>` / `feat/<desc>`, Conventional Commits (`fix(scope): ...`), PR description = What/Why + How-to-test + platforms tested + related issue.
 
 ### Step V3 — Discord verification (only if Discord access available this session)
-Discord access exists when the Hermes gateway is bound (skill `lab/discord-hermes-lab`; ALLOWED_USERS in your profile's `.env`). When available:
+Discord access exists when the Hermes gateway is bound (discord toolset; ALLOWED_USERS in your profile's `.env`). When available:
 - For errors of UNCERTAIN cause → post a triage thread FIRST (Channel: https://discord.com/channels/1053877538025386074/1485307775444844625), attach `hermes debug share` output, and wait for staff/user confirmation that it is a real bug before promoting to GitHub.
 - For confirmed bugs / features → Discord is optional; GitHub is the official record.
 If Discord access is NOT available this session: skip V3, note "Discord triage skipped — gateway not reachable in this session", and go straight to GitHub with full self-evidence.

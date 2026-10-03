@@ -1018,7 +1018,10 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
         return args, None, run_env
     # The probe verdict is cached; a user bus lost since then would make systemd-run fail
     # before the command runs (cron's ``scoped_spawn_lost_user_bus`` race). Run it unwrapped.
-    bus_env = _pr.systemd_user_bus_env(run_env)
+    # Re-derive without an inherited address, or that stale value would pass for a live bus.
+    probe_env = dict(run_env)
+    probe_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    bus_env = _pr.systemd_user_bus_env(probe_env)
     if "DBUS_SESSION_BUS_ADDRESS" not in bus_env:
         _warn_foreground_scope_degraded("user D-Bus session is gone")
         return args, None, run_env

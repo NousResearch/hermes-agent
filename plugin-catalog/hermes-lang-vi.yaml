@@ -1,20 +1,21 @@
 name: hermes-lang-vi
 repo: https://github.com/moken627-hub/hermes-lang-vi
-sha: 43501c0c38a6a4b36307091ff6bc2d4757a5940b
+sha: 79bbcf3646b54976af72ea2e2c46b8af9d9d209f
 description: >-
   Vietnamese (Tieng Viet) language pack for Hermes Agent — full UI translation across every
   surface: core (approval prompts, gateway/slash replies, CLI, tips), TUI, and Desktop catalogs.
-  9,600 keys validated 100% against the English catalogs (hermes plugins validate exit 0).
+  9,598 keys validated 100% against the English catalogs (hermes plugins validate exit 0).
   Parser-safe: hard-parsed menu brackets and [Y/n] prompts stay verbatim; placeholders, URLs and
-  CLI flags preserved. Manifest-only plugin, no code execution, no network. Ban dich tieng Viet
-  day du cho toan bo giao dien Hermes Agent. Disclosure — text-only catalogs; registering the
-  pack never changes display.language, the user opts in via config.
+  CLI flags preserved; multi-line values use real newlines exactly like the English catalogs.
+  Manifest-only plugin, no code execution, no network. Ban dich tieng Viet day du cho toan bo
+  giao dien Hermes Agent. Disclosure — text-only catalogs; registering the pack never changes
+  display.language, the user opts in via config.
 maintainer: moken627-hub
 tier: community
 category: general
 requires_hermes: '>=0.22'
 docs_url: https://github.com/moken627-hub/hermes-lang-vi#readme
-version: "1.1.0"
+version: "1.1.1"
 platforms: []
 capabilities:
   provides_tools: []

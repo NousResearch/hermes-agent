@@ -19,7 +19,9 @@ from tools import browser_tool_cdp as _cdp
 
 
 def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object]):
-    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored.
+    """Process-lifetime cache on ``_bt``: the value is stored BEFORE the resolved flag flips so a
+    concurrent reader never sees ``resolved=True`` with an unfilled slot, and a ``compute()`` raise
+    leaves the slot unresolved so the next call retries (#14331).
 
     Under a routed profile (HERMES_HOME override, multiplexed gateway) the slot is NOT consulted: every
     ``_memo`` here caches a ``browser.*`` config read, and one process-wide slot would hand the launch
@@ -28,8 +30,8 @@ def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object
     if get_hermes_home_override() is not None:
         return compute()
     if not getattr(_bt, resolved_attr):
-        setattr(_bt, resolved_attr, True)
         setattr(_bt, cache_attr, compute())
+        setattr(_bt, resolved_attr, True)
     return getattr(_bt, cache_attr)
 
 

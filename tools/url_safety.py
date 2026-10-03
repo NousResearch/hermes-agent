@@ -218,7 +218,10 @@ def _global_fake_ip_ranges() -> tuple:
     if get_hermes_home_override() is not None:
         return _resolve_fake_ip_ranges()
     if not _fake_ip_resolved:
-        _fake_ip_resolved, _cached_fake_ip_ranges = True, _resolve_fake_ip_ranges()
+        # Store the value BEFORE the resolved flag so a concurrent reader never sees
+        # resolved=True with an unfilled cache (same invariant as tools/browser_tool._cached_browser_cfg).
+        _cached_fake_ip_ranges = _resolve_fake_ip_ranges()
+        _fake_ip_resolved = True
     return _cached_fake_ip_ranges
 
 

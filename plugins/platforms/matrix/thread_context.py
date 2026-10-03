@@ -1,0 +1,238 @@
+"""Read earlier Matrix thread messages at an event boundary."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any, Collection
+from urllib.parse import quote
+
+from plugins.platforms.matrix.client_events import Method
+from plugins.platforms.matrix.effective_event import effective_event, event_content
+from plugins.platforms.matrix.reply_context import (
+    MatrixEventContext,
+    MatrixEventContextCache,
+    _label_body,
+    _own_text,
+)
+from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
+
+
+logger = logging.getLogger(__name__)
+
+# Receives an earlier event's sender and original content. It returns True when the event
+# belongs to a previous turn, and catch-up stops at that event.
+PreviousTurnCheck = Callable[[str, dict], bool]
+
+NON_CONVERSATIONAL_KEY = "com.nousresearch.hermes.non_conversational"
+
+
+def ends_scan(
+    is_previous_turn: PreviousTurnCheck | None, entry: MatrixEventContext, content: dict,
+) -> bool:
+    # Redaction strips NON_CONVERSATIONAL_KEY, so a redacted bot event may have been a
+    # status notice. Only an event with its content can mark the previous turn.
+    return is_previous_turn is not None and not entry.redacted and is_previous_turn(entry.sender, content)
+
+
+async def history_entry(
+    client: Any, raw: dict, cache: MatrixEventContextCache, room_id: str,
+    *, before: MatrixEventContext | None,
+) -> tuple[MatrixEventContext, dict] | None:
+    if raw.get("room_id", room_id) != room_id:
+        return None
+    event_id = raw.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        return None
+    unsigned = raw.get("unsigned")
+    if isinstance(raw.get("event_id"), str) and isinstance(unsigned, dict) and unsigned.get("redacted_because"):
+        cache.store(room_id, raw["event_id"], MatrixEventContext(
+            str(raw.get("sender") or ""), "[redacted]", redacted=True,
+        ))
+    if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
+        return None
+    if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
+        return None
+    retained = cache.retain(room_id, event_id)
+    if before is None and not retained.text and not retained.redacted and not retained.state_error:
+        before = retained
+    state = await effective_event(client, raw, cache=cache, room_id=room_id)
+    if state.plain_original_content.get(NON_CONVERSATIONAL_KEY) is True:
+        cache.store(room_id, event_id, MatrixEventContext(str(raw.get("sender") or ""), ""))
+        return None
+    content = state.content
+    if content is None:
+        entry = MatrixEventContext(
+            str(raw.get("sender") or ""), "[encrypted message could not be decrypted]",
+            state_error=state.error["error"] if state.error else None,
+        )
+        stored = cache.store_resolved(room_id, event_id, entry, before)
+        return (stored, state.plain_original_content) if stored is not None else None
+    if state.redacted:
+        entry = MatrixEventContext(
+            str(raw.get("sender") or ""), "[redacted]", redacted=True,
+        )
+        stored = cache.store_resolved(room_id, event_id, entry, before)
+        return (stored, state.plain_original_content) if stored is not None else None
+    body = content.get("body")
+    if not isinstance(body, str):
+        return None
+    body = body.strip()
+    text = _label_body(str(content.get("msgtype") or ""), _own_text(body, content))
+    if not text:
+        return None
+    sender = str(raw.get("sender") or "")
+    entry = MatrixEventContext(
+        sender, text, is_image=content.get("msgtype") == "m.image",
+        media_content=MatrixEventContext.image_content(content),
+        state_error=state.error["error"] if state.error else None,
+        replacement_id=state.replacement_id,
+    )
+    stored = cache.store_resolved(room_id, event_id, entry, before)
+    return (stored, state.plain_original_content) if stored is not None else None
+
+
+async def _thread_root(
+    client: Any, cache: MatrixEventContextCache, room_id: str, thread_id: str,
+    before: MatrixEventContext | None, is_previous_turn: PreviousTurnCheck | None,
+) -> MatrixEventContext | None:
+    root_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(thread_id, safe='')}"
+    try:
+        raw_root = await asyncio.wait_for(client.api.request(Method.GET, root_path), timeout=10.0)
+    except Exception as exc:
+        logger.debug("Matrix: could not fetch thread root %s in %s: %s", thread_id, room_id, exc)
+        return cache.history_entry(room_id, thread_id) if is_previous_turn is None else None
+    if (not isinstance(raw_root, dict) or raw_root.get("event_id") != thread_id
+            or raw_root.get("room_id", room_id) != room_id):
+        return cache.history_entry(room_id, thread_id) if is_previous_turn is None else None
+    parsed = await history_entry(client, raw_root, cache, room_id, before=before)
+    if parsed is None:
+        return None
+    root, content = parsed
+    if ends_scan(is_previous_turn, root, content):
+        return None
+    return root
+
+
+async def fetch_thread_entries(
+    client: Any,
+    cache: MatrixEventContextCache,
+    room_id: str,
+    thread_id: str,
+    *,
+    limit: int,
+    before_event_id: str | None = None,
+    exclude_event_ids: Collection[str] = (),
+    is_previous_turn: PreviousTurnCheck | None = None,
+) -> list[MatrixEventContext]:
+    if client is None or limit <= 0 or not thread_id or not before_event_id:
+        return []
+
+    cached = cache.snapshot(room_id)
+    cached.setdefault(thread_id, cache.retain(room_id, thread_id))
+    retained: dict[str, MatrixEventContext] = {}
+
+    context_path = (
+        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
+        f"/context/{quote(before_event_id, safe='')}"
+    )
+    path = (
+        f"/_matrix/client/v1/rooms/{quote(room_id, safe='')}"
+        f"/relations/{quote(thread_id, safe='')}/m.thread"
+    )
+    messages_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages"
+    response: dict | None = None
+    event_key = "events_before"
+    try:
+        boundary = await asyncio.wait_for(
+            client.api.request(Method.GET, context_path, query_params={"limit": "0"}), timeout=10.0,
+        )
+        token = boundary.get("start") if isinstance(boundary, dict) else None
+        if isinstance(token, str) and token:
+            room_page = await asyncio.wait_for(
+                client.api.request(
+                    Method.GET, messages_path,
+                    query_params={"from": token, "dir": "b", "limit": str(limit)},
+                ),
+                timeout=10.0,
+            )
+            response = room_page if isinstance(room_page, dict) else None
+            event_key = "chunk"
+            if response is not None and isinstance(response.get("chunk"), list):
+                retained.update(cache.retain_events(room_id, [raw for raw in response["chunk"][:limit] if isinstance(raw, dict)]))
+            relation_token = room_page.get("start") if isinstance(room_page, dict) else None
+            try:
+                if isinstance(relation_token, str) and relation_token:
+                    relations_page = await asyncio.wait_for(
+                        client.api.request(
+                            Method.GET, path,
+                            query_params={"dir": "b", "limit": str(limit), "from": relation_token},
+                        ),
+                        timeout=10.0,
+                    )
+                    if isinstance(relations_page, dict) and isinstance(relations_page.get("chunk"), list):
+                        response = relations_page
+            except Exception as exc:
+                logger.debug("Matrix: thread cursor rejected for %s in %s: %s", thread_id, room_id, exc)
+        if response is None:
+            response = await asyncio.wait_for(
+                client.api.request(Method.GET, context_path, query_params={"limit": str(limit * 2)}),
+                timeout=10.0,
+            )
+            event_key = "events_before"
+    except Exception as exc:
+        logger.debug("Matrix: could not fetch thread %s in %s: %s", thread_id, room_id, exc)
+        return []
+
+    chunk = response.get(event_key) if isinstance(response, dict) else None
+    if not isinstance(chunk, list):
+        chunk = []
+    retained.update(cache.retain_events(room_id, [raw for raw in chunk[:limit] if isinstance(raw, dict)]))
+    newest_first: list[tuple[str, MatrixEventContext]] = []
+    reached_previous_turn = False
+    for raw in chunk[:limit]:
+        if not isinstance(raw, dict):
+            continue
+        event_id = raw.get("event_id")
+        if not isinstance(event_id, str) or event_id == before_event_id or event_id in exclude_event_ids:
+            continue
+        if raw.get("room_id", room_id) != room_id:
+            continue
+        before = cached.get(event_id)
+        parsed = await history_entry(client, raw, cache, room_id, before=before)
+        if parsed is None:
+            continue
+        entry, content = parsed
+        # Redaction removes a child's relation, so a room page cannot identify
+        # its thread from the redacted event alone.
+        if MatrixRelation.from_content(content.get("m.relates_to")).thread_root != thread_id:
+            continue
+        if ends_scan(is_previous_turn, entry, content):
+            reached_previous_turn = True
+            break
+        newest_first.append((event_id, entry))
+
+    kept: list[tuple[str, MatrixEventContext]] = []
+    if not reached_previous_turn and thread_id not in exclude_event_ids:
+        root = await _thread_root(client, cache, room_id, thread_id, cached.get(thread_id), is_previous_turn)
+        if root is not None and (root.redacted or root.text or root.state_error):
+            kept.append((thread_id, root))
+    kept.extend(reversed(newest_first))
+    reaction_ids = [event_id for event_id, entry in kept if not entry.redacted]
+    snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids, cache=cache)
+    by_id = dict(zip(reaction_ids, snapshots))
+    kept = [
+        (event_id, cache.recheck(room_id, cache.history_entry(room_id, event_id) or entry))
+        for event_id, entry in kept
+    ]
+    return [
+        cache.recheck(room_id, replace(entry, reactions=by_id[event_id].reactions, reactions_truncated=by_id[event_id].truncated,
+                reactions_undecryptable=bool(by_id[event_id].undecryptable),
+                reactions_unavailable=bool(by_id[event_id].error)))
+        if event_id in by_id and not entry.redacted else entry
+        for event_id, entry in kept
+    ]

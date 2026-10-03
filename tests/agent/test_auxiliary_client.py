@@ -2272,6 +2272,16 @@ class TestTransientTransportRetry:
         assert result == {"retried": True}
         assert primary.chat.completions.create.call_count == 2
 
+    def test_goal_judge_skips_same_provider_retry_on_timeout(self):
+        """Goal handoff judging fails open instead of multiplying its timeout budget."""
+        from agent.auxiliary_client import _should_skip_same_provider_retry
+
+        class _Timeout(Exception):
+            pass
+
+        _Timeout.__name__ = "APITimeoutError"
+        assert _should_skip_same_provider_retry("goal_judge", _Timeout("Request timed out."))
+
     def test_non_critical_task_still_retries_same_provider_on_timeout(self):
         """The skip is scoped to critical-path tasks. Everything else keeps the
         existing one-shot same-provider retry, so this is not a blanket change.

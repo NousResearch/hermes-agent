@@ -3560,7 +3560,7 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
 # compression case. Title generation joins them because its retries multiplied the user's
 # ``auxiliary.title_generation.timeout`` (~4x: three full windows plus backoff) on a slow local
 # model, and the auto-title thread outlived the deadline the user thought they had set (#89445, #66251).
-_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})
+_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation", "goal_judge"})
 
 
 def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:

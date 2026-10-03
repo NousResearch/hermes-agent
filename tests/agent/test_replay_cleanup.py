@@ -8,6 +8,7 @@ because the dangling tool-call tail was replayed on every resume).
 
 from agent.replay_cleanup import (
     strip_dangling_tool_call_tail,
+    strip_interrupted_tool_tails,
     sanitize_replay_history,
 )
 
@@ -215,3 +216,102 @@ def test_untrustworthy_confirmation_stamp_fails_closed():
         out = canonicalize_replay_history(row, now=10_000.0)
         assert "EXPIRED" in out[0]["content"] and "api_content" not in out[0], untrusted
     assert canonicalize_replay_history([{"role": "user", "content": "confirm reboot"}], now=1e9)[0]["content"] == "confirm reboot"
+
+
+def _assistant_multi_tc(*names):
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": f"c{k}",
+                "type": "function",
+                "function": {"name": n, "arguments": "{}"},
+            }
+            for k, n in enumerate(names, 1)
+        ],
+    }
+
+
+def _tool_at(call_id, content):
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+
+def _interrupted_read_only_block():
+    """A read-only block whose SECOND call was interrupted — the FIRST result (the
+    successful full skill_view body) is dropped with the block (#132177)."""
+    return [
+        _user("run the demo"),
+        _assistant_multi_tc("skill_view", "read_file"),
+        _tool_at("c1", '{"success": true, "content": "# Demo full body"}'),
+        _tool_at("c2", "[Command interrupted]"),
+    ]
+
+
+def test_dropped_read_only_block_invalidates_skill_view_dedup(tmp_path):
+    """#132177: a successful skill_view body dropped with its interrupted read-only
+    sibling must not keep answering 'unchanged' stubs pointing at the dropped row."""
+    from tools.skills_tool_dedup import (
+        _check_skill_view_dedup,
+        _record_skill_view,
+        reset_skill_view_dedup,
+    )
+
+    reset_skill_view_dedup()
+    src = tmp_path / "SKILL.md"
+    src.write_text("# Demo\n\nfull body\n", encoding="utf-8")
+    _record_skill_view(
+        "t-132177", "demo-skill", None, {"_source_path": str(src), "name": "demo-skill"}
+    )
+    assert (
+        _check_skill_view_dedup("t-132177", "demo-skill", None) is not None
+    )  # pre: stub served
+
+    out = strip_interrupted_tool_tails(_interrupted_read_only_block())
+    assert out == [_user("run the demo")]  # whole read-only block dropped
+    assert (
+        _check_skill_view_dedup("t-132177", "demo-skill", None) is None
+    )  # full content again
+
+
+def test_dropped_read_only_block_advances_file_read_dedup_generation():
+    """Same replay loss advances the read_file dedup generation: the first unchanged
+    read after the drop returns full content the replay no longer carries."""
+    from tools.file_tools_read_tracking import _read_tracker
+
+    _read_tracker["t-132177-file"] = {
+        "dedup_generation_reads": {("fingerprint", "key")}
+    }
+
+    out = strip_interrupted_tool_tails(_interrupted_read_only_block())
+    assert out == [_user("run the demo")]
+    assert _read_tracker["t-132177-file"]["dedup_generation_reads"] == set()
+    del _read_tracker["t-132177-file"]
+
+
+def test_clean_replay_keeps_skill_view_dedup(tmp_path):
+    """No interrupted rows → no replay loss → the repeat-view stub keeps serving."""
+    from tools.skills_tool_dedup import (
+        _check_skill_view_dedup,
+        _record_skill_view,
+        reset_skill_view_dedup,
+    )
+
+    reset_skill_view_dedup()
+    src = tmp_path / "SKILL.md"
+    src.write_text("# Demo\n\nfull body\n", encoding="utf-8")
+    _record_skill_view(
+        "t-132177-clean",
+        "demo-skill",
+        None,
+        {"_source_path": str(src), "name": "demo-skill"},
+    )
+
+    history = [
+        _user("hi"),
+        _assistant_multi_tc("skill_view"),
+        _tool_at("c1", "full body"),
+    ]
+    out = strip_interrupted_tool_tails(history)
+    assert out == history
+    assert _check_skill_view_dedup("t-132177-clean", "demo-skill", None) is not None

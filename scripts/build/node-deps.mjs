@@ -64,20 +64,45 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
 // cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
 // debug log names the code while stdio stays on the terminal, so give each run
 // its own logs dir and retry once only on that code. Other failures keep the tree.
+// When the RETRY also fails, the log names the same ENOTEMPTY class: the tree is
+// corrupt beyond npm's own recovery, and a bare exit-1 strands the user (#57408) —
+// print the manual recovery (delete node_modules, re-run the same command).
 function runNpmCi(node, npm, args, { source, env }) {
   const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
   // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
   // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
   const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
     { cwd: source, env, stdio: 'inherit' })
+  const loggedEnotempty = () =>
+    readdirSync(logsDir).some(name => readFileSync(join(logsDir, name), 'utf8').includes('ENOTEMPTY'))
+  const modulesDir = join(source, 'node_modules')
   try {
-    run()
-  } catch (error) {
-    const logged = readdirSync(logsDir).some(name => readFileSync(join(logsDir, name), 'utf8').includes('ENOTEMPTY'))
-    if (!logged) throw error
-    console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
-    rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
-    run()
+    try {
+      run()
+    } catch (error) {
+      if (!loggedEnotempty()) throw error
+      console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
+      rmSync(modulesDir, { recursive: true, force: true, maxRetries: 3 })
+      try {
+        run()
+      } catch (retryError) {
+        if (!loggedEnotempty()) throw retryError
+        // The retry failed the same way: the tree holds a holder npm's rmdir cannot
+        // clear (a locked nested entry, an AV-scanned .bin). Nothing automatic is
+        // left — name the exact directory and the rerun command (#57408).
+        console.error(
+          `node-deps: npm ci still hits ENOTEMPTY after removing and reinstalling node_modules.\n` +
+          `  A process or scanner is likely holding an entry under the tree. Close Hermes/the\n` +
+          `  desktop app and any antivirus scan of this directory, then recover manually:\n` +
+          `\n` +
+          `    rm -rf ${JSON.stringify(modulesDir)}\n` +
+          `    (on Windows: Remove-Item -Recurse -Force ${JSON.stringify(modulesDir)})\n` +
+          `\n` +
+          `  then re-run the same command.`
+        )
+        throw retryError
+      }
+    }
   } finally {
     rmSync(logsDir, { recursive: true, force: true })
   }

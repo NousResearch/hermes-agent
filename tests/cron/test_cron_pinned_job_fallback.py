@@ -11,6 +11,9 @@ children via ``hermes_cli.fallback_config.scoped_fallback_chain``):
 Unpinned jobs (which store no provider/model since jobs follow the main model) keep inheriting
 the chain at both points. Drives the real ``run_job`` with AIAgent and
 ``resolve_runtime_provider`` mocked.
+
+A job may declare its own ``fallback_providers`` (``[]`` disables): a declared chain is used
+whether or not the job is pinned, so a pinned job can opt into a backup it chose itself.
 """
 
 from unittest.mock import MagicMock, patch
@@ -176,3 +179,95 @@ def test_pinned_job_failure_notice_does_not_promise_a_backup(monkeypatch):
     assert "pinned" in phrase and "--unpin" in phrase
     assert "succeeded" not in phrase
     assert scheduler._fallback_chain_phrase(_job()) == "No backup provider succeeded either."
+
+
+# --- per-job fallback_providers -------------------------------------------------------------
+
+_OWN = [{"provider": "anthropic", "model": "claude-haiku-5"}]
+_PIN = {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+
+
+@pytest.mark.parametrize("pin,declared,expected", [
+    pytest.param(_PIN, _OWN, _OWN, id="pinned+declared->own"),
+    pytest.param(_PIN, [], None, id="pinned+empty->none"),
+    pytest.param(_PIN, None, None, id="pinned+absent->none"),
+    pytest.param({}, None, _CHAIN, id="unpinned+absent->global"),
+    pytest.param({}, _OWN, _OWN, id="unpinned+declared->own"),
+    pytest.param({}, [], None, id="unpinned+empty->none"),
+])
+def test_job_fallback_chain_honours_a_declared_chain(pin, declared, expected):
+    job = _job(**pin)
+    if declared is not None:
+        job["fallback_providers"] = declared
+    assert scheduler._job_fallback_chain(job, {"fallback_providers": list(_CHAIN)}) == expected
+
+
+def test_pinned_job_with_declared_chain_walks_it_at_resolve_time_and_mid_run(tmp_path):
+    job = {**_job(**_PIN), "fallback_providers": [{"provider": "openrouter", "model": "z-ai/glm-5.2"}]}
+    success, error, requested, agent_kwargs = _run(
+        tmp_path, job, primary_error=AuthError("No Codex credentials stored"))
+    assert (success, error) == (True, None)
+    assert requested[-1] == "openrouter"
+    assert (agent_kwargs["provider"], agent_kwargs["model"]) == ("openrouter", "z-ai/glm-5.2")
+
+    success, error, _requested, agent_kwargs = _run(tmp_path, job)
+    assert (success, error) == (True, None)
+    assert agent_kwargs["fallback_model"] == _CHAIN
+
+
+def test_failure_notice_describes_a_declared_or_disabled_chain(monkeypatch):
+    monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": list(_CHAIN)})
+    own = scheduler._fallback_chain_phrase({**_job(**_PIN), "fallback_providers": _OWN})
+    assert "own `fallback_providers` chain" in own and "pinned" not in own
+    off = scheduler._fallback_chain_phrase({**_job(), "fallback_providers": []})
+    assert "disabled" in off and "--clear-fallback" in off
+
+
+@pytest.fixture()
+def tmp_cron_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    return tmp_path / "cron"
+
+
+def test_fallback_providers_persists_through_create_update_and_clear(tmp_cron_dir):
+    from cron.jobs import create_job, load_jobs, update_job
+
+    job = create_job(prompt="hi", schedule="every 1h", **_PIN, fallback_providers=_OWN)
+    assert load_jobs()[0]["fallback_providers"] == _OWN
+    assert "fallback_providers" not in create_job(prompt="hi", schedule="every 1h")
+
+    update_job(job["id"], {"fallback_providers": []})
+    assert load_jobs()[0]["fallback_providers"] == []
+    update_job(job["id"], {"fallback_providers": ""})  # clear -> key removed, not stored as null
+    assert "fallback_providers" not in load_jobs()[0]
+
+    with pytest.raises(ValueError, match="no usable entry"):
+        update_job(job["id"], {"fallback_providers": [{"provider": "openrouter"}]})
+    assert "fallback_providers" not in load_jobs()[0]
+
+
+def test_cron_edit_flags_reach_the_store(tmp_cron_dir):
+    import argparse
+
+    from cron.jobs import create_job, load_jobs
+    from hermes_cli.cron import cron_edit
+    from hermes_cli.subcommands.cron import build_cron_parser
+
+    parser = argparse.ArgumentParser()
+    build_cron_parser(parser.add_subparsers(dest="command"), cmd_cron=lambda _a: 0)
+    job = create_job(prompt="hi", schedule="every 1h", **_PIN)
+
+    def edit(*flags):
+        assert cron_edit(parser.parse_args(["cron", "edit", job["id"], *flags])) == 0
+        return load_jobs()[0]
+
+    stored = edit("--fallback", "openrouter:z-ai/glm-5.2", "--fallback", "anthropic:claude-haiku-5")
+    assert stored["fallback_providers"] == [
+        {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+        {"provider": "anthropic", "model": "claude-haiku-5"}]
+    assert edit("--no-fallback")["fallback_providers"] == []
+    assert "fallback_providers" not in edit("--clear-fallback")
+    with pytest.raises(SystemExit):
+        parser.parse_args(["cron", "edit", job["id"], "--fallback", "openrouter"])

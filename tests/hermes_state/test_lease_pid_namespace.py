@@ -51,6 +51,12 @@ def test_turn_lease_of_sibling_namespace_is_not_stolen(tmp_path) -> None:
     time.sleep(0.4)
     assert db.try_acquire_session_turn_lease("shared", contender, ttl_seconds=300) is True
 
+    # Unstamped (pre-upgrade) TTL holder: STRICT — never probed, defers to TTL.
+    db.create_session("legacy", source="test")
+    legacy = f"pid={_dead_pid()}:turn=old:platform=x"
+    assert db.try_acquire_session_turn_lease("legacy", legacy, ttl_seconds=300) is True
+    assert db.try_acquire_session_turn_lease("legacy", contender, ttl_seconds=300) is False
+
 
 def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch) -> None:
     dead = _dead_pid()

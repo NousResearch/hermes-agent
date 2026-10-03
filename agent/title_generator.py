@@ -47,7 +47,6 @@ RuntimeValidator = Callable[[], bool]
 # Text budget handed to the model (Claude Code / OpenClaw converged on 1000).
 MAX_TITLE_INPUT_CHARS = 1000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
-_ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
 # Footers the @-reference expander appends below the typed text (agent/context_references.py).
 _CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) ---\n.*", re.DOTALL)
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
@@ -320,8 +319,10 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
     # warnings/attached-context footer along; the preview already carries the topic, so drop it.
     message = _CONTEXT_FOOTER_RE.sub("", message).strip()
     # A paste-only opener is just the generated `@file:` ref: the preview IS the topic, so it
-    # leads (derive_title takes the first line, and a file path is not a title).
-    if not _ATTACHMENT_REF_RE.sub("", message).strip():
+    # leads (derive_title takes the first line, and a file path is not a title). Ask the one
+    # canonical-shaped matcher: a second, `\S+`-only local copy stopped at the first space of a
+    # backtick-quoted path, so the residual fragment read as prose (#92068).
+    if _attachment_only_opener(message):
         return preview[:MAX_TITLE_INPUT_CHARS]
     message_budget = min(len(message), MAX_TITLE_INPUT_CHARS // 2)
     preview_budget = MAX_TITLE_INPUT_CHARS - message_budget - len(_PASTE_PREVIEW_LABEL)

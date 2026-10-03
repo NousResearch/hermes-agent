@@ -679,7 +679,16 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
-    if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
+    # Reuse only a linked worktree rooted AT target. A plain directory inside
+    # the main checkout shares the common dir too, but it runs on the main
+    # checkout's branch, so it must go through ``git worktree add``.
+    if (
+        target.exists()
+        and repo_common is not None
+        and _path_key(_git_common_dir(target)) == _path_key(repo_common)
+        and _is_linked_worktree_checkout(target)
+        and _path_key(_git_toplevel(target)) == _path_key(target.resolve(strict=False))
+    ):
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):

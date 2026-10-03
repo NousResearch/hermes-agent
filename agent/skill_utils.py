@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sys
+from contextlib import suppress
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -659,6 +660,43 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter (absent = ``[]``)."""
     hermes = _hermes_metadata(frontmatter)
     return {key: hermes.get(key, []) for key in _CONDITION_KEYS}
+
+
+def _ambient_skill_session_info() -> Dict[str, str]:
+    """Session facts a ``filter_skill_visible`` callback may gate on, resolved without an
+    agent object (listing paths build before/independently of one). Same fields and
+    resolution order as ``agent.system_prompt._plugin_session_info`` where ambient
+    sources exist; agent-backed fields (session_id/model/provider) stay empty."""
+    info: Dict[str, str] = {"session_id": "", "model": "", "provider": "", "platform": "",
+                            "profile_name": "", "cwd": ""}
+    with suppress(Exception):
+        from gateway.session_context import get_session_env
+        info["platform"] = (os.getenv("HERMES_PLATFORM") or os.getenv("HERMES_SESSION_PLATFORM")
+                            or get_session_env("HERMES_SESSION_PLATFORM") or "")
+    with suppress(Exception):
+        from hermes_cli.profiles import get_active_profile_name
+        info["profile_name"] = str(get_active_profile_name() or "default")
+    with suppress(Exception):
+        from agent.runtime_cwd import resolve_context_cwd
+        info["cwd"] = str(resolve_context_cwd() or os.getcwd())
+    return info
+
+
+def plugin_filter_hides_skill(skill_name: str, frontmatter: Optional[Dict[str, Any]]) -> bool:
+    """True when a ``filter_skill_visible`` plugin callback hides this skill from the model.
+
+    Called only AFTER the stock gates (disabled/platform/apps/conditions) so a plugin can
+    add hiding but never un-hide. ``None``/``True`` (or no callback, or any error/timeout —
+    the hook is bounded and fail-open) keeps the skill visible. One call per skill row."""
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+        if not has_hook("filter_skill_visible"):
+            return False
+        results = invoke_hook("filter_skill_visible", skill_name=skill_name,
+                              frontmatter=frontmatter or {}, session_info=_ambient_skill_session_info())
+        return any(r is False for r in results)
+    except Exception:
+        return False
 
 
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:

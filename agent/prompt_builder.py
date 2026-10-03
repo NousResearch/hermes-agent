@@ -1206,8 +1206,9 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v2 added org provenance fields (org_id/org_author); v3 compact_categories; v4 persists the
+# full parsed frontmatter per entry (filter_skill_visible gating); older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1290,6 +1291,9 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
+        # Full parsed frontmatter: ``filter_skill_visible`` plugins gate on arbitrary keys
+        # (surface tags, runtime modes), which the whitelisted fields above don't carry.
+        "frontmatter": {str(k): v for k, v in frontmatter.items()},
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1415,7 +1419,8 @@ def _collect_extra_skills(
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             entry = _build_snapshot_entry(skill_file, root, frontmatter, desc) if is_compatible else None
             fm_name = entry["frontmatter_name"] if entry else ""
-            if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
+            if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"],
+                                                       extract_skill_conditions(frontmatter), frontmatter):
                 continue
             claimed.add(fm_name)
             skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
@@ -1505,6 +1510,16 @@ def _oneshot_prompt_variant() -> bool:
     return is_single_query_session()
 
 
+def _filter_skill_visible_token() -> bool:
+    """Cache-key part: whether any ``filter_skill_visible`` callback is registered — a plugin
+    load changes what the index should contain without touching any SKILL.md mtime."""
+    try:
+        from hermes_cli.plugins import has_hook
+        return has_hook("filter_skill_visible")
+    except Exception:
+        return False
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
@@ -1514,12 +1529,13 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    filter_gated = _filter_skill_visible_token()
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(),
+        _oneshot_prompt_variant(), filter_gated,
     )
     snapshot = _load_skills_snapshot(skills_dir)
     app_gated = snapshot is not None and any(
@@ -1527,14 +1543,18 @@ def _build_skills_system_prompt_inner(
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None and not app_gated:
+        # Callbacks may change while the presence token stays True; reapply them per build.
+        if cached is not None and not app_gated and not filter_gated:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
-    def hides(frontmatter_name: str, skill_name: str, conditions: dict) -> bool:
+    def hides(frontmatter_name: str, skill_name: str, conditions: dict, frontmatter: dict | None = None) -> bool:
         """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
-        return (frontmatter_name in disabled or skill_name in disabled
-                or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
+        if (frontmatter_name in disabled or skill_name in disabled
+                or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None)):
+            return True
+        from agent.skill_utils import plugin_filter_hides_skill
+        return plugin_filter_hides_skill(frontmatter_name, frontmatter)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -1552,7 +1572,8 @@ def _build_skills_system_prompt_inner(
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
     visible_entries: list[dict] = [
         entry for entry, is_compatible in candidates
-        if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
+        if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "",
+                                       entry.get("conditions") or {}, entry.get("frontmatter"))
     ]
 
     # Project-local skills (highest precedence) shadow same-named profile-local skills; tagged [project].

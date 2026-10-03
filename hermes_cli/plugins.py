@@ -156,6 +156,14 @@ VALID_HOOKS: Set[str] = {
     # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
     # model (registration order, last-writer-wins; file_path is read-only).
     "pre_transcription",
+    # filter_skill_visible: consulted once per visible skill row by the model-facing skill
+    # listings (agent/prompt_builder.py skills index, tools/skills_tool.py _find_all_skills and
+    # the skills_list plugin-skill loop). Kwargs: skill_name, frontmatter (parsed SKILL.md
+    # frontmatter; snapshot entries persist it), session_info (the _plugin_session_info dict:
+    # session_id/model/provider/platform/profile_name/cwd). Return False to hide the skill from
+    # the model; None/True = no opinion. Stock gates (disabled, platform, conditions) still apply
+    # first — a plugin can only ADD hiding, never un-hide. Fail-open on error/timeout.
+    "filter_skill_visible",
     # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
     # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,

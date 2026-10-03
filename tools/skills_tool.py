@@ -17,7 +17,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path,
+    plugin_filter_hides_skill)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -41,7 +42,9 @@ _SKILLS_CACHE_TTL_SECONDS = 30.0
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     """O(#dirs + #categories) stat-based change signature; platform is read via
-    ``agent.skill_utils.sys`` so test patches are honored."""
+    ``agent.skill_utils.sys`` so test patches are honored. ``filter_skill_visible``
+    registration is part of the signature: a plugin load changes what the listing
+    should contain without touching any SKILL.md mtime (TTL bounds the staleness)."""
     from agent import skill_utils as _skill_utils
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
     sig = []
@@ -56,7 +59,12 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
                     if entry.is_dir(follow_symlinks=False):
                         m = max(m, entry.stat(follow_symlinks=False).st_mtime)
         sig.append((str(d), m))
-    return (tuple(sig), frozenset(disabled), platform)
+    try:
+        from hermes_cli.plugins import has_hook
+        filter_hook = has_hook("filter_skill_visible")
+    except Exception:
+        filter_hook = False
+    return (tuple(sig), frozenset(disabled), platform, filter_hook)
 
 
 HERMES_HOME = get_hermes_home()  # all skills live in ~/.hermes/skills/ (seeded from bundled)
@@ -191,7 +199,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature = _skills_scan_signature(dirs_to_scan, disabled)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
+    # Active callbacks can change without changing the boolean registration signature.
+    filter_gated = signature[-1]
+    if (cached is not None and not filter_gated and cached[0] == signature
+            and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS):
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
@@ -213,6 +224,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
+                if plugin_filter_hides_skill(name, frontmatter):
+                    continue
                 seen_names.add(name)
                 skills.append({"name": name, "description": _truncate_description(description),
                                "category": _get_category_from_path(skill_md)})
@@ -242,6 +255,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
                 if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
+                    continue
+                if plugin_filter_hides_skill(plugin_skill["name"], frontmatter):
                     continue
                 all_skills.append(plugin_skill)
         except Exception:

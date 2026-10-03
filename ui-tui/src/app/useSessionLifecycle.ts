@@ -183,7 +183,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       turnController.idle()
       turnController.clearReasoning()
       turnController.turnTools = []
-      turnController.persistedToolLabels.clear()
+      turnController.clearPersistedToolLabels()
 
       setHistoryItems(info ? [introMsg(info)] : [])
       setStickyPrompt('')

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 from collections import Counter
@@ -305,6 +306,12 @@ class SlashCommandsMixin:
         except Exception as exc:
             return None, f"Could not rewind conversation: {exc}"
         state.history = outcome.prefix
+        memory_manager = getattr(state.agent, "_memory_manager", None)
+        if memory_manager is not None:
+            with contextlib.suppress(Exception):
+                memory_manager.on_session_switch(
+                    state.session_id, parent_session_id="", reset=False, rewound=True
+                )
         self.session_manager.save_session(state.session_id)
         return outcome, None
 
@@ -343,6 +350,14 @@ class SlashCommandsMixin:
         if not title:
             return "Title is empty after cleanup."
         try:
+            if db.get_session(state.session_id) is None:
+                db.create_session(
+                    session_id=state.session_id,
+                    source="acp",
+                    model=str(state.model or getattr(state.agent, "model", "") or "") or None,
+                    model_config={"cwd": state.cwd},
+                    cwd=state.cwd or None,
+                )
             if not db.set_session_title(state.session_id, title):
                 return "Session not found."
         except ValueError as exc:

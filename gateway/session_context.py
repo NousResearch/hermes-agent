@@ -192,11 +192,14 @@ def session_is_messaging_surface() -> bool:
     """Whether this turn is delivered over a human messaging channel (checks
     ``HERMES_PLATFORM``, then the session platform, then the session source)."""
     platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
+    source_from_context = _SESSION_SOURCE.get()
     source = get_session_env("HERMES_SESSION_SOURCE", "")
     # ``hermes chat --source`` supplies a user-defined filtering label, not a
     # transport identity.  Do not let that label turn an interactive CLI turn
     # into a messaging surface; a real platform identity still takes precedence.
-    if not platform and os.getenv("HERMES_SESSION_SOURCE_EXPLICIT") == "1":
+    # Gateway adapters bind their identity through ContextVars, so an inherited
+    # EXPLICIT marker in os.environ must not erase a ContextVar-only source.
+    if not platform and source_from_context is _UNSET and os.getenv("HERMES_SESSION_SOURCE_EXPLICIT") == "1":
         source = ""
     idents = (platform, source)
     idents = (str(v or "").strip().lower() for v in idents)

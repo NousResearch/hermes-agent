@@ -11,6 +11,7 @@ vi.mock('@/store/session', async (): Promise<object> => {
 
 import type { QueryClient } from '@tanstack/react-query'
 import { QueryClientProvider } from '@tanstack/react-query'
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -334,9 +335,10 @@ describe('the Daybreak switch', () => {
 // (what it lists, what it offers), not about what any host does with a pick.
 function renderMenu(current: Partial<ModelMenuController['current']> = {}, host: Partial<ModelMenuController> = {}) {
   const select = vi.fn()
+  const applyPreset = vi.fn()
 
   const controller: ModelMenuController = {
-    applyPreset: vi.fn(),
+    applyPreset,
     current: { effort: '', fast: false, model: '', provider: '', ...current },
     presetFor: () => ({}),
     select,
@@ -358,7 +360,7 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}, host:
     </QueryClientProvider>
   )
 
-  return select
+  return Object.assign(select, { applyPreset })
 }
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
@@ -871,5 +873,25 @@ describe('the catalog renders per-model pricing', () => {
     await screen.findByText('Sonnet 5')
     expect(screen.queryByText(/\/Mtok/)).toBeNull()
     expect(screen.queryByText('free')).toBeNull()
+  })
+})
+
+// Selecting a model with no stored preset applies the profile defaults to the
+// session only; they must not be persisted as that model's preset.
+describe('preset policy on selection', () => {
+  it('applies profile defaults without persisting when no preset is stored', async () => {
+    const select = renderMenu()
+    await screen.findByText('Gemini 2.5')
+
+    fireEvent.click(screen.getByText('Gemini 2.5'))
+    expect(select).toHaveBeenCalledWith('gemini-2.5-flash', 'google')
+
+    await waitFor(() =>
+      expect(select.applyPreset).toHaveBeenCalledWith(
+        { effort: DEFAULT_REASONING_EFFORT, fast: undefined },
+        { model: 'gemini-2.5-flash', provider: 'google' },
+        { persist: false }
+      )
+    )
   })
 })

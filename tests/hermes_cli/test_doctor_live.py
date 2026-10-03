@@ -36,6 +36,7 @@ def _clean_env(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
     # Default: browser not installed.
     monkeypatch.setattr(doctor_live, "_browser_available", lambda: False)
+    monkeypatch.setattr("tools.browser_use_cli.is_browser_use_cli_mode", lambda: False)
 
 
 class TestLiveFlagGating:
@@ -146,12 +147,43 @@ class TestConfiguredOnlySelection:
         assert results["STT"].status == "warn"
 
     def test_browser_probed_when_available(self, monkeypatch):
+        monkeypatch.setattr("tools.browser_use_cli.is_browser_use_cli_mode", lambda: False)
         monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
         monkeypatch.setattr(
             doctor_live, "_launch_browser_probe",
             lambda timeout: (True, "about:blank ok"))
         results = {r.name: r for r in run_live_checks([])}
         assert results["Browser"].status == "pass"
+
+    def test_browser_use_probe_runs_real_tool_path_and_closes_tab(self, monkeypatch):
+        monkeypatch.setattr("tools.browser_use_cli.is_browser_use_cli_mode", lambda: True)
+        seen = {}
+
+        def _exec(code, **kwargs):
+            seen.update(code=code, **kwargs)
+            return '{"success": true, "output": "HERMES_DOCTOR_READY=complete\\n"}'
+
+        monkeypatch.setattr("tools.browser_use_cli.browser_exec", _exec)
+        result = doctor_live._probe_browser(10)
+        assert result.status == "pass"
+        assert "new_tab('about:blank')" in seen["code"]
+        assert "close_tab()" in seen["code"]
+        assert seen["session"] == seen["task_id"]
+
+    def test_builtin_probe_opens_and_cleans_up_own_session(self, monkeypatch):
+        seen = []
+
+        def _command(session, command, args, **kwargs):
+            seen.append((session, command, args))
+            return {"success": True}
+
+        monkeypatch.setattr("tools.browser_tool_session._run_browser_command", _command)
+        monkeypatch.setattr("tools.browser_tool_lifecycle._cleanup_single_browser_session",
+                            lambda session: seen.append((session, "cleanup", [])))
+        assert doctor_live._launch_browser_probe(10)[0] is True
+        assert [entry[1] for entry in seen] == ["open", "cleanup"]
+        assert seen[0][0] == seen[1][0]
+        assert seen[0][2] == ["about:blank"]
 
 
 class TestBrowserAvailable:

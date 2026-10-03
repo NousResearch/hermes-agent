@@ -6,11 +6,12 @@ trivial amount of quota. They run ONLY when the user passes ``hermes doctor --li
 
 from __future__ import annotations
 
+import json
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
 
@@ -57,22 +58,40 @@ def _browser_available() -> bool:
 
 
 def _launch_browser_probe(timeout: float) -> tuple:
-    """Launch a browser, open about:blank, close. Returns (ok, detail). Uses Playwright directly (what
-    agent-browser drives underneath) so the probe owns the full lifecycle and always cleans up."""
+    """Open and close an isolated tab through the built-in agent-browser backend."""
+    from tools.browser_tool_lifecycle import _cleanup_single_browser_session
+    from tools.browser_tool_session import _run_browser_command
+
+    session = f"doctor-{uuid.uuid4().hex}"
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return (False, "playwright not installed")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chromium", executable_path=chromium_executable(),
-            headless=True, timeout=timeout * 1000,
-        )
-        try:
-            browser.new_page().goto("about:blank", timeout=timeout * 1000)
-        finally:
-            browser.close()
-    return (True, "launched + about:blank + closed")
+        result = _run_browser_command(session, "open", ["about:blank"], timeout=timeout)
+        return (bool(result.get("success")),
+                "agent-browser opened about:blank" if result.get("success")
+                else str(result.get("error") or "agent-browser navigation failed"))
+    finally:
+        _cleanup_single_browser_session(session)
+
+
+def _launch_browser_use_probe(timeout: float) -> tuple:
+    """Exercise the same Browser Use CLI route that the agent's browser_exec tool uses."""
+    from tools.browser_use_cli import browser_exec
+
+    session = f"doctor-{uuid.uuid4().hex}"
+    code = ("# Validate local browser automation\n"
+            "opened = False\n"
+            "try:\n"
+            "    new_tab('about:blank')\n"
+            "    opened = True\n"
+            "    print('HERMES_DOCTOR_READY=' + str(js('document.readyState')))\n"
+            "finally:\n"
+            "    if opened:\n"
+            "        close_tab()\n")
+    result = json.loads(browser_exec(code, session=session, task_id=session, timeout_s=int(timeout)))
+    ok = result.get("success") and "HERMES_DOCTOR_READY=complete" in result.get("output", "")
+    detail = ("browser_exec opened about:blank and read DOM" if ok else
+              str(result.get("error") or result.get("stderr") or result.get("output") or
+                  "browser_exec did not confirm DOM access")[:250])
+    return (bool(ok), detail)
 
 
 def _probe_mcp_server(name: str, config: dict, timeout: float):
@@ -100,6 +119,11 @@ def _keyed_probe(name: str, url: str, env_var: str, scheme: str, timeout: float)
 
 
 def _probe_browser(timeout: float) -> ProbeResult:
+    from tools.browser_use_cli import is_browser_use_cli_mode
+
+    if is_browser_use_cli_mode():
+        ok, detail = _launch_browser_use_probe(timeout)
+        return ProbeResult("Browser", "pass" if ok else "fail", f"({detail})")
     if not _browser_available():
         return ProbeResult("Browser", "skip", "(not configured)")
     ok, detail = _launch_browser_probe(timeout)

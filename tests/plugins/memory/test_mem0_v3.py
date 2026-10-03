@@ -9,6 +9,37 @@ import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
 
+# ---------------------------------------------------------------------------
+# Test helpers for the lazy-install / SDK-availability matrix (#70979)
+# ---------------------------------------------------------------------------
+
+def _stub_sdk_absent(monkeypatch):
+    """Make find_spec("mem0") return None — simulates SDK not installed."""
+    import importlib.util
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: None if name == "mem0" else real(name),
+    )
+
+
+def _stub_sdk_present(monkeypatch):
+    """Make find_spec("mem0") return a non-None spec — simulates SDK installed."""
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: MagicMock() if name == "mem0" else None,
+    )
+
+
+def _stub_lazy_enabled(monkeypatch):
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: True)
+
+
+def _stub_lazy_disabled(monkeypatch):
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: False)
+
+
 class FakeBackend:
     """Fake Mem0Backend for provider-level tests."""
 
@@ -297,6 +328,8 @@ class TestMem0ModeSwitch:
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        # Availability also needs the SDK when installs are off (#70979).
+        _stub_sdk_present(monkeypatch)
         (tmp_path / "mem0.json").write_text(
             json.dumps(
                 {
@@ -383,6 +416,60 @@ class TestMem0ModeSwitch:
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
         provider = Mem0MemoryProvider()
         assert provider.is_available() is False
+
+    def test_is_available_false_when_sdk_missing_and_lazy_disabled(self, monkeypatch, tmp_path):
+        """When lazy installs are disabled and the mem0 SDK is not installed,
+        is_available() must return False — otherwise `hermes memory status`
+        falsely reports "available" for a provider that can never initialize
+        (#70979)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        _stub_sdk_absent(monkeypatch)
+        _stub_lazy_disabled(monkeypatch)
+        assert Mem0MemoryProvider().is_available() is False
+
+    def test_is_available_false_oss_mode_when_sdk_missing_and_lazy_disabled(self, monkeypatch, tmp_path):
+        """OSS mode with lazy installs disabled and SDK missing → False.
+        Covers the OSS branch of the config check + SDK gate."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "mem0.json"
+        config_path.write_text('{"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}')
+        _stub_sdk_absent(monkeypatch)
+        _stub_lazy_disabled(monkeypatch)
+        assert Mem0MemoryProvider().is_available() is False
+
+    def test_is_available_true_self_hosted_when_sdk_missing_and_lazy_disabled(self, monkeypatch, tmp_path):
+        """The direct-HTTP self-hosted backend does not require mem0ai."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        _stub_sdk_absent(monkeypatch)
+        _stub_lazy_disabled(monkeypatch)
+        assert Mem0MemoryProvider().is_available() is True
+
+    def test_is_available_true_when_sdk_present_and_lazy_disabled(self, monkeypatch, tmp_path):
+        """Even with lazy installs disabled, if the SDK IS installed the
+        provider is genuinely available."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        _stub_sdk_present(monkeypatch)
+        _stub_lazy_disabled(monkeypatch)
+        assert Mem0MemoryProvider().is_available() is True
+
+    def test_is_available_true_when_lazy_enabled_even_if_sdk_missing(self, monkeypatch, tmp_path):
+        """When lazy installs are enabled (default), is_available() must
+        return True as long as config is present — the SDK will be
+        installed on demand by _create_backend(). Gating on find_spec here
+        would be a chicken-and-egg trap (provider must be activated for
+        ensure() to run)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        _stub_sdk_absent(monkeypatch)
+        _stub_lazy_enabled(monkeypatch)
+        assert Mem0MemoryProvider().is_available() is True
 
 
 class TestMem0UserIdResolution:

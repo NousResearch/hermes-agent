@@ -67,6 +67,31 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     return text[:max_len]
 
 
+def _lazy_installs_enabled() -> bool:
+    """Return True if the mem0 SDK can be installed on demand.
+
+    The same policy pm applies when ``_create_backend()`` installs the SDK, so
+    is_available() and doctor agree with what first use will actually do.
+    """
+    from pm.install import lazy_installs_allowed
+
+    return lazy_installs_allowed()
+
+
+def _mem0_sdk_installed() -> bool:
+    """Return True if the mem0 SDK is importable right now.
+
+    Uses ``importlib.util.find_spec`` (no side effects) instead of a bare
+    ``import mem0`` so we don't trigger import-time side effects or pollute
+    ``sys.modules`` from a status/doctor probe.
+    """
+    try:
+        import importlib.util
+        return importlib.util.find_spec("mem0") is not None
+    except Exception:
+        return False
+
+
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
     err_str = str(exc).lower()
@@ -142,9 +167,32 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
-        if cfg.get("mode", "platform") == "oss":
-            return bool(cfg.get("oss", {}).get("vector_store"))
-        return bool(cfg.get("api_key") or cfg.get("host"))  # platform needs a key; self-hosted a host (key optional with AUTH_DISABLED)
+        mode = cfg.get("mode", "platform")
+        if mode == "oss":
+            if not cfg.get("oss", {}).get("vector_store"):
+                return False
+        elif cfg.get("host"):
+            # SelfHostedBackend talks HTTP directly and does not import the
+            # mem0 SDK, so host-only setups remain available even when lazy
+            # installs are disabled and mem0ai is absent.
+            return True
+        elif not cfg.get("api_key"):
+            # Platform needs an API key when no self-hosted endpoint is set.
+            return False
+        # Platform and OSS are configured. The mem0 SDK is lazy-installed by
+        # _create_backend() via ensure("memory.mem0"). Gating availability
+        # on the SDK being importable here would be a chicken-and-egg trap
+        # — the provider must be activated (is_available() → True) for
+        # ensure() to run. So we only verify the SDK when the lazy-install
+        # escape hatch is closed (security.allow_lazy_installs=false): in
+        # that sealed state the SDK can never be installed at runtime, and
+        # reporting "available" would mislead `hermes memory status` and
+        # `hermes doctor` (#70979). The direct-HTTP self-hosted path above is
+        # intentionally exempt. See the same design note in
+        # supermemory.is_available().
+        if _lazy_installs_enabled():
+            return True
+        return _mem0_sdk_installed()
 
     def save_config(self, values, hermes_home):
         """Merge-write config to $HERMES_HOME/mem0.json."""

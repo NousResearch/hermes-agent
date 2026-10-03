@@ -126,3 +126,20 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+def test_bounded_kill_survives_rg_exiting_before_the_group_lookup(tree, ops_factory, monkeypatch):
+    """#125461: rg reached the line bound and exited before the kill; macOS getpgid() on the
+    unreaped zombie raises ESRCH, which escaped as "[Errno 3] No such process". Simulate that
+    lookup failure while the process is still alive, so the kill must use the stamped group."""
+    import os
+
+    ops = ops_factory(tree, [])
+
+    def zombie_getpgid(pid):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "getpgid", zombie_getpgid)
+    result = ops._run_rg_native(["yes", "hit"], 5, timeout=10)
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[:5] == ["hit"] * 5

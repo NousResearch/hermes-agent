@@ -2019,6 +2019,7 @@ export interface ProfilesConfigureParams {
   ui_meta_expected_revisions?: Record<string, number> | null
   soul?: string | null
   description?: string | null
+  display_name?: string | null
   model?: string | null
   provider?: string | null
   confirm_expensive_model?: boolean | string | null
@@ -2040,6 +2041,7 @@ export interface ProfilesConfigureApplied {
   ui_meta_conflicts?: Record<string, UiMetaConflict> | null
   soul?: boolean | null
   description?: boolean | null
+  display_name?: boolean | null
   model?: boolean | null
   skills?: boolean | null
   toolsets?: boolean | null

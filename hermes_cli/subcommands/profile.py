@@ -87,8 +87,11 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "rename", help="Rename a profile ('default': sets a display name; id unchanged)")
     profile_rename.add_argument("old_name", help="Current profile name")
     profile_rename.add_argument(
-        "new_name",
+        "new_name", nargs="?", default=None,
         help="New profile name (for 'default': a display name — the canonical id stays 'default')")
+    profile_rename.add_argument(
+        "--display-name", dest="display_name", metavar="DISPLAY_NAME", default=None,
+        help="Set the profile's display name without renaming the profile directory")
 
     profile_purge = profile_subparsers.add_parser(
         "purge-identity",

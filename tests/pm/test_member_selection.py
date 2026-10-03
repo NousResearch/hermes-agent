@@ -87,3 +87,80 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_versionless_pyproject_member_stages_a_version(tmp_path):
+    """uv rejects any [project] table whose `version` is neither set nor listed in
+    `project.dynamic` at parse time — before resolution or build — so a version-less
+    plugin pyproject failed every workspace `uv lock` (#125583). Staging fills one in."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "lcm"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-lcm"\ndependencies = ["lcm>=1.0"]\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+    assert document["project"]["version"] == "0.0.0"
+    assert document["project"]["name"].startswith("hermes-plugin-lcm-")
+    assert document["project"]["dependencies"] == ["lcm>=1.0"]
+
+
+def test_versionless_buildable_pyproject_member_stages_a_version(tmp_path):
+    """Buildable members keep their declared name (uv verifies it against the built
+    metadata) but still need a staged version when the plugin omitted one."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "replay"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "replay-plugin"\n'
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+    assert document["project"]["version"] == "0.0.0"
+    assert document["project"]["name"] == "replay-plugin"
+
+
+def test_declared_or_dynamic_version_is_left_alone(tmp_path):
+    """A plugin that declares its own version — statically or via `dynamic` —
+    must not be rewritten."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "mine"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "mine"\nversion = "2.5"\n[build-system]\n'
+        'requires = []\nbuild-backend = "backend"\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+    assert document["project"]["version"] == "2.5"
+
+    dynamic = tmp_path / "home" / "plugins" / "dyn"
+    dynamic.mkdir(parents=True)
+    (dynamic / "pyproject.toml").write_text(
+        '[project]\nname = "dyn"\ndynamic = ["version", "dependencies"]\n'
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\n',
+        encoding="utf-8",
+    )
+    root2 = tmp_path / "gen2"
+    root2.mkdir()
+    member2 = _workspace_member(dynamic, root2, identity=dynamic)
+    document2 = tomllib.loads((member2 / "pyproject.toml").read_text(encoding="utf-8"))
+    assert document2["project"]["dynamic"] == ["version", "dependencies"]
+    assert "version" not in document2["project"]

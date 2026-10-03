@@ -12,7 +12,8 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.stream_events import (
-    Commentary, GatewayNotice, LongToolHint, MessageChunk, MessageStop, StreamEvent, ToolCallChunk,
+    Commentary, GatewayNotice, LongToolHint, MessageChunk, MessageStop, Reasoning, StreamEvent,
+    ToolCallChunk,
 )
 
 logger = logging.getLogger("gateway.stream_events")
@@ -61,6 +62,10 @@ class GatewayEventDispatcher:
         if isinstance(event, (MessageChunk, MessageStop, Commentary)):
             if self.sink is not None:
                 self.adapter.render_message_event(event, self.sink)
+        elif isinstance(event, Reasoning):
+            if self.sink is not None:
+                # Opt-in (plugins.stream_reasoning_deltas); the adapter decides rendering.
+                self.adapter.render_reasoning_event(event, self.sink)
         elif isinstance(event, ToolCallChunk):
             self._dispatch_tool_call(event)
         elif isinstance(event, LongToolHint) and self._on_long_tool is not None:

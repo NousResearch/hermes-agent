@@ -1097,6 +1097,8 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "endpoints via browser_console is not permitted in this "
                 "browser mode."
             ))
+        if not _eval_policy._allow_unsafe_browser_evaluate():
+            expression = _eval_policy._guard_network_expression(expression)
 
     # Camofox keeps its own raw-task_id-keyed session map, so pass the raw id.
     if _is_camofox_mode():

@@ -41,6 +41,18 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
     return next((c for c in (m.rstrip(".,;") for m in literals) if _url_blocked(_bt, c)), None)
 
 
+def _guard_network_expression(expression: str) -> str:
+    """Disable browser-side network primitives for one guarded evaluation."""
+    return """(() => {
+const hermesDenyNetwork = () => { throw new Error('Network requests are blocked during guarded browser evaluation'); };
+try { window.fetch = hermesDenyNetwork; } catch (_) {}
+try { window.XMLHttpRequest = hermesDenyNetwork; } catch (_) {}
+try { window.WebSocket = hermesDenyNetwork; } catch (_) {}
+try { window.EventSource = hermesDenyNetwork; } catch (_) {}
+try { navigator.sendBeacon = hermesDenyNetwork; } catch (_) {}
+return (""" + expression + "\n); })()"
+
+
 def _current_page_private_url(effective_task_id: str) -> Optional[str]:
     """Return the current page URL when it targets a private/internal address (e.g. after a prior
     ``location.href = '...'`` eval). Fail-open on probe failure, matching the snapshot/vision guards."""

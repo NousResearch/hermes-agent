@@ -285,3 +285,11 @@ class TestExpressionScanHelper:
         monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
         out = bt_eval_policy._expression_targets_private_url("location.href='http://10.0.0.1/';")
         assert out == "http://10.0.0.1/"
+
+    def test_guard_wraps_runtime_network_assembly(self):
+        expression = bt_eval_policy._guard_network_expression(
+            "fetch(String.fromCharCode(104,116,116,112,58,47,47)+'169.254.169.254')"
+        )
+        assert "window.fetch = hermesDenyNetwork" in expression
+        assert "String.fromCharCode" in expression
+        assert "169.254.169.254" in expression

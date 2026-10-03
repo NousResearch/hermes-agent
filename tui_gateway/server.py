@@ -674,6 +674,7 @@ def write_json(obj: dict) -> bool:
     session's transport (async events reach the owner even from threads with no contextvar binding);
     (2) the context-bound transport (:func:`dispatch`); (3) module stdio (tests monkey-patch ``_real_stdout``).
     Every event frame gets a per-session monotonic ``seq`` + replay-ring entry so ``session.events.since`` can resume."""
+    from tui_gateway import turn_alive
     from tui_gateway.event_replay import _stamp_event
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
     _stamp_event(obj)
@@ -685,7 +686,14 @@ def write_json(obj: dict) -> bool:
         project_room_member_activity(obj, _sessions)
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
+            if obj.get("method") == "event":
+                turn_alive.note_frame(sid, params.get("type"))
+            written = t.write(obj)
+            if written:
+                # Recorded here rather than in _emit: a compute host's relayed frames and server→client
+                # requests reach the client through this path without _emit, and still prove the turn is live.
+                turn_alive.note_emit(sid)
+            return written
     return (current_transport() or _stdio_transport).write(obj)
 
 

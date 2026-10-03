@@ -14136,6 +14136,18 @@
             ],
             "default": null,
             "title": "Heartbeat"
+          },
+          "turn_alive_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Alive S"
           }
         },
         "required": [
@@ -36721,6 +36733,58 @@
         "title": "TranscriptMessage",
         "type": "object"
       },
+      "TurnAlivePayload": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/turn_alive.py``: this session's turn is still running and nothing else was emitted for it in\n``quiet_s`` seconds.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/TurnAliveStatus"
+          },
+          "quiet_s": {
+            "title": "Quiet S",
+            "type": "number"
+          },
+          "activity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Activity"
+          },
+          "activity_age_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Activity Age S"
+          }
+        },
+        "required": [
+          "status",
+          "quiet_s"
+        ],
+        "title": "TurnAlivePayload",
+        "type": "object"
+      },
+      "TurnAliveStatus": {
+        "description": "``server._session_live_status`` values of a turn that is still running.",
+        "enum": [
+          "working",
+          "starting"
+        ],
+        "title": "TurnAliveStatus",
+        "type": "string"
+      },
       "TurnStatus": {
         "description": "``prompt_turn._result_status``.",
         "enum": [
@@ -40191,6 +40255,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolStartPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "turn.alive",
+      "summary": "Liveness for a running turn that has emitted nothing lately (a quiet tool call, a long prefill), so a client can tell a quiet turn from a dead one. Ephemeral: never sequenced or kept for replay.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/TurnAlivePayload"
           }
         }
       ]

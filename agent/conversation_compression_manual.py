@@ -57,13 +57,21 @@ def parse_compress_args(raw_args: str) -> CompressRequest:
 
 def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> int:
     """Transcript + system prompt + tool schemas: a transcript-only figure understates real request pressure
-    and can even appear to grow after a dense handoff summary replaces many short turns (#6217)."""
+    and can even appear to grow after a dense handoff summary replaces many short turns (#6217).
+
+    ``charge_stale_thinking`` follows the same route-aware predicate the compaction
+    trigger uses (``turn_context._agent_stale_thinking_on_wire``), so the manual
+    ``/compress`` before/after figures — and the ``approx_tokens`` handed to
+    ``_compress_context`` — agree with the trigger on routes whose provider accounting
+    ignores replayed reasoning."""
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.turn_context import _agent_stale_thinking_on_wire
     if not messages:
         return 0
     return estimate_request_tokens_rough(
         list(messages), system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
-        tools=getattr(agent, "tools", None) or None)
+        tools=getattr(agent, "tools", None) or None,
+        charge_stale_thinking=_agent_stale_thinking_on_wire(agent))
 
 
 def compress_now(

@@ -14,6 +14,7 @@ import logging
 import re
 import shlex
 import stat
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -86,6 +87,10 @@ def _strip_quotes(command: str) -> str:
     return re.sub(r"`[^`]*`", "``", result)
 
 
+def _uses_background_amp(unquoted: str) -> bool:
+    return bool(_INLINE_BACKGROUND_AMP_RE.search(unquoted) or _TRAILING_BACKGROUND_AMP_RE.search(unquoted))
+
+
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
     r"\bdocker\s+compose\s+up\b",
@@ -107,7 +112,7 @@ _FOREGROUND_GUIDANCE = (
         "checks and tests in separate commands.",
     ),
     (
-        lambda s: _INLINE_BACKGROUND_AMP_RE.search(s) or _TRAILING_BACKGROUND_AMP_RE.search(s),
+        _uses_background_amp,
         "Foreground command uses '&' backgrounding. Re-send WITHOUT the '&' as "
         "terminal(command=\"<cmd>\", background=true) — add notify_on_complete=true "
         "for bounded jobs — then run health checks and tests in follow-up terminal calls.",
@@ -132,13 +137,123 @@ def _looks_like_help_or_version_command(command: str) -> bool:
     )
 
 
-def _foreground_background_guidance(command: str) -> str | None:
+# This rejection is fully deterministic -- a command matching one of the
+# _FOREGROUND_GUIDANCE predicates will ALWAYS be rejected, identically, no
+# matter how many times it is retried. Hermes's general loop guardrail
+# (agent/tool_guardrails.py) deliberately exempts "terminal" from its
+# same-tool-failure hard-stop, since most terminal failures are genuine varied
+# diagnosis, not a loop -- but that exemption also covers this one
+# non-diagnostic, 100%-reproducible category, and retried commands usually
+# differ, so no single exact signature repeats enough to trip anything else.
+# Observed: 13 identical rejections in one task. Track it locally instead and,
+# from the 3rd rejection, hand the model the exact call to resend.
+#
+# Counted per agent (the code-kernel owner: approval session key, qualified per
+# delegated child, task_id as fallback) and per user turn. Only a
+# background=true call resets it: resetting on unrelated successful foreground
+# commands let a model retrying `&` between other work never reach 3 (live:
+# counts went 1,1,2,1,1,1,1). The turn scope keeps one early slip from
+# escalating a mistake many turns later in a long gateway conversation; a
+# batch-eval rollout is a single turn, so its retry loop still escalates.
+_FG_BG_REJECTION_LOCK = threading.Lock()
+_FG_BG_REJECTIONS: dict[str, tuple[str, int]] = {}  # owner -> (turn id, rejections)
+_FG_BG_ESCALATE_AFTER = 3
+_CORRECTED_CALL_MAX_CHARS = 200
+_LEADING_DETACH_WRAPPER_RE = re.compile(r"^(?:nohup|setsid)\s+(?=[^\s-])")
+
+
+def _fg_bg_owner(task_id: str) -> str:
+    # Same identity session kernels use, so delegated children get their own
+    # counter instead of adding to the parent's (they inherit its session key).
+    from tools.code_kernel import _resolve_owner
+
+    return _resolve_owner(task_id)
+
+
+def _backgrounded_command(command: str) -> str | None:
+    """*command* as it should be resent with background=true: minus a trailing
+    '&' and one leading nohup/setsid. None when fixing it would take more than
+    that (inline '&', disown, wrapper flags, chained wrappers) or the result is
+    too long to quote back -- the caller then shows the placeholder form rather
+    than a guessed rewrite."""
+    fixed = command.strip()
+    tail = _TRAILING_BACKGROUND_AMP_RE.search(fixed)
+    # Only strip an '&' the quote-masked command also ends with, so a quoted or
+    # heredoc '&' is never cut.
+    if tail and (masked := _TRAILING_BACKGROUND_AMP_RE.search(_strip_quotes(fixed))):
+        if masked.group(0) == tail.group(0):
+            fixed = fixed[:tail.start()].rstrip()
+    if wrapper := _LEADING_DETACH_WRAPPER_RE.match(fixed):
+        fixed = fixed[wrapper.end():]
+    rest = _strip_quotes(fixed)
+    if not fixed or len(fixed) > _CORRECTED_CALL_MAX_CHARS or (
+        _SHELL_LEVEL_BACKGROUND_RE.search(rest) or _uses_background_amp(rest)
+    ):
+        return None
+    return fixed
+
+
+def _escalated_guidance(command: str, msg: str, count: int) -> str:
+    fixed = _backgrounded_command(command)
+    call = 'terminal(command={}, background=true, notify_on_complete=true)'.format(
+        json.dumps(fixed, ensure_ascii=False) if fixed else '"<cmd>"'
+    )
+    how = (
+        f"Resend exactly this: {call}" if fixed else
+        f"Resend it as {call}, where <cmd> is your command without the '&' / "
+        "nohup / setsid / disown."
+    )
+    return (
+        f"REPEATED REJECTION (#{count}): you have already received this guidance. "
+        "A foreground command that backgrounds itself or starts a long-lived process "
+        "is NEVER accepted as written, and rewording it will not help. "
+        f"{msg} {how}"
+    )
+
+
+def _foreground_background_guidance(command: str, task_id: str = "") -> str | None:
     """Guidance text when a foreground command looks long-lived or uses shell
-    backgrounding (it should be a managed background session), else None."""
+    backgrounding (it should be a managed background session), else None.
+
+    Only the terminal tool's own call site passes ``task_id``; without it the
+    guidance never escalates.
+    """
     if _looks_like_help_or_version_command(command):
         return None
     unquoted = _strip_quotes(command)
-    return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+    msg = next((m for hit, m in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+    if msg is None or not task_id:
+        return msg
+    from tools.approval_context import get_current_turn_id
+
+    owner, turn = _fg_bg_owner(task_id), get_current_turn_id()
+    with _FG_BG_REJECTION_LOCK:
+        last_turn, count = _FG_BG_REJECTIONS.get(owner, (turn, 0))
+        count = (count if last_turn == turn else 0) + 1
+        _FG_BG_REJECTIONS[owner] = (turn, count)
+    if count < _FG_BG_ESCALATE_AFTER:
+        return msg
+    return _escalated_guidance(command, msg, count)
+
+
+def reset_foreground_background_guard(task_id: str) -> None:
+    """Clear the caller's rejection count; called only for background=true calls,
+    the corrected usage this guard steers toward."""
+    if task_id:
+        with _FG_BG_REJECTION_LOCK:
+            _FG_BG_REJECTIONS.pop(_fg_bg_owner(task_id), None)
+
+
+def clear_foreground_background_guard(session_key: str) -> None:
+    """Drop a session's counters, its delegated children's included. Wired into
+    ``tools.approval.clear_session`` so a long-lived gateway does not keep one
+    entry per finished conversation."""
+    if not session_key:
+        return
+    child_prefix = f"{session_key}::child::"
+    with _FG_BG_REJECTION_LOCK:
+        for owner in [o for o in _FG_BG_REJECTIONS if o == session_key or o.startswith(child_prefix)]:
+            del _FG_BG_REJECTIONS[owner]
 
 
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:

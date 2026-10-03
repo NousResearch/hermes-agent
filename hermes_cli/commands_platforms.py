@@ -316,7 +316,7 @@ def discord_skill_commands_by_category(
     parity, external-dir skills are visible via ``hermes skills list`` and the agent's ``/skill-name``
     dispatch but silently absent from Discord's ``/skill`` autocomplete.
     The legacy 25-group × 25-subcommand caps (from the old nested ``/skill <cat> <name>`` layout) are
-    **not** applied — the live caller (``_register_skill_group`` in ``gateway/platforms/discord.py``,
+    **not** applied — the live caller (``_register_skill_group`` in ``plugins/platforms/discord/adapter.py``,
     refactored in PR #11580) flattens these results and feeds them into a single autocomplete callback,
     which scales to thousands of entries without any per-command payload concerns. ``hidden_count`` is
     retained in the return tuple for backward compatibility and still reports skills dropped for other

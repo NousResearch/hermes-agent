@@ -62,7 +62,6 @@ import {
   filterVisibleProjects,
   pinSession,
   SESSION_SEARCH_FOCUS_EVENT,
-  setPinnedSessionOrder,
   setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
@@ -1569,17 +1568,6 @@ export function ChatSidebar({
   // it over the default sort, so stale/new ids reconcile on the next render.
   const reorderProjects = (ids: string[]) => setSidebarProjectOrderIds(ids)
 
-  // Sortable rows carry live session ids; the pinned store is keyed by durable
-  // (lineage-root) ids, so translate before persisting the new order.
-  const reorderPinned = (ids: string[]) =>
-    setPinnedSessionOrder(
-      ids.map(id => {
-        const session = sessionByAnyId.get(id)
-
-        return session ? sessionPinId(session) : id
-      })
-    )
-
   return (
     <Sidebar
       className={cn(
@@ -1794,7 +1782,6 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
-                onReorderSessions={reorderPinned}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
                 onTogglePin={unpinSession}
@@ -1804,7 +1791,7 @@ export function ChatSidebar({
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
-                sortable={pinnedSessions.length > 1}
+                sortable={false}
               />
             )}
 

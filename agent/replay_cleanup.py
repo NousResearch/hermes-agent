@@ -238,29 +238,32 @@ def strip_stale_dangerous_confirmations(
             age, expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
-        redacted_content = re.sub(
-            "|".join(re.escape(pattern) for pattern in _DANGEROUS_CONFIRMATION_PATTERNS),
-            _EXPIRED_CONFIRMATION_SENTINEL,
-            str(msg.get("content") or ""),
-            flags=re.IGNORECASE,
-        )
-        # Never leave a surviving destructive authorization in a user row after
-        # its confirmation expires. A bare keyword is not enough: summaries
-        # legitimately quote action names in documentation, filenames, key
-        # names, or negative instructions. Look for an action-shaped request
-        # in either side of the expired phrase, including polite/locative lead-
-        # ins and authorization after the verb; preserve unrelated context.
-        action = r"(?:reboot|restart|shutdown|power\s+off|wipe|delete|factory\s+reset)"
-        without_marker = redacted_content.replace(_EXPIRED_CONFIRMATION_SENTINEL, " ")
-        destructive_target = rf"\b(?:production|host|server|machine|system)\b[^.?!\n]*\b{action}\b|\b{action}\b[^.?!\n]*\b(?:production|host|server|machine|system)\b"
-        request_qualifier = rf"(?:please\s+|on\s+[^.?!\n,]+,\s*)\b{action}\b[^.?!\n]*(?:\bnow\b|\bauthori[sz](?:e|ed|ation)\b|\bapproved?\b)"
-        action_then_authorization = rf"\b{action}\b[^.?!\n]*\b(?:authorize|authorise|approved?|confirm(?:ed)?)\b"
-        if (
-            re.search(destructive_target, without_marker, re.IGNORECASE)
-            or re.search(request_qualifier, without_marker, re.IGNORECASE)
-            or re.search(action_then_authorization, without_marker, re.IGNORECASE)
-        ):
-            redacted_content = _EXPIRED_CONFIRMATION_SENTINEL
+        # Ordinary user authorization expires as a whole, independent of the
+        # language, word order, or target of any remaining instruction. Only a
+        # producer-marked summary has a separate reference segment to preserve;
+        # user-authored labels such as "Reference:" do not establish that fact.
+        redacted_content = _EXPIRED_CONFIRMATION_SENTINEL
+        content = msg.get("content")
+        if msg.get("_compressed_summary") and isinstance(content, str):
+            from agent.context_compressor import split_user_originated_turn
+
+            handoff, _ = split_user_originated_turn(msg)
+            reference = handoff.get("content") if handoff else None
+            if isinstance(reference, str) and reference and reference in content:
+                start = content.index(reference)
+                before, after = content[:start], content[start + len(reference):]
+                # The existing projection owns both merged-carrier layouts.
+                # Expire the entire live segment if it contains a confirmation,
+                # but only redact quoted phrases in non-actionable reference.
+                before = _EXPIRED_CONFIRMATION_SENTINEL if is_dangerous_confirmation(before) else before
+                after = _EXPIRED_CONFIRMATION_SENTINEL if is_dangerous_confirmation(after) else after
+                reference = re.sub(
+                    "|".join(re.escape(pattern) for pattern in _DANGEROUS_CONFIRMATION_PATTERNS),
+                    _EXPIRED_CONFIRMATION_SENTINEL,
+                    reference,
+                    flags=re.IGNORECASE,
+                )
+                redacted_content = before + reference + after
         redacted["content"] = redacted_content
         # The api_content sidecar carries the exact bytes sent — the confirmation itself; replaying it would undo the redaction.
         drop_stale_api_content(redacted)

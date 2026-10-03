@@ -1148,6 +1148,10 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
+    # Shared expiry needs the producer-owned reference/live distinction too,
+    # not just the timestamp-rendering guard below.
+    if msg.get("_compressed_summary"):
+        entry["_compressed_summary"] = True
     # Replay rebuilds the SAME conversation for its next turn: every role keeps its uid and merge witness, so a
     # context engine sees the uids the store holds. Tool-call uid maps stay with the rows that still carry
     # their calls (those pass through whole); on a plain row a leftover map would name calls it no longer has.

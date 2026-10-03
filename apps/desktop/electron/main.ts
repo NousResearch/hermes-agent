@@ -2138,11 +2138,13 @@ function setPoolLimits(raw) {
 //                       cap-driven eviction killed the active profile's
 //                       backend mid-session, re-minting runtime ids and
 //                       re-allocating pooled gateway secondaries ~700×/day).
-//   * 3× ping + 60s headroom = ~4 min, comfortable margin for two missed
-//     pings + WSL2 IPC stall. The hard ceiling for the cap-eligible set is
-//     pool idle window above (default 10 min) — this constant only governs the
-//     "is this backend plausibly still alive" question for LRU eviction,
-//     not when the idle reaper definitively tears a backend down.
+//   * The previous ~4 min default (3× ping + 60s headroom) was a comfortable
+//     margin for two missed pings + WSL2 IPC stall, but the default is now
+//     aligned with the 10 min pool idle window to absorb longer stalls. The
+//     hard ceiling for the cap-eligible set is the pool idle window above —
+//     this constant only governs the "is this backend plausibly still alive"
+//     question for LRU eviction, not when the idle reaper definitively tears a
+//     backend down.
 const POOL_KEEPALIVE_FRESH_MS = Math.max(
   120_000,
   Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 10 * 60_000

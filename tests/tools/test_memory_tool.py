@@ -425,6 +425,19 @@ class TestMemoryStoreSnapshot:
         assert "loaded at start" in snapshot
         assert "added later" not in snapshot
 
+    def test_external_change_produces_one_shot_freshness_context(self, store, tmp_path):
+        store.add("memory", "loaded at start")
+        store.load_from_disk()
+        frozen = store.format_for_system_prompt("memory")
+
+        MemoryStore._write_file(tmp_path / "MEMORY.md", ["updated by another session"])
+
+        note = store.consume_freshness_context()
+        assert "updated by another session" in note
+        assert "loaded at start" not in note
+        assert store.format_for_system_prompt("memory") == frozen
+        assert store.consume_freshness_context() == ""
+
 
 # =========================================================================
 # memory_tool() dispatcher

@@ -73,10 +73,14 @@ def _safe_session_filename_component(session_id: str) -> str:
 def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     """May the persist override replace ``content``? A plain-text override must not replace native image/audio
     blocks (a list override is the clean multimodal payload and does), nor a message MERGED with a compaction
-    summary (overwriting would drop the summary)."""
+    summary (overwriting would drop the summary), nor a typed /steer row (the override is the opening prompt;
+    writing it onto a mid-turn correction's row would replace the correction, #132165)."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
     return (
         override is not None
         and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        and msg.get("display_kind") != STEER_DISPLAY_KIND
         and (not isinstance(content, list) or isinstance(override, list))
     )
 

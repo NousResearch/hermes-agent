@@ -76,3 +76,7 @@ def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch) -> None:
     monkeypatch.setattr(hermes_state_pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(None, True))
     assert provably_dead({"pid": dead, "pidns": _OURS, "start_ticks": 1, "acquired_at": 0.0}) is False
     assert provably_dead({"pid": dead, "start_ticks": 1, "acquired_at": 0.0}) is True
+
+    # The failed lookup was not cached: once it resolves, a stamped record breaks.
+    monkeypatch.setattr(hermes_state_pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(_OURS, True))
+    assert provably_dead({"pid": dead, "pidns": _OURS, "start_ticks": 1, "acquired_at": 0.0}) is True

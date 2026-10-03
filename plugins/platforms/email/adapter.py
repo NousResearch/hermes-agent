@@ -13,13 +13,15 @@ import socket
 import ssl
 import uuid
 from email.header import decode_header
+from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.parser import BytesHeaderParser
 from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.i18n import t
 from gateway.platforms.base import (
@@ -60,6 +62,13 @@ _COMMENT_RE = re.compile(r"\([^()]*\)")
 # Longest From: value we parse. parseaddr is pure Python and superlinear on hostile input (~1s at 100KB, GIL held);
 # a real mailbox plus display name stays far below this (RFC 5322 caps a line at 998 chars).
 _MAX_FROM_LEN = 2048
+# Only these headers are needed to reject a sender. Request one byte past the
+# limit so a truncated preflight fails closed without downloading the MIME body.
+_MAX_PREAUTH_HEADER_BYTES = 64 * 1024
+_PREAUTH_FETCH = (
+    "(BODY.PEEK[HEADER.FIELDS (FROM AUTHENTICATION-RESULTS AUTO-SUBMITTED PRECEDENCE "
+    f"X-AUTO-RESPONSE-SUPPRESS LIST-UNSUBSCRIBE)]<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
+)
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
@@ -343,8 +352,8 @@ def _domains_aligned(a: str, b: str) -> bool:
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "") -> Tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
-    ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so the FIRST
-    instance is trusted and an injected copy sorts below it; pinned to *authserv_id* when given.
+    ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
+    FIRST instance is authoritative; when *authserv_id* is set, that instance must match it exactly.
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
@@ -352,15 +361,15 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, _NO_AUTH_RESULTS_REASON
-    values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
-    trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
-                    or _domains_aligned(serv, authserv_id)), None)
-    if trusted is None:
+    trusted = " ".join(str(headers[0]).split())
+    # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
+    # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
+    if (clauses := _ar_clauses(trusted)) is None:
+        return False, "unbalanced quote or comment in Authentication-Results"
+    if authserv_id and clauses[0].strip().lower() != authserv_id.strip().lower():
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
-    if (clauses := _ar_clauses(trusted)) is None:
-        return False, "unbalanced quote or comment in Authentication-Results"
     results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
     for clause in clauses:
         if m := _AUTH_METHOD_RE.match(clause):
@@ -607,7 +616,17 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def _check_inbox(self) -> None:
         """Check INBOX for unseen messages and dispatch them."""
-        messages = await asyncio.get_running_loop().run_in_executor(None, self._fetch_new_messages)
+        loop = asyncio.get_running_loop()
+
+        async def authorize_on_loop(msg_data: Dict[str, Any]) -> bool:
+            return self._sender_accepted(msg_data["sender_addr"], msg_data)
+
+        def gate(candidate: Dict[str, Any]) -> bool:
+            # Authorization reads profile-scoped policy and pairing state on the adapter's event loop;
+            # the blocking IMAP worker waits for that verdict before asking the server for RFC822.
+            return asyncio.run_coroutine_threadsafe(authorize_on_loop(candidate), loop).result()
+
+        messages = await asyncio.to_thread(self._fetch_new_messages, gate)
         # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched (already marked seen).
         for msg_data in messages:
             await self._dispatch_message(msg_data)
@@ -620,8 +639,18 @@ class EmailAdapter(BasePlatformAdapter):
             self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
             await self._notify_fatal_error()
 
-    def _fetch_new_messages(self) -> List[Dict[str, Any]]:
-        """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+    def _mark_uid_consumed(self, imap: "imaplib.IMAP4", uid: Any) -> None:
+        """Remember a rejected UID and mark it seen without fetching its MIME body."""
+        self._seen_uids.add(uid)
+        self._trim_seen_uids()
+        status, _ = imap.uid("store", uid, "+FLAGS.SILENT", r"(\Seen)")
+        if status != "OK":
+            logger.warning("[Email] Could not mark rejected UID %s seen", uid)
+
+    def _fetch_new_messages(
+        self, preauthorize: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch unseen messages. When *preauthorize* is set, bounded headers are gated before RFC822."""
         results = []
         try:
             with self._inbox() as imap:
@@ -629,6 +658,34 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
+                    if preauthorize is not None:
+                        header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
+                        if header_status != "OK":
+                            continue
+                        try:
+                            raw_headers = header_data[0][1]
+                        except (IndexError, TypeError):
+                            logger.warning("[Email] Unexpected IMAP header response for UID %s, skipping", uid)
+                            self._mark_uid_consumed(imap, uid)
+                            continue
+                        if not isinstance(raw_headers, (bytes, bytearray)):
+                            logger.warning("[Email] Non-bytes IMAP header payload for UID %s, skipping", uid)
+                            self._mark_uid_consumed(imap, uid)
+                            continue
+                        if len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
+                            logger.warning("[Email] Pre-authorization headers exceed %d bytes for UID %s, skipping",
+                                           _MAX_PREAUTH_HEADER_BYTES, uid)
+                            self._mark_uid_consumed(imap, uid)
+                            continue
+                        try:
+                            candidate = self._parse_fetched_headers(uid, raw_headers)
+                            accepted = candidate is not None and preauthorize(candidate)
+                        except Exception as auth_exc:
+                            logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
+                            accepted = False
+                        if not accepted:
+                            self._mark_uid_consumed(imap, uid)
+                            continue
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
@@ -664,9 +721,8 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results
 
-    def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
-        """Parse one RFC822 payload into a dispatchable dict; ``None`` for automated senders. Raises on pathological input (caller logs + continues)."""
-        msg = email_lib.message_from_bytes(raw_email)
+    def _message_metadata(self, uid: bytes, msg: Message) -> Optional[Dict[str, Any]]:
+        """Parse sender-facing headers and authentication without touching the MIME body."""
         if not (sender_addr := _extract_email_address(msg.get("From", ""))):  # never dispatch an empty identity
             logger.debug("[Email] Dropping message with no parseable From address: %r", msg.get("From", ""))
             return None
@@ -677,13 +733,23 @@ class EmailAdapter(BasePlatformAdapter):
         if _is_automated_sender(sender_addr, dict(msg.items())):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)
             return None
-        # Verify From: while the trusted Authentication-Results header is in scope; the verdict is consumed at dispatch (GHSA-rxqh-5572-8m77).
         sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
-                "body": _extract_text_body(msg),
-                "attachments": _extract_attachments(msg, skip_attachments=self._skip_attachments),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
+
+    def _parse_fetched_headers(self, uid: bytes, raw_headers: "bytes | bytearray") -> Optional[Dict[str, Any]]:
+        """Parse the bounded IMAP header preflight without constructing a MIME tree."""
+        return self._message_metadata(uid, BytesHeaderParser().parsebytes(bytes(raw_headers)))
+
+    def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
+        """Parse an authorized RFC822 payload into a dispatchable dict."""
+        msg = email_lib.message_from_bytes(raw_email)
+        if (metadata := self._message_metadata(uid, msg)) is None:
+            return None
+        metadata.update(body=_extract_text_body(msg),
+                        attachments=_extract_attachments(msg, skip_attachments=self._skip_attachments))
+        return metadata
 
     @staticmethod
     def _allow_all_senders() -> bool:

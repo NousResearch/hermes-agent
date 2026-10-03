@@ -93,18 +93,40 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_module_argv(self):
-        """_resolve_hermes_bin uses the running interpreter's module argv when hermes_cli is
+        """_resolve_hermes_bin uses this checkout's launcher bootstrap when hermes_cli is
         importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
         lookup would re-exec an attacker-planted executable on /update and /restart)."""
-        import sys
+        from pathlib import Path
+
+        import gateway.run as gateway_run
         from gateway.run import _resolve_hermes_bin
+        from hermes_cli._launchers import runtime_command
 
         fake_spec = MagicMock()
         with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 
-        assert result == [sys.executable, "-m", "hermes_cli.main"]
+        assert result == runtime_command(Path(gateway_run.__file__).resolve().parents[1])
+        assert "/tmp/attacker/hermes" not in result
+
+    def test_resolve_hermes_bin_starts_hermes_without_an_installed_package(self, tmp_path):
+        """The /update and /restart argv must carry the checkout onto ``sys.path`` itself.
+        Under the store runtime ``hermes_cli`` is importable in the gateway only through the
+        launcher's path entry, and a bare ``-m hermes_cli.main`` child died with
+        ``No module named 'hermes_cli'``. Run it from a foreign cwd with no PYTHONPATH."""
+        import os
+        import subprocess
+
+        from gateway.run import _resolve_hermes_bin
+
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        proc = subprocess.run(
+            [*_resolve_hermes_bin(), "--version"],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "No module named" not in proc.stderr
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):

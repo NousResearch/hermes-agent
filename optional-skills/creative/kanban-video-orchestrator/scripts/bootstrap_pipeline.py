@@ -432,7 +432,7 @@ def render_soul_md(team_member: dict, plan: dict) -> str:
         "stream=codec_name,width,height,r_frame_rate <file.mp4>\n"
         "\n"
         "# Extract a frame for QA\n"
-        "ffmpeg -y -i <input.mp4> -vf \"select='eq(n,30)'\" -vsync vfr <out.png>\n"
+        "ffmpeg -y -i <input.mp4> -vf \"select='eq(n,30)'\" -fps_mode vfr <out.png>\n"
         "```"
     )
 

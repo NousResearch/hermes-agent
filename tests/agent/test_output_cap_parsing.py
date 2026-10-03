@@ -250,3 +250,45 @@ class TestParseOpenAiCompletionSplit:
                "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert not is_output_cap_error(msg)
+
+
+class TestParseDirectComparisonOutputCaps:
+    """#128171: Common OpenAI-compatible provider wordings that state the output cap
+    as a direct comparison rather than context-breakdown or bounded range."""
+
+    @pytest.mark.parametrize("msg, expected", [
+        ("max_tokens exceeds the limit of 65536 (request id: 20260929153625350699347ECbz8YfE)", 65536),
+        ("HTTP 400: max_tokens exceeds the limit of 32768", 32768),
+        ("max_tokens cannot exceed the limit of 16384", 16384),
+        ("'max_tokens': 65536 is greater than the maximum of 4096 - 'max_tokens'", 4096),
+        ("max_tokens is greater than the maximum of 8192", 8192),
+        ("max_tokens cannot be greater than max_model_len=8192", 8192),
+        ("max_tokens cannot be greater than max_model_len=8192 (request id: req_abc123)", 8192),
+        ("max_tokens cannot be greater than 4096", 4096),
+    ])
+    def test_direct_comparison_parses_cap(self, msg, expected):
+        assert parse_available_output_tokens_from_error(msg) == expected
+
+    @pytest.mark.parametrize("msg", [
+        "max_tokens exceeds the limit of 65536 (request id: 20260929153625350699347ECbz8YfE)",
+        "'max_tokens': 65536 is greater than the maximum of 4096 - 'max_tokens'",
+        "max_tokens cannot be greater than max_model_len=8192 (request id: req_abc123)",
+        "max_tokens cannot be greater than 4096",
+    ])
+    def test_direct_comparison_is_output_cap(self, msg):
+        assert is_output_cap_error(msg) is True
+
+    @pytest.mark.parametrize("msg", [
+        "temperature cannot be greater than 2",
+        "top_p cannot be greater than 1",
+        "temperature exceeds the limit of 2",
+        "top_p exceeds the limit of 1",
+        "temperature is greater than the maximum of 2",
+        "top_p is greater than the maximum of 1",
+        "Invalid value for 'temperature': temperature cannot be greater than 2",
+        "Invalid value for 'top_p': top_p cannot be greater than 1",
+    ])
+    def test_non_token_fields_are_not_output_cap(self, msg):
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+

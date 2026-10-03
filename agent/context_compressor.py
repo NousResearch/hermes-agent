@@ -5043,8 +5043,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # occurrence of it. When the original survived in the protected head,
         # retaining it gives the durable transcript two active rows with the
         # same message_uid and renders the request twice after reload.
-        replay_uid = replay.get("message_uid")
-        if isinstance(replay_uid, str) and replay_uid:
+        from agent.message_metadata import MESSAGE_UID, message_uid_or_none, record_absorbed_message
+
+        if replay_uid := message_uid_or_none(replay):
             before = len(compressed)
             compressed[:] = [
                 msg
@@ -5052,7 +5053,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 if not (
                     msg is not carrier
                     and msg.get("role") == "user"
-                    and msg.get("message_uid") == replay_uid
+                    and msg.get(MESSAGE_UID) == replay_uid
                 )
             ]
             # The summary role was picked against a head that ended on the row
@@ -5080,8 +5081,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             drop_stale_api_content(carrier)
             # The carrier absorbed a durable user turn: record its uid (merge witness).
-            from agent.message_metadata import record_absorbed_message
-
             record_absorbed_message(carrier, inflight)
             return compressed
 

@@ -459,6 +459,13 @@ def provably_same_skill(skill_mds) -> bool:
         return False
 
 
+def skill_candidate_rank(skill_md, root) -> Tuple[bool, int]:
+    """Same-root order of identical copies: a real SKILL.md beats a legacy flat ``<name>.md``,
+    then the shallower path wins (shared by skill_view and :func:`resolve_skill_catalog`)."""
+    skill_md = Path(skill_md)
+    return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
+
+
 def pick_skill_candidate(candidates) -> Tuple[Optional[int], List[int]]:
     """Winner index among one identifier's ``(tier, root, rank, skill_md)`` candidates, plus the
     winning tier's contender indexes. The lowest tier wins; inside it a lone candidate wins, identical
@@ -495,8 +502,8 @@ def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     winner: Dict[str, Optional[int]] = {}
     for alias, idxs in owners.items():
         won, _ = pick_skill_candidate([
-            (out[j]["tier"], str(out[j]["root"]), (False, len(PurePath(out[j]["relative_path"]).parts) + 1),
-             out[j]["path"]) for j in idxs])
+            (out[j]["tier"], str(out[j]["root"]), skill_candidate_rank(out[j]["path"], out[j]["root"]), out[j]["path"])
+            for j in idxs])
         winner[alias] = None if won is None else idxs[won]
     for i, e in enumerate(out):
         name, rel = str(e["name"]), e["relative_path"]

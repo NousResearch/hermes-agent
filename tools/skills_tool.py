@@ -489,18 +489,12 @@ def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     return max(owners, key=lambda d: len(d.parts), default=None)
 
 
-def _rank_same_root_candidate(candidate, root: Path) -> tuple:
-    """Real SKILL.md beats a legacy flat ``<name>.md``, then the shallower path wins."""
-    _skill_dir, skill_md = candidate
-    return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
-
-
 def _locate_skill(name: str, local_category_name: Optional[str], roots):
     """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
     skill_md)``; skill_md set iff no error."""
-    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate
+    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate, skill_candidate_rank
     all_dirs = [d for _t, d in roots]
     if not all_dirs:
         return _fail(
@@ -510,7 +504,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
     if len(candidates) > 1:
         owned = [(c, _owning_search_dir(c[1], all_dirs)) for c in candidates]
         won, contenders = pick_skill_candidate([
-            (tier_of[root], str(root), _rank_same_root_candidate(c, root), c[1]) for c, root in owned])
+            (tier_of[root], str(root), skill_candidate_rank(c[1], root), c[1]) for c, root in owned])
         if won is not None:
             if dropped := [str(smd) for i, (_sd, smd) in enumerate(candidates) if i != won]:
                 logger.info("Skill '%s' resolved to %s by precedence (project > local > create_dir > "

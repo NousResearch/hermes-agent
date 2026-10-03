@@ -29,7 +29,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _is_link, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -646,8 +646,34 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        with _staged_upload(target, overwrite=payload.overwrite) as out:
+            out.write(data)
     return _managed_write_result(policy, target, display_path)
+
+
+@contextlib.contextmanager
+def _staged_upload(target: Path, *, overwrite: bool):
+    """Yield a sibling temp file; publish it at ``target`` only once the body
+    completes, so a failed or aborted upload leaves the existing entry as it was.
+
+    Publication acts on the entry itself (a link there is replaced, never
+    written through), and create-only publication is atomic: ``os.link``
+    refuses any entry present at that moment, a dangling link or a file
+    another writer created after admission included.
+    """
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            yield out
+        if overwrite:
+            os.replace(tmp_path, target)
+        else:
+            os.link(tmp_path, target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="File already exists")
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 async def stream_upload_to_path(
@@ -657,22 +683,19 @@ async def stream_upload_to_path(
     too_large: str,
     not_writable: str,
     write_failed: str,
+    overwrite: bool = True,
 ) -> int:
     """Stream a multipart upload to ``target`` in chunks; returns bytes written.
 
-    Writes a sibling temp file first so a partial/aborted upload never clobbers
-    an existing file, enforces ``_MANAGED_FILE_MAX_BYTES`` as it goes (413
-    ``too_large``), then atomically renames into place. The temp file is
-    removed on EVERY non-success exit — including asyncio.CancelledError when a
-    browser aborts a large upload mid-stream.
+    Staged through ``_staged_upload``, so a partial, aborted (including
+    asyncio.CancelledError when a browser aborts mid-stream) or refused upload
+    never clobbers the existing entry. Enforces ``_MANAGED_FILE_MAX_BYTES`` as
+    it goes (413 ``too_large``).
     """
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES, _UPLOAD_CHUNK_BYTES
-    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
-    tmp_path = Path(tmp_name)
     total = 0
-    renamed = False
     try:
-        with os.fdopen(tmp_fd, "wb") as out:
+        with _io_errors(not_writable, write_failed), _staged_upload(target, overwrite=overwrite) as out:
             while True:
                 chunk = await file.read(_UPLOAD_CHUNK_BYTES)
                 if not chunk:
@@ -681,15 +704,7 @@ async def stream_upload_to_path(
                 if total > _MANAGED_FILE_MAX_BYTES:
                     raise HTTPException(status_code=413, detail=too_large)
                 out.write(chunk)
-        os.replace(tmp_path, target)
-        renamed = True
-    except PermissionError:
-        raise HTTPException(status_code=403, detail=not_writable)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"{write_failed}: {exc}")
     finally:
-        if not renamed:
-            tmp_path.unlink(missing_ok=True)
         await file.close()
     return total
 
@@ -711,6 +726,7 @@ async def upload_managed_file_stream(
         too_large="File is too large",
         not_writable="File is not writable",
         write_failed="Could not write file",
+        overwrite=overwrite,
     )
     return _managed_write_result(policy, target, display_path)
 
@@ -727,16 +743,21 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 
 @router.delete("/api/files")
 async def delete_managed_file(payload: ManagedFileDelete, request: Request):
-    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
-    if not target.exists():
+    # exists() follows the link, so a dangling link must still count as present.
+    is_link = _is_link(target)
+    if not (is_link or target.exists()):
         raise HTTPException(status_code=404, detail="Path not found")
 
+    # A link is unlinked AS the link: is_dir() would chase a link to a directory
+    # and rmtree() would take the referent's whole tree with it.
+    is_dir = not is_link and target.is_dir()
     try:
-        if target.is_dir():
+        if is_dir:
             if payload.recursive:
                 shutil.rmtree(target)
             else:
@@ -744,7 +765,7 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         else:
             target.unlink()
     except OSError as exc:
-        status_code = 409 if target.is_dir() and not payload.recursive else 500
+        status_code = 409 if is_dir and not payload.recursive else 500
         raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 

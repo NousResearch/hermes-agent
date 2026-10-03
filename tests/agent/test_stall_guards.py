@@ -380,6 +380,22 @@ def test_ignores_conversational_future_offers():
     )
 
 
+def test_detects_trailing_continue_intent_cjk():
+    """CJK half of the language support: a Chinese ``让我……`` announcement ending a
+    mid-task turn is the same stall shape as the Latin one."""
+    assert trailing_continue_intent("扫描完成。让我用更多关键词做更全面的扫描。")
+    assert trailing_continue_intent("好的，接下来我来检查一下日志。")
+
+
+def test_cjk_conclusion_clause_is_not_a_dangling_ack():
+    # "让我先扫一遍，结论是……" hands the outcome back — a conclusion, not an announcement.
+    assert not trailing_continue_intent("让我先扫一遍，结论是配置没问题。")
+
+
+def test_cjk_without_action_verb_is_not_a_dangling_ack():
+    assert not trailing_continue_intent("让我想想。")
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 

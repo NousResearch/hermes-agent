@@ -627,9 +627,16 @@ def _split_text_for_speak_stream(text: str, cap: int) -> list:
     cap = cap if cap and cap > 0 else 4000
     pieces, buf = [], ""
     for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):
+        if len(sentence) > cap and buf:
+            # The chopped heads below go straight to ``pieces``; the text before them goes first.
+            pieces.append(buf)
+            buf = ""
         while len(sentence) > cap:
-            pieces.append(sentence[:cap])
-            sentence = sentence[cap:]
+            # Cut at the last whitespace within the cap so a word is never split; hard-cut a lone giant token.
+            m = re.match(r"(.*\S)\s", sentence[:cap + 1], re.S)
+            head = m.group(1) if m else sentence[:cap]
+            pieces.append(head)
+            sentence = sentence[len(head):].lstrip()
         if buf and len(buf) + len(sentence) + 1 > cap:
             pieces.append(buf)
             buf = sentence

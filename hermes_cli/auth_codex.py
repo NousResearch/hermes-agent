@@ -68,7 +68,23 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
 
 
 def _codex_base_url() -> str:
-    return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+    """Host a singleton Codex credential is sent to: the ``HERMES_CODEX_BASE_URL`` override of the
+    profile that owns the credential, else canonical chatgpt.com.
+
+    Read through the profile scope, never ``os.environ``, for the same reason the pooled route does
+    (#121486): on a multiplexed gateway the raw process env is the *launch* profile's gateway, so a
+    routed sibling's token would be addressed to it. Outside multiplexing ``get_secret_str`` still
+    falls through to the process env, so single-profile deployments are unaffected.
+
+    An unscoped read while multiplexing is on cannot name the owning profile, so it degrades to the
+    canonical host — the same answer ``_codex_pool_route_base_url`` already produces in that state,
+    rather than a new failure mode on the credential path.
+    """
+    override = ""
+    with suppress(Exception):
+        from agent.secret_scope import get_secret_str
+        override = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    return override or DEFAULT_CODEX_BASE_URL
 
 
 def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:

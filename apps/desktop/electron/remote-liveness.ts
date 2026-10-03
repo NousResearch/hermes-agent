@@ -366,13 +366,18 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 // later. Keep this comfortably above the dispatch probe timeout so overlapping
 // signals can never queue back-to-back sweeps into a hot loop.
 export const POWER_RESUME_REVALIDATION_HOLDOFF_MS = 15_000
+export const POWER_RESUME_TRANSPORT_RESET_TIMEOUT_MS = 3_000
+
+type PowerResumeEvent = 'resume' | 'unlock-screen'
 
 export interface AttachPowerResumeRemoteRevalidationOptions {
   log: (message: string) => void
   now?: () => number
+  notifyResume?: () => void
   // Method syntax (bivariant) so Electron's overloaded PowerMonitor.on
   // satisfies this structural seam while tests can pass a tiny fake.
   powerMonitor: { on(event: 'resume' | 'unlock-screen', listener: () => void): unknown }
+  resetTransports?: () => Promise<unknown>
   revalidate: () => Promise<unknown>
 }
 
@@ -380,22 +385,61 @@ export interface AttachPowerResumeRemoteRevalidationOptions {
  * Wire the suspect-pool sweep to the Electron powerMonitor seam (#93910).
  *
  * Returns the trigger so tests (and the network-restore nudge, if main ever
- * wants one) can drive the exact code path the events run. The trigger is a
- * plain function: holdoff first (one sweep per wake window, never a hot
- * loop), then a fire-and-forget revalidation whose rejection is logged and
- * swallowed — a broken sweep must never take down the resume handler or wedge
- * future wakes.
+ * wants one) can drive the exact code path the events run.
+ * Transport cleanup is resume-only and bounded. Every event still nudges the
+ * renderer, including events inside the sweep holdoff and failed cleanup. An
+ * unlock during cleanup joins it so new requests cannot race the pool reset.
  */
 export function attachPowerResumeRemoteRevalidation({
   log,
   now = Date.now,
+  notifyResume,
   powerMonitor,
+  resetTransports,
   revalidate
-}: AttachPowerResumeRemoteRevalidationOptions): () => Promise<void> {
+}: AttachPowerResumeRemoteRevalidationOptions): (event?: PowerResumeEvent) => Promise<void> {
   let lastKickAt: null | number = null
+  let lastResetAt: null | number = null
+  let resetInFlight: null | Promise<unknown> = null
 
-  const trigger = async (): Promise<void> => {
+  const trigger = async (event: PowerResumeEvent = 'resume'): Promise<void> => {
     const at = now()
+
+    try {
+      if (
+        event === 'resume' &&
+        resetTransports &&
+        !resetInFlight &&
+        (lastResetAt === null || at - lastResetAt >= POWER_RESUME_REVALIDATION_HOLDOFF_MS)
+      ) {
+        lastResetAt = at
+        let timer: ReturnType<typeof setTimeout>
+        resetInFlight = Promise.race([
+          Promise.resolve().then(resetTransports),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error('HTTP transport cleanup timed out; reconnecting anyway')),
+              POWER_RESUME_TRANSPORT_RESET_TIMEOUT_MS
+            )
+          })
+        ]).finally(() => {
+          clearTimeout(timer)
+          resetInFlight = null
+        })
+      }
+
+      if (resetInFlight) {
+        await resetInFlight
+      }
+    } catch (error) {
+      log(`Post-resume transport cleanup failed (${error instanceof Error ? error.message : String(error)}).`)
+    } finally {
+      try {
+        notifyResume?.()
+      } catch (error) {
+        log(`Renderer wake notification failed (${error instanceof Error ? error.message : String(error)}).`)
+      }
+    }
 
     if (lastKickAt !== null && at - lastKickAt < POWER_RESUME_REVALIDATION_HOLDOFF_MS) {
       return
@@ -412,8 +456,8 @@ export function attachPowerResumeRemoteRevalidation({
     }
   }
 
-  powerMonitor.on('resume', () => void trigger())
-  powerMonitor.on('unlock-screen', () => void trigger())
+  powerMonitor.on('resume', () => void trigger('resume'))
+  powerMonitor.on('unlock-screen', () => void trigger('unlock-screen'))
 
   return trigger
 }

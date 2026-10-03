@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   attachPowerResumeRemoteRevalidation,
   POWER_RESUME_REVALIDATION_HOLDOFF_MS,
+  POWER_RESUME_TRANSPORT_RESET_TIMEOUT_MS,
   RemoteLivenessTracker,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
@@ -184,6 +185,117 @@ describe('attachPowerResumeRemoteRevalidation (#93910)', () => {
       }
     }
   }
+
+  it('resets before every renderer redial, coalesces wake bursts, and never resets for unlock alone', async () => {
+    const order: string[] = []
+    let finish!: () => void
+
+    const pending = new Promise<void>(resolve => {
+      finish = resolve
+    })
+
+    const resetTransports = vi
+      .fn()
+      .mockImplementationOnce(() => pending)
+      .mockResolvedValue(undefined)
+
+    let now = 1_000_000
+
+    const trigger = attachPowerResumeRemoteRevalidation({
+      log: vi.fn(),
+      now: () => now,
+      notifyResume: () => order.push('notify'),
+      powerMonitor: fakePowerMonitor(),
+      resetTransports,
+      revalidate: async () => {
+        order.push('sweep')
+      }
+    })
+
+    const wake = trigger('resume')
+    const unlock = trigger('unlock-screen')
+    const bounce = trigger('resume')
+    await Promise.resolve()
+    expect(resetTransports).toHaveBeenCalledTimes(1)
+    expect(order).toEqual([])
+    finish()
+    await Promise.all([wake, unlock, bounce])
+    expect(order.filter(step => step === 'notify')).toHaveLength(3)
+    expect(order.filter(step => step === 'sweep')).toHaveLength(1)
+    expect(order[0]).toBe('notify')
+
+    await trigger('resume')
+    expect(order.filter(step => step === 'notify')).toHaveLength(4)
+    expect(resetTransports).toHaveBeenCalledTimes(1)
+    now += POWER_RESUME_REVALIDATION_HOLDOFF_MS + 1
+    await trigger('unlock-screen')
+    expect(resetTransports).toHaveBeenCalledTimes(1)
+    // Unlock can start a sweep but cannot suppress cleanup for the next wake.
+    await trigger('resume')
+    expect(resetTransports).toHaveBeenCalledTimes(2)
+    expect(order.filter(step => step === 'notify')).toHaveLength(6)
+  })
+
+  it('notifies and revalidates after stuck or throwing cleanup, and recovers on a later wake', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const log = vi.fn()
+
+      const notifyResume = vi.fn().mockImplementationOnce(() => {
+        throw new Error('renderer unavailable')
+      })
+
+      const revalidate = vi.fn(async () => undefined)
+      let rejectLate!: (error: Error) => void
+
+      const resetTransports = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectLate = reject
+            })
+        )
+        .mockImplementationOnce(() => {
+          throw new Error('partition unavailable')
+        })
+        .mockResolvedValue(undefined)
+
+      const trigger = attachPowerResumeRemoteRevalidation({
+        log,
+        notifyResume,
+        powerMonitor: fakePowerMonitor(),
+        resetTransports,
+        revalidate
+      })
+
+      const stuck = trigger('resume')
+      await vi.advanceTimersByTimeAsync(POWER_RESUME_TRANSPORT_RESET_TIMEOUT_MS)
+      await stuck
+      expect(notifyResume).toHaveBeenCalledTimes(1)
+      expect(revalidate).toHaveBeenCalledTimes(1)
+      rejectLate(new Error('late failure'))
+      await Promise.resolve()
+
+      await vi.advanceTimersByTimeAsync(POWER_RESUME_REVALIDATION_HOLDOFF_MS + 1)
+      await trigger('resume')
+      expect(notifyResume).toHaveBeenCalledTimes(2)
+      expect(revalidate).toHaveBeenCalledTimes(2)
+      expect(log.mock.calls.map(call => call[0]).join('\n')).toMatch(
+        /timed out[\s\S]*renderer unavailable[\s\S]*partition unavailable/
+      )
+
+      await vi.advanceTimersByTimeAsync(POWER_RESUME_REVALIDATION_HOLDOFF_MS + 1)
+      await trigger('resume')
+      expect(resetTransports).toHaveBeenCalledTimes(3)
+      expect(notifyResume).toHaveBeenCalledTimes(3)
+      expect(revalidate).toHaveBeenCalledTimes(3)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   it('kicks one bounded revalidation per resume, coalescing resume + unlock-screen bursts (no hot loop)', async () => {
     const powerMonitor = fakePowerMonitor()

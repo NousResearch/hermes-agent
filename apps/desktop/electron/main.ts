@@ -43,6 +43,7 @@ import {
   jsonAgentFor,
   readJsonErrorBody,
   readStatusCode,
+  resetKeepaliveTransports,
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
@@ -554,6 +555,7 @@ import {
 import { selectPathsDialogProperties } from './select-paths-dialog'
 import { selectRunnableBinary } from './select-runnable-binary'
 import {
+  broadcastPowerResume,
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -6643,17 +6645,12 @@ function sendOpenFolderRequested() {
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
 function sendPowerResume() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:power-resume')
+  // All app chat/browser/peer windows register here, regardless of glass or
+  // platform settings. OAuth dialogs and guest content are never registered.
+  broadcastPowerResume(
+    BrowserWindow.getAllWindows().filter(win => translucencyBackedWindows.has(win)),
+    rememberLog
+  )
 }
 
 let powerResumeRegistered = false
@@ -6691,22 +6688,29 @@ function registerPowerResumeListeners() {
   powerResumeRegistered = true
 
   try {
-    // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
-    // full suspend. Either can drop an idle socket.
-    powerMonitor.on('resume', sendPowerResume)
-    powerMonitor.on('unlock-screen', sendPowerResume)
+    // Cleanup precedes renderer redials, but cannot block them indefinitely.
+    // Register recovery before battery reads so those cannot disable wake IPC.
+    attachPowerResumeRemoteRevalidation({
+      log: rememberLog,
+      notifyResume: sendPowerResume,
+      powerMonitor,
+      resetTransports: async () => {
+        if (!primaryBackendIsRemote() && ![...backendPool.values()].some(entry => entry.remoteBaseUrl)) {
+          return
+        }
+
+        const sessions = [oauthSession, ...oauthSessionsByPartition.values()].filter(Boolean)
+        const resets = await resetKeepaliveTransports(sessions)
+        const failures = resets.filter(result => result.status === 'rejected').length
+        rememberLog(
+          `[wake] Reset gateway HTTP transports (${failures} failed); cookies and server-side sessions preserved.`
+        )
+      },
+      revalidate: () => revalidateSuspectPoolAfterResume()
+    })
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
     onBatteryPower = powerMonitor.isOnBatteryPower()
-    // Pooled remote/SSH backends are also suspect after a wake (#93910): the
-    // renderer nudge above only re-drives the PRIMARY socket, while pooled
-    // tunnels have no renderer loop of their own. Bounded + coalesced inside;
-    // never a hot loop.
-    attachPowerResumeRemoteRevalidation({
-      log: rememberLog,
-      powerMonitor,
-      revalidate: () => revalidateSuspectPoolAfterResume()
-    })
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.

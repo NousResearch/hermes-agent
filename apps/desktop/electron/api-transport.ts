@@ -61,6 +61,26 @@ function destroyKeepaliveAgents() {
   }
 }
 
+interface GatewayHttpSession {
+  closeAllConnections(): Promise<void>
+}
+
+// Wake can leave idle pooled sockets half-open. Do not destroy in-use Node
+// sockets: a submitted POST may already have been processed, and downloads
+// must finish without replay. Chromium has no idle-only equivalent; callers
+// supply only gateway cookie sessions and invoke this on resume, never unlock.
+async function resetKeepaliveTransports(sessions: Iterable<GatewayHttpSession>) {
+  for (const agent of [HTTP_JSON_AGENT, HTTPS_JSON_AGENT, HTTP_DOWNLOAD_AGENT, HTTPS_DOWNLOAD_AGENT]) {
+    for (const sockets of Object.values(agent.freeSockets)) {
+      for (const socket of sockets ?? []) {
+        socket.destroy()
+      }
+    }
+  }
+
+  return Promise.allSettled([...new Set(sessions)].map(async session => session.closeAllConnections()))
+}
+
 // Transient transport errors: retry MAY be safe (subject to verb gating).
 const TRANSIENT_CODES = new Set([
   'ECONNRESET',
@@ -278,6 +298,7 @@ export {
   jsonAgentFor,
   readJsonErrorBody,
   readStatusCode,
+  resetKeepaliveTransports,
   shouldRetryRequest,
   withRetry
 }

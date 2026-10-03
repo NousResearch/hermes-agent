@@ -18,11 +18,13 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import {
   destroyKeepaliveAgents,
+  downloadAgentFor,
   htmlResponseError,
   httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,
+  resetKeepaliveTransports,
   shouldRetryRequest,
   withRetry
 } from './api-transport'
@@ -248,6 +250,115 @@ function listen(server: http.Server): Promise<string> {
     })
   })
 }
+
+describe('wake transport cleanup', () => {
+  it('closes each cookie session once and settles rejected promises and synchronous throws independently', async () => {
+    let finish!: () => void
+    let closes = 0
+
+    const session = {
+      closeAllConnections: () => {
+        closes += 1
+
+        return new Promise<void>(resolve => {
+          finish = resolve
+        })
+      }
+    }
+
+    const reset = resetKeepaliveTransports([
+      session,
+      { closeAllConnections: () => Promise.reject(new Error('rejected')) },
+      {
+        closeAllConnections: () => {
+          throw new Error('unavailable')
+        }
+      },
+      session
+    ])
+
+    expect(closes).toBe(1)
+    finish()
+    expect((await reset).map(result => result.status)).toEqual(['fulfilled', 'rejected', 'rejected'])
+  })
+
+  it('replaces stale idle sockets while a submitted POST and download finish without replay', async () => {
+    let idleSocket: http.IncomingMessage['socket']
+    let postResponse!: http.ServerResponse
+    let downloadResponse!: http.ServerResponse
+    let postArrived!: () => void
+    let downloadArrived!: () => void
+
+    const arrived = Promise.all([
+      new Promise<void>(resolve => {
+        postArrived = resolve
+      }),
+      new Promise<void>(resolve => {
+        downloadArrived = resolve
+      })
+    ])
+
+    let posts = 0
+
+    const server = http.createServer((req, res) => {
+      if (req.method === 'POST') {
+        posts += 1
+        postResponse = res
+        req.resume()
+        req.on('end', postArrived)
+      } else if (req.url === '/download') {
+        downloadResponse = res
+        res.write('first-')
+        downloadArrived()
+      } else {
+        // A stale pool socket stalls, while fresh sockets stay healthy.
+        if (req.socket === idleSocket) {
+          return
+        }
+
+        idleSocket ??= req.socket
+        res.end(JSON.stringify({ port: req.socket.remotePort }))
+      }
+    })
+
+    const base = await listen(server)
+
+    const request = (pathname: string, method = 'GET', agent = jsonAgentFor('http:')) =>
+      new Promise<string>((resolve, reject) => {
+        const req = http.request(base + pathname, { method, agent }, res => {
+          let body = ''
+          res.on('data', chunk => {
+            body += chunk
+          })
+          res.on('end', () => resolve(body))
+          res.on('error', reject)
+        })
+
+        req.on('error', reject)
+        req.setTimeout(5000, () => req.destroy(new Error('stale socket timed out')))
+        req.end(method === 'POST' ? 'submit-once' : undefined)
+      })
+
+    try {
+      const submitted = request('/prompt', 'POST')
+      const downloading = request('/download', 'GET', downloadAgentFor('http:'))
+      await arrived
+      const prime = JSON.parse(await request('/health'))
+      await new Promise<void>(resolve => setImmediate(resolve))
+      await resetKeepaliveTransports([])
+      const recovered = JSON.parse(await request('/health'))
+      expect(recovered.port).not.toBe(prime.port)
+      postResponse.end('accepted')
+      downloadResponse.end('last')
+      expect(await submitted).toBe('accepted')
+      expect(await downloading).toBe('first-last')
+      expect(posts).toBe(1)
+    } finally {
+      server.closeAllConnections()
+      server.close()
+    }
+  }, 20_000)
+})
 
 describe('live: GET burst against a server that resets keep-alive sockets', () => {
   it('bare attempts fail with ECONNRESET/hang-up; retried GETs all succeed', async () => {

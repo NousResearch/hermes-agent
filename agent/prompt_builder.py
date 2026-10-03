@@ -24,8 +24,8 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_index_names_only, skill_matches_apps,
+    skill_matches_environment, skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_signature
@@ -1206,8 +1206,9 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v2 added org provenance fields (org_id/org_author); v4 adds skill_path for collision labels.
+# Older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1287,6 +1288,8 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     platforms = [platforms] if isinstance(platforms, str) else platforms
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
+        # Path under the skills dir (``_org/<id>/...`` included): the id skill_view accepts when the name is ambiguous.
+        "skill_path": skill_file.parent.relative_to(skills_dir).as_posix(),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
@@ -1363,7 +1366,8 @@ def build_skills_system_prompt(
     """Compact skill index for the system prompt.
 
     External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
-    ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
+    ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden;
+    ``skills.index_descriptions: names_only`` demotes every category.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
@@ -1423,6 +1427,9 @@ def _collect_extra_skills(
             logger.debug(log_fmt, skill_file, e)
 
 
+_COLLISION_LABEL = "[name collision"
+
+
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
     """Org labeling + FAIL-LOUD collisions: a personal/org name clash flags BOTH
     entries (neither silently wins) and skill_view refuses the bare name."""
@@ -1436,32 +1443,47 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
             desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
         category = f"org:{org_id}" if org_id else (entry.get("category") or "general")
         if len(name_owners[fm]) > 1:
-            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
+            # skill_view refuses the bare name, so print the exact path that loads THIS copy.
+            path = entry.get("skill_path")
+            load = f'load with skill_view("{path}")' if path else "load via its path"
+            desc = f"{_COLLISION_LABEL} — also exists {'personally' if org_id else 'in your org'}; {load}] {desc}".strip()
         skills_by_category.setdefault(category, []).append((fm, desc))
 
 
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
-    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", names_only: bool = False,
 ) -> str:
-    """Render the ## Skills block; "" when there is nothing to list."""
+    """Render the ## Skills block; "" when there is nothing to list. ``names_only``
+    (``skills.index_descriptions``) demotes every category."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
-    hidden_note = (
-        "\n(Categories marked [names only] are outside the current coding "
-        "context, so their descriptions are omitted — the skills work "
-        "normally and load with skill_view(name) as usual.)"
-    ) if demoted else ""
+    if names_only:
+        demoted = frozenset(skills_by_category)
+        hidden_note = ("\n(Skill descriptions are omitted from this index by configuration only — "
+                       "skill_view(name) still loads the skill's full SKILL.md.)")
+    else:
+        demoted = frozenset(cat for cat in skills_by_category
+                            if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        ) if demoted else ""
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
         if category in demoted:
-            index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
+            # A colliding name keeps its labelled line: the bare name does not load, and a names-only
+            # line would hide both the ambiguity and the path that does.
+            ambiguous = sorted({(n, d) for n, d in entries if d.startswith(_COLLISION_LABEL)})
+            plain = sorted({n for n, _ in entries} - {n for n, _ in ambiguous})
+            index_lines.append(f"  {category} [names only]: {', '.join(plain)}".rstrip())
+            index_lines.extend(f"    - {name}: {desc}" for name, desc in ambiguous)
             continue
         cat_desc = category_descriptions.get(category, "")
         index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
@@ -1513,12 +1535,13 @@ def _build_skills_system_prompt_inner(
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    names_only = skill_index_names_only()
     project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())), names_only,
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)
@@ -1582,7 +1605,8 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools,
+                                  names_only=names_only)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

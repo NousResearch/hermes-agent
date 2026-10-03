@@ -140,6 +140,32 @@ class TestListingCollisionsAndLabels:
         # BOTH entries flagged — neither silently wins.
         assert out.count("[name collision") == 2
 
+    def test_names_only_keeps_collision_label_and_a_loadable_path(self, tmp_path, monkeypatch):
+        """skills.index_descriptions: names_only must not collapse a colliding name into a plain
+        names-only line: the bare name does not load, so each copy keeps its label and the path
+        printed there really loads that copy through skill_view."""
+        import re
+        from tools.skills_tool import skill_view
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("skills:\n  index_descriptions: names_only\n", encoding="utf-8")
+        skills, pb = self._render(tmp_path, monkeypatch)
+        _mk_skill(skills, "research/deploy", name="deploy", body="personal copy\n")
+        _mk_skill(skills, f"{sku.ORG_MIRROR_DIR_NAME}/acme/devops/deploy", name="deploy", body="org copy\n")
+        _mk_skill(skills, "research/arxiv")
+        _mark_active(skills, "acme")
+
+        out = pb.build_skills_system_prompt()
+        assert out.count("[name collision") == 2
+        assert "research [names only]: arxiv" in out  # unambiguous names still demote
+        paths = re.findall(r'skill_view\("([^"]+)"\)', out)
+        assert sorted(paths) == ["_org/acme/devops/deploy", "research/deploy"]
+        assert json.loads(skill_view("deploy"))["success"] is False  # the bare name really is ambiguous
+        bodies = {p: json.loads(skill_view(p)) for p in paths}
+        assert all(r["success"] for r in bodies.values()), bodies
+        assert "personal copy" in bodies["research/deploy"]["content"]
+        assert "org copy" in bodies["_org/acme/devops/deploy"]["content"]
+
     def test_no_collision_flag_when_unique(self, tmp_path, monkeypatch):
         skills, pb = self._render(tmp_path, monkeypatch)
         _mk_skill(skills, "personal-a")

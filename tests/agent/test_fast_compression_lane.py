@@ -4,6 +4,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _resolve(config, *, provider="ollama", model="qwen3:8b", requested_model=None):
     from agent.auxiliary_client import resolve_compression_fast_lane
@@ -155,7 +157,8 @@ def test_compression_latency_records_delayed_first_provider_chunk():
     assert timings["summary_generation_ms"] >= timings["time_to_first_progress_ms"]
 
 
-def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
+@pytest.mark.parametrize("task", ["compression", "micro_compaction"])
+def test_certified_compression_family_fast_lane_preserves_reasoning(task):
     from agent.auxiliary_client import call_llm
 
     config = {
@@ -175,7 +178,7 @@ def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
         patch("agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         assert call_llm(
-            task="compression",
+            task=task,
             messages=[{"role": "user", "content": "summary request"}],
         ) is response
 
@@ -327,7 +330,8 @@ def test_summary_model_override_cap_uses_the_actual_primary_request():
     assert "max_tokens" not in request
 
 
-def test_fallback_reasoning_requires_independent_route_certification():
+@pytest.mark.parametrize("task", ["compression", "micro_compaction"])
+def test_compression_family_fallback_requires_independent_route_certification(task):
     from agent.auxiliary_client import _call_fallback_candidate_sync
 
     response = object()
@@ -351,7 +355,7 @@ def test_fallback_reasoning_requires_independent_route_certification():
                 client,
                 "qwen3:14b",
                 "fallback_chain[0](ollama)",
-                task="compression",
+                task=task,
                 messages=[{"role": "user", "content": "summary request"}],
                 temperature=None,
                 max_tokens=None,

@@ -63,6 +63,20 @@ def test_all_aux_tasks_includes_plugin_registered(patched_manager):
     )
 
 
+def test_micro_compaction_is_builtin_and_reserved_from_plugins(patched_manager):
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+
+    assert any(key == "micro_compaction" for key, _name, _description in _AUX_TASKS)
+
+    ctx = PluginContext(PluginManifest(name="plug"), patched_manager)
+    with pytest.raises(ValueError, match="reserved.*built-in"):
+        ctx.register_auxiliary_task(
+            key="micro_compaction",
+            display_name="Conflicting micro-compaction",
+            description="must not replace the built-in route",
+        )
+
+
 # ── _reset_aux_to_auto includes plugin tasks ─────────────────────────────────
 
 

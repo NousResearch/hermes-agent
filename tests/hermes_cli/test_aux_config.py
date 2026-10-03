@@ -13,7 +13,14 @@ here (they're stdin-driven curses prompts).
 from __future__ import annotations
 
 from hermes_cli.config import load_config
-from hermes_cli.main_provider_setup import _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
+from hermes_cli.main_provider_setup import (
+    _DELEGATION_TASK_KEY,
+    _aux_select_for_task,
+    _delegation_cfg_as_task,
+    _format_aux_current,
+    _reset_aux_to_auto,
+    _save_aux_choice,
+)
 
 # ── Default config ──────────────────────────────────────────────────────────
 
@@ -38,9 +45,87 @@ def test_save_aux_choice_persists_to_config_yaml(tmp_path, monkeypatch):
     assert v["base_url"] == ""
     assert v["api_key"] == ""
 
+
+def test_micro_compaction_picker_auto_removes_route_overrides_preserves_tuning(tmp_path, monkeypatch):
+    from hermes_cli import inventory
+    from hermes_cli import main_provider_setup as setup
+    from hermes_cli.config import save_config
+
+    _isolate_home(tmp_path, monkeypatch)
+    cfg = load_config()
+    cfg["auxiliary"]["micro_compaction"] = {
+        "provider": "custom",
+        "model": "micro-model",
+        "base_url": "https://micro.example/v1",
+        "api_key": "micro-key",
+        "reasoning_effort": "none",
+        "timeout": 17,
+    }
+    save_config(cfg)
+    monkeypatch.setattr(inventory, "build_aux_picker_rows", lambda **_kwargs: [])
+    monkeypatch.setattr(inventory, "format_aux_picker_entries", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(setup, "_prompt_provider_choice", lambda _choices, default=0: 0)
+
+    _aux_select_for_task("micro_compaction")
+
+    micro = load_config()["auxiliary"]["micro_compaction"]
+    assert not ({"provider", "model", "base_url", "api_key", "reasoning_effort"} & micro.keys())
+    assert micro["timeout"] == 17
+
+
+def test_micro_compaction_explicit_route_persists_reasoning_override(tmp_path, monkeypatch):
+    _isolate_home(tmp_path, monkeypatch)
+
+    _save_aux_choice(
+        "micro_compaction", provider="openrouter", model="fast-summary",
+        reasoning_effort="high",
+    )
+
+    micro = load_config()["auxiliary"]["micro_compaction"]
+    assert micro["provider"] == "openrouter"
+    assert micro["model"] == "fast-summary"
+    assert micro["reasoning_effort"] == "high"
+
 # ── _reset_aux_to_auto ──────────────────────────────────────────────────────
 
+
+def test_reset_aux_removes_micro_route_overrides_preserves_tuning(tmp_path, monkeypatch):
+    from hermes_cli.config import save_config
+
+    _isolate_home(tmp_path, monkeypatch)
+    cfg = load_config()
+    cfg["auxiliary"]["micro_compaction"] = {
+        "provider": "openrouter",
+        "model": "micro-model",
+        "base_url": "https://micro.example/v1",
+        "api_key": "micro-key",
+        "reasoning_effort": "high",
+        "timeout": 23,
+    }
+    save_config(cfg)
+
+    assert _reset_aux_to_auto() >= 1
+
+    micro = load_config()["auxiliary"]["micro_compaction"]
+    assert not ({"provider", "model", "base_url", "api_key", "reasoning_effort"} & micro.keys())
+    assert micro["timeout"] == 23
+
 # ── Menu dispatch ───────────────────────────────────────────────────────────
+
+
+def test_micro_compaction_auto_label_communicates_compression_inheritance(tmp_path, monkeypatch):
+    from hermes_cli import inventory
+    from hermes_cli import main_provider_setup as setup
+
+    _isolate_home(tmp_path, monkeypatch)
+    shown = []
+    monkeypatch.setattr(inventory, "build_aux_picker_rows", lambda **_kwargs: [])
+    monkeypatch.setattr(inventory, "format_aux_picker_entries", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(setup, "_prompt_provider_choice", lambda choices, default=0: shown.extend(choices))
+
+    _aux_select_for_task("micro_compaction")
+
+    assert shown[0].startswith("auto (inherit compression)")
 
 # ── Delegation entry (top-level `delegation.*`, not `auxiliary.*`) ──────────
 

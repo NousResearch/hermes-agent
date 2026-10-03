@@ -86,7 +86,7 @@ Hermes still prints the full data-policy warning and the acknowledgement key on 
 
 ## Setting auxiliary models
 
-Click **Show auxiliary** to reveal the 11 task slots:
+Click **Show auxiliary** to reveal the 12 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -99,6 +99,7 @@ Every auxiliary task defaults to `auto` — meaning Hermes tries your main model
 | **Title Gen** | When title latency or cost matters more than matching the main model. Pin a known-good flash model, or set `auxiliary.title_generation.prefer_fast_model: true` to let Hermes choose the provider's fast tier. |
 | **Vision** | When your main model lacks vision support. Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
 | **Compression** | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost. |
+| **Micro-compaction** | Incremental end-of-turn summaries when `compression.micro_compact` is enabled. It uses its own `auxiliary.micro_compaction` route so frequent micro calls can use a faster model than full compression. |
 | **Approval** | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
 | **Web Extract** | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning. |
 | **Skills Hub** | `hermes skills search` uses this. Usually fine at `auto`. |
@@ -125,7 +126,7 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to all 11 aux slots at once. Useful when you just want every side-job on a cheap flash model.
+- **All auxiliary tasks** — assigns this model to all 12 aux slots at once. Useful when you just want every side-job on a cheap flash model.
 - **Individual task options** — Vision, Web Extract, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.
@@ -167,6 +168,14 @@ auxiliary:
 ```
 
 `provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring fallback policy if the main route cannot serve the auxiliary call.
+
+`auxiliary.micro_compaction` is the compatibility exception: omitted fields
+shallowly inherit from `auxiliary.compression`, so a model-only override keeps
+the compression provider and endpoint. If the child changes `provider`, it does
+not inherit the compression `base_url`; if it changes `base_url`, it does not
+inherit the compression provider. Either route change also clears inherited
+`api_key`, `key_env`, `api_key_env`, and `key_cmd` values unless the child sets
+that credential source explicitly.
 
 Optional task-specific fallback chains live under the same auxiliary task:
 

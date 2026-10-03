@@ -18,6 +18,7 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -59,6 +60,24 @@ def _summary_markers(messages: list) -> list:
 
 
 class TestMicroCompaction:
+    def test_micro_and_batch_compaction_use_distinct_auxiliary_tasks(self):
+        cc = _compressor()
+        del cc._micro_summarize_one
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content="updated summary"),
+            )],
+        )
+
+        with patch("agent.auxiliary_client.call_llm", return_value=response) as micro_call:
+            assert cc._micro_summarize_one("assistant exchange") == "updated summary"
+        with patch("agent.context_compressor.call_llm", return_value=response) as batch_call:
+            assert cc._call_summary_llm("full compression prompt", 0.0) == "updated summary"
+
+        assert micro_call.call_args.kwargs["task"] == "micro_compaction"
+        assert batch_call.call_args.kwargs["task"] == "compression"
+
     def test_absorbs_one_exchange_and_leaves_a_summary_marker(self):
         cc = _compressor()
         messages = _conversation()
@@ -301,10 +320,11 @@ class TestMicroCompaction:
 
     def test_summarizer_failure_leaves_conversation_intact(self):
         cc = _compressor()
-        cc._micro_summarize_one = lambda _text: None
+        del cc._micro_summarize_one
         messages = _conversation()
 
-        result = cc._micro_compact(list(messages))
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("provider unavailable")):
+            result = cc._micro_compact(list(messages))
 
         assert result == messages
         assert cc._micro_compact_consecutive_failures == 1

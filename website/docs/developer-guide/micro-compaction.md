@@ -21,8 +21,8 @@ of all at once in the middle of your session.
 
 It is not free and it is not a magic bullet, and it is **off by default** —
 `compression.micro_compact: true` turns it on. Each pass is a real call to the
-compression model, and it runs at the end of a turn — your answer has already
-streamed, but the turn does not close until the pass finishes. Each pass also
+micro-compaction auxiliary route, and it runs at the end of a turn — your
+answer has already streamed, but the turn does not close until the pass finishes. Each pass also
 rewrites already-sent history, which breaks the provider prompt-cache prefix
 every turn; read [Prompt caching](#prompt-caching--the-cost-you-are-opting-into)
 before enabling it, because for some setups that cost exceeds the benefit.
@@ -252,7 +252,29 @@ more than the stall it removes. Measure your own sessions — see
 
 ## Choosing a compression model
 
-Micro-compaction uses the `auxiliary.compression` model:
+Micro-compaction has its own auxiliary task key, `micro_compaction`. This keeps
+its calls separately routable and attributable while batch and full-context
+compression continue to use `compression`.
+
+For backward compatibility, `auxiliary.micro_compaction` shallowly inherits the
+top-level fields in `auxiliary.compression`. If the child block is absent or empty,
+micro-compaction uses the same provider, model, endpoint, timeout, reasoning,
+request body, and fallback settings as batch compression. A field present in
+the child block overrides only that field; omitted fields still come from the
+parent. Route identity is the safety exception: changing only `provider` does
+not inherit the parent's `base_url`, and changing only `base_url` does not
+inherit the parent's `provider`. Either change also drops inherited credential
+sources (`api_key`, `key_env`, `api_key_env`, or `key_cmd`) unless the child
+explicitly supplies them, and drops inherited `api_mode` unless the child sets
+its own. A changed child `base_url` with no credential source uses the
+`no-key-required` placeholder rather than ambient `OPENAI_API_KEY`; reference
+that variable with child `key_env: OPENAI_API_KEY` when it is intentional.
+Child `key_cmd` takes precedence over its static credential fields and a command
+failure does not fall through to ambient credentials. Mapping-valued fields are
+replaced as a whole rather than deep-merged; for example, a child `extra_body`
+replaces the parent `extra_body`.
+
+Existing configurations therefore need no change:
 
 ```yaml
 auxiliary:
@@ -260,6 +282,20 @@ auxiliary:
     provider: openai-api
     model: <your choice>
     base_url: <endpoint>
+```
+
+To route the frequent micro calls to a faster model without changing batch
+compression, add only the fields that differ:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openai-api
+    model: <batch model>
+    base_url: <endpoint>
+    timeout: 300
+  micro_compaction:
+    model: <fast micro model>  # provider, base_url, and timeout inherit above
 ```
 
 This is the single most important knob, and there is no universally right

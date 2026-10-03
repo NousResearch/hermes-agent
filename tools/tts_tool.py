@@ -24,6 +24,7 @@ from typing import Callable, Dict, Any, List, Optional
 import copy
 
 from hermes_constants import display_hermes_home
+from tools.path_identity import denotes_same_file
 
 logger = logging.getLogger(__name__)
 
@@ -481,9 +482,8 @@ def text_to_speech_tool(
     except Exception as exc:
         return _tool_failure("TTS long-form generation failed", provider, exc)
     finally:
-        final_absolute = {os.path.abspath(path) for path in final_paths}
         for artifact in generated_artifacts:
-            if os.path.abspath(artifact) not in final_absolute:
+            if not any(denotes_same_file(artifact, path) for path in final_paths):
                 _remove_quietly(artifact)
 
 

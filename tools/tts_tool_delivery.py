@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.path_identity import denotes_same_file
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH, _get_named_provider_config,
     _is_command_provider_config)
@@ -336,7 +337,7 @@ def _concat_audio_files(audio_paths: List[str], output_path: str, *, voice_compa
     if not audio_paths:
         raise ValueError("No audio chunks to combine")
     if len(audio_paths) == 1:
-        if os.path.abspath(audio_paths[0]) != os.path.abspath(output_path):
+        if not denotes_same_file(audio_paths[0], output_path):
             shutil.copyfile(audio_paths[0], output_path)
         return output_path
     ffmpeg = shutil.which("ffmpeg")
@@ -411,7 +412,7 @@ def _build_audio_delivery_files(
         destination = base
         if len(packed) > 1:
             destination = base.with_name(f"{base.stem}.part{index:02d}{Path(source).suffix or base.suffix}")
-        if os.path.abspath(source) != os.path.abspath(destination):
+        if not denotes_same_file(source, destination):
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.replace(source, destination)
         if destination.stat().st_size > profile.max_file_bytes:

@@ -1491,14 +1491,17 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
         return False
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
         return False
+
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
-    basename = os.path.basename(operand)
-    return (
-        operand == os.path.join(temp_dir, basename)
-        and os.path.dirname(os.path.realpath(operand)) == temp_dir
-        and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
-    )
+    if _is_exempt_verification_artifact_path(operand):
+        return True
+    # Same file, MSYS spelling (see _windows_spelling_of_msys_path). Re-run the
+    # IDENTICAL checks on the translated path — the exemption widens to one
+    # extra SPELLING of an already-permitted target, never to an extra target.
+    windows_spelling = _windows_spelling_of_msys_path(operand)
+    if windows_spelling is None:
+        return False
+    return _is_exempt_verification_artifact_path(windows_spelling)
 
 
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
@@ -1546,3 +1549,36 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
     return (False, None, None)
+
+
+from tools import path_identity
+_windows_spelling_of_msys_path = path_identity.windows_spelling_of_msys_path
+
+def _is_exempt_verification_artifact_path(operand: str) -> bool:
+    """Whether *operand* names exactly one Hermes ad-hoc script in temp.
+
+    Two independent guards, both required, and they ask deliberately DIFFERENT
+    questions:
+
+    * **Spelling.** The operand must be written as the canonical temp dir joined
+      with a bare basename. This is a literal string comparison on purpose — it
+      is what refuses ``/tmp/nested/../x``, ``/var/tmp/x`` and every alternate
+      spelling of temp. Relaxing it into an identity test would delete the
+      traversal rejection outright, so it must NOT become
+      ``denotes_same_file``.
+    * **Identity.** The operand must still land in that same temp dir after
+      symlink resolution. This one IS an identity question, and it is asked
+      through the authority: a realpath'd dir and the realpath'd temp dir can
+      differ in case on Windows, and a string ``!=`` there refuses a legitimate
+      cleanup rather than permitting an illegitimate one — but the exemption is
+      security-relevant either way, so it gets the resolution-based answer.
+    """
+    temp_dir = os.path.realpath(tempfile.gettempdir())
+    basename = os.path.basename(operand)
+    if operand != os.path.join(temp_dir, basename):
+        return False
+
+    target = os.path.realpath(operand)
+    if not path_identity.denotes_same_file(os.path.dirname(target), temp_dir):
+        return False
+    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None

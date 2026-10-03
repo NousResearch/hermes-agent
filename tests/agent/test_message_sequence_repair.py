@@ -1146,12 +1146,14 @@ def test_classify_orphans_mixed():
 
 
 def _assistant_with_call(call_id, content=""):
+    # Read-only on purpose: an unanswered call that may have had a side effect is answered with an
+    # UNKNOWN result instead of pruned (test_resume_unanswered_tool_calls.py).
     return {
         "role": "assistant",
         "content": content,
         "tool_calls": [{
             "id": call_id, "type": "function",
-            "function": {"name": "f", "arguments": "{}"},
+            "function": {"name": "read_file", "arguments": "{}"},
         }],
     }
 
@@ -1545,8 +1547,8 @@ def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
     stamped = {
         "role": "assistant", "content": "calling tools",
         "tool_calls": [
-            {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
-            {"id": "t2", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+            {"id": "t1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "t2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
         ],
         _DB_PERSISTED_MARKER: True,
     }

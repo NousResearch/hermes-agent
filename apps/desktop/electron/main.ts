@@ -16529,7 +16529,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               })
 
               if (shouldDeferLocalEnumeration(localRoute, backendPool.keys(), connection.id)) {
-                return { connection, profiles: null, error: 'connect-on-demand' }
+                return { connection, profiles: null, error: 'connect-on-demand', inventoryComplete: false }
               }
             }
 
@@ -16661,11 +16661,18 @@ ipcMain.handle('hermes:agents:roster', async () => {
     // instead of appending duplicates (remote-only desktops doubled every
     // bot otherwise; see #88344).
     primaryConnectionId: registry.primary,
-    sources: enumerations.map(({ connection, error, installId, profiles, needsSignIn }) => ({
+    sources: enumerations.map(({ connection, error, inventoryComplete, installId, profiles, needsSignIn }) => ({
       connectionId: connection.id,
       label: connection.label,
       kind: connection.kind,
       ...rosterSourceStatus({ profiles, error, needsSignIn }),
+      // `reachable` only means "we have a list": an ssh source is never
+      // enumerated live (it keeps its last successful cache) and a bounced
+      // remote serves the same cache, so a profile missing from either is not
+      // evidence it was deleted. Consumers that act on ABSENCE must read
+      // `inventoryComplete`, which is true only for a fresh answer from the
+      // source itself.
+      inventoryComplete: inventoryComplete === true,
       ...(installId ? { installId } : {})
     }))
   }

@@ -98,3 +98,49 @@ def test_unavailable_profile_is_a_typed_rpc_error_not_a_dispatch_crash(tmp_path,
         assert resp["error"]["code"] == 4064, resp
         assert "gone" in resp["error"]["message"]
     assert server._response_profile_name("gone") == server._current_profile_name()
+
+
+@pytest.mark.parametrize("previously_served", [False, True])
+@pytest.mark.parametrize("method,extra", [
+    ("session.create", {}),
+    ("session.resume", {"session_id": "existing-chat"}),
+    ("config.get", {"key": "full"}),
+])
+def test_tombstoned_profile_residue_is_a_typed_refusal(
+    tmp_path, monkeypatch, previously_served, method, extra,
+):
+    """A retired directory can retain state.db/config; it is still unavailable.
+
+    Exercise the RPC dispatcher with real on-disk homes, including deletion
+    after this multiplexer has already resolved the profile.
+    """
+    from tui_gateway import server
+    from hermes_constants import mark_named_profile_deleted, profile_tombstone_path
+
+    home = tmp_path / ".hermes"
+    retired = home / "profiles" / "retired"
+    active = home / "profiles" / "active"
+    for path in (home, retired, active):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "config.yaml").write_text(f"terminal:\n  cwd: {path}\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    assert server._profile_home("active") == active
+    if previously_served:
+        assert server._profile_home("retired") == retired
+    mark_named_profile_deleted(retired)
+    before = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
+
+    response = server.handle_request({
+        "jsonrpc": "2.0", "id": 7, "method": method,
+        "params": {"profile": "retired", **extra},
+    })
+    assert response["error"]["code"] == 4064, response
+    assert "retired" in response["error"]["message"]
+    assert profile_tombstone_path(retired).exists()
+    assert {path: path.read_bytes() for path in home.rglob("*") if path.is_file()} == before
+    # Refusal must not poison the remaining active or launch profile.
+    assert server._profile_home("active") == active
+    assert server._profile_home("default") is None

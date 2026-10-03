@@ -992,6 +992,158 @@ describe('dropTilesForProfile', () => {
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-divergent'])
   })
 
+  it('drops only Bot Mode state whose owner is absent from a reachable live roster', async () => {
+    const session = await import('./session')
+
+    mod.openSessionTile('retired-bot-chat', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'bot-builder' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::bot-builder'
+    })
+    mod.openSessionTile('ai-specialist-chat', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'ai-specialist' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::ai-specialist'
+    })
+    mod.openSessionTile('unrelated-session')
+    session.setSessionOwnerHint('retired-bot-chat', { connectionId: 'local', profile: 'bot-builder' })
+    session.setSessionOwnerHint('retired-bot-chat', { connectionId: 'remote-a', profile: 'bot-builder' })
+
+    // Issued AFTER the tabs were opened: this answer really did see them.
+    const fetchedAt = Date.now()
+
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [{ connectionId: 'local', profile: 'ai-specialist' }],
+        sources: [{ connectionId: 'local', inventoryComplete: true, reachable: true }],
+        fetchedAt
+      })
+    ).toEqual(['retired-bot-chat'])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['ai-specialist-chat', 'unrelated-session'])
+    expect(
+      (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
+    ).toEqual(['ai-specialist-chat'])
+    expect(session.getSessionOwnerHint('retired-bot-chat', { connectionId: 'local', profile: 'bot-builder' })).toBeUndefined()
+    expect(session.getSessionOwnerHint('retired-bot-chat', { connectionId: 'remote-a', profile: 'bot-builder' })).toMatchObject({
+      connectionId: 'remote-a'
+    })
+  })
+
+  it('keeps an absent bot tile while its source is unreachable', () => {
+    mod.openSessionTile('bot-chat', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'bot-builder' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::bot-builder'
+    })
+
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [{ connectionId: 'local', profile: 'ai-specialist' }],
+        sources: [{ connectionId: 'local', inventoryComplete: false, reachable: false }],
+        fetchedAt: Date.now()
+      })
+    ).toEqual([])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-chat'])
+  })
+
+  it('keeps a bot tile whose owner is missing from a source that only REMEMBERED its list', () => {
+    // F1: an ssh source is never enumerated live — it answers with its last
+    // successful list (and main reports reachable: true, because it HAS a list).
+    // Reading that cache's gap as a deletion destroyed a valid tab for a bot the
+    // box still had, and PERSISTED the deletion.
+    mod.openSessionTile('cached-source-bot', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'homelab', mode: 'remote' as const, profile: 'research' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:homelab::research'
+    })
+
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [{ connectionId: 'homelab', profile: 'default' }],
+        sources: [{ connectionId: 'homelab', inventoryComplete: false, reachable: true }],
+        fetchedAt: Date.now()
+      })
+    ).toEqual([])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['cached-source-bot'])
+    expect(
+      (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
+    ).toEqual(['cached-source-bot'])
+  })
+
+  it('keeps a bot tile whose owner the collapsed roster reports under the SAME install address', () => {
+    // F2: two connections reporting one install_id are ONE physical backend, and
+    // the roster collapses their rows onto a single canonical connection. A tab
+    // whose owner route names the non-canonical address is still live — its bot
+    // is on that box, just not under the spelling the row kept.
+    mod.openSessionTile('alias-address-bot', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'spark-ts', mode: 'remote' as const, profile: 'default' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:spark-ts::default'
+    })
+    mod.openSessionTile('truly-gone-bot', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'spark-ts', mode: 'remote' as const, profile: 'cron-bot' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:spark-ts::cron-bot'
+    })
+
+    const sources = [
+      { connectionId: 'spark', installId: 'aaa', inventoryComplete: true, reachable: true },
+      { connectionId: 'spark-ts', installId: 'aaa', inventoryComplete: true, reachable: true }
+    ]
+
+    // The roster kept ONE row for the pair — the canonical (hostname) address.
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [{ connectionId: 'spark', profile: 'default' }],
+        sources,
+        fetchedAt: Date.now()
+      })
+    ).toEqual(['truly-gone-bot'])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['alias-address-bot'])
+  })
+
+  it('keeps a bot tab opened after the answer was issued, then drops it on the next answer', () => {
+    // F3: `fetchedAt` is the ISSUE time. An answer sent before the tab existed
+    // never saw it, so its absence from that answer says nothing — a cached or
+    // out-of-order response used to delete the chat the user had just opened.
+    mod.openSessionTile('just-opened-bot', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'retired-later' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::retired-later'
+    })
+
+    const owners: Array<{ connectionId: string; profile: string }> = []
+    const sources = [{ connectionId: 'local', inventoryComplete: true, reachable: true }]
+
+    expect(
+      mod.reconcileBotTilesWithRoster({ owners, sources, fetchedAt: Date.now() - 60_000 })
+    ).toEqual([])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['just-opened-bot'])
+
+    // The next poll postdates the tab, so it is a verdict the tab can be held to.
+    expect(mod.reconcileBotTilesWithRoster({ owners, sources, fetchedAt: Date.now() })).toEqual(['just-opened-bot'])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual([])
+  })
+
+  it('refuses to reconcile an undated answer', () => {
+    mod.openSessionTile('undated-answer-bot', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'bot-builder' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:local::bot-builder'
+    })
+
+    // No issue time: it cannot be dated against the tabs it would delete, so it
+    // proves nothing at all — including the `0` an older caller would send.
+    expect(
+      mod.reconcileBotTilesWithRoster({
+        owners: [],
+        sources: [{ connectionId: 'local', inventoryComplete: true, reachable: true }]
+      })
+    ).toEqual([])
+    expect(mod.reconcileBotTilesWithRoster({ owners: [], sources: [], fetchedAt: Date.now() })).toEqual([])
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['undated-answer-bot'])
+  })
+
   it('throws on a route without profile instead of silently falling into the local-delete branch', () => {
     // A caller passing a route with only connectionId/targetProfile would
     // silently take the local branch and start requiring

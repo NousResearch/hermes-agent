@@ -19,6 +19,7 @@ import type { RosterRow } from './types'
 const { hostMock, mergeServerMeta, trackInboundActivity } = vi.hoisted(() => ({
   hostMock: {
     agents: vi.fn(),
+    reconcileBotWorkspaceRoster: vi.fn(),
     request: vi.fn(),
     setWorkspaceOwnerLabel: vi.fn(),
     state: { connectionId: { get: vi.fn(() => 'local') }, profile: { get: () => 'default' } }
@@ -103,6 +104,33 @@ describe('usePublishRosterSnapshot', () => {
     expect($lastRoster.get()).toBe(published)
     expect(mergeServerMeta).toHaveBeenCalledTimes(1)
     expect(trackInboundActivity).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles persisted Bot Mode tiles from the live roster, not display ghosts', async () => {
+    const sources = [{ connectionId: 'local', reachable: true }]
+    hostMock.request.mockResolvedValue({ profiles: rows, sources })
+
+    const { result } = renderPane()
+
+    await waitFor(() => expect(result.current.data?.profiles).toHaveLength(2))
+    expect(hostMock.reconcileBotWorkspaceRoster).toHaveBeenCalledWith(rows, sources, expect.any(Number))
+    // The fence rides the ANSWER's own issue time — a tab opened after it must
+    // not be judged by it (F3).
+    expect(hostMock.reconcileBotWorkspaceRoster.mock.calls[0]?.[2]).toBe(result.current.data?.fetchedAt)
+  })
+
+  it('does not reconcile an answer that carries no issue time', () => {
+    renderHook(() =>
+      usePublishRosterSnapshot({
+        activeSourceRoster: rows,
+        allMeta: {},
+        data: { profiles: rows, sources: [{ connectionId: 'local', reachable: true }] },
+        live: rows,
+        roster: rows
+      })
+    )
+
+    expect(hostMock.reconcileBotWorkspaceRoster).not.toHaveBeenCalled()
   })
 
   it('republishes when a row changed', async () => {

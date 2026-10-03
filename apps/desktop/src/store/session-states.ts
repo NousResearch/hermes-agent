@@ -64,6 +64,7 @@ import {
   $sessions,
   $workspaceCwdOwner,
   clearReadBaseline,
+  forgetSessionOwnerHint,
   getSessionOwnerHint,
   knownSessionOwner,
   lineageAliases,
@@ -1600,6 +1601,239 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
   })
 }
 
+/** When each tile was OPENED in this window (ms since epoch). See
+ *  {@link reconcileBotTilesWithRoster}: a roster answer can only be a verdict
+ *  on the tabs that already existed when it was issued, so this is the clock
+ *  its freshness fence compares against. Tiles restored from storage have no
+ *  entry — they predate every answer this window will see. */
+const botTileOpenedAt = new Map<string, number>()
+
+export interface BotRosterSource {
+  connectionId?: string
+  /** `/api/status` install_id — two connections reporting the same id are ONE
+   *  physical install, which the roster collapses onto a single row. */
+  installId?: string
+  /** True only when this source's list is its own fresh, complete answer. */
+  inventoryComplete?: boolean
+  /** Deliberately NOT what decides anything here: `reachable` only means "we
+   *  have a list", which a remembered cache and an undialed seed satisfy too —
+   *  reading a gap in one as a deletion is the bug this reconciliation is
+   *  fixing. Declared so the trap stays visible at the contract. */
+  reachable?: boolean
+}
+
+export interface BotRosterReconciliation {
+  /** Live roster rows, one per (source, profile). `connectionId` is the
+   * connection the roster ROUTES to — for a same-backend pair that is only one
+   * of the owner's aliases, never the only spelling of it. */
+  owners: readonly { connectionId?: string; profile?: string }[]
+  /** Every connection the answer reported, with the quality of its list. */
+  sources: readonly BotRosterSource[]
+  /** Issue time (ms) of the answer `owners` came from. Absent/0 is unknown, and
+   *  an answer whose age cannot be bounded proves nothing. */
+  fetchedAt?: number
+}
+
+interface PersistedBotOwner {
+  connectionId: string
+  legacyConnection: boolean
+  profile: string
+}
+
+function persistedBotOwner(tile: StoredTile): PersistedBotOwner | null {
+  const routeProfile = normalizeProfileKey(tile.ownerRoute?.profile)
+  const routeConnectionId = String(tile.ownerRoute?.connectionId ?? '').trim()
+
+  if (routeProfile && routeConnectionId) {
+    return { connectionId: routeConnectionId, legacyConnection: false, profile: routeProfile }
+  }
+
+  const key = String(tile.workspaceOwnerKey ?? '')
+
+  if (!key.startsWith('bot:')) {
+    return null
+  }
+
+  const owner = key.slice('bot:'.length)
+  const separator = owner.indexOf('::')
+
+  if (separator >= 0) {
+    const connectionId = owner.slice(0, separator).trim()
+    const profile = normalizeProfileKey(owner.slice(separator + 2))
+
+    return connectionId && profile ? { connectionId, legacyConnection: false, profile } : null
+  }
+
+  const profile = normalizeProfileKey(owner)
+
+  // Pre-registry Bot Mode persisted bare bot names. They can only be reconciled
+  // against a healthy local roster; treating them as a remote source would
+  // silently retarget a historical tab across connections.
+  return profile ? { connectionId: 'legacy', legacyConnection: true, profile } : null
+}
+
+/**
+ * Reconcile persisted Bot Mode tiles only after a roster source has returned a
+ * list it OWNS. A retired owner is discarded, not redirected: a stale tile can
+ * otherwise re-dial a deleted profile and recreate its home.
+ *
+ * Absence is the only thing that condemns a tile here, so absence has to be
+ * real evidence. Three ways it is not, all of which used to delete live tabs:
+ * a source that answered from a remembered/partial list (`inventoryComplete`
+ * false — an ssh source is never enumerated live and a bounced remote serves
+ * its last-known cache), a bot that the roster only reports under another
+ * address of the SAME install (two connections sharing an `install_id` collapse
+ * onto one canonical row), and an answer issued before the tab was opened.
+ * Unidentifiable legacy state is preserved for the same reason.
+ *
+ * Exact owner hints for discarded tiles are removed at the same time; unrelated
+ * tiles and same-id hints on another source remain intact.
+ */
+export function reconcileBotTilesWithRoster({ owners, sources, fetchedAt = 0 }: BotRosterReconciliation): string[] {
+  // An undated answer cannot be compared against the tabs it would delete, and
+  // an answer that names no source cannot prove which connection lost a bot.
+  if (!(fetchedAt > 0) || sources.length === 0) {
+    return []
+  }
+
+  const registered = new Set<string>()
+  const complete = new Set<string>()
+  const installByConnection = new Map<string, string>()
+
+  for (const source of sources) {
+    const connectionId = String(source.connectionId ?? '').trim()
+
+    if (!connectionId) {
+      continue
+    }
+
+    registered.add(connectionId)
+
+    const installId = String(source.installId ?? '').trim()
+
+    if (installId) {
+      installByConnection.set(connectionId, installId)
+    }
+
+    if (source.inventoryComplete === true) {
+      complete.add(connectionId)
+    }
+  }
+
+  const liveOnProfile = new Map<string, Set<string>>()
+
+  for (const owner of owners) {
+    const profile = normalizeProfileKey(owner.profile)
+
+    if (!profile) {
+      continue
+    }
+
+    // A union row that carries no connection id is the pre-registry local
+    // spelling (older shells predate the ids) — never an unowned row.
+    const connectionId = String(owner.connectionId ?? '').trim() || LOCAL_CONNECTION_ID
+    const live = liveOnProfile.get(profile) ?? new Set<string>()
+
+    live.add(connectionId)
+    liveOnProfile.set(profile, live)
+  }
+
+  /** Every connection that IS the same physical install as `connectionId`. */
+  const backendAliases = (connectionId: string): string[] => {
+    const installId = installByConnection.get(connectionId)
+
+    if (!installId) {
+      return [connectionId]
+    }
+
+    const aliases = [connectionId]
+
+    for (const [other, otherInstallId] of installByConnection) {
+      if (otherInstallId === installId && other !== connectionId) {
+        aliases.push(other)
+      }
+    }
+
+    return aliases
+  }
+
+  const isRetired = (tile: StoredTile): boolean => {
+    if (tile.workspaceMode !== 'bots') {
+      return false
+    }
+
+    const owner = persistedBotOwner(tile)
+
+    if (!owner) {
+      return false
+    }
+
+    // Freshness fence: this answer predates the tab, so it never saw it.
+    const openedAt = botTileOpenedAt.get(tile.storedSessionId) ?? 0
+
+    if (openedAt > fetchedAt) {
+      return false
+    }
+
+    const aliases = backendAliases(owner.legacyConnection ? LOCAL_CONNECTION_ID : owner.connectionId)
+
+    // Proof needs a COMPLETE list from one of these connections. A remembered
+    // cache and an undialed seed both answer with rows while listing only what
+    // they knew before — their gaps are not deletions.
+    if (!aliases.some(alias => complete.has(alias))) {
+      // A connection that left a non-empty registry can never serve this bot
+      // again: honour the removal rather than letting the tab resurrect it.
+      if (!aliases.every(alias => !registered.has(alias))) {
+        return false
+      }
+    }
+
+    const live = liveOnProfile.get(owner.profile)
+
+    if (live && aliases.some(alias => live.has(alias))) {
+      return false
+    }
+
+    return true
+  }
+
+  const stored = tilesByProfile[BOTS_TILE_BUCKET] ?? []
+  const dropped = stored.filter(isRetired)
+
+  if (dropped.length === 0) {
+    return []
+  }
+
+  const remaining = stored.filter(tile => !isRetired(tile))
+
+  if (remaining.length > 0) {
+    tilesByProfile[BOTS_TILE_BUCKET] = remaining
+  } else {
+    delete tilesByProfile[BOTS_TILE_BUCKET]
+  }
+
+  for (const tile of dropped) {
+    const route = tile.ownerRoute
+
+    if (route?.connectionId && route.profile) {
+      forgetSessionOwnerHint(tile.storedSessionId, route)
+    }
+
+    botTileOpenedAt.delete(tile.storedSessionId)
+  }
+
+  const live = $sessionTiles.get()
+  const next = live.filter(tile => !isRetired(tile))
+
+  if (next.length !== live.length) {
+    $sessionTiles.set(next)
+  }
+
+  persistTiles()
+
+  return dropped.map(tile => tile.storedSessionId)
+}
+
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
@@ -2501,6 +2735,9 @@ export function openSessionTile(
         workspaceTabTitle: workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceTabTitle : undefined
       }
     ])
+    // Stamp the open: roster reconciliation may only judge tabs that existed
+    // when its answer was issued, never one the user just opened.
+    botTileOpenedAt.set(storedSessionId, Date.now())
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
@@ -2803,6 +3040,8 @@ export function closeSessionTile(storedSessionId: string) {
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 
+  botTileOpenedAt.delete(storedSessionId)
+
   // A settled session may never publish again, so the publish-time eviction
   // in publishSessionState can't reach it — drop its cached state here. A
   // BUSY one stays: its turn keeps streaming in the background, the sidebar
@@ -2849,6 +3088,8 @@ export function discardSessionTile(storedSessionId: string) {
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
+
+  botTileOpenedAt.delete(storedSessionId)
 }
 
 /**

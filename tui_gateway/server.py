@@ -572,7 +572,10 @@ def _profile_home(profile: str | None) -> Path | None:
         home = Path(profiles_mod.get_profile_dir(name))
     except ValueError:
         home = None
-    if home is None or not home.is_dir():
+    from hermes_constants import named_profile_is_deleted
+    # Retired profiles can leave a directory behind. Refuse before binding a
+    # scope or opening its store, including homes this process served earlier.
+    if home is None or not home.is_dir() or named_profile_is_deleted(home):
         raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)

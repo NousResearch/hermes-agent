@@ -1201,6 +1201,11 @@ export interface DesktopAgentRoster {
     needsSignIn?: boolean
     // Stable backend identity (/api/status install_id) when known.
     installId?: string
+    // True only when this source's profile list is its OWN fresh, complete
+    // answer. `reachable` means "we have a list", which a remembered cache and
+    // the undialed-ssh seed also satisfy — absence from those is not evidence a
+    // profile was deleted. Optional so a renderer tolerates an older main.
+    inventoryComplete?: boolean
   }[]
 }
 

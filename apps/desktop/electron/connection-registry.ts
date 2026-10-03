@@ -623,6 +623,14 @@ export interface ConnectionAgents {
    * collapses their rows. Absent on older backends → no collapse (fully
    * backward compatible). */
   installId?: string
+  /** Whether `profiles` is this source's OWN complete, fresh inventory — set by
+   * {@link rememberSshEnumeration}, not by the enumerator. `profiles !== null`
+   * only means "we have a list": an ssh/URL source that failed this round keeps
+   * serving its remembered cache, and the undialed-ssh seed is one name. Absence
+   * from a remembered or partial list is NOT evidence a profile was deleted, so
+   * consumers that act on absence (Bot Mode's tile reconciliation) must read
+   * this, never `reachable`. */
+  inventoryComplete?: boolean
 }
 
 export interface RosterAgent {
@@ -646,6 +654,12 @@ export interface RosterProfileMetadata {
   has_avatar?: boolean
 }
 
+/** An enumeration after the cache/seed fallback, with the quality of the list
+ *  it settled on. See {@link ConnectionAgents.inventoryComplete}. */
+export interface RememberedEnumeration extends Pick<ConnectionAgents, 'error' | 'profiles'> {
+  inventoryComplete: boolean
+}
+
 /**
  * Roster enumeration skips undialed sources (connect-on-demand) and reports
  * unreachable ones with `profiles: null`. Reuse the last successful profile
@@ -656,29 +670,34 @@ export interface RosterProfileMetadata {
  * 2026 bundle). Never-seen SSH sources still get a `default` seed so the
  * device is clickable; never-seen remote sources stay empty (no seed) since
  * an unreachable URL is not evidence a backend exists there.
+ *
+ * The `inventoryComplete` it returns is the same distinction made explicit:
+ * only the live branch is a complete answer. Every remembered/seed fallback
+ * below reports `false` so a consumer can never read a cached or partial list
+ * as "the profiles that are missing from this list were deleted".
  */
 export function rememberSshEnumeration(
   enumeration: Pick<ConnectionAgents, 'error' | 'profiles'>,
   cached: null | string[] | undefined,
   kind: ConnectionKind
-): Pick<ConnectionAgents, 'error' | 'profiles'> {
+): RememberedEnumeration {
   if (enumeration.profiles && enumeration.profiles.length > 0) {
-    return enumeration
+    return { ...enumeration, inventoryComplete: true }
   }
 
   if (kind === 'local') {
-    return enumeration
+    return { ...enumeration, inventoryComplete: false }
   }
 
   if (cached && cached.length > 0) {
-    return { profiles: cached, error: enumeration.error }
+    return { profiles: cached, error: enumeration.error, inventoryComplete: false }
   }
 
   if (kind === 'ssh' && enumeration.error === 'connect-on-demand') {
-    return { profiles: ['default'], error: 'connect-on-demand' }
+    return { profiles: ['default'], error: 'connect-on-demand', inventoryComplete: false }
   }
 
-  return enumeration
+  return { ...enumeration, inventoryComplete: false }
 }
 
 /** Whether an undialed SSH source should be inventoried again. Cached

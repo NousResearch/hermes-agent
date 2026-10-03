@@ -1324,6 +1324,30 @@ export function forgetSessionOwnerHintsForSession(sessionId: string): void {
   }
 }
 
+/** Remove one exact owner binding without disturbing another source that happens
+ * to use the same stored session id. Bot Mode roster reconciliation calls this
+ * only after it has proved that this particular bot owner was retired. */
+export function forgetSessionOwnerHint(
+  sessionId: string,
+  scope: Pick<SessionOwnerRoute, 'connectionId' | 'profile'>
+): void {
+  const id = sessionId.trim()
+  const connectionId = scope.connectionId.trim()
+
+  if (!id || !connectionId) {
+    return
+  }
+
+  const key = sessionOwnerHintKey(id, {
+    connectionId,
+    profile: scope.profile.trim() || 'default'
+  })
+
+  if (sessionOwnerHints.delete(key)) {
+    persistSessionOwnerHints()
+  }
+}
+
 /** Exact route carried by a connection-tagged row. An untagged row deliberately
  * returns undefined: it belongs to the ambient backend that supplied the list,
  * including the legacy primary-SSH path whose rows have no registry id. */

@@ -102,8 +102,10 @@ import {
   $sessionTiles,
   dropTilesForProfile,
   focusWorkspaceOwnerSessionTile,
+  reconcileBotTilesWithRoster,
   sessionTileDelegate
 } from '@/store/session-states'
+import type { BotRosterSource } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
@@ -917,6 +919,22 @@ export const host = {
 
     return roster()
   },
+
+  /** Reconcile Bot Mode's renderer-owned persisted tabs after a live roster
+   * answer. This is intentionally a discard-only action: an absent profile is
+   * never redirected to another bot. The answer must carry its issue time
+   * (`fetchedAt`) — absence in an answer older than a tab says nothing about the
+   * tab — and sources that only remembered their list keep their tabs. */
+  reconcileBotWorkspaceRoster: (
+    owners: readonly { connectionId?: string; name?: string }[],
+    sources: readonly BotRosterSource[],
+    fetchedAt?: number
+  ): string[] =>
+    reconcileBotTilesWithRoster({
+      owners: owners.map(owner => ({ connectionId: owner.connectionId, profile: owner.name })),
+      sources,
+      fetchedAt
+    }),
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
    *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded

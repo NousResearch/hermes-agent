@@ -53,16 +53,28 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
         )
     return expanded
 
-def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
+def _strip_blocked_tools(toolsets: List[str], parent_tools: Optional[set] = None) -> List[str]:
     """Remove toolsets whose tools are ALL blocked (derived from DELEGATE_BLOCKED_TOOLS so the two can't drift) plus
-    composite toolsets children must never get (``delegation``, ``kanban``)."""
+    composite toolsets children must never get (``delegation``, ``kanban``). An MCP server sharing a blocked name
+    ("memory") is not blocked: it stays under its canonical ``mcp-<name>`` toolset, but only when *parent_tools*
+    (the parent's own selection) holds that server's tools. The canonical name survives the child's inherited
+    ``disabled_toolsets`` entry for the bare name, so it must never grant a server the parent disabled."""
+    from tools.registry import registry
+
     blocked_toolset_names = {"delegation", "kanban"} | {
         name
         for name in TOOLSETS
         if (resolved_tools := resolve_toolset(name, include_registry=False))
         and all(tool in DELEGATE_BLOCKED_TOOLS for tool in resolved_tools)
     }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    kept = []
+    for name in toolsets:
+        if name not in blocked_toolset_names:
+            kept.append(name)
+        elif ((target := registry.get_toolset_alias_target(name) or "").startswith("mcp-") and target not in toolsets
+              and parent_tools is not None and set(resolve_toolset(target)) <= parent_tools):
+            kept.append(target)
+    return kept
 
 def _blocked_toolsets_for_role(role: str) -> List[str]:
     """One-tool deny toolsets for the role; passed as ``disabled_toolsets`` so
@@ -83,17 +95,22 @@ def _resolve_child_toolsets(
     ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
     expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
     (role-granted, not inherited)."""
+    import model_tools
+
     # enabled_toolsets=None means "all tools", so derive from loaded tool names.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        import model_tools
         parent_toolsets = {
             ts for name in parent_agent.valid_tool_names if (ts := model_tools.get_toolset_for_tool(name)) is not None
         }
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
+    raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
+    inherited_disabled = (
+        [str(name) for name in raw_parent_disabled] if isinstance(raw_parent_disabled, (list, tuple, set)) else []
+    )
 
     if toolsets:
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
@@ -107,12 +124,9 @@ def _resolve_child_toolsets(
         child_toolsets = parent_enabled
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
-    child_toolsets = _strip_blocked_tools(child_toolsets)
+    parent_tools = model_tools._select_tool_names(sorted(parent_toolsets), inherited_disabled, quiet_mode=True)
+    child_toolsets = _strip_blocked_tools(child_toolsets, parent_tools)
 
-    raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
-    inherited_disabled = (
-        [str(name) for name in raw_parent_disabled] if isinstance(raw_parent_disabled, (list, tuple, set)) else []
-    )
     if effective_role == "orchestrator":
         inherited_disabled = [name for name in inherited_disabled if name != "delegation"]
         if "delegation" not in child_toolsets:

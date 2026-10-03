@@ -279,9 +279,10 @@ def _tool_defs_cache_key(
     )
 
 
-def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, disable: bool) -> None:
+def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, disable: bool,
+                             enabled_names: Optional[List[str]] = None) -> None:
     """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet."""
-    from toolsets import bundle_non_core_tools, get_toolset
+    from toolsets import TOOLSETS, bundle_non_core_tools, get_toolset
     verb, icon = ("Disabled", "🚫") if disable else ("Enabled", "✅")
     for name in names:
         if validate_toolset(name):
@@ -300,6 +301,11 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
                     )
             else:
                 resolved = resolve_toolset(name)
+                # A built-in name also resolves the MCP server that shares it ("memory" -> mcp-memory);
+                # a caller that enabled that server by its canonical name keeps it when denying the built-in.
+                alias_target = registry.get_toolset_alias_target(name) if disable and name in TOOLSETS else None
+                if alias_target and alias_target != name and alias_target in (enabled_names or ()):
+                    resolved = sorted(set(resolved) - set(resolve_toolset(alias_target)))
         elif name in _LEGACY_TOOLSET_MAP:
             label = f"{verb} legacy toolset"
             resolved = _LEGACY_TOOLSET_MAP[name]
@@ -337,7 +343,7 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
-        _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+        _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True, enabled_names=enabled_toolsets)
     return tools
 
 

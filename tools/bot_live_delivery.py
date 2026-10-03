@@ -13,6 +13,7 @@ import os
 import re
 import time
 import uuid
+import contextlib
 from contextlib import contextmanager
 
 from utils import atomic_json_write, atomic_write_text, fsync_directory
@@ -27,6 +28,143 @@ DELIVERY_DIR_NAME = "bot_live_delivery"
 _SEQUENCE_FILE = ".sequence"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
+
+
+def _find_visible_desktop_bot_chat_owner(home: Path, session_id: str) -> dict[str, Any] | None:
+    """A lease-free resumed Desktop chat still owns Bot Chat for deferral purposes.
+
+    ``session.resume`` deliberately delays the active-session lease until the first real turn
+    (no invisible slots for tile paints / reconnects), so the registry miss that used to mean
+    "unattended, CLI may take it" also fires while the user is looking at the chat. The CLI
+    fallback then steals the lease and its turn fences the human out with SESSION_NOT_OWNED.
+    A live, non-finalized session in this process with a live transport and the canonical key
+    (or a Bot Chat-titled row) blocks the fallback via deferral until it closes.
+    """
+    try:
+        from tui_gateway import server as _srv
+    except Exception:
+        return None
+    try:
+        sessions = getattr(_srv, "_sessions", None)
+        if not sessions:
+            return None
+        lock = getattr(_srv, "_sessions_lock", None)
+        if lock is not None:
+            with lock:
+                items = list(sessions.items())
+        else:
+            items = list(sessions.items())
+    except Exception:
+        return None
+    detached = getattr(_srv, "_detached_ws_transport", None)
+
+    def _transport_live(transport) -> bool:
+        if transport is None:
+            return False
+        if detached is not None and transport is detached:
+            return False
+        # Standalone liveness (mirrors session_reaper._transport_is_dead without its
+        # server-rebound globals): Fanout is dead when no peer is live, else _closed.
+        try:
+            peers = transport.transports() if hasattr(transport, "transports") else None
+        except Exception:
+            peers = None
+        if peers is not None:
+            try:
+                peers = list(peers)
+            except Exception:
+                return getattr(transport, "_closed", None) is not True
+            if not peers:
+                return False
+            return any(_transport_live(peer) for peer in peers)
+        return getattr(transport, "_closed", None) is not True
+
+    try:
+        launch_home = Path(_srv._launch_home()).resolve() if hasattr(_srv, "_launch_home") else None
+    except Exception:
+        launch_home = None
+    if launch_home is None:
+        with contextlib.suppress(Exception):
+            from hermes_constants import get_process_hermes_home
+            launch_home = Path(get_process_hermes_home()).resolve()
+
+    def _profile_matches(sess_home_raw) -> bool:
+        if sess_home_raw is None:
+            return launch_home is not None and launch_home == home
+        try:
+            return Path(str(sess_home_raw)).resolve() == home
+        except Exception:
+            return str(sess_home_raw) == str(home)
+
+    def _source_visible(source: str) -> bool:
+        try:
+            from tui_gateway.session_lifecycle import _is_gateway_owned_source
+            return not _is_gateway_owned_source(source)
+        except Exception:
+            return str(source or "").strip().lower() in (
+                "", "tui", "cli", "webui", "desktop", "cron", "kanban",
+                "subagent", "test", "local", "acp", "webhook", "api_server",
+                "msgraph_webhook")
+
+    visible: list[tuple[str, dict, str, str]] = []
+    for sid, sess in items:
+        try:
+            if not isinstance(sess, dict):
+                continue
+            if sess.get("_finalized") or sess.get("_closing"):
+                continue
+            if not _profile_matches(sess.get("profile_home")):
+                continue
+            if not _transport_live(sess.get("transport")):
+                continue
+            if not _source_visible(str(sess.get("source") or "")):
+                continue
+            sess_key = str(sess.get("session_key") or "")
+            try:
+                agent_sid = str(getattr(sess.get("agent"), "session_id", "") or "")
+            except Exception:
+                agent_sid = ""
+            if session_id and (sess_key == session_id or (agent_sid and agent_sid == session_id)):
+                return {
+                    "profile_home": str(home),
+                    "session_id": session_id,
+                    "surface": "desktop",
+                    "live_session_id": str(sid),
+                    "session_key": sess_key,
+                    "visible_desktop_session": True,
+                }
+            visible.append((str(sid), sess, sess_key, agent_sid))
+        except Exception:
+            continue
+    if not visible:
+        return None
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db", read_only=True)
+    except Exception:
+        return None
+    try:
+        for sid, _sess, sess_key, agent_sid in visible:
+            for candidate in (sess_key, agent_sid):
+                if not candidate:
+                    continue
+                try:
+                    row = db.get_session(candidate)
+                except Exception:
+                    continue
+                if row is not None and str(row.get("title") or "").strip() == "Bot Chat":
+                    return {
+                        "profile_home": str(home),
+                        "session_id": session_id,
+                        "surface": "desktop",
+                        "live_session_id": sid,
+                        "session_key": sess_key,
+                        "visible_desktop_session": True,
+                    }
+    finally:
+        with contextlib.suppress(Exception):
+            db.close()
+    return None
 
 
 def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
@@ -48,7 +186,7 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     for entry in active_session_registry_snapshot(registry_home=home):
         if entry["session_id"] == session_id:
             return {**entry, "profile_home": str(home)}
-    return None
+    return _find_visible_desktop_bot_chat_owner(home, session_id)
 
 
 def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:

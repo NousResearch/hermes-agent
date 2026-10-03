@@ -147,7 +147,14 @@ export interface ModelMenuController {
    *  `setOptions` because it is one atomic "apply this model's preset" write,
    *  not a user editing one control — surfaces that write through to a session
    *  need to batch it. Values are already capability-gated by the menu. */
-  applyPreset: (preset: { effort?: string; fast?: boolean }, row: { model: string; provider: string }) => void
+  applyPreset: (
+    preset: { effort?: string; fast?: boolean },
+    row: { model: string; provider: string },
+    options?: {
+      /** Apply to the session but do not store it as the model's preset. */
+      persist?: boolean
+    }
+  ) => void
   current: ModelChoice
   presetFor: (provider: string, model: string) => { effort?: string; fast?: boolean }
   /** Commit a model row. Return false to abort (a failed session switch). */
@@ -417,12 +424,22 @@ export function ModelCatalogMenu({
       return false
     }
 
+    // A stored preset restores its remembered effort/fast. Without one, the
+    // profile defaults apply to the session (so effort no longer carries over
+    // from the previously selected model) but are not written as this model's
+    // preset — merely clicking a row must not give it a permanent chip.
+    const storedEffort = preset.effort !== undefined
+    const storedFast = preset.fast !== undefined
+
     controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
-        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+        effort:
+          (caps?.reasoning ?? true) ? (storedEffort ? preset.effort : defaultEffort) : undefined,
+        fast:
+          (caps?.fast ?? false) ? (storedFast ? preset.fast : false) : undefined
       },
-      { model: family.id, provider: provider.slug }
+      { model: family.id, provider: provider.slug },
+      { persist: storedEffort || storedFast }
     )
 
     return true

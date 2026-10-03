@@ -153,8 +153,10 @@ export function useModelMenuController({
   const controller: ModelMenuController = {
     // Selecting a model row restores that model's remembered preset onto the
     // session (effort/fast). applyModelPreset owns the batched gateway write.
-    applyPreset: (preset, row) => {
-      setModelPreset(row.provider, row.model, preset)
+    applyPreset: (preset, row, options) => {
+      if (options?.persist !== false) {
+        setModelPreset(row.provider, row.model, preset)
+      }
 
       void applyModelPreset(preset, {
         failMessage: t.shell.modelOptions.updateFailed,

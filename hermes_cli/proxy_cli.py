@@ -231,7 +231,12 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
     else:
         tunnel_port = int(proxy_cfg.get("tunnel_port", ip._DEFAULT_TUNNEL_PORT))
     proxy_cfg["tunnel_port"] = tunnel_port
-    extra_hosts = list(proxy_cfg.get("extra_allowed_hosts") or [])
+    # Entries the matcher could never satisfy (URLs, host:port, paths) are dropped with a fix hint
+    # instead of shipping a silently dead allowlist (every sandbox request would 403 unexplained).
+    extra_hosts = ip.normalize_allowed_hosts(
+        proxy_cfg.get("extra_allowed_hosts"),
+        warn=lambda msg: console.print(f"  [yellow]⚠ {msg}[/yellow]"),
+    )
     allowed = list(ip._DEFAULT_ALLOWED_HOSTS) + [h for h in extra_hosts if h not in ip._DEFAULT_ALLOWED_HOSTS]
     # Pre-create the audit log 0o600. The pinned v0.39 daemon never writes it (reserved for
     # v0.40+ per-request records), so a pre-create failure is a WARNING, not a setup abort.

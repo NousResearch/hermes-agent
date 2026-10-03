@@ -2468,19 +2468,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
-    # Match the provider transport's existing default-cap semantics. An unset job cap must
-    # stay unset for providers that delegate the choice to the upstream service; the model
-    # context window is not an output-token default.
-    if setup.max_tokens is not None:
-        try:
-            setup.max_tokens = int(setup.max_tokens)
-        except (TypeError, ValueError):
-            setup.max_tokens = None
-    if setup.max_tokens is None:
-        from providers import get_provider_profile
-        _profile = get_provider_profile(str(setup.runtime.get("provider") or ""))
-        if _profile is not None:
-            setup.max_tokens = _profile.get_max_tokens(setup.model)
+    setup.max_tokens = _resolve_cron_max_tokens(
+        setup.max_tokens,
+        provider=str(setup.runtime.get("provider") or ""),
+        model=setup.model,
+    )
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
@@ -2497,6 +2489,23 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
         if _mcp_reason:
             setup.blocked = _blocked_config_result(job_id, job_name, _mcp_reason)
     return setup
+
+
+def _resolve_cron_max_tokens(requested: Any, *, provider: str, model: str) -> int | None:
+    """Resolve the cron cap against the selected provider route default only."""
+    from providers import get_provider_profile
+
+    try:
+        requested = int(requested) if requested is not None else None
+    except (TypeError, ValueError):
+        requested = None
+    profile = get_provider_profile(provider)
+    route_default = profile.get_max_tokens(model) if profile is not None else None
+    if not isinstance(route_default, int) or isinstance(route_default, bool) or route_default <= 0:
+        route_default = None
+    if requested is None or requested <= 0:
+        return route_default
+    return min(requested, route_default) if route_default is not None else requested
 
 
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):

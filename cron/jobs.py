@@ -1727,11 +1727,13 @@ def _normalize_max_tokens(value: Any) -> Optional[int]:
         return None
     if isinstance(value, bool):
         raise ValueError("max_tokens must be a positive integer.")
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, int):
+        normalized = value
+    elif isinstance(value, str) and re.fullmatch(r"\+?\d+", value.strip()):
+        normalized = int(value.strip())
+    else:
         raise ValueError("max_tokens must be a positive integer.")
-    if normalized <= 0 or str(value).strip() != str(normalized):
+    if normalized <= 0:
         raise ValueError("max_tokens must be a positive integer.")
     return normalized
 

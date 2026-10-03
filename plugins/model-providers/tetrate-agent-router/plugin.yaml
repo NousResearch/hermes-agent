@@ -1,0 +1,5 @@
+name: tetrate-agent-router-provider
+kind: model-provider
+version: 1.0.0
+description: Tetrate Agent Router — unified OpenAI-compatible gateway across 25+ providers
+author: Tetrate

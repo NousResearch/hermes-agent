@@ -23,6 +23,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **Tetrate Agent Router** | `TETRATE_AGENT_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `tetrate-agent-router`; aliases: `tetrate`, `agent-router`, `agentrouter`; unified gateway across 25+ providers) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -341,6 +342,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# Tetrate Agent Router
+hermes chat --provider tetrate-agent-router --model claude-sonnet-5
+# Requires: TETRATE_AGENT_ROUTER_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -405,6 +410,28 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### Tetrate Agent Router
+
+[Tetrate Agent Router](https://router.tetrate.ai) is a unified OpenAI-compatible gateway that fronts 25+ upstream providers (Anthropic, OpenAI, Google, xAI, DeepInfra, and more) behind one endpoint, with automatic fallbacks, cost controls, and usage tracking attached to each key.
+
+```bash
+# Use any model in your account's catalog (Claude, GPT, Gemini, and more)
+hermes chat --provider tetrate-agent-router --model claude-sonnet-5
+# Requires: TETRATE_AGENT_ROUTER_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider tetrate --model gpt-5.6-terra
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "tetrate-agent-router"
+  default: "claude-sonnet-5"
+```
+
+Sign up at [router.tetrate.ai](https://router.tetrate.ai/) and create a key from the Console under **Settings → API Keys**. Keys look like `sk-...`. The env var `AGENTROUTER_API_KEY` (the name used in Tetrate's own docs and CLI) is also accepted. The base URL can be overridden with `TETRATE_AGENT_ROUTER_BASE_URL`.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 

@@ -15,7 +15,14 @@ def _message(text, *, phase: str | None = "final_answer", status="completed"):
     )
 
 
-def _adapter_response(final, *, streamed):
+def _reasoning(text):
+    return SimpleNamespace(
+        type="reasoning", id="rs_test", encrypted_content=None,
+        summary=[SimpleNamespace(text=text)],
+    )
+
+
+def _adapter_response(final, *, streamed, base_url=""):
     class FakeStream:
         def __iter__(self):
             if getattr(final, "output_text", ""):
@@ -35,7 +42,7 @@ def _adapter_response(final, *, streamed):
             return FakeStream() if streamed else final
 
     return _CodexCompletionsAdapter(
-        SimpleNamespace(responses=FakeResponses()), "aux-model",
+        SimpleNamespace(base_url=base_url, responses=FakeResponses()), "aux-model",
     ).create(messages=[{"role": "user", "content": "Summarize the task."}])
 
 
@@ -83,6 +90,44 @@ def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch, fallback
         assert compressor._previous_summary is None
         assert compressor._last_summary_truncated_failure is True
         assert compressor._last_compress_aborted is True
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["response-object", "sse"])
+@pytest.mark.parametrize(
+    "base_url, reasoning_text, expected_content, expected_finish",
+    [
+        pytest.param(
+            "https://chatgpt.com/backend-api/codex",
+            "still thinking",
+            None,
+            "length",
+            id="codex-reasoning-only",
+        ),
+        pytest.param(
+            "https://api.x.ai/v1",
+            "scratch\n<response>FINAL ANSWER</response>",
+            "FINAL ANSWER",
+            "stop",
+            id="xai-reasoning-answer",
+        ),
+    ],
+)
+def test_actual_adapter_preserves_route_sensitive_reasoning(
+    streamed, base_url, reasoning_text, expected_content, expected_finish,
+):
+    final = SimpleNamespace(
+        status="completed", output=[_reasoning(reasoning_text)], output_text="",
+        incomplete_details=None, error=None,
+        usage=SimpleNamespace(input_tokens=11, output_tokens=3, total_tokens=14),
+    )
+
+    response = _adapter_response(final, streamed=streamed, base_url=base_url)
+
+    choice = response.choices[0]
+    assert choice.message.content == expected_content
+    assert choice.finish_reason == expected_finish
+    assert getattr(response, "status", None) == "completed"
+    assert (response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens) == (11, 3, 14)
 
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["response-object", "sse"])

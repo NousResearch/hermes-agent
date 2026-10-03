@@ -249,6 +249,32 @@ function normalizeLineBreaks(text: string): string {
 // ---------------------------------------------------------------------------
 
 const SENTENCE_CUT_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
+
+// Fenced code blocks are silence for speech (sanitizeTextForSpeech strips them):
+// the streaming cutter must not cut inside one, or the code's periods would be
+// spoken before the closing fence arrives (#131091). A trailing unclosed fence
+// runs to end-of-buffer — the close may arrive in a later delta.
+function fencedSpans(text: string): Array<[number, number]> {
+  const marks: number[] = []
+  let index = text.indexOf('```')
+
+  while (index !== -1) {
+    marks.push(index)
+    index = text.indexOf('```', index + 3)
+  }
+
+  const spans: Array<[number, number]> = []
+
+  for (let i = 0; i + 1 < marks.length; i += 2) {
+    spans.push([marks[i], marks[i + 1] + 3])
+  }
+
+  if (marks.length % 2 === 1) {
+    spans.push([marks[marks.length - 1], text.length])
+  }
+
+  return spans
+}
 const MIN_SENTENCE_CHARS = 24
 
 export function cutSentences(
@@ -265,17 +291,26 @@ export function cutSentences(
 
   SENTENCE_CUT_RE.lastIndex = 0
 
+  const fences = fencedSpans(buffer)
+
   let match = SENTENCE_CUT_RE.exec(buffer)
 
   while (match) {
-    const end = match.index + match[0].length
-    const candidate = buffer.slice(start, end).trim()
+    const at = match.index
+    const end = at + match[0].length
+    const inFence = fences.some(([fenceStart, fenceEnd]) => at >= fenceStart && at < fenceEnd)
 
-    // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
-    // provider call per abbreviation — unless a later boundary extends them.
-    if (candidate.length >= minChars) {
-      sentences.push(candidate)
-      start = end
+    // Inside a code fence: hold the text until the fence closes instead of
+    // speaking the code's periods (#131091).
+    if (!inFence) {
+      const candidate = buffer.slice(start, end).trim()
+
+      // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
+      // provider call per abbreviation — unless a later boundary extends them.
+      if (candidate.length >= minChars) {
+        sentences.push(candidate)
+        start = end
+      }
     }
 
     match = SENTENCE_CUT_RE.exec(buffer)

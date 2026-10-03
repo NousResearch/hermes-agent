@@ -284,3 +284,24 @@ describe('IncrementalSpeechSentenceBuffer', () => {
     expect(buffer.flush()).toEqual(['And a tail'])
   })
 })
+
+describe('cutSentences fenced code', () => {
+  it('holds cuts inside fenced code blocks until the fence closes (#131091)', () => {
+    const first = cutSentences('Here is the demo setup for this. ```ts\nconst x = 1. It stays quiet. \n', false)
+
+    expect(first.sentences).toEqual(['Here is the demo setup for this.'])
+    expect(first.rest).toContain('const x = 1.')
+
+    const second = cutSentences(first.rest + '```\nAll done with the demo. ', false)
+
+    expect(second.sentences).toEqual(['```ts\nconst x = 1. It stays quiet. \n```\nAll done with the demo.'])
+    expect(sanitizeTextForSpeech(second.sentences[0])).toBe('All done with the demo.')
+  })
+
+  it('stays silent when the buffer is only an unclosed fence', () => {
+    const { sentences, rest } = cutSentences('```py\nx = 1. \n', false)
+
+    expect(sentences).toEqual([])
+    expect(rest).toBe('```py\nx = 1. \n')
+  })
+})

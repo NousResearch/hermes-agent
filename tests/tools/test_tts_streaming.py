@@ -1225,3 +1225,43 @@ def test_flush_drops_unterminated_think_tail(tag):
     chunker = SentenceChunker()
     assert chunker.feed(f"The spoken part. {tag}half-formed reas") == []
     assert chunker.flush() == ["The spoken part."]
+
+
+class TestSentenceChunkerFences:
+    """#131091: streaming TTS read fenced code blocks aloud."""
+
+    def test_no_cuts_inside_unclosed_fence(self):
+        c = ts.SentenceChunker(min_len=1)
+        assert c.feed("```py\nx = 1. \n") == []
+        assert c.feed("y = 2. \n") == []
+        out = c.feed("```\nAll finished here. ")
+        assert out == ["```py\nx = 1. \ny = 2. \n```\nAll finished here. "]
+        from tools.tts_text_normalize import _strip_markdown_for_tts
+
+        spoken = _strip_markdown_for_tts(out[0])
+        assert "x = 1" not in spoken
+        assert "All finished here." in spoken
+
+    def test_prose_before_fence_still_emits_promptly(self):
+        c = ts.SentenceChunker()
+        assert c.feed("Here is the full setup for this demo. ```py\nx = 1. \n") == [
+            "Here is the full setup for this demo. "
+        ]
+        assert c.feed("y = 2. \n") == []
+        out = c.feed("```\nDone with it all here. ")
+        assert out == ["```py\nx = 1. \ny = 2. \n```\nDone with it all here. "]
+
+    def test_flush_silences_fenced_code_keeps_prose(self):
+        c = ts.SentenceChunker()
+        assert c.feed("Some intro without boundary ```py\ncode here") == []
+        assert c.flush() == ["Some intro without boundary"]
+        c = ts.SentenceChunker()
+        assert c.feed("This prose part is long enough. ```py\nx=1\n```\nTail without boundary") == [
+            "This prose part is long enough. "
+        ]
+        assert c.flush() == ["Tail without boundary"]
+
+    def test_flush_of_pure_code_block_is_silent(self):
+        c = ts.SentenceChunker(min_len=1)
+        assert c.feed("```py\nx = 1. \n") == []
+        assert c.flush() == []

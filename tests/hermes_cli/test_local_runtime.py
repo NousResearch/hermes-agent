@@ -602,6 +602,56 @@ def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
     assert handler.unloaded == []
 
 
+def test_idle_sweeper_survives_a_router_restart(monkeypatch):
+    """The sweeper belongs to the supervisor, not to the first router process: the watchdog
+    respawns a crashed router, and a sweeper that exited with the crash left every model loaded
+    afterwards resident for good. It stops only when the supervisor is stopped."""
+    import time
+
+    from hermes_cli.local_runtime import bootstrap
+
+    class _Proc:
+        def __init__(self, rc):
+            self.rc = rc
+
+        def poll(self):
+            return self.rc
+
+    class _Sup:
+        def __init__(self):
+            self._stop_event = threading.Event()
+            self.proc = _Proc(None)
+            self.sweeps = 0
+
+        def sweep_idle(self):
+            self.sweeps += 1
+
+    def wait_until(pred):
+        deadline = time.monotonic() + 5
+        while not pred():
+            assert time.monotonic() < deadline, "timed out"
+            time.sleep(0.01)
+
+    monkeypatch.setattr(bootstrap, "_REFIT_EVERY_S", 0.01)
+    monkeypatch.setattr(bootstrap, "_SWEEP_EVERY_S", 0)
+    monkeypatch.setattr(bootstrap, "refit_idle_presets", lambda sup: False)
+    sup = _Sup()
+    bootstrap._start_idle_sweeper(sup)
+    sweeper = next(t for t in threading.enumerate() if t.name == "local-runtime-idle-sweep")
+
+    wait_until(lambda: sup.sweeps >= 1)
+    sup.proc = _Proc(-9)            # router crashed
+    time.sleep(0.1)
+    sup.proc = _Proc(None)          # watchdog respawned it
+    swept = sup.sweeps
+    wait_until(lambda: sup.sweeps >= swept + 3)
+    assert sweeper.is_alive()
+
+    sup._stop_event.set()           # supervisor.stop()
+    sweeper.join(timeout=5)
+    assert not sweeper.is_alive()
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read

@@ -481,13 +481,15 @@ _REFIT_EVERY_S = 30
 def _start_idle_sweeper(sup) -> None:
     """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
     threshold; every 30 s with nothing loaded, re-plan launch windows against free GPU memory.
-    Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
+    Daemon thread tied to the supervisor's lifetime — exits when the supervisor is stopped, NOT
+    when the router process exits: the watchdog respawns a crashed router, and a loop keyed on
+    the first process's liveness died with it, leaving every later model resident forever. While
+    the router is down, both passes fail their probes and skip."""
     import threading
 
     def _loop():
         last_sweep = time.monotonic()
-        while sup.proc is not None and sup.proc.poll() is None:
-            time.sleep(_REFIT_EVERY_S)
+        while not sup._stop_event.wait(_REFIT_EVERY_S):
             if time.monotonic() - last_sweep >= _SWEEP_EVERY_S:
                 last_sweep = time.monotonic()
                 try:

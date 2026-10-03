@@ -536,3 +536,172 @@ class TestConfigAndSchema:
         describe_params = schemas["tool_describe"]["parameters"]
         assert describe_params["required"] == ["names"]
         assert describe_params["properties"]["names"]["type"] == "array"
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped not-deferrable diagnosis (#108663)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionScopedToolDiagnosis:
+    """A registered direct-surface name the session's real tool surface
+    (``agent.valid_tool_names``) never offered — a disabled toolset, or a name hidden
+    by one-shot pruning / side-agent drops — must be told 'not available, don't
+    retry', not 'call it directly': the old wording sends the model into a retry
+    loop on a function it doesn't have."""
+
+    NAME = "mq_diag_desktop_action"
+
+    def _register_direct_surface(self):
+        return _register(self.NAME, "desktop_ui", "A GUI-surface tool.")
+
+    def test_describe_absent_direct_surface_says_not_available(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        self._register_direct_surface()
+        # The model's surface offers only an unrelated deferred tool: the
+        # direct-surface name is registered globally but not offered here.
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[_register("mq_diag_deferred", "mcp-mq-diag")],
+            session_tool_names=["mq_diag_deferred"],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        msg = result["errors"][self.NAME]
+        assert "not available in this session" in msg
+        assert msg.lower().count("do not retry")
+        assert "Call it directly" not in msg
+
+    def test_describe_listed_direct_surface_keeps_call_directly(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        tool_def = self._register_direct_surface()
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[tool_def],
+            session_tool_names=[self.NAME],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        msg = result["errors"][self.NAME]
+        assert "directly-listed tool" in msg
+        assert "Call it directly" in msg
+
+    def test_describe_pruned_name_follows_surface_not_catalog(self):
+        """One-shot pruning / side-agent drops hide a name from the model's surface
+        while the pre-assembly catalog still lists it. The diagnosis must follow
+        the surface — the catalog-derived check would wrongly say 'call it directly'
+        and re-open the retry loop this PR closes."""
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        tool_def = self._register_direct_surface()
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[tool_def],        # pre-assembly catalog still lists it…
+            session_tool_names=["tool_search"],  # …but the session surface never offered it
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        msg = result["errors"][self.NAME]
+        assert "not available in this session" in msg
+        assert msg.lower().count("do not retry")
+        assert "Call it directly" not in msg
+
+    def test_describe_without_session_surface_keeps_legacy_wording(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        self._register_direct_surface()
+        # No session surface at all: behaviour must be exactly the legacy one.
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert "Call it directly" in result["errors"][self.NAME]
+
+    def test_resolve_underlying_call_with_session_surface_says_not_available(self):
+        from tools.tool_search import resolve_underlying_call
+
+        self._register_direct_surface()
+        _, _, err = resolve_underlying_call(
+            {"calls": [{"name": self.NAME, "arguments": {}}]},
+            session_tool_names=["mq_diag_deferred"],
+        )
+        assert err is not None
+        assert "not available in this session" in err
+        assert "Call it directly" not in err
+
+    def test_resolve_underlying_call_without_session_surface_keeps_legacy_wording(self):
+        # Display/trajectory callers pass no session list: legacy message unchanged.
+        from tools.tool_search import resolve_underlying_call
+
+        self._register_direct_surface()
+        _, _, err = resolve_underlying_call(
+            {"calls": [{"name": self.NAME, "arguments": {}}]},
+        )
+        assert err is not None
+        assert "Call it directly" in err
+
+    def test_resolve_normalized_name_matches_session_surface(self):
+        """Dispatch repairs case/separators (``Read_File``, ``read-file``) before
+        matching; the diagnosis must fold the same way, or those spellings fall to
+        the unknown-name branch and dodge this split entirely."""
+        from tools.tool_search import resolve_underlying_call
+
+        _, _, err = resolve_underlying_call(
+            {"calls": [{"name": "Read_File", "arguments": {}}]},
+            session_tool_names=["read_file"],
+        )
+        assert err is not None
+        assert "directly-listed tool" in err
+        assert "not a known tool name" not in err
+
+        _, _, err = resolve_underlying_call(
+            {"calls": [{"name": "read-file", "arguments": {}}]},
+            session_tool_names=["tool_search"],
+        )
+        assert err is not None
+        assert "not available in this session" in err
+        assert err.lower().count("do not retry")
+
+    def test_bridge_dispatch_routes_session_list_to_the_rejection(self):
+        """End-to-end via the model_tools bridge, mirroring the issue repro: the
+        session surface (enabled_tools = agent.valid_tool_names) decides — a core
+        tool the surface never offered gets the don't-retry rejection from both
+        tool_describe and tool_call."""
+        import model_tools
+
+        r, _ = model_tools._dispatch_bridge_tool(
+            "tool_describe", {"names": ["read_file"]}, None, ["file"],
+            session_tool_names=["tool_search"])
+        assert "read_file" in r and "not available in this session" in r
+
+        r, _ = model_tools._dispatch_bridge_tool(
+            "tool_call",
+            {"calls": [{"name": "read_file", "arguments": {"path": "/etc/hostname"}}]},
+            None, ["file"], session_tool_names=["tool_search"])
+        assert "not available in this session" in r
+
+        # And a session whose surface does offer the tool keeps the legacy wording.
+        r, _ = model_tools._dispatch_bridge_tool(
+            "tool_describe", {"names": ["read_file"]}, None, None,
+            session_tool_names=["read_file"])
+        assert "Call it directly" in r
+
+    def test_handle_function_call_surface_reaches_the_diagnosis(self):
+        """The agent's real surface travels as enabled_tools through
+        handle_function_call into the bridge: the pre-assembly catalog cannot
+        see pruned/dropped names, so this channel is what actually kills the
+        retry loop in live sessions."""
+        import model_tools
+
+        r = model_tools.handle_function_call(
+            "tool_call",
+            {"calls": [{"name": "read_file", "arguments": {"path": "/etc/hostname"}}]},
+            enabled_tools=["tool_search"],  # = agent.valid_tool_names without file tools
+            enabled_toolsets=None, disabled_toolsets=["file"])
+        assert "not available in this session" in r
+        assert "do not retry" in r.lower()
+
+        r = model_tools.handle_function_call(
+            "tool_describe", {"names": ["read_file"]},
+            enabled_tools=["read_file"], enabled_toolsets=None, disabled_toolsets=None)
+        assert "Call it directly" in r

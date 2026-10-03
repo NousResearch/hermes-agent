@@ -85,6 +85,72 @@ def test_explicit_config_key_overrides_matching_env_value(monkeypatch):
     assert config["docker_image"] == "config/image:1"
 
 
+def test_local_cli_in_dir_survives_config_reload_and_terminal_fallback(tmp_path, monkeypatch):
+    """An explicit CLI workspace wins over stale local terminal.cwd."""
+    from argparse import Namespace
+
+    from hermes_cli import _early_recovery
+
+    monkeypatch.setattr(_early_recovery, "restore_interrupted_pull", lambda: False)
+    from hermes_cli import main as main_mod
+    from hermes_cli.cli_config_load import _mirror_config_to_env
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    configured = tmp_path / "configured"
+    requested = tmp_path / "requested"
+    alias = tmp_path / "alias"
+    configured.mkdir()
+    requested.mkdir()
+    try:
+        alias.symlink_to(requested, target_is_directory=True)
+        selected = alias
+    except (OSError, NotImplementedError):
+        selected = requested
+    _write_config(f"terminal:\n  backend: local\n  cwd: {configured}\n")
+    monkeypatch.chdir(configured)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+    main_mod._apply_in_dir(Namespace(in_dir=str(selected), no_restore_cwd=False))
+    expected = os.getcwd()
+    _mirror_config_to_env({"terminal": {"backend": "local", "cwd": str(configured)}}, True)
+    load_hermes_dotenv(load_external_secrets=False)
+
+    assert os.environ["TERMINAL_CWD"] == expected
+    assert terminal_tool._get_env_config()["cwd"] == expected
+
+
+def test_local_non_cli_and_gateway_bridges_keep_configured_cwd(tmp_path, monkeypatch):
+    """A local launch without --in and a gateway retain terminal.cwd authority."""
+    from hermes_cli import _early_recovery
+
+    monkeypatch.setattr(_early_recovery, "restore_interrupted_pull", lambda: False)
+    from hermes_cli import main as main_mod
+    from hermes_cli.cli_config_load import _mirror_config_to_env
+
+    configured = tmp_path / "configured"
+    launch = tmp_path / "launch"
+    configured.mkdir()
+    launch.mkdir()
+    _write_config(f"terminal:\n  backend: local\n  cwd: {configured}\n")
+    monkeypatch.chdir(launch)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr(main_mod, "_explicit_in_dir", None)
+
+    import cli
+
+    monkeypatch.setattr(cli, "CLI_CONFIG", {"terminal": {"env_type": "local"}})
+    _mirror_config_to_env({"terminal": {"backend": "local", "cwd": str(configured)}}, True)
+    assert os.environ["TERMINAL_CWD"] == str(launch)
+    assert terminal_tool._get_env_config()["cwd"] == str(configured)
+
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
+    monkeypatch.setenv("TERMINAL_CWD", str(launch))
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(main_mod, "_explicit_in_dir", str(launch))
+    assert terminal_tool._get_env_config()["cwd"] == str(configured)
+
+
 def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):
     """SSH ``~`` belongs to the remote user, not the Hermes host/container."""
     _write_config("terminal:\n  backend: ssh\n  cwd: '~'\n")

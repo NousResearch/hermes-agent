@@ -105,6 +105,10 @@ Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to
 
 `websocket_event_max_silence_seconds` is the exception: it guards a single dimension (event dispatch), so `0` opts out of **that check only** — ready/ACK/latency keep guarding. A socket can stay ESTABLISHED and keep ACKing heartbeats while delivering zero Gateway events; heartbeat ACKs are frames without an event type, so no transport-side check can see that state. The default (4 hours) matches the outage window operators have observed in the field; a quiet guild can legitimately go hours without a single Gateway event, so keep this bound generous unless you know your traffic.
 
+:::tip[Shortcut: let the wizard do Steps 5–7]
+Create the application and copy the bot token (Steps 1–4), then run `hermes gateway setup` and pick **Discord**. Hermes checks the token with Discord, tells you if **Message Content Intent** is off (with a link straight to the toggle), prints a ready-made invite link for your server, and allowlists you as the bot's owner — no Developer Mode needed.
+:::
+
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.
@@ -219,6 +223,7 @@ These are the minimum permissions your bot needs:
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
 | Recommended | `274878286912` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions |
+| Full (what `hermes gateway setup` prints) | `309240908864` | Recommended plus Create Public Threads (for `auto_thread`) and Connect/Speak (voice channels) |
 
 ## Step 6: Invite to Your Server
 
@@ -258,7 +263,7 @@ Run the guided setup command:
 hermes gateway setup
 ```
 
-Select **Discord** when prompted, then paste your bot token and user ID when asked.
+Select **Discord** when prompted and paste your bot token. The wizard verifies it with Discord (a wrong or stale token is rejected before it is saved), checks the privileged intents, prints the invite link, and offers to allowlist the bot's owner — you. Extra users can be added by user ID or username.
 
 ### Option B: Manual Configuration
 

@@ -90,7 +90,7 @@ def test_acquire_writes_pid_and_start_time(marker):
     assert lock.acquire() is True
     assert lock.acquired is True
 
-    lines = marker.read_text(encoding="utf-8").splitlines()
+    lines = marker.read_text(encoding="utf-8-sig").splitlines()
     assert int(lines[0]) == os.getpid(), (
         "the Electron gate probes this pid for liveness"
     )
@@ -197,7 +197,7 @@ def test_dead_owner_is_reclaimed_not_honored(marker):
 
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True
-    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+    assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == os.getpid()
 
 
 def test_v1_owner_past_the_age_ceiling_is_reclaimed(marker, other_pid):
@@ -226,7 +226,7 @@ def test_v2_marker_whose_pid_was_reused_is_reclaimed(marker, other_pid):
 
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True and lock.acquired is True
-    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+    assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == os.getpid()
 
 
 def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatch, other_pid):
@@ -238,7 +238,7 @@ def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatc
 
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True and lock.acquired is False
-    lines = marker.read_text(encoding="utf-8").splitlines()
+    lines = marker.read_text(encoding="utf-8-sig").splitlines()
     assert marker.read_bytes().startswith(base) and lines[3].startswith(f"delegate:{os.getpid()} ct:")
 
     dead_partner = f"{DEAD_PID}\n{int(time.time())}\nct:1.000\n{lines[3]}\n"
@@ -393,7 +393,7 @@ class TestHandoffFromOrchestratingUpdater:
 
         lock.release()
         assert marker.exists(), "the parent still needs its marker after our stage ends"
-        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == other_pid
+        assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == other_pid
 
     def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(
         self, marker, monkeypatch, other_pid
@@ -426,7 +426,7 @@ class TestHandoffFromOrchestratingUpdater:
         lock = UpdateLock(path=marker)
         assert lock.acquire() is True
         assert lock.acquired is True
-        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+        assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == os.getpid()
 
 
 class TestAncestryHandoff:

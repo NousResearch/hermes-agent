@@ -561,9 +561,13 @@ def test_sensitive_path_and_forged_grant_fail_closed(tmp_path, monkeypatch):
     assert "source_unavailable" in missing_exc.value.decision.reason_codes
 
 
-def test_forced_secret_redaction_rejects_instead_of_rewriting(tmp_path):
+@pytest.mark.parametrize(
+    "text",
+    ["token=super-secret-value\n", "TOKEN=super-secret-value\n", "export TOKEN=super-secret-value\n"],
+)
+def test_forced_secret_redaction_rejects_instead_of_rewriting(tmp_path, text):
     path = tmp_path / "secret.txt"
-    path.write_text("token=super-secret-value\n", encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     grant = _source_grant(path)
     with pytest.raises(EgressBlocked) as exc_info:
         firewall(tmp_path).preflight(
@@ -572,6 +576,21 @@ def test_forced_secret_redaction_rejects_instead_of_rewriting(tmp_path):
             grants=(grant,),
         )
     assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
+@pytest.mark.parametrize("text", [
+    "token=os.getenv('EXTERNAL_VALUE')\n",
+    "max_tokens=128\n",
+    "The prose discusses token=CPU as a technical example.\n",
+])
+def test_granted_source_reference_and_prose_survive_boundary_scan(tmp_path, text):
+    path = tmp_path / "source.py"
+    path.write_text(text, encoding="utf-8")
+    grant = _source_grant(path)
+    authorized = firewall(tmp_path).authorize(
+        _typed_request(_request("ignored"), source_grant=grant), _route(), grants=(grant,)
+    )
+    assert json.loads(authorized.payload_bytes)["messages"][0]["content"] == text
 
 
 @pytest.mark.parametrize(

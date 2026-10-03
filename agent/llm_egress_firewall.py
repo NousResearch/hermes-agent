@@ -570,15 +570,47 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
     return False
 
 
+_BOUNDARY_TOKEN_ASSIGNMENT = re.compile(
+    r"^[ \t]*(?:export[ \t]+)?token[ \t]*[:=][ \t]*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_TOKEN_REFERENCE = re.compile(
+    r"(?:os\.getenv\(['\"][A-Za-z_][A-Za-z0-9_]*['\"]\)"
+    r"|os\.environ\[['\"][A-Za-z_][A-Za-z0-9_]*['\"]\]"
+    r"|process\.env\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
+)
+
+
+def _contains_token_literal(text: str) -> bool:
+    """Bare token assignments are credentials at the send boundary.
+
+    Logging intentionally permits short, non-opaque token values. A final
+    denial predicate cannot use that heuristic. Line anchoring preserves prose;
+    environment references carry names rather than credential bytes.
+    """
+    for match in _BOUNDARY_TOKEN_ASSIGNMENT.finditer(text):
+        value = match.group(1).strip()
+        if _TOKEN_REFERENCE.fullmatch(value):
+            continue
+        if value in {"***", "<redacted>"}:
+            continue
+        return True
+    return False
+
+
 def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
-    """Apply forced redaction semantics independently to every request string."""
+    """Scan credential literals as well as forced logging-redactor patterns."""
 
     if isinstance(value, str):
-        return redact_sensitive_text(
-            value,
-            force=True,
-            redact_url_credentials=True,
-        ) != value
+        return (
+            _contains_token_literal(value)
+            or redact_sensitive_text(
+                value,
+                force=True,
+                redact_url_credentials=True,
+            )
+            != value
+        )
     if isinstance(value, (bytes, bytearray, memoryview)):
         # Binary request material is not safely inspectable as text.
         return True

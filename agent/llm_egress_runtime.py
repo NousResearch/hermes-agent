@@ -619,7 +619,8 @@ def authorize_agent_sdk_kwargs(
         sanitized_cap=sanitized_segment_cap,
         syntax_tool_call_ids=(
             _recognized_syntax_tool_call_ids(body)
-            if os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+            if provider_uses_egress_firewall(getattr(agent, "provider", None))
+            or os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
             else frozenset()
         ),
         registry=registry if isinstance(registry, SourceProvenanceRegistry) else None,

@@ -56,14 +56,17 @@ above it, lets a command rename the parent, and the next spawn then finds
 nothing to hide at the old path while the secret is readable under the
 new one.
 
-Resource limits are applied by prlimit(1) from util-linux, which the
-environment places in front of the bwrap argv above: prlimit sets
-RLIMIT_AS, RLIMIT_CPU and RLIMIT_NPROC on itself and execs bwrap, so the
-limits are in place before the sandbox starts and no Python code runs in
-the forked child. (Popen's pre-exec callback is documented as unsafe in
-a threaded process, and the gateway is one.) A value above the inherited
-hard limit is clamped to it in the parent, since raising a hard limit
-needs CAP_SYS_RESOURCE.
+Resource limits are applied by prlimit(1) from util-linux, in two
+places. In front of the bwrap argv above, prlimit sets RLIMIT_AS and
+RLIMIT_CPU on itself and execs bwrap, so those limits are in place before
+the sandbox starts. After bwrap's ``--`` separator, a second prlimit sets
+RLIMIT_NPROC and execs the shell: inside the user namespace bwrap made,
+the kernel counts the processes of that sandbox alone, so the value is a
+ceiling for the sandbox whatever the host runs (see rlimit_values). No
+Python code runs in the forked child. (Popen's pre-exec callback is
+documented as unsafe in a threaded process, and the gateway is one.) A
+value above the inherited hard limit is clamped to it in the parent,
+since raising a hard limit needs CAP_SYS_RESOURCE.
 """
 
 from __future__ import annotations
@@ -807,48 +810,26 @@ def probe_bwrap() -> str:
     return _probed_bwrap_path
 
 
-def uid_thread_count(uid: int) -> int:
-    """Threads owned by *uid* host-wide, counted from /proc.
-
-    RLIMIT_NPROC counts threads, not processes (getrlimit(2)), and a desktop
-    uid runs several threads per process.
-    """
-    count = 0
-    for name in os.listdir("/proc"):
-        if not name.isdigit():
-            continue
-        proc = os.path.join("/proc", name)
-        try:
-            if os.stat(proc).st_uid == uid:
-                count += len(os.listdir(os.path.join(proc, "task")))
-        except OSError:
-            continue
-    return count
+# The wrapper's own processes that exist beside the command for its whole
+# run: bwrap's pid-1 init and the shell that runs the command. They count
+# against the same limit, so they come on top of max_procs.
+SANDBOX_BASE_PROCESSES = 2
 
 
-# Processes the wrapper itself forks before the command runs: bwrap, its
-# pid-1 init, the bash that runs the command, and that shell's command
-# substitutions and mktemp for the snapshot; a python3 under execute_code
-# counts too. RLIMIT_NPROC is checked against the uid's live thread count
-# at each fork, so without headroom a tight max_procs (or host threads
-# started between the /proc scan and the fork) fails the spawn before the
-# command starts: "bwrap: Can't fork for pid 1: Resource temporarily
-# unavailable".
-WRAPPER_PROCESS_ALLOWANCE = 16
-
-
-def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, int]:
+def rlimit_values(config: BubblewrapConfig) -> dict[int, int]:
     """The rlimits a spawn gets from the three terminal.bubblewrap_* keys.
 
-    A key at 0 leaves its limit out. RLIMIT_NPROC is counted per uid
-    host-wide, and a bwrap user namespace does not change that (kernel
-    6.8: with the limit below the uid's thread count bwrap cannot even
-    create its namespace), so max_procs is applied on top of the uid's
-    current thread count: it bounds what the sandbox may add, and the
-    documented default of 256 keeps working on a desktop that already runs
-    more. WRAPPER_PROCESS_ALLOWANCE is added on top of that for the
-    wrapper's own processes, so max_procs is what the command may add,
-    not what the command and the wrapper share.
+    A key at 0 leaves its limit out. The memory and CPU limits are per
+    process and are set in front of bwrap. RLIMIT_NPROC is different: the
+    kernel counts it per user and per user namespace, and checks a
+    namespace's creator limit against the count of the namespace above. A
+    value set in front of bwrap is therefore compared with every thread
+    the uid runs on the host, which makes it either useless as a ceiling
+    or fatal to the spawn. Set inside the sandbox, after bwrap has made
+    its user namespace, it is compared with the processes of that sandbox
+    alone, so max_procs is what the command may run, whatever the host
+    does. A process in the sandbox cannot raise it (the hard limit is set
+    too), and a nested user namespace stays inside it.
     """
     limits: dict[int, int] = {}
     if config.memory_mb:
@@ -856,7 +837,7 @@ def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, in
     if config.cpu_seconds:
         limits[resource.RLIMIT_CPU] = config.cpu_seconds
     if config.max_procs:
-        limits[resource.RLIMIT_NPROC] = uid_threads + config.max_procs + WRAPPER_PROCESS_ALLOWANCE
+        limits[resource.RLIMIT_NPROC] = config.max_procs + SANDBOX_BASE_PROCESSES
     return limits
 
 
@@ -1347,7 +1328,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         )
 
     def _wrap_popen_args(self, args: list[str]) -> list[str]:
-        return self._prlimit_prefix() + self._bwrap_prefix(self.cwd) + list(args)
+        return self._prlimit_prefix() + self._bwrap_prefix(self.cwd) + self._process_limit_prefix() + list(args)
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         # --unsetenv strips the socket variables from the environment bwrap
@@ -1359,14 +1340,17 @@ class BubblewrapEnvironment(LocalEnvironment):
         return super()._wrap_command(f"unset {' '.join(HOST_SOCKET_VARS)}; {command}", cwd)
 
     def _prlimit_prefix(self) -> list[str]:
-        # uid_thread_count scans /proc once per spawn, and only when max_procs
-        # is non-zero (the one limit that needs it). The count must be fresh:
-        # the kernel checks RLIMIT_NPROC against the uid's live thread count
-        # when the sandbox forks, so a count taken at construction goes stale
-        # as the host starts threads, and a limit that falls below the live
-        # count stops bwrap from creating its namespace at all.
-        uid_threads = uid_thread_count(os.getuid()) if self._config.max_procs else 0  # windows-footgun: ok — bubblewrap is a Linux-only backend
-        return prlimit_args(rlimit_values(self._config, uid_threads=uid_threads), self._prlimit_path)
+        """prlimit in front of bwrap: the per-process memory and CPU limits."""
+        limits = rlimit_values(self._config)
+        limits.pop(resource.RLIMIT_NPROC, None)
+        return prlimit_args(limits, self._prlimit_path)
+
+    def _process_limit_prefix(self) -> list[str]:
+        """prlimit after bwrap's separator: the process limit, set inside the sandbox."""
+        limit = rlimit_values(self._config).get(resource.RLIMIT_NPROC)
+        if not limit:
+            return []
+        return prlimit_args({resource.RLIMIT_NPROC: limit}, self._prlimit_path)
 
     def _live_sandbox_pids(self) -> list[int]:
         """PIDs of this instance's bwrap wrappers still running.

@@ -41,6 +41,41 @@ def _osascript_exec_argv(program_args: list[str]) -> list[str]:
     return argv
 
 
+def test_launchd_plist_escapes_dynamic_xml_strings(tmp_path, monkeypatch):
+    """Dynamic launchd values can contain XML-sensitive chars in user paths."""
+    hermes_home = tmp_path / "Hermes & Co"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/Users/a&b/.venv/bin/python")
+    monkeypatch.setattr(gateway_cli, "_stable_service_working_dir", lambda: hermes_home)
+    monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway&dev")
+    monkeypatch.setattr(gateway_cli, "_profile_arg", lambda _home=None: "--profile a&b")
+    monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: ["/tmp/a&b/bin"])
+    monkeypatch.setattr(gateway_cli.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("PATH", "/usr/bin:/tmp/c&d/bin")
+
+    plist = gateway_cli.generate_launchd_plist()
+
+    assert "&amp;" in plist
+    parsed = plistlib.loads(plist.encode("utf-8"))
+    assert parsed["Label"] == "ai.hermes.gateway&dev"
+    # The osascript Local Network wrapper carries the stderr-timestamp argv; every
+    # dynamic value must round-trip through plist parsing, including XML-sensitive ones.
+    args = _osascript_exec_argv(parsed["ProgramArguments"])
+    assert args[0] == "/Users/a&b/.venv/bin/python"
+    assert "--error-log" in args
+    error_log = args[args.index("--error-log") + 1]
+    assert error_log == str(hermes_home / "logs" / "gateway.error.log")
+    assert "--profile" in args
+    assert args[args.index("--profile") + 1] == "a&b"
+    assert parsed["WorkingDirectory"] == str(hermes_home)
+    assert parsed["EnvironmentVariables"]["PATH"].startswith("/tmp/a&b/bin:")
+    assert parsed["EnvironmentVariables"]["HERMES_HOME"] == str(hermes_home)
+    assert parsed["StandardOutPath"] == str(hermes_home / "logs" / "gateway.log")
+    assert parsed["StandardErrorPath"] == str(hermes_home / "logs" / "gateway.error.log")
+
+
 class TestUserSystemdPrivateSocketPreflight:
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)

@@ -392,7 +392,7 @@ def generate_launchd_plist() -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    <string>{escape(str(label))}</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -400,15 +400,14 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    <string>{escape(str(working_dir))}</string>
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
-
+        <string>{escape(str(sane_path))}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{escape(str(hermes_home))}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
     </dict>
@@ -447,10 +446,10 @@ def generate_launchd_plist() -> str:
     <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
+    <string>{escape(str(stdout_log))}</string>
     
     <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
+    <string>{escape(str(stderr_log))}</string>
 </dict>
 </plist>
 """

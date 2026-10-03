@@ -220,6 +220,69 @@ How it works: pressing the voice button opens a WebRTC session from the desktop 
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 
+### Desktop: Grok-Live voice chat mode (full duplex, delegates to Hermes)
+
+Grok-Live is the third voice chat mode alongside `chained` and `gpt-live`. Like GPT-Live, it replaces the STT → turn → TTS chain with **one full-duplex voice model**, xAI's realtime Grok voice: it listens while it speaks, handles interruptions and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the Grok voice then speaks Hermes' answer aloud.
+
+Under the hood it differs from GPT-Live in one way that matters on remote setups: the realtime websocket to xAI is held by the **gateway backend**, and your microphone audio is relayed through it — the credential never leaves the gateway host, and there is no browser-side WebRTC negotiation.
+
+```yaml
+voice:
+  voice_chat_mode: grok-live     # chained (default) | gpt-live | grok-live
+  grok_live:
+    model: grok-voice-latest
+    voice: eve                   # xAI realtime voice
+    auth: auto                   # auto (default) | oauth | apikey — see below
+    instructions: ""             # optional extra persona sentences (tone, pace, language)
+    vad_threshold: 0.75          # xAI server VAD: speech trigger threshold (0-1)
+    silence_ms: 700              # xAI server VAD: silence that ends your turn
+    prefix_ms: 333               # xAI server VAD: padding kept before speech
+    speed: 1.0                   # spoken-reply speed
+```
+
+#### Requirements
+
+A **SuperGrok subscription or an xAI API key**. There is **no separate per-minute voice billing** — unlike GPT-Live's $0.05/min, the realtime session runs on your SuperGrok/xAI account, and each Hermes turn is billed on its own provider as always.
+
+Sign in first (preferred):
+
+```bash
+hermes auth add xai-oauth        # SuperGrok OAuth — opens the browser for device-code login
+```
+
+or set a key in `~/.hermes/.env`:
+
+```bash
+XAI_API_KEY=your-key
+```
+
+:::warning
+`auth: auto` (the default) resolves the credential **OAuth-first** and only falls back to `XAI_API_KEY` — never the reverse. If you see a 403 / no-credits error, it usually means no valid SuperGrok token resolved and the fallback key (possibly a zero-credit one) was used instead: re-sign in with `hermes auth add xai-oauth`, check what resolves with `hermes auth status xai-oauth`, or force one path with `voice.grok_live.auth: oauth` / `apikey`.
+:::
+
+#### Switching modes
+
+Select Grok-Live in **Settings → Voice → Voice Chat Mode**, or from the engine picker in the composer's voice menu (the same radio list where GPT-Live is selected). Until a credential resolves, the row reads "Needs a SuperGrok sign-in or xAI API key"; if `grok-live` is selected but no credential resolves at start, the button falls back to the chained mode with a notice. The row is hidden entirely when the connected backend predates the mode.
+
+#### How it works
+
+Pressing the voice button opens a backend-held xAI websocket session; mic audio streams to xAI through the gateway in ~100 ms chunks, and Grok's spoken reply streams back the same way. When an utterance is a real request, the gateway submits it as a **normal chat turn** on the open session — the bubble shows what you said, the recent spoken exchange rides the model input as a per-turn note (never the system prompt, so the reply stays speakable prose), and tool activity is fed to the voice as quiet context ("Hermes is working: terminal"). The finished reply is spoken by the Grok voice. Saying the stop phrase (`voice.stop_phrases`) ends the conversation.
+
+If the connection drops mid-conversation, the gateway reconnects automatically every 5 s (the UI shows *reconnecting*); ending the conversation cancels the retry. While the conversation is open the gateway holds the microphone lease — **the wake word is paused by design** and resumes when you end it. During playback the gateway withholds your mic audio plus a short tail (server-side echo gate), so speaker echo doesn't re-trigger the model.
+
+Not supported in this mode: the CLI/TUI (`/voice` keeps the chained loop), the `tts` tool (it keeps using `tts.provider`), and local function tools in the voice model itself — in v1 the Grok voice registers zero function tools; all real work is delegated to Hermes.
+
+#### Grok-Live troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| **403 / "no credits" on start** | Auth is OAuth-first — the key was likely used because no valid SuperGrok token resolved. Run `hermes auth add xai-oauth` (or `hermes auth status xai-oauth` to inspect), or pin the order with `voice.grok_live.auth: oauth`. |
+| **No sound** | Check the default output sink: `wpctl status` (PipeWire) and `wpctl set-default <ID>` if the wrong sink is default. |
+| **Mic not picked up** | Check the default input source the same way: `wpctl status` → `wpctl set-default <ID>` for your microphone. |
+| **Wake word doesn't respond during a conversation** | By design — the mic lease is held by the voice conversation; the wake word resumes when you end it. |
+| **The model hears itself / echo trips replies** | Use headphones (no AEC on most speaker setups). The gateway's playback gate withholds mic audio during replies plus a 0.45 s tail, but loud speaker bleed can still trip the VAD. |
+| **Grok-Live row missing from the engine picker** | The connected backend predates the mode — update the gateway and desktop — or no credential resolves (fix auth first, the row then appears). |
+
 ### Barge-in
 
 You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):

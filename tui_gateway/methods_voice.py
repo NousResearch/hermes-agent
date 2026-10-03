@@ -11,6 +11,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 
 # ── Voice state: HERMES_VOICE / HERMES_VOICE_TTS are runtime-only env flags (never config.yaml)
@@ -458,6 +459,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("wake.start")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Arm the wake-word listener for the calling surface ("tui" | "gui"); ``{started: False,
     reason}`` when disabled/owned/not ready. ``persist: true`` (explicit gesture) also flips
@@ -519,6 +521,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("wake.stop")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Stop this surface's listener; ``persist: true`` also writes ``wake_word.enabled: false``."""
     stopped = _release_wake_for_transport(_caller_transport())
@@ -555,6 +558,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("wake.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     try:
         from tools.wake_word import (

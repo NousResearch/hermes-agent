@@ -7,9 +7,32 @@ from agent import account_usage
 
 
 class _FakeResponse:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, content=None):
         self._payload = payload
         self.status_code = status_code
+        # Mirror ``httpx.Response.content``: bytes buffered off the wire. Used by the body-cap
+        # code in ``agent/account_usage.py::_get_json`` (see #54949). When not supplied,
+        # synthesize from the JSON-encoded payload (normal < cap).
+        if content is None:
+            import json as _json
+            content = _json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else b""
+        self.content = content
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        """Mirror ``httpx.Response.iter_bytes``: the body arrives while streaming, so the
+        production cap (``account_usage._read_capped_body``) can stop reading mid-body."""
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
+    def close(self):
+        self.closed = True
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -32,7 +55,7 @@ class _FakeClient:
     def __exit__(self, *exc):
         return False
 
-    def get(self, url, headers):
+    def stream(self, method, url, headers=None, **kwargs):
         self.calls.append({"url": url, "headers": headers})
         return _FakeResponse(self.payload)
 
@@ -237,7 +260,7 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
         def __exit__(self, *exc):
             return False
 
-        def get(self, url, headers):
+        def stream(self, method, url, headers=None, **kwargs):
             request_calls.append(headers["Authorization"])
             return responses.pop(0)
 
@@ -382,7 +405,7 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
         def __exit__(self, *exc):
             return False
 
-        def get(self, url, headers):
+        def stream(self, method, url, headers=None, **kwargs):
             request_calls.append(headers["Authorization"])
             return responses.pop(0)
 

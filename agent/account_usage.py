@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -20,6 +21,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEPLETED_LINE = "Status: access depleted — top up to restore"
+
+# Defensive body-size cap for usage/account endpoints. These endpoints are expected to return
+# small JSON payloads (a few KB at most), but a hostile, broken, or proxy-interposed response
+# could stream an unbounded body. The cap is enforced on the response *stream* (see
+# ``_read_capped_body``) so the helper never buffers more than this from a single response:
+# a length check after ``response.content``/``response.json()`` would run too late to bound
+# memory. Normal small payloads are unaffected.
+# #54949: mirrors openclaw/openclaw#97702 and openclaw/openclaw#97659.
+_USAGE_RESPONSE_MAX_BYTES = 256 * 1024
 
 
 def _utc_now() -> datetime:
@@ -379,11 +389,40 @@ def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
             **codex_account_headers(token), **({"ChatGPT-Account-ID": account_id} if account_id else {})}
 
 
-def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
-    with httpx.Client(timeout=timeout) as client:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-    return response.json() or {}
+def _read_capped_body(response: httpx.Response) -> bytes:
+    """Read a response body off the wire, aborting once it exceeds ``_USAGE_RESPONSE_MAX_BYTES``.
+
+    The cap has to run while the body is still streaming: ``response.content`` and
+    ``response.json()`` buffer the whole body before returning, so a post-hoc length check
+    cannot bound memory — a fast hostile endpoint (or loopback proxy) would already have
+    exhausted it inside the transport call. Dropping the stream also stops the peer instead of
+    reading to the end of an oversized body.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > _USAGE_RESPONSE_MAX_BYTES:
+            response.close()
+            raise httpx.RequestError(
+                f"Usage response body exceeds cap ({total} > {_USAGE_RESPONSE_MAX_BYTES} bytes)"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _get_json(
+    url: str, headers: dict[str, str], *, timeout: float = 15.0, client: Optional[httpx.Client] = None
+) -> dict:
+    def _fetch(active: httpx.Client) -> dict:
+        with active.stream("GET", url, headers=headers) as response:
+            response.raise_for_status()
+            return json.loads(_read_capped_body(response)) or {}
+
+    if client is not None:
+        return _fetch(client)
+    with httpx.Client(timeout=timeout) as active:
+        return _fetch(active)
 
 
 def _usage_windows(
@@ -619,9 +658,9 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     with httpx.Client(timeout=10.0) as client:
         def _data(path: str) -> dict:
-            resp = client.get(f"{normalized}/{path}", headers=headers)
-            resp.raise_for_status()
-            return (resp.json() or {}).get("data") or {}
+            # Route through ``_get_json`` so the streamed body cap (#54949) applies here too.
+            payload = _get_json(f"{normalized}/{path}", headers, client=client)
+            return (payload or {}).get("data") or {}
         credits = _data("credits")
         try:
             key_data = _data("key")

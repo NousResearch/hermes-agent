@@ -390,12 +390,14 @@ export async function answerApproval(
       APPROVAL_RESPOND_REQUEST_TIMEOUT_MS
     )
   } catch (error) {
-    if (!isRequestTimeoutError(error)) {
+    // Without a request_id the backend resolves the session's current FIFO entry, so
+    // a resend after a landed-but-unacknowledged answer could approve a newer command.
+    if (!isRequestTimeoutError(error) || !request.requestId) {
       throw error
     }
 
     // The deadline fired while the approval may still be pending server-side
-    // (WS stall behind a long LLM stream). Resolve is idempotent: re-send once.
+    // (WS stall behind a long LLM stream). Resolve by request_id is idempotent: re-send once.
     await requestForOwnedSession(
       request.sessionId,
       ambientRequestFor(gateway),

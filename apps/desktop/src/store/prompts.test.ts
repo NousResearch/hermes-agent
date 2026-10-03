@@ -327,6 +327,24 @@ describe('answerApproval', () => {
     expect(calls).toBe(2)
   })
 
+  it('does not retry an approval without a stable request id', async () => {
+    let calls = 0
+
+    const gateway = {
+      request: async () => {
+        calls += 1
+        throw new Error(`request timed out after 330s: approval.respond`)
+      }
+    }
+
+    // Without request_id the backend resolves the session's current FIFO entry; if the
+    // first send landed and a newer approval arrived, a resend would answer that one.
+    await expect(
+      answerApproval(gateway as never, { requestId: undefined, sessionId: 'session-1' } as never, 'once')
+    ).rejects.toThrow('request timed out')
+    expect(calls).toBe(1)
+  })
+
   it('propagates non-timeout failures without a retry', async () => {
     let calls = 0
 

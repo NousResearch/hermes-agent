@@ -13,6 +13,14 @@ The record lives in the durable Runs store beside the owner's participant freeze
 (``group_run_freezes``), so a fence and a run admission are ordered by one SQLite writer.
 The owner freeze stays a separate, permanent, single-scope record. SQL guards keep the
 record monotonic and back the admission check for every writer that shares the store.
+
+A voting computer of a group in automatic mode also grants the group's host a short lease
+(``grant_lease``): while it runs, this gateway promises no later epoch to anyone
+(``room_lease_active``), so a majority of promises can only form once the host's majority of
+leases has run out. Leases are measured on a clock that keeps counting while the computer sleeps
+(``gateway/hosted_room_clock.py``) and survive restarts. That clock starts near zero at boot, so
+after a reboot a lease counts as running for its full length less the time since the new boot:
+never shorter than it really ran, and never measured on the wall clock, which can be stepped.
 """
 
 from __future__ import annotations
@@ -26,7 +34,10 @@ from gateway.hosted_room_peer import _identifier
 from gateway.hosted_rooms_common import bounded_int, clock, table_exists
 
 FENCES = "hosted_room_fences"
+LEASES = "hosted_room_leases"
 MAX_FENCED_ROOMS = 4096
+MAX_LEASE_SECONDS = 60.0
+MAX_RESTART_EXTENSION_SECONDS = 300.0
 _MAX_EPOCH = 2**63 - 1
 _SELECT = f"""SELECT fenced_epoch, promise_epoch, candidate_install_id, issued_at,
     authority_epoch, authority_install_id FROM {FENCES} WHERE room_id=?"""
@@ -66,6 +77,12 @@ class RoomAuthorityConflict(RoomFenceError):
     code = "room_authority_conflict"
     status = 409
     message = "This gateway already follows another authority at that Group Chat epoch."
+
+
+class RoomLeaseActive(RoomFenceError):
+    code = "room_lease_active"
+    status = 409
+    message = "This gateway's lease to the Group Chat's current host is still running."
 
 
 class RoomFenceCapacity(RoomFenceError):
@@ -118,6 +135,19 @@ def initialize_fence_schema(conn: sqlite3.Connection) -> None:
     conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_room_fence_kept
         BEFORE DELETE ON {FENCES}
         BEGIN SELECT RAISE(ABORT, 'room fence is permanent'); END""")
+    # ``granted_clock`` and ``boot_id`` are this gateway's sleep-counting clock and boot at the grant;
+    # ``host_sent_at`` and ``host_boot`` the host's own clock and boot when it asked for the latest
+    # renewal, which a handover statement the host signed earlier can't release.
+    conn.execute(f"""CREATE TABLE IF NOT EXISTS {LEASES} (
+        room_id TEXT PRIMARY KEY,
+        epoch INTEGER NOT NULL CHECK (epoch >= 1),
+        authority_install_id TEXT NOT NULL,
+        granted_clock REAL NOT NULL,
+        length_s REAL NOT NULL CHECK (length_s > 0),
+        boot_id TEXT NOT NULL,
+        granted_at REAL NOT NULL,
+        host_sent_at REAL,
+        host_boot TEXT)""")
     # Back the admission check for every writer sharing the Runs store: a fenced room epoch
     # records no new scope, and a scope already recorded for it reserves no new run.
     if table_exists(conn, "group_run_scopes"):
@@ -163,6 +193,42 @@ def successor_controls_locked(conn: sqlite3.Connection, room_id: str, *, candida
     else:
         return False
     return holder == candidate_install_id and (epoch is None or held_epoch == epoch)
+
+
+def lease_remaining(*, granted_clock: float, length_s: float, boot: str, granted_at: float,
+                    now: float | None = None) -> float:
+    """Seconds a lease granted at ``granted_clock`` (this gateway's sleep-counting clock, in ``boot``)
+    still runs, never fewer than it really does.
+
+    In the same boot, the clock tells. After a reboot at least the time since the new boot went by,
+    and a clock below the grant's own reading proves a reboot. Only a computer without a
+    sleep-counting clock measures on the wall clock (``granted_at``).
+    """
+    from gateway import hosted_room_clock
+    if not hosted_room_clock.EXACT:
+        return float(granted_at) + float(length_s) - clock(now)
+    current, here = hosted_room_clock.now(), str(hosted_room_clock.boot_id() or "")
+    rebooted = (bool(boot) and bool(here) and str(boot) != here) or current < float(granted_clock)
+    if rebooted:
+        return float(length_s) - current
+    return float(granted_clock) + float(length_s) - current
+
+
+def lease_locked(conn: sqlite3.Connection, room_id: str, *, now: float | None = None) -> dict[str, Any] | None:
+    """The lease this gateway granted the room's host, while it still runs; else ``None``."""
+    if not table_exists(conn, LEASES):
+        return None
+    row = conn.execute(f"""SELECT epoch, authority_install_id, granted_clock, length_s, boot_id, granted_at,
+        host_sent_at, host_boot FROM {LEASES} WHERE room_id=?""", (room_id,)).fetchone()
+    if row is None:
+        return None
+    epoch, authority, granted_clock, length, boot, granted_at, host_sent_at, host_boot = row
+    remaining = lease_remaining(granted_clock=granted_clock, length_s=length, boot=boot, granted_at=granted_at,
+                                now=now)
+    if remaining <= 0:
+        return None
+    return {"epoch": int(epoch), "authority_install_id": authority, "remaining": remaining,
+            "host_sent_at": None if host_sent_at is None else float(host_sent_at), "host_boot": host_boot}
 
 
 def _connect(db_path: Path | str) -> sqlite3.Connection:
@@ -214,6 +280,9 @@ def fence_and_promise(db_path: Path | str, *, room_id: str, fence_epoch: int, pr
             raise RoomAuthorityFenced()
         if promise is not None and promise_epoch < promise["epoch"]:
             raise RoomAuthorityPromised()
+        lease = lease_locked(conn, room_id, now=timestamp)
+        if lease is not None and lease["epoch"] <= fence_epoch:
+            raise RoomLeaseActive()
         if row is None:
             if conn.execute(f"SELECT COUNT(*) FROM {FENCES}").fetchone()[0] >= MAX_FENCED_ROOMS:
                 raise RoomFenceCapacity()
@@ -227,6 +296,106 @@ def fence_and_promise(db_path: Path | str, *, room_id: str, fence_epoch: int, pr
         return {**_state(conn.execute(_SELECT, (room_id,)).fetchone()), "idempotent": False}
 
     return _write(db_path, operation)
+
+
+def _finite(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and value == value and abs(value) < 1e300
+
+
+def grant_lease(db_path: Path | str, *, room_id: str, epoch: int, authority_install_id: str, duration_s: float,
+                until: float | None = None, host_sent_at: float | None = None, host_boot: str | None = None,
+                now: float | None = None) -> dict[str, Any]:
+    """Grant the room's host at ``epoch`` a lease of ``duration_s`` seconds, atomically with the fence.
+
+    Only the authority of an epoch above the fenced one, never against a promise or a learned
+    authority of this or a later epoch for another computer. ``until`` (wall clock) extends the
+    lease over a planned restart, by at most five minutes. A renewal never shortens a lease.
+    ``host_sent_at`` and ``host_boot`` are the host's own clock and boot when it asked (its request):
+    the latest one asked is kept, for ``release_lease``.
+    """
+    from gateway import hosted_room_clock
+    room_id = _exact(room_id, "room_id")
+    authority_install_id = _exact(authority_install_id, "authority_install_id")
+    epoch = _epoch(epoch, "epoch")
+    if isinstance(duration_s, bool) or not isinstance(duration_s, (int, float)) or not (
+            0 < float(duration_s) <= MAX_LEASE_SECONDS):
+        raise ValueError("duration_s must be a positive number of seconds, at most a minute")
+    timestamp = clock(now)
+    length = float(duration_s)
+    if until is not None:
+        if isinstance(until, bool) or not isinstance(until, (int, float)) or until != until:
+            raise ValueError("until must be a unix time")
+        length = max(length, min(float(until) - timestamp, MAX_RESTART_EXTENSION_SECONDS))
+    sent_at = float(host_sent_at) if _finite(host_sent_at) else None
+    sent_boot = host_boot if isinstance(host_boot, str) and host_boot and len(host_boot) <= 128 else None
+
+    def operation(conn):
+        state = _state(conn.execute(_SELECT, (room_id,)).fetchone())
+        promise, authority = state["promise"], state["authority"]
+        if epoch <= state["fenced_epoch"]:
+            raise RoomAuthorityFenced()
+        if promise is not None and (promise["epoch"] > epoch or (
+                promise["epoch"] == epoch and promise["candidate_install_id"] != authority_install_id)):
+            raise RoomAuthorityPromised()
+        if authority is not None and (authority["epoch"] > epoch or (
+                authority["epoch"] == epoch and authority["install_id"] != authority_install_id)):
+            raise RoomAuthorityConflict()
+        current = lease_locked(conn, room_id, now=timestamp)
+        if current is not None and (current["epoch"] > epoch or (
+                current["epoch"] == epoch and current["authority_install_id"] != authority_install_id)):
+            raise RoomAuthorityConflict()
+        same = current is not None and current["epoch"] == epoch
+        kept = current["remaining"] if same else 0.0
+        granted, asked = max(length, kept), sent_at
+        if same and current["host_boot"] == sent_boot and current["host_sent_at"] is not None and (
+                asked is None or current["host_sent_at"] > asked):
+            asked = current["host_sent_at"]  # a request delayed in transit never moves this back
+        conn.execute(f"""INSERT INTO {LEASES}(room_id, epoch, authority_install_id, granted_clock, length_s,
+            boot_id, granted_at, host_sent_at, host_boot) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(room_id) DO UPDATE
+            SET epoch=excluded.epoch, authority_install_id=excluded.authority_install_id,
+            granted_clock=excluded.granted_clock, length_s=excluded.length_s, boot_id=excluded.boot_id,
+            granted_at=excluded.granted_at, host_sent_at=excluded.host_sent_at, host_boot=excluded.host_boot""",
+                     (room_id, epoch, authority_install_id, hosted_room_clock.now(), granted,
+                      str(hosted_room_clock.boot_id() or ""), timestamp, asked, sent_boot))
+        return {"room_id": room_id, "epoch": epoch, "authority_install_id": authority_install_id,
+                "duration_s": granted}
+
+    return _write(db_path, operation)
+
+
+def release_lease(db_path: Path | str, *, room_id: str, epoch: int, authority_install_id: str,
+                  signed_at: float | None = None, host_boot: str | None = None) -> bool:
+    """The host itself gives its lease back: from now on this gateway may promise the next epoch.
+    A lease of another epoch or host stays.
+
+    With ``signed_at`` and ``host_boot`` (a handover statement the host signed, checked by the
+    caller) only a lease the host last asked for before it signed is given back: once the host asks
+    again it serves on that lease, and an older statement can't take it away. Without a recorded
+    request, or across the host's reboot, the lease runs out by itself instead.
+    """
+    room_id = _exact(room_id, "room_id")
+    authority_install_id = _exact(authority_install_id, "authority_install_id")
+    epoch = _epoch(epoch, "epoch")
+    bound = signed_at is not None or host_boot is not None
+    if bound and not (_finite(signed_at) and isinstance(host_boot, str) and host_boot):
+        return False
+
+    def operation(conn):
+        if bound:
+            current = lease_locked(conn, room_id)
+            if current is not None and (current["host_boot"] != host_boot or current["host_sent_at"] is None
+                                        or current["host_sent_at"] >= float(signed_at)):
+                return False
+        return conn.execute(f"DELETE FROM {LEASES} WHERE room_id=? AND epoch=? AND authority_install_id=?",
+                            (room_id, epoch, authority_install_id)).rowcount == 1
+
+    return _write(db_path, operation)
+
+
+def room_lease_state(db_path: Path | str, room_id: str) -> dict[str, Any] | None:
+    """The lease this gateway granted the room's host while it runs, else ``None``."""
+    room_id = _exact(room_id, "room_id")
+    return _read(db_path, lambda conn: lease_locked(conn, room_id))
 
 
 def fence_room(db_path: Path | str, *, room_id: str, fence_epoch: int, now: float | None = None) -> dict[str, Any]:

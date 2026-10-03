@@ -217,6 +217,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        if adapter._security_context.localhost_only() and (refusal := security.browser_post_refusal(self.headers)):
+            return self._error(403, None, protocol.ERR_UNAUTHORIZED, refusal)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:

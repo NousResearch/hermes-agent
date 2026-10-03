@@ -195,7 +195,7 @@ class PluginLedgerMixin:
         if hook_source is None:
             return context.register_hook(hook_name, callback)
         owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
-                    for loaded in self._plugins.values())
+                    for loaded in list(self._plugins.values()))
         handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
         return handle
@@ -256,7 +256,7 @@ class PluginLedgerMixin:
         """Resolve a targeted-unload request to canonical plugin keys (exact key, else by name)."""
         if requested in self._ownership_ledger or requested in self._plugins:
             return {requested}
-        return {key for key, loaded in self._plugins.items() if loaded.manifest.name == requested}
+        return {key for key, loaded in list(self._plugins.items()) if loaded.manifest.name == requested}
 
     def _reset_after_unload_all(self, registrations: List[PluginRegistration]) -> None:
         """Sweep pre-ledger global state and clear every manager-local container."""

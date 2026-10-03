@@ -44,7 +44,7 @@ def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[
         return message.copy()
 
     projected = ContextCompressor._strip_context_summary_handoff_message(message)
-    if projected is None:
+    if projected is None or not projected.get("content"):
         return None
 
     projected = projected.copy()

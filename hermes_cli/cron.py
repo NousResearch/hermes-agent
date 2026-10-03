@@ -856,7 +856,11 @@ def _run_outcome(job: Dict[str, Any]) -> str:
 
 
 def cron_resume(args) -> int:
-    """Resume a paused job or explicitly re-arm a completed one-shot."""
+    """Resume a paused job, or explicitly re-arm a completed one-shot.
+
+    A recurring job whose finite ``repeat.times`` budget is spent is also restartable here: the
+    series' counter resets and it runs its budget again (see ``resume_job``).
+    """
     run_at = getattr(args, "run_at", None)
     run_now = getattr(args, "run_now", False)
     if run_at and run_now:

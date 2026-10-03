@@ -634,6 +634,13 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
     bb_session_id = session_info.get("bb_session_id", "unknown")
     _forget_session_tracking(task_id, session=True)
 
+    if (session_info.get("features") or {}).get("lightpanda"):
+        try:
+            from tools.browser_lightpanda import stop_lightpanda
+            stop_lightpanda(session_info.get("session_name", ""))
+        except Exception as e:
+            _bt.logger.warning("lightpanda stop failed for task %s: %s", task_id, e)
+
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
         provider = _cloud._get_cloud_provider()
         if provider is not None:
@@ -694,20 +701,16 @@ def _cleanup_single_browser_session(task_id: str) -> None:
 
     # Lightpanda sessions have no daemon to ``close``; an expired cloud CDP URL cannot
     # accept one and would make _get_session_info() renew the session mid-cleanup.
-    if (session_info.get("features") or {}).get("lightpanda"):
-        try:
-            from tools.browser_lightpanda import stop_lightpanda
-            stop_lightpanda(session_info.get("session_name", ""))
-        except Exception as e:
-            _bt.logger.warning("lightpanda stop failed for task %s: %s", task_id, e)
-    elif _session_has_expired(session_info):
-        _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)
-    else:
-        try:
-            _session._run_browser_command(task_id, "close", [], timeout=10)
-            _bt.logger.debug("agent-browser close command completed for task %s", task_id)
-        except Exception as e:
-            _bt.logger.warning("agent-browser close failed for task %s: %s", task_id, e)
+    is_lightpanda = (session_info.get("features") or {}).get("lightpanda")
+    if not is_lightpanda:
+        if _session_has_expired(session_info):
+            _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)
+        else:
+            try:
+                _session._run_browser_command(task_id, "close", [], timeout=10)
+                _bt.logger.debug("agent-browser close command completed for task %s", task_id)
+            except Exception as e:
+                _bt.logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
     _release_session_resources(task_id, session_info)
     _bt.logger.debug("Removed task %s from active sessions", task_id)

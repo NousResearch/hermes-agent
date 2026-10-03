@@ -65,6 +65,24 @@ class TestBrowserCleanup:
         assert browser_tool_session._get_session_info("task-1") is winner
         assert calls == [("task-1#discarded-" + str(id(discarded)), discarded)]
 
+    def test_release_session_resources_stops_lightpanda_session(self):
+        session_info = {
+            "session_name": "lightpanda-discarded",
+            "bb_session_id": None,
+            "features": {"lightpanda": True},
+        }
+
+        with (
+            patch("tools.browser_lightpanda.stop_lightpanda") as mock_stop,
+            patch.object(bt_lifecycle, "_forget_session_tracking") as mock_forget,
+            patch.object(bt_lifecycle._cloud, "_get_cloud_provider") as mock_provider,
+        ):
+            bt_lifecycle._release_session_resources("task-1#discarded", session_info)
+
+        mock_forget.assert_called_once_with("task-1#discarded", session=True)
+        mock_stop.assert_called_once_with("lightpanda-discarded")
+        mock_provider.assert_not_called()
+
     def test_cleanup_browser_clears_tracking_state(self):
         browser_tool = self.browser_tool
         browser_tool._active_sessions["task-1"] = {

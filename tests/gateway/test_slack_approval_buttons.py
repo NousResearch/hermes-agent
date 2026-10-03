@@ -1,6 +1,7 @@
 """Tests for Slack Block Kit approval buttons and thread context fetching."""
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,7 +43,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
 from gateway.config import PlatformConfig, Platform
 
 
@@ -793,6 +794,19 @@ class TestSlackReactionForwarding:
         assert adapter._slack_reaction_triggers() == set()
         adapter.config.extra["reaction_triggers"] = "false"
         assert adapter._slack_reaction_triggers() is None
+
+    @pytest.mark.parametrize(("value", "encoded"), [
+        (["rocket", "eyes"], "rocket,eyes"),
+        (("rocket", "eyes"), "rocket,eyes"),
+        ({"rocket", "eyes"}, "eyes,rocket"),
+    ])
+    def test_trigger_config_yaml_bridge_collection_round_trip(self, monkeypatch, value, encoded):
+        monkeypatch.delenv("SLACK_REACTION_TRIGGERS", raising=False)
+
+        _apply_yaml_config({}, {"reaction_triggers": value})
+
+        assert os.environ["SLACK_REACTION_TRIGGERS"] == encoded
+        assert _make_adapter()._slack_reaction_triggers() == {"eyes", "rocket"}
 
 
 class TestSlackReactionAuthorizationGate:

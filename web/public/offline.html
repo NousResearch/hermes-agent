@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#041c1c" />
+    <title>Hermes Dashboard — offline</title>
+    <style>
+      /* Self-contained on purpose: this page is precached by the service
+         worker and shown when a navigation cannot reach the backend, so it
+         must not depend on any other asset or font file. */
+      :root {
+        color-scheme: dark;
+        --bg: #041c1c;
+        --fg: #ffe6cb;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: max(1.5rem, env(safe-area-inset-top)) 1.5rem
+          max(1.5rem, env(safe-area-inset-bottom));
+        box-sizing: border-box;
+        text-align: center;
+      }
+      main {
+        max-width: 32rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin: 0 0 0.75rem;
+      }
+      p {
+        font-size: 0.875rem;
+        line-height: 1.6;
+        opacity: 0.85;
+        margin: 0 0 1.5rem;
+      }
+      button {
+        font: inherit;
+        font-size: 0.875rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--bg);
+        background: var(--fg);
+        border: 0;
+        border-radius: 0.25rem;
+        padding: 0.6rem 1.25rem;
+        cursor: pointer;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Dashboard unreachable</h1>
+      <p>
+        This device cannot reach your Hermes backend right now. The dashboard is a live
+        view of a running agent, so there is nothing cached to show. Check your
+        connection, confirm the <code>hermes dashboard</code> process is up, then retry.
+      </p>
+      <button type="button" onclick="location.reload()">Retry</button>
+    </main>
+  </body>
+</html>

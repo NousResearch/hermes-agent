@@ -61,6 +61,39 @@ afterEach(() => {
 })
 
 describe('VaultSettings', () => {
+  it.each([false, true])(
+    'shows manual Dashlane guidance without lock/unlock controls (unlocked=%s)',
+    async unlocked => {
+      requestGateway.mockImplementation(async (method: string) =>
+        method === 'vault.sources'
+          ? {
+              sources: [
+                {
+                  name: 'dashlane',
+                  display_name: 'Dashlane',
+                  enabled: true,
+                  needs_unlock: true,
+                  unlocked,
+                  installed: true,
+                  manual_unlock: true,
+                  setup_hint: 'Use dcli sync in your terminal; lock with dcli lock.'
+                }
+              ]
+            }
+          : { items: [] }
+      )
+      renderVault()
+      await screen.findByText('Use dcli sync in your terminal; lock with dcli lock.')
+      expect(screen.getByRole('switch', { name: 'Dashlane' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Unlock' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Lock' })).toBeNull()
+      expect(screen.queryByPlaceholderText('Master password')).toBeNull()
+      expect(requestGateway.mock.calls.some(([method]) => method === 'vault.unlock' || method === 'vault.lock')).toBe(
+        false
+      )
+    }
+  )
+
   // Two connections both serving `default` (this device + a remote gateway): a bare profile
   // name would resolve onto the PRIMARY socket and the panel would show the other machine's
   // vault (#94811). The RPC must name the connection the panel claims to show.

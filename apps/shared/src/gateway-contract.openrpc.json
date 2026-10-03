@@ -37561,6 +37561,16 @@
           "installed": {
             "title": "Installed",
             "type": "boolean"
+          },
+          "manual_unlock": {
+            "default": false,
+            "title": "Manual Unlock",
+            "type": "boolean"
+          },
+          "setup_hint": {
+            "default": "",
+            "title": "Setup Hint",
+            "type": "string"
           }
         },
         "required": [

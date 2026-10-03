@@ -153,6 +153,32 @@ def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
     assert rows["bitwarden"]["enabled"] is False
 
 
+def test_dashlane_manual_controls_and_opt_in(home, monkeypatch):
+    from unittest.mock import Mock
+    from agent.vault_backends.dashlane import DashlaneLoginBackend
+    from hermes_cli.config import load_config
+
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "dashlane")
+    run = Mock(side_effect=AssertionError("No real CLI calls"))
+    monkeypatch.setattr(DashlaneLoginBackend, "_run", run)
+    assert _sources_rows(home)["dashlane"]["enabled"] is False
+    _result(srv._methods["vault.source.set"](1, {"name": "dashlane", "enabled": True}))
+    assert load_config()["vault"]["dashlane"]["enabled"] is True
+    row = _sources_rows(home)["dashlane"]
+    assert row["manual_unlock"] is True and row["unlocked"] is False
+    assert "dcli sync" in row["setup_hint"]
+    for method, params in [("vault.unlock", {"name": "dashlane", "password": "synthetic"}),
+                           ("vault.lock", {"name": "dashlane"})]:
+        error = _error(srv._methods[method](2, params))
+        assert error["code"] == 5095
+        assert "dcli" in error["message"] and "synthetic" not in error["message"]
+    # No-name lock only clears Hermes-owned session tokens; never invokes dcli.
+    assert _result(srv._methods["vault.lock"](3, {}))["locked"] is True
+    _result(srv._methods["vault.source.set"](4, {"name": "dashlane", "enabled": False}))
+    assert _sources_rows(home)["dashlane"]["enabled"] is False
+    run.assert_not_called()
+
+
 def test_remove_is_idempotent(home):
     item_id = _result(srv._methods["vault.add"](1, dict(_LOGIN_PARAMS)))["id"]
     assert _result(srv._methods["vault.remove"](2, {"id": item_id}))["removed"] is True

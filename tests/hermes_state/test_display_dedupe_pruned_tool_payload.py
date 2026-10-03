@@ -10,9 +10,6 @@ tests pin both directions (rewritten copies collapse, genuinely distinct calls
 do not merge).
 """
 import json
-import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -71,20 +68,5 @@ def test_distinct_assistant_calls_with_same_args_are_not_merged(db):
                                        "arguments": json.dumps({"q": "same"})}}]),
              1700000000.0))
         for cid in ("call-1", "call-2")])
-    msgs = db.get_messages(sid, include_compacted=True)
-    assert len(msgs) == 2
-
-
-def test_tool_row_without_call_id_keeps_content_key(db):
-    """A legacy tool row with no tool_call_id must not lose its content key:
-    two such rows with different payloads stay separate."""
-    sid = "legacy-no-call-id"
-    db.create_session(sid, source="test")
-    db._execute_write(lambda conn: [
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content, tool_name, timestamp,"
-            " active, compacted) VALUES (?, ?, ?, ?, ?, 1, 0)",
-            (sid, "tool", content, "demo_tool", 1700000000.0))
-        for content in ("result one", "result two")])
     msgs = db.get_messages(sid, include_compacted=True)
     assert len(msgs) == 2

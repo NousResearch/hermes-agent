@@ -24,6 +24,7 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
+from gateway.hosted_room_fence import RoomFenceError
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, GroupRunFrozen, TERMINAL_STATUSES
 from gateway.platforms.api_server_run_scope import ROOM_RUN_SCOPE_FIELDS, room_run_scope_key, validate_room_run_scope
@@ -429,8 +430,10 @@ def _owner_alive(owner_pid: int, owner_started: int) -> bool:
         return False
 
 
-def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, Any] | None:
-    """Hydrate a scoped run status and fail stale owners closed."""
+def _durable_run_status(
+    self, request: "web.Request", run_id: str, *, scope: str | None = None,
+) -> Dict[str, Any] | None:
+    """Hydrate a scoped run status and fail stale owners closed; ``scope`` is the run's own."""
     from gateway.platforms.api_server_authority_runs import run_projection
     canonical = run_projection(self, run_id)
     if canonical is not None:
@@ -438,10 +441,10 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     status = self._run_statuses.get(run_id)
     if status is not None:
         if run_id in self._run_idempotency_ids:
-            scope = self._run_idempotency_scope(request)
+            scope = scope or self._run_idempotency_scope(request)
             self._run_idempotency_store.extend_retention(scope, run_id, _room_retention_until(request))
         return status
-    scope = self._run_idempotency_scope(request)
+    scope = scope or self._run_idempotency_scope(request)
     record = self._run_idempotency_store.status_for_run(
         scope, run_id, retention_until=_room_retention_until(request))
     if record is None:
@@ -772,7 +775,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
                 owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
                 retention_until=_room_retention_until(request), identity=_room_identity(request))
-        except GroupRunFreezeError as exc:
+        except (GroupRunFreezeError, RoomFenceError) as exc:
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
                 self._run_statuses, self._run_owners)
@@ -1153,6 +1156,20 @@ def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
     return owns_api_run(self, run_id, scope)
 
 
+def _successor_run_scope(self, request, run_id: str, permission: Optional[str]) -> str | None:
+    """The run's own scope when this room grant is its promised successor's Status or Stop."""
+    status_read = permission == "status" and request.method == "GET"
+    if not (status_read or (permission == "stop" and request.path.endswith("/stop"))):
+        return None
+    identity = _room_identity(request) if self._room_grant_token(request) else None
+    lookup = getattr(self._run_idempotency_store, "successor_run_scope", None)
+    if identity is None or not callable(lookup):
+        return None
+    scope = lookup(run_id, successor=identity)
+    owner = self._run_owners.get(run_id)
+    return scope if scope is not None and owner in (None, scope) else None
+
+
 def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
     """Authenticate (*permission* -> room-grant aware; ``None`` -> API key only) and resolve
     ``(run_id, status, agent, task, error)``; *active_fallback* reports a live in-process run
@@ -1162,11 +1179,16 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
         return None, None, None, None, auth_err
     _openai_error = _api_server._openai_error
     run_id = request.match_info["run_id"]
+    successor_scope = None
     if not self._request_owns_run(request, run_id):
-        return run_id, None, None, None, _run_not_found(_openai_error, run_id)
+        # A fenced room's existing runs: their Status and Stop pass to the promised successor.
+        successor_scope = _successor_run_scope(self, request, run_id, permission)
+        if successor_scope is None:
+            return run_id, None, None, None, _run_not_found(_openai_error, run_id)
     agent = self._active_run_agents.get(run_id)
     task = self._active_run_tasks.get(run_id)
-    status = self._durable_run_status(request, run_id)
+    status = (self._durable_run_status(request, run_id) if successor_scope is None
+              else _durable_run_status(self, request, run_id, scope=successor_scope))
     if status is None and active_fallback and (agent is not None or task is not None):
         status = self._set_run_status(run_id, "running")
     if status is None:
@@ -1337,7 +1359,7 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
                                    code="group_work_frozen", status=409)
             resolved = resolve_gateway_approval(
                 approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
-    except GroupRunFreezeError as exc:
+    except (GroupRunFreezeError, RoomFenceError) as exc:
         return _json_error(_openai_error, str(exc), code=exc.code, status=exc.status)
     except Exception as exc:
         logger.exception("[api_server] approval resolution failed for run %s", run_id)
@@ -1352,7 +1374,7 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
         "resolved": resolved})
 
 
-def _respond_under_freeze_gate(self, run_id, body, kind, scope):
+def _respond_under_freeze_gate(self, run_id, body, kind, scope, *, freeze=True):
     """The lower control coroutine is synchronous to completion today (attach,
     respond and detach do not suspend). Enforce that invariant while holding the
     short store transaction: a check followed by an await permits freeze between
@@ -1361,7 +1383,7 @@ def _respond_under_freeze_gate(self, run_id, body, kind, scope):
     from gateway.platforms.api_server_authority_runs import respond_run
     operation = respond_run(self, run_id, body, kind=kind)
     try:
-        with self._run_idempotency_store.group_control_open(scope) as open_control:
+        with self._run_idempotency_store.group_control_open(scope, freeze=freeze) as open_control:
             if not open_control:
                 raise GroupRunFrozen()
             try:
@@ -1373,14 +1395,14 @@ def _respond_under_freeze_gate(self, run_id, body, kind, scope):
         operation.close()
 
 
-async def _respond_authority_run(self, run_id, body, *, kind, _api_server, control_scope=None):
+async def _respond_authority_run(self, run_id, body, *, kind, _api_server, control_scope=None, freeze=True):
     from gateway.platforms.api_server_authority_runs import respond_run
     from hermes_state_runtime import RuntimeStoreError
     try:
-        result = (_respond_under_freeze_gate(self, run_id, body, kind, control_scope)
+        result = (_respond_under_freeze_gate(self, run_id, body, kind, control_scope, freeze=freeze)
                   if control_scope is not None else await respond_run(self, run_id, body, kind=kind))
         return web.json_response({'run_id': run_id, **result})
-    except GroupRunFreezeError as exc:
+    except (GroupRunFreezeError, RoomFenceError) as exc:
         return _json_error(_api_server._openai_error, str(exc), code=exc.code, status=exc.status)
     except RuntimeStoreError as exc:
         return _json_error(_api_server._openai_error, exc.reason, code=exc.reason, status=409)
@@ -1394,7 +1416,10 @@ async def _handle_run_clarify(self, request, *, _api_server):
     body, err = await self._read_json_body(request)
     if err is not None:
         return err
-    return await _respond_authority_run(self, run_id, body, kind='clarify', _api_server=_api_server)
+    # An answer from a fenced room epoch is control that passed to its successor.
+    return await _respond_authority_run(
+        self, run_id, body, kind='clarify', _api_server=_api_server, freeze=False,
+        control_scope=self._run_idempotency_scope(request) if self._room_grant_token(request) else None)
 
 
 async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "web.Response":

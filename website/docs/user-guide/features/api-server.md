@@ -648,14 +648,16 @@ cannot use this operation.
 Stop.** Other participants, other groups and ordinary API conversations are not
 stopped. There is no unfreeze or takeover endpoint.
 
-Future group-host recovery is a separate [Layer 7 proposal in #104601](https://github.com/NousResearch/hermes-agent/pull/104601),
-documented there in `website/docs/developer-guide/group-chat-host-loss.md`.
-A successor would need independently verified exclusive authority and scoped
-participant-owner permission while preserving the original Run identities and
-permanent freezes. This endpoint supplies neither that proof nor permission to
-retry unknown work. The [manual recovery procedure](../bot-mode.md#transferring-hosted-room-authority)
-still requires fencing the old writer wherever those methods are enabled;
-the proposed design does not open the Layer 7 takeover gate.
+Group-host succession is designed in [#104601](https://github.com/NousResearch/hermes-agent/pull/104601)
+(`website/docs/developer-guide/group-chat-host-loss.md`) and built in
+[#105197](https://github.com/NousResearch/hermes-agent/pull/105197). A successor
+needs a verified succession proof and scoped participant-owner permission, and
+preserves the original Run identities and permanent freezes. This endpoint
+supplies neither that proof nor permission to retry unknown work; the fence
+below is the participant's side of that proof. The legacy
+[manual recovery procedure](../bot-mode.md#transferring-hosted-room-authority)
+(`groups.promote` and `groups.demote`) stays disabled: a group changes host only
+through the verified succession calls of #105197.
 
 To find the participant, send `GET /v1/group-participants` with the same owner
 credentials. It lists the default-profile group scopes this gateway's Runs store
@@ -749,6 +751,34 @@ at most 128 outstanding records and explicitly reports truncation. If durable
 storage is unavailable, owner Stop and new scoped group admissions return `503`;
 ordinary API conversations retain their existing behavior. No control request
 changes a Bot's approval defaults.
+
+### Succession fences
+
+When a Group Chat's home is lost, a candidate successor asks each participant
+to fence the room's current authority epoch and promise the next epoch to it
+(Group Chat succession, #105197). The participant keeps one durable record per
+room in the same Runs store as the owner freezes: the highest fenced epoch, its
+latest promise, and the latest verified successor it learned. Each epoch is
+promised once, to one installation, and never revoked; a later candidate can
+only ask for a later epoch, which fences the earlier one too.
+
+Once an epoch is fenced here:
+
+- New group work stamped with that epoch or an older one is refused with
+  `409 room_authority_fenced`, including after restart and for other listeners
+  sharing the store. Exact replays of runs this gateway already accepted still
+  return their original run IDs.
+- Runs it already accepted keep executing, and their status stays readable.
+- Approvals and clarify answers from a fenced epoch are refused with the same
+  code; denying an approval and Stop still work, because they only reduce work.
+- The promised successor, presenting its own group grant for the promised epoch
+  and the same room member, can read the status of the room's existing runs
+  here and stop them. Once this gateway learns a verified successor for that
+  epoch or a later one, control passes to that successor instead, so a candidate
+  that lost never gains it. Neither can approve those runs or start them again.
+
+The owner freeze above is a separate record and behaves exactly as described:
+a frozen scope stays frozen, whatever its room's fence.
 
 With the canonical gateway owner, `GET /v1/runs/{run_id}` exposes
 `pending_controls`, using the same `prompt_id` and `execution_generation` as

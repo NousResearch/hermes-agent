@@ -135,6 +135,7 @@ export type GatewayEventPayload = {
   // agent.terminal.output — live chunk for a read-only agent terminal tab
   process_id?: string
   chunk?: string
+  pty?: boolean
   // clarify.request
   request_id?: string
   question?: string

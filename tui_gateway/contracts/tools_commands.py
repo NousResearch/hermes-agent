@@ -109,6 +109,7 @@ class ProcessEntry(_Open):
     exited_at: float | None = None
     completion_reason: str | None = None
     detached: bool | None = None
+    pty: bool | None = None
 
 
 class ProcessListResult(Result):

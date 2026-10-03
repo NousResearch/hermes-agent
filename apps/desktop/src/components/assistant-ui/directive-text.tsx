@@ -501,6 +501,31 @@ export function openSessionRef(value: string) {
   void import('@/app/open-session').then(({ openSession }) => openSession(sessionId, () => undefined, 'tab'))
 }
 
+/** Click-to-open for a sent pasted-content chip (#118569): the file kind has
+ *  no DIRECTIVE_ACTIONS entry so every sent file chip is an inert span.
+ *  Lazy-imports like openSessionRef above so the composer's rich editor can
+ *  pull this module in without booting the preview stack. A failed resolve
+ *  leaves the chip in place — same reveal-nothing outcome as before.
+ *  ponytail: scoped to pasted_content_*.txt; all file chips if this holds. */
+export function openPastedContentPreview(value: string) {
+  const target = value.replace(/^`|`$/g, '')
+
+  if (!target) {
+    return
+  }
+
+  triggerHaptic('selection')
+  void Promise.all([import('@/lib/local-preview'), import('@/store/preview')]).then(
+    async ([{ normalizeOrLocalPreviewTarget }, { openPreview }]) => {
+      const preview = await normalizeOrLocalPreviewTarget(target)
+
+      if (preview) {
+        openPreview(preview)
+      }
+    }
+  )
+}
+
 /** What activating a directive of a given kind does. The single source of truth
  *  for "you can act on this reference," shared by every surface that renders a
  *  chip: the composer's hover pill (`ComposerDirectiveActions`) and the sent
@@ -594,10 +619,15 @@ const DirectiveChip: FC<{
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
   const { t } = useI18n()
+  // Pasted-content files have no DIRECTIVE_ACTIONS entry, so without this
+  // override they render as an inert span (#118569). Scoped to pastes only —
+  // other file chips keep their current behavior.
+  const effectiveOnClick =
+    onClick ?? (type === 'file' && isPastedContentPath(id) ? () => openPastedContentPreview(id) : undefined)
   // An `onClick` override is a bespoke activation, not the kind's link action —
   // an override must not turn its carrier into a link.
-  const action = onClick ? undefined : DIRECTIVE_ACTIONS[type]
-  const activate = onClick ?? (action ? () => action.run(id) : undefined)
+  const action = effectiveOnClick ? undefined : DIRECTIVE_ACTIONS[type]
+  const activate = effectiveOnClick ?? (action ? () => action.run(id) : undefined)
   const href = action?.href?.(id)
 
   const body = (

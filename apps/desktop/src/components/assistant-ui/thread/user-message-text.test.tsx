@@ -38,6 +38,21 @@ describe('a sent reference renders as the chip the composer showed', () => {
     expect(screen.getByTitle(path).textContent).toBe('Pasted content')
   })
 
+  it('makes a pasted-content file chip activatable so it can be read', () => {
+    const path = '/home/u/.hermes/composer-pastes/pasted_content_2026-09-27_21-33-42-827_55e028.txt'
+
+    render(<UserMessageText text={`@file:${path}`} />)
+
+    // Inert span = the reported bug (collapsed, unreadable, no affordance).
+    expect(screen.getByTitle(path).tagName).toBe('BUTTON')
+  })
+
+  it('leaves ordinary file chips inert', () => {
+    render(<UserMessageText text="see @file:`apps/desktop/my notes.md` please" />)
+
+    expect(screen.getByTitle('apps/desktop/my notes.md').tagName).toBe('SPAN')
+  })
+
   it('chips every kind that travels in message text', () => {
     // The guard against WIRE_REFERENCE_KINDS and the pattern's own alternation
     // drifting apart: add a kind to one and this fails until both agree.

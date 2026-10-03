@@ -51,6 +51,7 @@ import {
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { $showModelPricing } from '@/store/model-pricing'
+import { modelPresetServiceTier } from '@/store/model-presets'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -152,7 +153,11 @@ export interface ModelMenuController {
    *  need to batch it. Values are already capability-gated by the menu. */
   applyPreset: (
     preset: { effort?: string; fast?: boolean; serviceTier?: string },
-    row: { model: string; provider: string }
+    row: { model: string; provider: string },
+    options?: {
+      /** Apply to the session but do not store it as the model's preset. */
+      persist?: boolean
+    }
   ) => void
   current: ModelChoice
   presetFor: (provider: string, model: string) => { effort?: string; fast?: boolean; serviceTier?: string }
@@ -423,23 +428,27 @@ export function ModelCatalogMenu({
       return false
     }
 
-    const rememberedTier = preset.serviceTier ?? (preset.fast ? 'priority' : 'normal')
+    // A model without a stored preset inherits the profile defaults (effort,
+    // standard speed): apply them to the session on switch, but do not persist
+    // them as the model's preset. Stored presets restore the remembered values.
+    const storedEffort = preset.effort !== undefined
+    const storedTier = modelPresetServiceTier(preset) !== undefined
+
+    // The remembered tier rides the exact-tier field; capability-gate it the
+    // way the fast flag is gated below. `fast` mirrors the tier for surfaces
+    // that still speak the legacy flag.
+    const rememberedTier = modelPresetServiceTier(preset) ?? (preset.fast ? 'priority' : 'normal')
 
     const tier =
-      rememberedTier === 'ultrafast'
-        ? caps?.ultrafast
-          ? 'ultrafast'
-          : 'normal'
-        : rememberedTier === 'priority' && caps?.fast
-          ? 'priority'
-          : 'normal'
+      rememberedTier === 'ultrafast' ? (caps?.ultrafast ? 'ultrafast' : 'normal') : rememberedTier === 'priority' && caps?.fast ? 'priority' : 'normal'
 
     controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
+        effort: (caps?.reasoning ?? true) ? (storedEffort ? preset.effort : defaultEffort) : undefined,
         ...(controller.allowSpeed !== false ? { serviceTier: tier, fast: tier !== 'normal' } : {})
       },
-      { model: family.id, provider: provider.slug }
+      { model: family.id, provider: provider.slug },
+      { persist: storedEffort || storedTier }
     )
 
     return true

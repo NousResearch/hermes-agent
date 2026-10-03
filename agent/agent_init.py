@@ -942,12 +942,12 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         from agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
         raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit))
     from hermes_constants import profile_cli_selector
-    from agent.auxiliary_unavailable import ProviderNotConfiguredError
+    from agent.auxiliary_unavailable import ProviderNotConfiguredError, flat_model_schema_hint
     _sel = profile_cli_selector()
     raise ProviderNotConfiguredError(
         "No LLM provider configured. Run `hermes model` to "
         "select a provider, or run `hermes setup` for first-time "
-        "configuration."
+        "configuration." + flat_model_schema_hint()
     )
 
 

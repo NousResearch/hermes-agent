@@ -553,6 +553,10 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
             _persist_branch_seed(session)
             _persist_submit_user_row(session, text, display_kind)
             return None
+    except SessionProfileOwnershipError as exc:
+        logger.warning("prompt.submit: refused cross-profile session ownership: %s", exc)
+        error = _err(
+            rid, 4095, _session_profile_ownership_error_message(exc))
     except Exception as exc:
         failure = describe_storage_failure(exc)
         if failure.code == "disk_full":

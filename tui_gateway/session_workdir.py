@@ -13,6 +13,65 @@ from tui_gateway import git_probe
 from .method_ctx import bind_module
 
 
+class SessionProfileOwnershipError(RuntimeError):
+    """A launch-scoped session id is owned by, or cannot be ruled out from, another served profile."""
+
+    def __init__(self, session_key: str, profile_home, *, probe_failed: bool = False):
+        self.session_key = session_key
+        self.profile_home = Path(profile_home)
+        self.probe_failed = probe_failed
+        detail = "could not verify" if probe_failed else "is owned by"
+        super().__init__(f"session {session_key!r} {detail} served profile {self.profile_home}")
+
+
+def _assert_session_profile_ownership(session: dict) -> None:
+    """Fail closed before an unscoped session can write or run under the launch profile.
+
+    A missing ``profile_home`` means launch-profile ownership only while no served sibling
+    already has the same durable id. A disconnected Desktop can lose its route metadata;
+    without this guard the launch backend creates a second row and then executes the foreign
+    profile's prompt. Explicitly routed sessions and single-profile processes stay on their
+    existing path without opening any sibling store.
+    """
+    if session.get("profile_home") or not (key := str(session.get("session_key") or "").strip()):
+        return
+    for raw_home in tuple(_served_profile_homes):
+        home = Path(raw_home)
+        db_path = home / "state.db"
+        try:
+            db_path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SessionProfileOwnershipError(key, home, probe_failed=True) from exc
+        db = None
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB(db_path=db_path, read_only=True)
+            if db.get_session(key) is not None:
+                raise SessionProfileOwnershipError(key, home)
+        except SessionProfileOwnershipError:
+            raise
+        except Exception as exc:
+            raise SessionProfileOwnershipError(key, home, probe_failed=True) from exc
+        finally:
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    db.close()
+
+
+def _session_profile_ownership_error_message(exc: SessionProfileOwnershipError) -> str:
+    if exc.probe_failed:
+        return (
+            "Session routing could not be verified because another served profile store is unavailable. "
+            "Restore access to that profile store, then try again."
+        )
+    return (
+        "This session belongs to another profile on this gateway. "
+        "Reopen it from that profile and try again."
+    )
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":
@@ -421,6 +480,7 @@ def _ensure_session_db_row(session: dict) -> bool:
     """
     if not (key := session.get("session_key")):
         return
+    _assert_session_profile_ownership(session)
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")

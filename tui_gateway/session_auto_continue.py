@@ -401,6 +401,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
     after" message must NEVER become a live correction."""
+    try:
+        _assert_session_profile_ownership(session)
+    except SessionProfileOwnershipError as exc:
+        logger.warning("busy prompt refused cross-profile session ownership: %s", exc)
+        return _err(
+            rid, 4095, _session_profile_ownership_error_message(exc))
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered

@@ -1116,10 +1116,26 @@ def _run_prompt_submit(
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
     # the token-accounting guard as an anonymous session (#111999).
-    if _ensure_session_db_row(session) is False:
-        logger.warning(
-            "prompt dispatch: session store unavailable for %s — this turn may not persist",
-            session.get("session_key") or sid)
+    try:
+        if _ensure_session_db_row(session) is False:
+            logger.warning(
+                "prompt dispatch: session store unavailable for %s — this turn may not persist",
+                session.get("session_key") or sid)
+    except SessionProfileOwnershipError as exc:
+        logger.warning("prompt dispatch refused cross-profile session ownership: %s", exc)
+        lock = session.get("history_lock")
+        with lock if lock is not None else contextlib.nullcontext():
+            session["running"] = False
+            session["last_active"] = time.time()
+            _clear_inflight_turn(session)
+            session.pop("_hosted_room_task", None)
+            session.pop("_auto_continue_scheduled", None)
+            session.pop("_auto_continue_attempt", None)
+            session.pop("_auto_continue_prompt", None)
+            # Any local lease for an unscoped id that resolves to another profile is invalid.
+            # Borrowed compute-host leases are inert, so releasing one only drops the child token.
+            _release_active_session_slot(session)
+        return False
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:

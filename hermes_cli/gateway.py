@@ -4071,7 +4071,8 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
 
     PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a restart that wins
     the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
-    listener is gone; a timed-out connect is a live listener with a slow accept queue.
+    listener is gone; a timed-out connect is verified with a bind before treating the
+    port as occupied.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -4081,7 +4082,20 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
         except ConnectionRefusedError:
             return True
         except TimeoutError:
-            pass  # a slow accept queue is still a live listener
+            # Some Windows loopback/filtering stacks time out after a listener closes
+            # instead of returning ECONNREFUSED.  Binding is the authoritative check
+            # because it mirrors the api_server's next operation.
+            try:
+                family, socktype, proto, _, address = socket.getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                )[0]
+                with socket.socket(family, socktype, proto) as probe:
+                    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    probe.bind(address)
+                return True
+            except OSError:
+                pass  # The listener is still holding the port, or the probe cannot bind yet.
         except OSError:
             return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
         time.sleep(0.1)

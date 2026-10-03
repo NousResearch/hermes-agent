@@ -11528,6 +11528,16 @@
             "default": null,
             "title": "Monitor Url"
           },
+          "monitor_tool": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Monitor Tool"
+          },
           "monitor_state": {
             "anyOf": [
               {},

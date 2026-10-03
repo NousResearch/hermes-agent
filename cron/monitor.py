@@ -1,22 +1,30 @@
 """Monitor-mode cron support — hash-suppressed change detection.
 
-A monitor job attaches a cheap source (``monitor_script`` / ``monitor_url``) to an LLM cron job.
-Each tick runs the source FIRST and hashes its EXACT output bytes (no timestamp/whitespace
-normalization — scripts must emit stable output) against the hash from the last agent-triggering
-tick: unchanged → agent run suppressed (silent ``no_change`` run); changed/first run → a "MONITOR
-CHANGE DETECTED" block (capped unified diff + new output) is injected into the prompt; source
-failure → an ERROR, never a change, and the stored hash is left untouched. State:
-``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
+A monitor job attaches a cheap source (``monitor_script`` / ``monitor_url`` / ``monitor_tool``)
+to an LLM cron job. Each tick runs the source FIRST and hashes its EXACT output bytes (no
+timestamp/whitespace normalization — scripts must emit stable output) against the hash from the
+last agent-triggering tick: unchanged → agent run suppressed (silent ``no_change`` run);
+changed/first run → a "MONITOR CHANGE DETECTED" block (capped unified diff + new output) is
+injected into the prompt; source failure → an ERROR, never a change, and the stored hash is left
+untouched. State: ``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
 ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
+
+``monitor_tool`` dispatches ONE registered tool (a connector such as
+``connectors__gmail__search``, an MCP tool, ``web_extract`` …) with fixed args and no LLM, so a
+job can watch an inbox, a tracker or an API for an event and wake the agent only when the
+result changes: an event trigger that spends nothing while it watches. Hosted connectors have no
+CLI, so this is the only token-free way to poll them.
 """
 
 from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import logging
+import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +109,118 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
 
 
 def _field(job: dict, key: str) -> str:
-    return (job.get(key) or "").strip()
+    value = job.get(key) or ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+# ---- monitor_tool: dispatch one registered tool with fixed args, no LLM ------------------------
+
+MONITOR_TOOL_PREFIX = "tool:"
+
+
+def parse_monitor_tool_spec(text: str) -> dict:
+    """``"<tool_name> {json args}"`` (the ``tool:`` prefix optional) → ``{"name", "args"}``.
+
+    Args are optional and must be a JSON object; anything else raises ValueError."""
+    value = str(text or "").strip()
+    if value.lower().startswith(MONITOR_TOOL_PREFIX):
+        value = value[len(MONITOR_TOOL_PREFIX):].strip()
+    name, _, raw_args = value.partition(" ")
+    name = name.strip()
+    if not name:
+        raise ValueError("monitor_tool needs a tool name: 'tool:<tool_name> {\"arg\": ...}'.")
+    raw_args = raw_args.strip()
+    if not raw_args:
+        return {"name": name, "args": {}}
+    try:
+        args = json.loads(raw_args)
+    except ValueError as exc:
+        raise ValueError(f"monitor_tool args for {name!r} must be a JSON object: {exc}") from None
+    if not isinstance(args, dict):
+        raise ValueError(f"monitor_tool args for {name!r} must be a JSON object, got {type(args).__name__}.")
+    return {"name": name, "args": args}
+
+
+def normalize_monitor_tool(value: Any) -> Optional[dict]:
+    """Stored shape for a job's ``monitor_tool``: ``{"name": str, "args": dict}`` or None.
+
+    Accepts the string grammar of :func:`parse_monitor_tool_spec` or a dict; empty clears."""
+    if value in (None, "", {}, False):
+        return None
+    if isinstance(value, str):
+        return parse_monitor_tool_spec(value)
+    if isinstance(value, dict):
+        name = str(value.get("name") or "").strip()
+        if not name:
+            raise ValueError("monitor_tool.name is required.")
+        args = value.get("args")
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise ValueError(f"monitor_tool.args for {name!r} must be a JSON object.")
+        return {"name": name, "args": args}
+    raise ValueError("monitor_tool must be 'tool:<name> {json}' or {\"name\": ..., \"args\": {...}}.")
+
+
+def monitor_tool_display(spec: Any) -> str:
+    """One-line ``tool:<name> {args}`` rendering for listings; '' when not a monitor_tool job."""
+    if not isinstance(spec, dict) or not spec.get("name"):
+        return ""
+    args = spec.get("args") or {}
+    suffix = f" {json.dumps(args, sort_keys=True)}" if args else ""
+    return f"{MONITOR_TOOL_PREFIX}{spec['name']}{suffix}"
+
+
+def _load_cron_cfg() -> dict:
+    """config.yaml as the scheduler sees it (effective view); {} when absent or unreadable."""
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "config.yaml"
+        return load_user_config_effective(path) if path.exists() else {}
+    except Exception as exc:
+        logger.warning("Monitor: failed to load config.yaml, using defaults: %s", exc)
+        return {}
+
+
+def _run_monitor_tool(job: dict, spec: dict) -> tuple[bool, str]:
+    """Dispatch the monitor tool through the same hooks/approval/toolset path the cron agent
+    uses, so it can reach connectors and MCP servers but never widens what a cron run may do.
+
+    A tool error (``{"error": ...}``, headless approval refusal included) is a source FAILURE,
+    never a change; JSON results are re-serialized with sorted keys so key order cannot fake a
+    change."""
+    from cron.scheduler import _init_cron_mcp_tools, _resolve_cron_disabled_toolsets
+    from model_tools import handle_function_call
+
+    job_id = str(job.get("id") or "")
+    name = str(spec.get("name") or "")
+    args = dict(spec.get("args") or {})
+    _init_cron_mcp_tools(job_id)  # idempotent; MCP tools only exist in the registry after this
+    disabled = _resolve_cron_disabled_toolsets(_load_cron_cfg())
+    from tools.registry import registry
+
+    toolset = registry.get_toolset_for_tool(name)
+    if toolset and toolset in disabled:
+        # handle_function_call only scopes the search bridge by toolset; a cron run's denylist
+        # (messaging/clarify/cronjob + agent.disabled_toolsets) has to hold here too.
+        return False, f"monitor_tool {name!r} belongs to toolset {toolset!r}, which cron runs may not use."
+    # Fresh task_id per tick: tools keep per-task state (read_file's "unchanged since last read"
+    # dedup, browser sessions), which would make an unchanged source LOOK changed on tick two.
+    task_id = f"cron_monitor_{job_id}_{uuid.uuid4().hex[:8]}"
+    raw = handle_function_call(name, args, task_id=task_id, disabled_toolsets=disabled)
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return True, str(raw)
+    if isinstance(parsed, dict) and parsed.get("error"):
+        return False, f"monitor_tool {name!r} failed: {parsed['error']}"
+    return True, json.dumps(parsed, sort_keys=True, indent=2, ensure_ascii=False)
 
 
 def _run_monitor_source(job: dict) -> tuple[bool, str]:
-    """Run the job's monitor source (script or URL). Returns (ok, output)."""
+    """Run the job's monitor source (script, URL or tool). Returns (ok, output)."""
     monitor_script = _field(job, "monitor_script")
     if monitor_script:
         # Same containment + interpreter rules as the existing `script` field.
@@ -116,11 +231,16 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
     monitor_url = _field(job, "monitor_url")
     if monitor_url:
         return _fetch_monitor_url(monitor_url)
-    return False, "monitor job has neither monitor_script nor monitor_url"
+    monitor_tool = job.get("monitor_tool")
+    if isinstance(monitor_tool, dict) and monitor_tool.get("name"):
+        return _run_monitor_tool(job, monitor_tool)
+    return False, "monitor job has neither monitor_script, monitor_url nor monitor_tool"
 
 
 def job_has_monitor(job: dict) -> bool:
-    return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
+    monitor_tool = job.get("monitor_tool")
+    return bool(_field(job, "monitor_script") or _field(job, "monitor_url")
+                or (isinstance(monitor_tool, dict) and monitor_tool.get("name")))
 
 
 def check_monitor(job: dict) -> MonitorOutcome:

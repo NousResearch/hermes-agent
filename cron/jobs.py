@@ -1742,6 +1742,13 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_monitor_tool(value: Any) -> Optional[Dict[str, Any]]:
+    """``{"name", "args"}`` or None; the grammar lives with the monitor runtime (cron.monitor)."""
+    from cron.monitor import normalize_monitor_tool
+
+    return normalize_monitor_tool(value)
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1751,6 +1758,7 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "script": _normalize_job_optional_text,
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
+    "monitor_tool": _normalize_monitor_tool,
     "enabled_toolsets": lambda v: _normalize_str_list(v) if v else None,
     "workdir": _normalize_workdir,
     "no_agent": bool,
@@ -1762,6 +1770,7 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
+    "monitor_tool": _normalize_monitor_tool,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
 }
@@ -1772,16 +1781,19 @@ def _validate_job_mode_invariants(
     monitor_url: Optional[str],
     no_agent: bool,
     script: Optional[str],
+    monitor_tool: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Execution-mode invariants shared by create_job and update_job (no bypass via the update
     door)."""
-    if monitor_script and monitor_url:
+    sources = [name for name, value in (("monitor_script", monitor_script), ("monitor_url", monitor_url),
+                                        ("monitor_tool", monitor_tool)) if value]
+    if len(sources) > 1:
         raise ValueError(
-            "monitor_script and monitor_url are mutually exclusive — a job "
+            f"{' and '.join(sources)} are mutually exclusive — a job "
             "can only have one monitor source.")
-    if (monitor_script or monitor_url) and no_agent:
+    if sources and no_agent:
         raise ValueError(
-            "monitor_script/monitor_url cannot be combined with no_agent=True — "
+            "monitor_script/monitor_url/monitor_tool cannot be combined with no_agent=True — "
             "the whole point of a monitor job is to suppress or wake the AGENT "
             "based on source changes. Use a plain no_agent script job instead.")
     if no_agent and not script:
@@ -1829,6 +1841,7 @@ def create_job(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    monitor_tool: Optional[Union[str, Dict[str, Any]]] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
     paused: bool = False,
@@ -1841,9 +1854,10 @@ def create_job(
     deliver defaults to "origin" when ``origin`` is given, else "local"; repeat None = forever.
     script: stdout is injected as prompt context, or with ``no_agent=True`` IS the job (stdout
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
-    injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
-    source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url/monitor_tool: cheap
+    monitor source run FIRST each tick; unchanged output suppresses the agent run (mutually
+    exclusive, incompatible with ``no_agent``). monitor_tool = one registered tool + fixed args
+    (``"tool:<name> {json}"`` or ``{"name", "args"}``), dispatched without an LLM. reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
@@ -1870,7 +1884,8 @@ def create_job(
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
 
-    _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
+    _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"],
+                                  f["monitor_tool"])
     prompt_text = _coerce_job_text(prompt).strip()
     if not prompt_text and not f["script"] and not normalized_skills:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
@@ -1902,6 +1917,7 @@ def create_job(
         "no_agent": f["no_agent"],
         "monitor_script": f["monitor_script"],
         "monitor_url": f["monitor_url"],
+        "monitor_tool": f["monitor_tool"],
         "monitor_state": None,
         "context_from": f["context_from"],
         "schedule": parsed_schedule,
@@ -2121,12 +2137,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
-        if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
+        if {"monitor_script", "monitor_url", "monitor_tool", "no_agent", "script"}.intersection(updates):
             _validate_job_mode_invariants(
                 updated.get("monitor_script") or None,
                 updated.get("monitor_url") or None,
                 bool(updated.get("no_agent")),
-                _normalize_job_optional_text(updated.get("script")))
+                _normalize_job_optional_text(updated.get("script")),
+                updated.get("monitor_tool") or None)
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
         if "schedule" in updates:

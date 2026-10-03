@@ -149,7 +149,7 @@ def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> Li
     """Mode guidance echoed once in the create/update response (not in the schema, which is
     paid for on every API call)."""
     notes: List[str] = []
-    if job.get("monitor_script") or job.get("monitor_url"):
+    if job.get("monitor_script") or job.get("monitor_url") or job.get("monitor_tool"):
         notes.append(
             "Monitor mode: the source runs first each tick and its output is "
             "hashed as exact bytes — unchanged output suppresses the agent run "
@@ -191,20 +191,24 @@ def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> Li
 def _split_monitor_arg(
     monitor: Optional[str],
     monitor_script: Optional[str],
-    monitor_url: Optional[str]) -> tuple:
+    monitor_url: Optional[str],
+    monitor_tool: Optional[Any] = None) -> tuple:
     """Resolve the model-facing ``monitor`` field into the stored ``(monitor_script,
-    monitor_url)`` pair. http(s):// is a URL, anything else a script path (a legal script path
-    never starts with a URL scheme). None = unchanged, '' = clear; setting one source clears
-    the other so switching transports never trips mutual exclusion; an explicit ``monitor``
-    wins over the legacy alias fields."""
+    monitor_url, monitor_tool)`` triple. http(s):// is a URL, ``tool:<name> {json}`` is a tool
+    dispatch, anything else a script path (a legal script path never starts with a URL scheme or
+    ``tool:``). None = unchanged, '' = clear; setting one source clears the others so switching
+    transports never trips mutual exclusion; an explicit ``monitor`` wins over the alias fields."""
     if monitor is None:
-        return monitor_script, monitor_url
+        return monitor_script, monitor_url, monitor_tool
     value = monitor.strip()
     if not value:
-        return "", ""
+        return "", "", ""
     if value.lower().startswith(("http://", "https://")):
-        return "", value
-    return value, ""
+        return "", value, ""
+    from cron.monitor import MONITOR_TOOL_PREFIX
+    if value.lower().startswith(MONITOR_TOOL_PREFIX):
+        return "", "", value
+    return value, "", ""
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
@@ -469,7 +473,7 @@ def _validate_context_from_refs(refs: List[Any]) -> Optional[str]:
 
 # Optional fields echoed by _format_job only when truthy (order = JSON key order).
 _FORMAT_JOB_OPTIONAL_KEYS = (
-    "script", "reasoning_effort", "monitor_script", "monitor_url",
+    "script", "reasoning_effort", "monitor_script", "monitor_url", "monitor_tool",
     "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter")
 
 

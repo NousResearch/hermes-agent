@@ -692,6 +692,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
+            monitor_tool=a["monitor_tool"] or None,
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
             pinned=bool(a["pinned"]),
@@ -863,8 +864,8 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
 
 
 def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
-    """script / monitor_script / monitor_url (empty string clears); returns an error string or None."""
-    monitor_script, monitor_url = a["monitor_script"], a["monitor_url"]
+    """script / monitor_script / monitor_url / monitor_tool (empty clears); returns an error string or None."""
+    monitor_script, monitor_url, monitor_tool = a["monitor_script"], a["monitor_url"], a["monitor_tool"]
     for field, value in (("script", a["script"]), ("monitor_script", monitor_script)):
         if value is not None:
             if value:
@@ -874,9 +875,16 @@ def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[
             updates[field] = _normalize_optional_job_value(value) if value else None
     if monitor_url is not None:
         updates["monitor_url"] = _normalize_optional_job_value(monitor_url) if monitor_url else None
-    if (monitor_script is not None or monitor_url is not None) and (
-        _pick(updates, job, "monitor_script") and _pick(updates, job, "monitor_url")):
-        return("monitor_script and monitor_url are mutually exclusive — clear one before setting the other.")
+    if monitor_tool is not None:
+        try:
+            from cron.monitor import normalize_monitor_tool
+            updates["monitor_tool"] = normalize_monitor_tool(monitor_tool)
+        except ValueError as exc:
+            return str(exc)
+    if monitor_script is not None or monitor_url is not None or monitor_tool is not None:
+        active = [f for f in ("monitor_script", "monitor_url", "monitor_tool") if _pick(updates, job, f)]
+        if len(active) > 1:
+            return f"{' and '.join(active)} are mutually exclusive — clear one before setting the other."
     return None
 
 
@@ -1004,6 +1012,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    monitor_tool: Optional[Union[str, Dict[str, Any]]] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
@@ -1110,7 +1119,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "monitor": {
                 "type": "string",
-                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
+                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick), a script path (same rules as `script`, run each tick), or `tool:<tool_name> {json args}` (one registered tool — a connector, MCP tool, web_extract … — dispatched each tick with fixed args; e.g. `tool:connectors__gmail__search {\"q\": \"from:vendor is:unread\"}` to react to matching mail) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps; pick tool args that return a stable set) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
             },
             "no_agent": {
                 "type": "boolean",
@@ -1173,12 +1182,14 @@ _HANDLER_FORWARDED_ARGS = (
 def _cronjob_handler(args, **kw):
     """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
     ``monitor_script``/``monitor_url`` pair (legacy field names still accepted)."""
-    _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
+    _mon_script, _mon_url, _mon_tool = _split_monitor_arg(
+        args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"), args.get("monitor_tool"))
     return cronjob(
         action=args.get("action", ""),
         include_disabled=args.get("include_disabled", True),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
+        monitor_tool=_mon_tool,
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),

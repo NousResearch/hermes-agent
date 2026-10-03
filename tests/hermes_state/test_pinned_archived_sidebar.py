@@ -80,6 +80,36 @@ def test_pinned_backfill_still_obeys_other_filters(db):
     assert "cron-pin" not in _sidebar_ids(db, exclude_sources=["cron"])
 
 
+def test_archived_only_view_does_not_backfill_unarchived_pins(db):
+    """An un-archived pin never belongs to the archived-only list (#125722).
+
+    Same flags as the desktop Archive & retention slice (``archived=only`` +
+    ``order=recent``): the back-fill must keep a pin stamped archived reachable
+    there, but a live pin is not an archived session — "Pinned chats are never
+    archived" is the page's own contract.
+    """
+    _seed(db, "live-pin", pinned=True, archived=False)
+    _seed(db, "pin-archived", pinned=True, archived=True)
+    _seed(db, "archived-only", archived=True)
+
+    ids = [
+        row["id"]
+        for row in db.list_sessions_rich(
+            limit=20,
+            offset=0,
+            min_message_count=1,
+            include_archived=False,
+            archived_only=True,
+            order_by_last_active=True,
+            compact_rows=True,
+            include_pinned=True,
+        )
+    ]
+    assert "archived-only" in ids
+    assert "pin-archived" in ids
+    assert "live-pin" not in ids
+
+
 def test_stale_sweep_does_not_archive_pinned_session(db):
     """The idle sweep retires an unpinned stale row and leaves a pin active."""
     db.create_session(session_id="keep", source="cli")

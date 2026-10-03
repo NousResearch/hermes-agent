@@ -1305,8 +1305,9 @@ class SessionSessionsMixin:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
-        filters except archived: a pin is an explicit keep, so a pinned row stamped
-        archived must still return."""
+        filters except ``include_archived``: a pin is an explicit keep, so a pinned row stamped
+        archived must still return. ``archived_only`` is honoured by the back-fill too: a pin that is
+        not archived never belongs to the archived-only recovery view (#125722)."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
@@ -1380,15 +1381,17 @@ class SessionSessionsMixin:
             params.extend([limit, offset])
         sessions = [self._list_row(row) for row in self._read_all(query, params)]
         # Pinned back-fill runs BEFORE compression projection so a back-filled root
-        # projects to its tip like any other row. Do not inherit the archived
-        # constraint: the sidebar lists with include_archived=False, and a pin
-        # must stay reachable even when that row is also archived.
+        # projects to its tip like any other row. Do not inherit include_archived:
+        # the sidebar lists with include_archived=False, and a pin must stay
+        # reachable even when that row is also archived. archived_only IS inherited:
+        # the archived recovery view may only back-fill pins that are themselves
+        # archived — an un-archived pin is not an archived session (#125722).
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
             pinned_clauses, pinned_params = _session_filter_where(
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
-                min_message_count=min_message_count, archived_only=False, include_archived=True,
+                min_message_count=min_message_count, archived_only=archived_only, include_archived=True,
                 include_subagents=include_subagents,
             )
             if not include_hidden and not archived_only:

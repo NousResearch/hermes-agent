@@ -639,7 +639,8 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls,
+            _resolve_session_persistence)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -727,6 +728,14 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
+        # Hermes extension (b)/(c): store:false on /v1/chat/completions and
+        # X-Hermes-Session-Mode: ephemeral request the same request-scoped,
+        # non-persisting execution (default true = persist as a first-class session).
+        store = _coerce_request_bool(body.get("store"), default=True)
+        persist = _resolve_session_persistence(request.headers, store)
+        if not persist:
+            provided_session_id = None
+            session_id = str(uuid.uuid4())
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
@@ -737,7 +746,8 @@ class OpenAICompatRoutesMixin:
             # and the client can resume the session by sending it again). A fingerprint-derived
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
-            session_history_delivery=("1" if provided_session_id else ""))
+            session_history_delivery=("1" if provided_session_id else ""),
+            persist=persist)
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
@@ -1037,7 +1047,8 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
             _content_has_visible_payload, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _resolve_media_to_data_urls, _responses_usage_payload,
+            _resolve_session_persistence)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1131,11 +1142,15 @@ class OpenAICompatRoutesMixin:
             model_alias=body.get("model"))
         if selection_error is not None:
             return selection_error
+        persist = _resolve_session_persistence(request.headers, store)
+        if not persist:
+            session_id = str(uuid.uuid4())
         run_kwargs = dict(
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
+            **agent_overrides, route=route, relay_metadata=relay_metadata,
+            persist=persist)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -1201,7 +1216,13 @@ class OpenAICompatRoutesMixin:
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
-        if store:
+        # Gate on ``persist``, not the body ``store`` field: ``store`` is body-only, so an
+        # ephemeral turn asked for via the X-Hermes-Session-Mode header alone (no store field)
+        # still had store==True here and wrote its response into response_store.db — the same
+        # class of bloat as the SessionDB row, in the store the row-count guards do not see.
+        # ``persist`` is ``store`` AND not-ephemeral, so it is the one value that means
+        # "this request leaves a retrievable trace" on every entry point.
+        if persist:
             response_store = self._current_response_store()
             response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,

@@ -1084,6 +1084,24 @@ def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: st
     return f"api-{digest}"
 
 
+def _resolve_session_persistence(headers: "Mapping[str, str]", store: bool) -> bool:
+    """True unless the client asked for an ephemeral (non-persisting) turn.
+
+    Ephemeral is requested by either:
+    - ``X-Hermes-Session-Mode: ephemeral`` request header (GBrain's requestHeaders
+      seam, which the Vercel generateText path may not forward as a body field), or
+    - ``store: false`` in the request body (the Responses ``store`` field, or the
+      Chat Completions ``store`` Hermes extension; defaults True).
+
+    A header/field ABSENT leaves today's exact behavior intact: the request persists
+    as a first-class session. Only an explicit ephemeral ask skips the SessionDB write.
+    """
+    mode = (headers.get("X-Hermes-Session-Mode") or "").strip().lower()
+    if mode == "ephemeral":
+        return False
+    return bool(store)
+
+
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -2370,7 +2388,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None,
+        persist: bool = True) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2426,14 +2445,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "interim_assistant_callback": interim_assistant_callback,
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
-            "session_db": self._ensure_session_db(),
+            "session_db": self._ensure_session_db() if persist else None,
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key,
             # The session's provider from the previous request, so its queued recall reaches this turn
             # (#120116); checked back in by the turn's finally.
-            "memory_manager": self._memory_sessions.checkout(session_id)}
+            "memory_manager": self._memory_sessions.checkout(session_id) if persist else None,
+            # An ephemeral turn owns no memory state, so it must not spin one up: without this,
+            # _init_memory's `elif not skip_memory` branch builds a brand-new MemoryManager and
+            # boots the provider for a session_db=None turn that will never read it back — and
+            # because the end-of-turn sync gates on _memory_manager alone (not _persist_disabled),
+            # that parked manager could sync_all() the ephemeral Q&A into the persistent backend.
+            # Complementary to _persist_disabled, not a substitute: persistence is still decided
+            # by the persist flag + session_db above.
+            "skip_memory": not persist}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
@@ -2445,6 +2472,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "provider": runtime_kwargs.get("provider") or getattr(agent, "provider", "") or "",
             "model": getattr(agent, "model", None) or model,
             "route_source": route_source}
+        if not persist:
+            agent._persist_disabled = True
         return agent
 
     # -- HTTP handlers ----------------------------------------------------------------
@@ -4224,7 +4253,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None,
+        persist: bool = True) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4267,7 +4297,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+                        persist=persist)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if resume_unanswered_turn:
@@ -4353,7 +4384,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
                         self._shutdown_interruptible_agents.pop(id(agent), None)
-                        self._memory_sessions.checkin(agent)
+                        # Only check in what was checked out. An ephemeral turn checked nothing
+                        # out (and now builds no manager at all), so checking it in parked an
+                        # orphan under the throwaway uuid4 session_id that nothing will ever
+                        # address again — an entry nothing ever evicts.
+                        if persist:
+                            self._memory_sessions.checkin(agent)
                         # Bind the declared key to the row the turn actually ended on
                         # (agent.session_id carries a mid-turn rotation). Opt-in per route.
                         # Record the declared conversation on the row the turn actually ended on —

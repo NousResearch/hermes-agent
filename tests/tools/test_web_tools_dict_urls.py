@@ -87,3 +87,23 @@ def test_web_extract_registry_dispatch_accepts_search_result_objects(
 
     assert extract_provider.received_urls == ["https://example.net/from-registry"]
     assert result["results"][0]["url"] == "https://example.net/from-registry"
+
+
+def test_each_fetched_page_stays_under_its_own_url_when_the_provider_omits_a_failure(
+    extract_provider, monkeypatch,
+):
+    """An invalid item pins position 0, so the fetched pages are merged back by position. Exa omits
+    the pages it could not fetch and backends reorder, so a page must land under the URL it names:
+    the failed URL reports no result, and no page appears twice."""
+    from tools.web_tools_extract import _NO_RESULT_ERROR
+
+    async def _omit_and_reorder(urls, **kwargs):
+        return [{"url": u, "title": "", "content": f"page {u}"} for u in reversed(urls) if not u.endswith("/down")]
+
+    monkeypatch.setattr(extract_provider, "extract", _omit_and_reorder)
+    urls = ["https://example.com/down", "https://example.com/a", "https://example.org/b"]
+    result = json.loads(web_tools.registry.dispatch("web_extract", {"urls": [42, *urls]}))
+
+    assert [(r["url"], r["content"] or r["error"]) for r in result["results"][1:]] == [
+        (urls[0], _NO_RESULT_ERROR), (urls[1], f"page {urls[1]}"), (urls[2], f"page {urls[2]}"),
+    ]

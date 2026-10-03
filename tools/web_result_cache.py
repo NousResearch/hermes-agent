@@ -3,7 +3,7 @@
 * **Search memo** — in-memory, per-process, single-flighted: concurrent identical queries share one
   paid request. Limits bucket to 10/20/50/100 so near-identical requests share an entry.
 * **Extract cache** — disk-backed under ``cache/web`` (cross-process) with a JSON sidecar index:
-  URL digest → (file, fetched_at, title). Hits re-run the normal truncate pipeline.
+  URL digest → (file, fetched_at, title, final_url). Hits re-run the normal truncate pipeline.
 Lives here, not in tool dispatch, so hits sit *after* every safety check and skip only the vendor call.
 """
 
@@ -259,12 +259,17 @@ def _cacheable(url: str) -> bool:
 
 
 def extract_cache_get(url: str, format: Optional[str] = None, provider: str = "") -> Optional[dict]:
-    """Return {'url','title','content'} for a fresh cached page, else None."""
+    """Return a fresh page with its final URL and requested identity, else None."""
     if not _cacheable(url):
         return None
     with _index_lock:
         entry = _load_index().get(_url_digest(url, format, provider))
     if not entry or (time.time() - float(entry.get("fetched_at", 0))) >= ttl_seconds():
+        return None
+    final_url = entry.get("final_url")
+    # Old entries lost redirect provenance; refresh instead of treating the
+    # requested URL as proof of the final destination.
+    if not isinstance(final_url, str) or not final_url or not _cacheable(final_url):
         return None
     try:
         file_path, cache_root = Path(entry["file"]), _cache_dir()
@@ -275,15 +280,19 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
     except Exception:  # noqa: BLE001 — evicted/pruned file == miss (or no cache dir)
         return None
     logger.info("web_extract cache hit: %s", url)
-    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    return {"url": final_url, "title": entry.get("title", ""), "content": content, "error": None,
+            "cached": True, "metadata": {"sourceURL": url, "url": final_url}}
 
 
 def extract_cache_put(
-    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "",
+    final_url: Optional[str] = None,
 ) -> None:
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
-    ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
-    if not content or not _cacheable(url):
+    ceiling are not cached (serving a capped copy back as if whole would silently lose the tail).
+    ``url`` is the requested cache key; ``final_url`` preserves redirect provenance."""
+    final_url = url if final_url is None else final_url
+    if not content or not _cacheable(url) or not isinstance(final_url, str) or not _cacheable(final_url):
         return
     try:
         from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
@@ -295,7 +304,7 @@ def extract_cache_put(
         with _index_lock:
             index = _load_index()
             index[_url_digest(url, format, provider)] = {
-                "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                "url": url, "final_url": final_url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
             _save_index(index)
     except Exception as exc:  # noqa: BLE001 — cache writes are best-effort

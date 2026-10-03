@@ -169,7 +169,8 @@ class TestWebExtractCacheAttribution:
             asyncio.run(wte._dispatch_extract(_PartialProvider(), urls, None))
 
         cache_put.assert_called_once_with(
-            "https://example.com/second", "second page", "Second", format=None, provider="tavily"
+            "https://example.com/second", "second page", "Second", format=None, provider="tavily",
+            final_url="https://example.com/second",
         )
 
     def test_redirected_page_caches_under_requested_source_url(self):
@@ -191,7 +192,8 @@ class TestWebExtractCacheAttribution:
             asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
 
         cache_put.assert_called_once_with(
-            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable"
+            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable",
+            final_url="https://www.example.com/moved",
         )
 
 

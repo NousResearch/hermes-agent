@@ -218,13 +218,15 @@ class TestResponsesItemImageAccounting:
         assert est >= (len(item["output"]) // 4) * 0.9
 
 
-class TestAnthropicOrderedBlocksAccounting:
-    """Direct-Anthropic replies that interleave signed thinking with tool_use carry
-    ``anthropic_content_blocks``: an ordered replay copy of blocks already counted under
-    ``content``/``tool_calls``/``reasoning_details``. The outbound strip (``_STRIP_MSG_KEYS``)
-    drops it before send, so the rough estimator must not price it a second time (#125761)."""
+class TestOrderedBlocksCarrierAccounting:
+    """Direct provider replies that interleave thinking with tool_use carry an ordered replay
+    carrier (``anthropic_content_blocks`` / ``bedrock_content_blocks``): a copy of blocks already
+    counted under ``content``/``tool_calls``/``reasoning_details``. The outbound strip
+    (``_STRIP_MSG_KEYS``) drops both before send, so the rough estimator must not price them a
+    second time (#125761)."""
 
-    def test_ordered_blocks_carrier_does_not_double_count(self):
+    @pytest.mark.parametrize("carrier_shape", ["anthropic", "bedrock"])
+    def test_ordered_blocks_carrier_does_not_double_count(self, carrier_shape):
         thinking = "plan: search the docs first, then answer with the exact quote " * 30
         signature = "EqoBCkgIBRABGAIiQKg" * 60
         base = {
@@ -239,15 +241,23 @@ class TestAnthropicOrderedBlocksAccounting:
                 {"type": "thinking", "thinking": thinking, "signature": signature}
             ],
         }
-        with_carrier = dict(
-            base,
-            anthropic_content_blocks=[
+        if carrier_shape == "anthropic":
+            carrier_key = "anthropic_content_blocks"
+            carrier_blocks = [
                 {"type": "thinking", "thinking": thinking, "signature": signature},
                 {"type": "text", "text": base["content"]},
                 {"type": "tool_use", "id": "toolu_1", "name": "web_search",
                  "input": {"query": "docs quote"}},
-            ],
-        )
+            ]
+        else:
+            carrier_key = "bedrock_content_blocks"
+            carrier_blocks = [
+                {"reasoningContent": {"reasoningText": {"text": thinking, "signature": signature}}},
+                {"text": base["content"]},
+                {"toolUse": {"toolUseId": "toolu_1", "name": "web_search",
+                             "input": {"query": "docs quote"}}},
+            ]
+        with_carrier = dict(base, **{carrier_key: carrier_blocks})
 
         assert (estimate_messages_tokens_rough([with_carrier])
                 == estimate_messages_tokens_rough([base]))

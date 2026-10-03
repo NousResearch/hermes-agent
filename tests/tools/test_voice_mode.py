@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tools.transcription_common import BUILTIN_STT_PROVIDERS
+
 
 # ============================================================================
 # Fixtures
@@ -293,6 +295,72 @@ class TestCheckVoiceRequirements:
         result = check_voice_requirements()
         assert result["available"] is True
         assert result["stt_available"] is True
+
+
+class TestNativeBuiltinSttVoiceGate:
+    """Every built-in STT provider must satisfy the CLI voice gate.
+
+    ``_NATIVE_STT_LABELS`` is (was) a third hand-maintained copy of the built-in
+    provider list, so a provider added to ``BUILTIN_STT_PROVIDERS`` could be
+    missing here: ``deepinfra`` was fully functional on the gateway while the CLI
+    reported ``STT provider: MISSING`` and `/voice on` refused to arm (#120118).
+    The contract asserted here is behavioural: each built-in must be reported as
+    ``OK`` by ``check_voice_requirements()``, never as ``MISSING``.
+    """
+
+    @pytest.mark.parametrize("provider", sorted(BUILTIN_STT_PROVIDERS))
+    def test_builtin_provider_passes_voice_gate(self, monkeypatch, provider):
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr(
+            "tools.voice_mode.detect_audio_environment",
+            lambda: {"available": True, "warnings": []},
+        )
+        monkeypatch.setattr("tools.voice_mode._check_plugin_stt_provider", lambda p: False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": provider},
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._get_provider",
+            lambda cfg, p=provider: p,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+
+        assert result["stt_available"] is True, result["details"]
+        assert result["available"] is True, result["details"]
+        assert "STT provider: OK (" in result["details"]
+        assert "STT provider: MISSING" not in result["details"]
+
+    def test_deepinfra_label_is_human_readable(self, monkeypatch):
+        """The gate reports the provider's display name, not a raw key."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr(
+            "tools.voice_mode.detect_audio_environment",
+            lambda: {"available": True, "warnings": []},
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": "deepinfra"},
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._get_provider", lambda cfg: "deepinfra")
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+
+        assert "STT provider: OK (DeepInfra)" in result["details"]
+
+    def test_label_map_has_no_keys_outside_the_builtins(self):
+        """No stale provider ids linger in the label map after removals."""
+        from tools.voice_mode import _NATIVE_STT_LABELS
+
+        stale = set(_NATIVE_STT_LABELS) - set(BUILTIN_STT_PROVIDERS)
+        assert not stale, f"_NATIVE_STT_LABELS has non-built-in providers: {sorted(stale)}"
+
 
 # ============================================================================
 # AudioRecorder

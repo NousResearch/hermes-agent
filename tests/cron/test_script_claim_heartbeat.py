@@ -327,6 +327,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         extra_prompt=None,
         cancel_event=None,
         execution_id=None,
+        **_kwargs,
     ):
         assert execution_id == job["execution_id"]
         assert lost_seen.wait(timeout=2)

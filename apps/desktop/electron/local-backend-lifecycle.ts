@@ -18,7 +18,7 @@ export async function waitForTeardown(tasks: readonly Promise<unknown>[], timeou
 }
 
 interface LocalBackendLifecycleDeps<Child> {
-  stopChild: (child: Child) => void
+  stopChild: (child: Child, reason?: string) => void
   waitForExit: (child: Child) => Promise<void>
   cancelSetup: () => void
   timeoutMs?: number
@@ -37,7 +37,7 @@ export interface LocalBackendLifecycle<Child> {
   start: <T>(run: () => Promise<T>) => Promise<T>
   spawn: (create: () => Child) => Child
   release: (child: Child) => boolean
-  stop: (child: Child | null | undefined) => Promise<void>
+  stop: (child: Child | null | undefined, reason?: string) => Promise<void>
   shutdown: () => Promise<void>
 }
 
@@ -49,7 +49,7 @@ export function createLocalBackendLifecycle<Child>(
   const children = new Set<Child>()
   const stops = new Map<Child, Promise<void>>()
 
-  function stop(child: Child | null | undefined): Promise<void> {
+  function stop(child: Child | null | undefined, reason?: string): Promise<void> {
     if (child == null) {
       return Promise.resolve()
     }
@@ -61,7 +61,8 @@ export function createLocalBackendLifecycle<Child>(
     }
 
     const stopping = (async (): Promise<void> => {
-      deps.stopChild(child)
+      deps.stopChild(child, reason)
+
       await deps.waitForExit(child)
     })()
 
@@ -78,7 +79,7 @@ export function createLocalBackendLifecycle<Child>(
     controller.abort(markExpectedTransition(new Error('Hermes Desktop is quitting.')))
     deps.cancelSetup()
 
-    return waitForTeardown([...starts, ...[...children].map(stop), ...stops.values()], deps.timeoutMs ?? 7_000)
+    return waitForTeardown([...starts, ...[...children].map(child => stop(child)), ...stops.values()], deps.timeoutMs ?? 7_000)
   })
 
   return {

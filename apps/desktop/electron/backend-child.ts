@@ -23,14 +23,43 @@
 export interface StopBackendChildDeps {
   /** Defaults to the real platform check; injectable for tests. */
   isWindows?: boolean
-  /** Windows tree-kill implementation (real: taskkill /T /F via execFileSync). */
-  forceKillProcessTree: (pid: number) => void
+  /**
+   * Windows tree-kill implementation (real: taskkill /T /F via execFileSync).
+   * Receives the threaded kill reason so the supervisor can log pid+reason
+   * before the kill runs (issue #119440 attribution).
+   */
+  forceKillProcessTree: (pid: number, reason?: BackendTreeKillReason) => void
   /**
    * POSIX group-signal implementation. Real: process.kill(-pgid, signal).
    * Injectable so the negative-pid group send is asserted in tests without a
    * live process group. Defaults to process.kill.
    */
   killGroup?: (pgid: number, signal: string) => void
+}
+
+
+/**
+ * Why a backend process tree is being killed (#119440). Threaded from every
+ * stop path to the tree-kill so a later abrupt `-1` / `4294967295` exit with
+ * empty stderr names its killer instead of respawning blind.
+ */
+export type BackendTreeKillReason =
+  | 'quit'
+  | 'update-handoff'
+  | 'superseded-start'
+  | 'pool-stop'
+  | 'orphan-reap'
+  | 'stop-escalation'
+  | 'unknown'
+
+export interface StopBackendChildOptions {
+  /** Why this child is being stopped; recorded with the tree-kill. */
+  reason?: BackendTreeKillReason
+}
+
+/** Single log line the supervisor emits before taskkill /T /F runs. */
+export function formatTreeKillLine(pid: number, reason: BackendTreeKillReason): string {
+  return `[backend-child] tree-kill pid=${pid} reason=${reason}`
 }
 
 export interface BackendProcessRoot {
@@ -87,7 +116,7 @@ export async function waitForBackendExit(
 
   try {
     if ((deps.isWindows ?? process.platform === 'win32') && Number.isInteger(child.pid)) {
-      deps.forceKillProcessTree(child.pid as number)
+      deps.forceKillProcessTree(child.pid as number, 'stop-escalation')
     } else if (Number.isInteger(child.pid)) {
       try {
         const killGroup = deps.killGroup ?? ((pid: number, signal: string): boolean => process.kill(pid, signal))
@@ -117,17 +146,22 @@ export async function waitForBackendExit(
  * throws (the process may already be gone) -- mirrors the original inline
  * best-effort semantics in main.ts.
  */
-export function stopBackendChild(child: KillableChild | null | undefined, deps: StopBackendChildDeps): void {
+export function stopBackendChild(
+  child: KillableChild | null | undefined,
+  deps: StopBackendChildDeps,
+  options: StopBackendChildOptions = {}
+): void {
   if (!child || child.killed) {
     return
   }
 
+  const reason = options.reason ?? 'unknown'
   const isWindows = deps.isWindows ?? process.platform === 'win32'
   const killGroup = deps.killGroup ?? ((pgid: number, signal: string): boolean => process.kill(pgid, signal))
 
   try {
     if (isWindows && Number.isInteger(child.pid)) {
-      deps.forceKillProcessTree(child.pid as number)
+      deps.forceKillProcessTree(child.pid as number, reason)
     } else if (Number.isInteger(child.pid)) {
       // POSIX: pgid == pid (start_new_session). Signal the whole group so MCP
       // grandchildren die too; fall back to the direct child on failure.
@@ -142,4 +176,72 @@ export function stopBackendChild(child: KillableChild | null | undefined, deps: 
   } catch {
     // Already gone.
   }
+}
+
+/**
+ * Ledger of this process's own tree-kills (#119440). When a backend child
+ * later exits `-1` / `4294967295` with empty stderr, the exit handler
+ * consults this ledger to say whether THIS process killed it (and why) or
+ * whether an external killer / sibling instance is implicated.
+ */
+export interface TreeKillRecord {
+  pid: number
+  reason: BackendTreeKillReason
+  at: number
+}
+
+/** How far back an exit attributes to our own tree-kill. */
+export const TREE_KILL_ATTRIBUTION_WINDOW_MS = 15_000
+
+const MAX_TREE_KILL_RECORDS = 20
+
+const treeKillRecords: TreeKillRecord[] = []
+
+export function noteTreeKill(pid: number, reason: BackendTreeKillReason, now: number = Date.now()): void {
+  treeKillRecords.push({ at: now, pid, reason })
+
+  while (treeKillRecords.length > MAX_TREE_KILL_RECORDS) {
+    treeKillRecords.shift()
+  }
+}
+
+export function describeRecentTreeKills(
+  now: number = Date.now(),
+  windowMs: number = TREE_KILL_ATTRIBUTION_WINDOW_MS
+): string {
+  const recent = treeKillRecords.filter(record => now - record.at >= 0 && now - record.at <= windowMs)
+
+  if (recent.length === 0) {
+    return `no tree-kill by this process in the last ${Math.round(windowMs / 1000)}s`
+  }
+
+  return `recent tree-kill by this process: ${recent.map(record => `pid=${record.pid} reason=${record.reason}`).join(', ')}`
+}
+
+/**
+ * True for the abrupt TerminateProcess-class death in #119440: Node reports
+ * the Win32 DWORD `0xFFFFFFFF` (4294967295) or `-1`, with no signal and
+ * (typically) empty stderr — the signature of taskkill /T /F, whether ours
+ * or an external killer's.
+ */
+export function isAbruptWindowsKillExit(code: number | null, signal: string | null): boolean {
+  return signal == null && (code === -1 || code === 4294967295)
+}
+
+/**
+ * Log suffix for a backend exit line. Silent for ordinary exits; for an
+ * abrupt `-1` / `4294967295` exit it carries the ownership snippet and this
+ * process's recent tree-kill ledger so the death is attributable.
+ */
+export function describeAbruptBackendExit(args: {
+  code: number | null
+  signal?: string | null
+  ownerText: string
+  recentText: string
+}): string {
+  if (!isAbruptWindowsKillExit(args.code, args.signal ?? null)) {
+    return ''
+  }
+
+  return ` [abrupt TerminateProcess-class death (empty stderr is typical of taskkill /T /F); ${args.ownerText}; ${args.recentText}]`
 }

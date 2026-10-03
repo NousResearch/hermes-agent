@@ -46,6 +46,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 # so in-module calls, `auxiliary_client.OpenAI` reads and
 # `patch("agent.auxiliary_client.OpenAI")` all keep working.
 if TYPE_CHECKING:
+    from agent.backend_identity import BackendIdentity
     from openai import OpenAI  # noqa: F401 — type hints only
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -3493,6 +3494,34 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
     ))
 
 
+def _is_vision_capability_error(exc: Exception) -> bool:
+    """Only proven image/route incapability permits another main vision candidate.
+
+    Check billing/auth/quota bodies independently of HTTP status: providers also
+    wrap them in validation errors, which must never authorize this walk.
+    """
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    if status not in {400, 415, 422, None}:
+        return False
+    text = str(exc).lower()
+    if (_is_auth_error(exc) or _is_payment_error(exc) or _is_rate_limit_error(exc)
+            or _is_model_not_found_error(exc)
+            or _contains_any(text, _PAYMENT_KEYWORDS + _RATE_LIMIT_KEYWORDS + (
+                "quota", "unauthorized", "unauthenticated", "authentication",
+                "invalid api key", "invalid_api_key", "bad-credentials", "permission denied",
+                "access denied", "model not found", "model_not_found", "unknown model",
+                "no such model", "model does not exist",
+            ))):
+        return False
+    return _is_model_incompatible_error(exc) or (
+        _contains_any(text, ("image_url", "image input", "image content", "images", "vision", "multimodal"))
+        and _contains_any(text, (
+            "does not support", "doesn't support", "not supported", "unsupported",
+            "unknown variant", "expected `text`", 'expected "text"', "text-only", "text only", "capability",
+        ))
+    )
+
+
 def _is_invalid_aux_response_error(exc: Exception) -> bool:
     """HTTP-200 empty/malformed ChatCompletions — a capability failure routed like model incompatibility."""
     if not isinstance(exc, RuntimeError):
@@ -4107,7 +4136,8 @@ def _call_fallback_candidate_sync(
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
 ) -> Optional[Any]:
-    """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
+    """Call one fallback candidate; vision errors propagate without credential recovery.
+    For non-vision tasks, on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
     provider and return None so the caller moves on. A capacity error (quota/rate-limit 429, 402,
     connection, route-incompatible model, malformed response) also quarantines and returns None so
@@ -4143,6 +4173,8 @@ def _call_fallback_candidate_sync(
     try:
         return _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
+        if task == "vision":
+            raise
         if not _is_auth_error(fb_err):
             capacity = fallback_candidate_unavailable_reason(fb_err)
             if capacity is None:
@@ -4193,6 +4225,8 @@ async def _call_fallback_candidate_async(
     try:
         return await _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
+        if task == "vision":
+            raise
         if not _is_auth_error(fb_err):
             capacity = fallback_candidate_unavailable_reason(fb_err)
             if capacity is None:
@@ -4462,10 +4496,20 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
 def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    attempted_candidates: Optional[List["BackendIdentity"]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
-    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
+    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order.
+    A vision walk records configured AND resolved identities before yielding a candidate;
+    each selected entry can therefore be attempted at most once during that walk.
+    """
+    from agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
+
+    def attempted(identity: BackendIdentity) -> bool:
+        return any(should_skip_candidate(identity, prior, FailureScope.MODEL)
+                   for prior in (attempted_candidates or ()))
+
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
@@ -4492,6 +4536,16 @@ def _try_main_fallback_chain(
         if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
             tried.append(f"{label} (skipped)")
             continue
+        configured_identity = BackendIdentity.build(
+            provider=fb_provider, model=fb_model, base_url=str(entry.get("base_url") or fb_base_url))
+        if attempted(configured_identity):
+            continue
+        if task == "vision" and (
+            _normalize_aux_provider(fb_provider) in _PROVIDERS_WITHOUT_VISION
+            or not _candidate_model_supports_vision(fb_provider, fb_model)
+        ):
+            tried.append(f"{label} (no vision capability)")
+            continue
         if _is_provider_unhealthy(fb_norm, fb_base_url):
             _log_skip_unhealthy(fb_norm, task, base_url=fb_base_url)
             tried.append(f"{label} (unhealthy)")
@@ -4501,6 +4555,21 @@ def _try_main_fallback_chain(
         except Exception as exc:
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
+        if fb_client is not None and task == "vision":
+            destination = _fallback_destination(task, fb_client, resolved_model or fb_model, label)
+            resolved_identity = BackendIdentity.build(
+                provider=destination.provider, model=destination.model, base_url=destination.base_url)
+            configured_identity = BackendIdentity.build(
+                provider=fb_provider, model=fb_model,
+                base_url=configured_identity.base_url or resolved_identity.base_url)
+            if attempted(resolved_identity) or skip(destination.provider, destination.model, destination.base_url):
+                if attempted_candidates is not None:
+                    attempted_candidates.append(configured_identity)
+                continue
+            if attempted_candidates is not None:
+                attempted_candidates.append(resolved_identity)
+        if attempted_candidates is not None and fb_client is not None:
+            attempted_candidates.append(configured_identity)
         if fb_client is not None:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model or fb_model, min_ctx, task=task, label=label,
@@ -5508,6 +5577,26 @@ def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str
 
 
 _VISION_AUTO_PROVIDER_ORDER = ("openrouter", "nous", "deepinfra")
+
+
+def _candidate_model_supports_vision(provider: str, model: Optional[str]) -> bool:
+    """Screen a fallback by its own overrides/catalog; unknown capability remains eligible."""
+    try:
+        from agent.image_routing import _probe_models_dev, _supports_vision_override
+        from hermes_cli.config import load_config_readonly
+    except ImportError:
+        return True
+    try:
+        candidate_cfg = dict(load_config_readonly())
+        # Neither the active model's flag nor its provider belongs to this candidate.
+        candidate_cfg.pop("model", None)
+        supports = _supports_vision_override(candidate_cfg, provider, model or "")
+        if supports is None and provider and model:
+            # Main-runtime endpoint/credential probes are not candidate-scoped.
+            supports = _probe_models_dev(provider, model, candidate_cfg)
+    except Exception:  # pragma: no cover - defensive
+        return True
+    return True if supports is None else bool(supports)
 
 
 def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
@@ -7398,7 +7487,7 @@ _PreparedAuxRequest = NamedTuple("_PreparedAuxRequest", [
     ("resolved_provider", str), ("request_provider", str), ("resolved_model", Optional[str]),
     ("resolved_base_url", Optional[str]), ("resolved_api_key", Optional[str]),
     ("resolved_api_mode", Optional[str]), ("effective_timeout", float),
-    ("effective_extra_body", Dict[str, Any]), ("base_info", str)])
+    ("effective_extra_body", Dict[str, Any]), ("base_info", str), ("fallback_policy_is_auto", bool)])
 
 
 def _prepare_aux_request(
@@ -7414,6 +7503,9 @@ def _prepare_aux_request(
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    # Vision resolution replaces the policy with a concrete backend. Keep the original
+    # policy for fallback eligibility, and the concrete identity for auth and requests.
+    fallback_policy_is_auto = _normalize_aux_provider(resolved_provider) == "auto"
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7466,7 +7558,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, fallback_policy_is_auto)
 
 
 class _LadderStep(NamedTuple):
@@ -7761,7 +7853,9 @@ def _next_fallback_after_quarantine(
     return fb
 
 
-def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
+def _ladder_provider_fallback(
+    first_err: Exception, route: _LadderRoute, *, fallback_policy_is_auto: bool,
+):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
@@ -7775,9 +7869,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # (429 + "too many tokens per day") must fall back just like a 402 credit error.
     # Rate limits are included: after retries are exhausted, a 429 means the provider is at capacity. See
     # #52228. See #26803: daily token quota must fall back like a 402 credit error.
-    is_auto = resolved_provider in {"auto", "", None}
+    is_auto = fallback_policy_is_auto
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
-    is_capacity_error = any(
+    vision_capability = task == "vision" and _is_vision_capability_error(first_err)
+    if reason is None and vision_capability:
+        reason = "vision capability mismatch"
+    is_capacity_error = vision_capability or any(
         predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
     task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
     has_task_fallback_chain = isinstance(task_chain, list) and bool(task_chain)
@@ -7815,10 +7912,14 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
         failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+    from_main_chain = False
+    attempted_candidates: List[BackendIdentity] = []
     if fb_client is None and is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
+            attempted_candidates=attempted_candidates if task == "vision" else None)
+        from_main_chain = fb_client is not None
         if fb_client is None:
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
@@ -7827,11 +7928,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
-    # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
-    # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
-    # re-selection hands back a lane already tried, so each lane is attempted at most once.
+    # Each quarantined lane is tried at most once, as in the native ordered walk.
     tried_lanes: set = set()
     while fb_client is not None:
         lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
@@ -7839,9 +7936,27 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             break
         tried_lanes.add(lane)
         _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-        fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+        fb_resp, capability_err = yield from _rung(
+            _LadderStep("fallback", (fb_client, fb_model, fb_label)),
+            lambda exc: task == "vision" and from_main_chain and _is_vision_capability_error(exc),
+        )
+        if capability_err is not None:
+            fb_client, fb_model, fb_label = _try_main_fallback_chain(
+                task, resolved_provider or "auto", reason="vision capability mismatch",
+                failed_model=_chain_failed_model, failed_base_url=route.base_info,
+                failure_scope=_chain_failure_scope, attempted_candidates=attempted_candidates)
+            if fb_client is None:
+                from_main_chain = False
+                fb_client, fb_model, fb_label = _try_payment_fallback(
+                    resolved_provider, task, reason="vision fallback chain exhausted",
+                    failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
+                    main_runtime=route.main_runtime)
+            continue
         if fb_resp is not None:
             return fb_resp
+        # Preserve the native bounded non-vision quarantine rewalk. A None response
+        # is not evidence of a vision capability failure.
+        from_main_chain = False
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
             task_chain_only=explicit_auth_with_task_chain)
@@ -7861,6 +7976,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    fallback_policy_is_auto: bool,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7882,7 +7998,8 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route)
+    resp = yield from _ladder_provider_fallback(
+        first_err, route, fallback_policy_is_auto=fallback_policy_is_auto)
     if resp is not None:
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
@@ -8077,7 +8194,8 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info,
+        fallback_policy_is_auto=req.fallback_policy_is_auto)
 
 
 def _call_llm_impl(
@@ -8314,7 +8432,10 @@ async def _async_call_llm_impl(
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args
+            destination = getattr(fb_client, "_hermes_fallback_destination", None)
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
+            if isinstance(destination, _FallbackDestination):
+                fb_client._hermes_fallback_destination = destination
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),

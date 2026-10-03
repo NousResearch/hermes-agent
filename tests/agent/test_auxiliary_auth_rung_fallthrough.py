@@ -83,6 +83,7 @@ def _ladder(base_info=("https://%s/v1" % NOUS_HOST), resolved_provider="nous"):
         async_mode=False,
         base_info=base_info,
         resolved_provider=resolved_provider,
+        fallback_policy_is_auto=False,
         resolved_model=AUX_MODEL,
         resolved_base_url=None,
         resolved_api_key=None,
@@ -99,8 +100,9 @@ def hermetic(monkeypatch):
     """Keep the ladder off the network and record the provider-fallback rung."""
     chain_calls = []
 
-    def _fake_provider_fallback(first_err, route):
+    def _fake_provider_fallback(first_err, route, *, fallback_policy_is_auto):
         """Stands in for the last rung: a generator that performs no steps."""
+        assert fallback_policy_is_auto is False
         chain_calls.append(first_err)
         yield from ()
         return "chain-response"
@@ -196,6 +198,7 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
         async_mode=False,
         base_info="https://vertex.example/v1",
         resolved_provider="vertex",
+        fallback_policy_is_auto=False,
         resolved_model=AUX_MODEL,
         resolved_base_url=None,
         resolved_api_key=None,
@@ -240,6 +243,7 @@ def test_explicit_provider_auth_never_uses_an_unconfigured_fallback(monkeypatch)
         async_mode=False,
         base_info="https://vertex.example/v1",
         resolved_provider="vertex",
+        fallback_policy_is_auto=False,
         resolved_model=AUX_MODEL,
         resolved_base_url=None,
         resolved_api_key=None,
@@ -386,7 +390,8 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
     monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
                         lambda **kwargs: (_FakeClient(), AUX_MODEL))
 
-    def _no_chain(first_err, route):
+    def _no_chain(first_err, route, *, fallback_policy_is_auto):
+        assert fallback_policy_is_auto is False
         hermetic.append(first_err)
         yield from ()
         return None

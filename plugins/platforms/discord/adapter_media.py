@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.i18n import t
@@ -283,6 +285,7 @@ class DiscordMediaMixin:
 
         try:
             import io
+            import math
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
@@ -304,11 +307,31 @@ class DiscordMediaMixin:
             # Try sending as a native voice message via raw API (flags=8192).
             try:
                 import base64
-                try:
-                    from mutagen.oggopus import OggOpus
-                    duration_secs = OggOpus(audio_path).info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
+                from gateway.platforms.base import transcode_to_ogg_opus
+
+                with tempfile.TemporaryDirectory(prefix="hermes-discord-voice-") as work_dir:
+                    source_path = os.path.join(work_dir, filename)
+                    with open(source_path, "wb") as source_file:
+                        source_file.write(file_data)
+                    try:
+                        from mutagen.oggopus import OggOpus
+                    except Exception as exc:
+                        raise RuntimeError("Ogg/Opus validation is unavailable") from exc
+                    try:
+                        final_path = source_path
+                        duration_secs = OggOpus(source_path).info.length
+                    except Exception:
+                        converted_path = os.path.join(work_dir, "voice-message.ogg")
+                        converted_path = transcode_to_ogg_opus(
+                            source_path, bitrate="48k", timeout=30, output_path=converted_path,
+                        )
+                        if not converted_path:
+                            raise RuntimeError("native voice conversion failed")
+                        final_path = converted_path
+                        duration_secs = OggOpus(final_path).info.length
+                    if not math.isfinite(duration_secs) or duration_secs <= 0:
+                        raise ValueError("native voice duration is invalid")
+                    final_data = Path(final_path).read_bytes()
                 payload_data = {
                     "flags": 8192,
                     "attachments": [{
@@ -321,7 +344,7 @@ class DiscordMediaMixin:
                 form = [
                     {"name": "payload_json", "value": json.dumps(payload_data)},
                     {
-                        "name": "files[0]", "value": file_data, "filename": "voice-message.ogg",
+                        "name": "files[0]", "value": final_data, "filename": "voice-message.ogg",
                         "content_type": "audio/ogg",
                     },
                 ]

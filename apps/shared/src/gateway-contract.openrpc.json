@@ -12284,6 +12284,46 @@
         "title": "CustodyCustodianStatus",
         "type": "object"
       },
+      "CustodyHead": {
+        "additionalProperties": false,
+        "description": "A head the host signs: the chain hash of its room's prefix ``1..seq`` at its ``epoch``.",
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "chain_hash": {
+            "title": "Chain Hash",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "host",
+          "epoch",
+          "seq",
+          "chain_hash",
+          "signature"
+        ],
+        "title": "CustodyHead",
+        "type": "object"
+      },
       "CustodyWatermark": {
         "additionalProperties": false,
         "properties": {
@@ -14895,6 +14935,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/CustodyWatermark"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CustodyHead"
               },
               {
                 "type": "null"

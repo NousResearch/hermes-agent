@@ -1,4 +1,9 @@
-"""``POST /v1/room-members/replica``: opt-in passive history, authenticated by a room grant."""
+"""Group Chat copies over RoomLink.
+
+``POST /v1/room-members/replica``: the host's history pages, authenticated by a room grant.
+``POST /v1/room-members/custody/pages``: another custodian's catch-up, authenticated by its signed
+request (``hosted_room_custody.serve_custodian_pages``).
+"""
 
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from gateway.hosted_room_replica_ingress import ingest_granted_page
 
 # Pages are bounded UTF-8 JSON; keep framing and roster headroom.
 MAX_REPLICA_HTTP_BYTES = 2 * (rooms.MAX_LOG_PAGE_BYTES + rooms.MAX_MEMBERS_JSON_BYTES) + 512 * 1024
+MAX_CUSTODY_PAGES_REQUEST_BYTES = 4096
 
 
 def http_routes(adapter):
@@ -55,4 +61,22 @@ def http_routes(adapter):
             return failure("Invalid Group Chat history page.", "invalid_room_replica", 400)
         return web.json_response({"object": "hermes.room_member.replica", **result})
 
-    return [("POST", "/v1/room-members/replica", receive)]
+    async def custody_pages(request):
+        from gateway import hosted_room_custody as custody
+        body, error = await adapter._read_json_body(request.clone(client_max_size=MAX_CUSTODY_PAGES_REQUEST_BYTES))
+        if error is not None:
+            return error
+        try:
+            reply = await asyncio.to_thread(custody.serve_custodian_pages, _grant_db(adapter), body)
+        except custody.CustodyAuthorizationError:
+            return failure("This installation keeps no copy for that request.", "custody_not_authorized", 403)
+        except (rooms.HostedRoomError, ValueError, TypeError):
+            return failure("Invalid Group Chat catch-up request.", "invalid_custody_request", 400)
+        return web.json_response(reply)
+
+    return [("POST", "/v1/room-members/replica", receive), ("POST", custody_path(), custody_pages)]
+
+
+def custody_path() -> str:
+    from gateway.hosted_room_custody import PAGES_PATH
+    return PAGES_PATH

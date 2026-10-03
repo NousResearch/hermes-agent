@@ -9,18 +9,25 @@ algorithm, and nothing here votes.
 
 Each copy, and the authority's own room, has a durable watermark ``(epoch, seq, event_hash)``:
 ``event_hash`` chains every event of that exact prefix. Custodians acknowledge each page with it, and
-the authority keeps the acknowledgments that match its own chain. ``at_risk_after_seq`` is the
-highest seq at least one eligible successor durably holds; every later event is at risk of being
-lost with this host, and clients say so. Nothing waits for a copy: replication degrades to local
-acknowledgement and marks the tail at risk. A task made ready for dispatch is announced with
-``task.admitted`` in the same transaction, so a successor can reconcile it.
+the authority keeps the acknowledgments that match its own chain. With every page and heartbeat the
+host also sends a **head** it signs, ``{room_id, host, epoch, seq, chain_hash}``, and each custodian
+keeps the latest head that vouches for its copy; a host that continues its own group at a fresh epoch
+keeps its own last head of the epoch it leaves. Copies pass history between themselves only as far
+as such a head vouches for it, so no custodian can add to the group's history, keys or voters.
+``at_risk_after_seq`` is the highest seq at least one eligible successor durably holds; every later
+event is at risk of being lost with this host, and clients say so. Nothing waits for a copy:
+replication degrades to local acknowledgement and marks the tail at risk. A task made ready for
+dispatch is announced with ``task.admitted`` in the same transaction, so a successor can reconcile it.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import re
+import secrets
 import socket
 import sqlite3
 import time
@@ -29,8 +36,10 @@ from typing import Any, Mapping
 
 from gateway import hosted_room_identity as identity
 from gateway import hosted_rooms as rooms
-from gateway.hosted_rooms_common import DbPath, compact_json, open_sqlite, table_exists
+from gateway.hosted_rooms_common import DbPath, compact_json, open_sqlite, table_exists, utf8_len
 from gateway.hosted_rooms_common import display_label as common_display_label
+
+logger = logging.getLogger(__name__)
 
 CONFIGURED = "custody.configured"
 TASK_ADMITTED = "task.admitted"
@@ -40,6 +49,10 @@ REPORTS_TABLE = "hosted_room_custody_reports"
 CHAIN_TABLE = "hosted_room_custody_chain"
 CONSENT_TABLE = "hosted_room_custody_consent"
 ROUTES_TABLE = "hosted_room_custody_routes"
+HEADS_TABLE = "hosted_room_custody_heads"
+# The domain of the head a host signs for its own room's prefix.
+HEAD_DOMAIN = b"hermes.group.custody.head.v1"
+_HEAD_FIELDS = frozenset({"room_id", "host", "epoch", "seq", "chain_hash"})
 # The member id a custodian-only grant carries: it names no Bot, and such a grant never runs work.
 CUSTODY_MEMBER_ID = "custody:installation"
 ROLES = frozenset({"authority", "custodian", "custodian_only"})
@@ -83,6 +96,10 @@ def initialize_locked(conn: sqlite3.Connection) -> None:
         room_id TEXT PRIMARY KEY, at_risk_after_seq INTEGER NOT NULL, reported_at REAL NOT NULL)""")
     conn.execute(f"""CREATE TABLE IF NOT EXISTS {CHAIN_TABLE} (
         room_id TEXT NOT NULL, seq INTEGER NOT NULL, event_hash TEXT NOT NULL, PRIMARY KEY (room_id, seq))""")
+    # On a custodian: per epoch, the latest head that host signed and that vouches for this copy.
+    conn.execute(f"""CREATE TABLE IF NOT EXISTS {HEADS_TABLE} (
+        room_id TEXT NOT NULL, epoch INTEGER NOT NULL, host TEXT NOT NULL, seq INTEGER NOT NULL,
+        chain_hash TEXT NOT NULL, signature TEXT NOT NULL, received_at REAL NOT NULL, PRIMARY KEY (room_id, epoch))""")
 
 
 def display_label(value: Any) -> str | None:
@@ -180,9 +197,11 @@ def chain_hash_locked(
 
 
 def reset_chain_locked(conn: sqlite3.Connection, room_id: str, *, after_seq: int) -> None:
-    """Forget derived hashes past ``after_seq``: required wherever stored history is rewritten."""
+    """Forget derived hashes and heads past ``after_seq``: required wherever stored history is rewritten."""
     if table_exists(conn, CHAIN_TABLE):
         conn.execute(f"DELETE FROM {CHAIN_TABLE} WHERE room_id=? AND seq>?", (room_id, after_seq))
+    if table_exists(conn, HEADS_TABLE):
+        conn.execute(f"DELETE FROM {HEADS_TABLE} WHERE room_id=? AND seq>?", (room_id, after_seq))
 
 
 def custody_watermark_locked(conn: sqlite3.Connection, room_id: str, *, store: bool = True) -> dict[str, Any] | None:
@@ -212,6 +231,161 @@ def validate_watermark(value: Any) -> dict[str, Any]:
     if not isinstance(event_hash, str) or _HASH_RE.fullmatch(event_hash) is None:
         raise CustodyError("watermark event_hash is invalid")
     return {"epoch": epoch, "seq": seq, "event_hash": event_hash}
+
+
+# -- heads the host signs ----------------------------------------------------------------------
+
+
+def _head_statement(head: Any) -> dict[str, Any]:
+    """A head's signed statement ``{room_id, host, epoch, seq, chain_hash}``, in its exact shape."""
+    if not isinstance(head, Mapping) or set(head) != _HEAD_FIELDS | {"signature"}:
+        raise CustodyError("a head carries exactly room_id, host, epoch, seq, chain_hash and signature")
+    statement = {key: head[key] for key in sorted(_HEAD_FIELDS)}
+    if (not isinstance(statement["room_id"], str) or not isinstance(statement["host"], str)
+            or type(statement["epoch"]) is not int or not 1 <= statement["epoch"] < 2**63
+            or type(statement["seq"]) is not int or not 0 <= statement["seq"] < 2**63
+            or not isinstance(statement["chain_hash"], str) or _HASH_RE.fullmatch(statement["chain_hash"]) is None):
+        raise CustodyError("head fields are invalid")
+    return statement
+
+
+def sign_head_locked(conn: sqlite3.Connection, room_id: str, *, seq: int | None = None) -> dict[str, Any]:
+    """The head this host signs for its own room: its epoch, and the chain hash of the prefix ``1..seq``.
+
+    ``seq`` defaults to the latest event. A custodian keeps the head that vouches for its copy, and
+    custodians pass history between themselves only as far as a head vouches for it.
+    """
+    host = rooms.local_authority_gateway_id()
+    room = conn.execute("SELECT authority_gateway_id, authority_epoch, next_seq FROM hosted_rooms WHERE room_id=?",
+                        (room_id,)).fetchone()
+    if room is None or room["authority_gateway_id"] != host:
+        raise CustodyError("only the Group Chat's host signs its head")
+    latest = int(room["next_seq"]) - 1
+    seq = latest if seq is None else seq
+    if type(seq) is not int or not 0 <= seq <= latest:
+        raise CustodyError("a head names only history its host holds")
+    statement = {"room_id": room_id, "host": host, "epoch": int(room["authority_epoch"]), "seq": seq,
+                 "chain_hash": chain_hash_locked(conn, room_id, seq, table="hosted_room_events", store=False)}
+    return {**statement, "signature": identity.sign(HEAD_DOMAIN, statement)}
+
+
+def verify_head_locked(conn: sqlite3.Connection, room_id: str, head: Any) -> dict[str, Any]:
+    """A head's statement, once its signature checks against the key this store pinned for its ``host``.
+
+    It says nothing about lineage: the caller checks that ``(host, epoch)`` is an authority it follows.
+    """
+    statement = _head_statement(head)
+    if statement["room_id"] != room_id or not identity.verify_locked(
+            conn, room_id, statement["host"], HEAD_DOMAIN, statement, head["signature"]):
+        raise CustodyError("the head is not signed with its host's pinned key")
+    return statement
+
+
+def _copy_head_locked(conn: sqlite3.Connection, room_id: str) -> tuple[str, int, int] | None:
+    """``(authority, epoch, last_seq)`` of the copy held here; None without one, or for a quarantined copy."""
+    if not table_exists(conn, "hosted_room_replicas"):
+        return None
+    row = conn.execute("""SELECT authority_gateway_id, authority_epoch, last_seq FROM hosted_room_replicas
+        WHERE room_id=? AND quarantine_reason IS NULL""", (room_id,)).fetchone()
+    return (str(row[0]), int(row[1]), int(row[2])) if row is not None else None
+
+
+def record_head_locked(conn: sqlite3.Connection, room_id: str, head: Any) -> bool:
+    """Keep a head that vouches for this copy's own prefix; returns whether it was kept.
+
+    It must be signed by the host this copy follows (``verify_head_locked``), name that authority and
+    epoch, and match this copy's chain at ``seq``. The latest head per epoch is kept; one from an
+    earlier epoch stays valid for its prefix.
+    """
+    initialize_locked(conn)
+    copy = _copy_head_locked(conn, room_id)
+    try:
+        statement = verify_head_locked(conn, room_id, head)
+        if (copy is None or (statement["host"], statement["epoch"]) != copy[:2] or statement["seq"] > copy[2]
+                or chain_hash_locked(conn, room_id, statement["seq"], table="hosted_room_replica_events")
+                != statement["chain_hash"]):
+            return False
+    except CustodyError:
+        return False
+    _store_head_locked(conn, room_id, statement, head["signature"])
+    return True
+
+
+def _store_head_locked(conn: sqlite3.Connection, room_id: str, statement: Mapping[str, Any], signature: str) -> None:
+    """Keep the latest head per epoch: a later head of the same epoch replaces an earlier one."""
+    conn.execute(f"""INSERT INTO {HEADS_TABLE} (room_id, epoch, host, seq, chain_hash, signature, received_at)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(room_id, epoch) DO UPDATE SET host=excluded.host, seq=excluded.seq,
+        chain_hash=excluded.chain_hash, signature=excluded.signature, received_at=excluded.received_at
+        WHERE excluded.seq >= {HEADS_TABLE}.seq""",
+                 (room_id, statement["epoch"], statement["host"], statement["seq"], statement["chain_hash"],
+                  signature, time.time()))
+
+
+def record_head(db_path: DbPath, room_id: str, head: Any) -> bool:
+    """``record_head_locked`` in its own writer."""
+    with rooms._transaction(db_path, immediate=True) as conn:
+        return record_head_locked(conn, rooms._room_id(room_id), head)
+
+
+def keep_own_head_locked(conn: sqlite3.Connection, room_id: str) -> dict[str, Any]:
+    """On the host, in the writer that continues its own group at a fresh epoch: keep its own head
+    for the epoch it leaves, and return it.
+
+    Call it before the change of host is appended, so the head names this host's current epoch and
+    its latest event, the one the change directly follows. A host signs heads for its current epoch
+    only, and its copies may have missed that epoch's last pushes: kept here, the head still vouches
+    for them (``heads_locked``), so a copy behind the change can catch up across it.
+    """
+    initialize_locked(conn)
+    head = sign_head_locked(conn, room_id)
+    _store_head_locked(conn, room_id, head, head["signature"])
+    return head
+
+
+def vouched_head_locked(conn: sqlite3.Connection, room_id: str) -> dict[str, Any] | None:
+    """The head that vouches for the history held here, for receipts and catch-up; None without one.
+
+    On the host, a head it signs now for its latest event. On a copy, the stored head of the host it
+    follows, as long as it still matches the copy's chain.
+    """
+    room = conn.execute("SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL",
+                        (room_id,)).fetchone()
+    try:
+        if room is not None:
+            return sign_head_locked(conn, room_id) if room[0] == rooms.local_authority_gateway_id() else None
+        copy = _copy_head_locked(conn, room_id)
+        if copy is None or not table_exists(conn, HEADS_TABLE):
+            return None
+        row = conn.execute(f"SELECT * FROM {HEADS_TABLE} WHERE room_id=? AND epoch=? AND host=?",
+                           (room_id, copy[1], copy[0])).fetchone()
+        if row is None or int(row["seq"]) > copy[2] or chain_hash_locked(
+                conn, room_id, int(row["seq"]), table="hosted_room_replica_events", store=False) != row["chain_hash"]:
+            return None
+    except (CustodyError, identity.RoomIdentityError):
+        return None
+    return {"room_id": room_id, "host": row["host"], "epoch": int(row["epoch"]), "seq": int(row["seq"]),
+            "chain_hash": row["chain_hash"], "signature": row["signature"]}
+
+
+def heads_locked(conn: sqlite3.Connection, room_id: str) -> list[dict[str, Any]]:
+    """Every stored head that still vouches for the history held here, one per epoch, oldest first.
+
+    A head from an earlier epoch stays valid for its prefix: a copy that has moved on can still vouch
+    for that part of the history to a copy that hasn't.
+    """
+    table = events_table_locked(conn, room_id)
+    if table is None or not table_exists(conn, HEADS_TABLE):
+        return []
+    kept = []
+    for row in conn.execute(f"SELECT * FROM {HEADS_TABLE} WHERE room_id=? ORDER BY epoch", (room_id,)).fetchall():
+        try:
+            if chain_hash_locked(conn, room_id, int(row["seq"]), table=table, store=False) != row["chain_hash"]:
+                continue
+        except CustodyError:
+            continue
+        kept.append({"room_id": room_id, "host": row["host"], "epoch": int(row["epoch"]), "seq": int(row["seq"]),
+                     "chain_hash": row["chain_hash"], "signature": row["signature"]})
+    return kept
 
 
 # -- configurations ----------------------------------------------------------------------------
@@ -553,14 +727,23 @@ def record_acknowledgment(
         return "acknowledged" if matches else "divergent"
 
 
-def report_locked(conn: sqlite3.Connection, room_id: str, install_id: str) -> dict[str, Any]:
+def report_locked(
+    conn: sqlite3.Connection, room_id: str, install_id: str, *, head_seq: int | None = None,
+) -> dict[str, Any]:
     """What the authority tells one custodian with each page: the tail at risk, the configuration,
-    and the consent it recorded for that custodian."""
+    the consent it recorded for that custodian, and the head it signs for the page's end
+    (``head_seq``), which the custodian keeps to vouch for its copy."""
     allowed = conn.execute(f"SELECT allowed FROM {CUSTODIANS_TABLE} WHERE room_id=? AND install_id=?",
                            (room_id, install_id)).fetchone() if table_exists(conn, CUSTODIANS_TABLE) else None
-    return {"at_risk_after_seq": at_risk_after_locked(conn, room_id),
-            "configuration_seq": configuration_locked(conn, room_id)["configuration_seq"],
-            **({"allowed": bool(allowed[0])} if allowed is not None else {})}
+    report = {"at_risk_after_seq": at_risk_after_locked(conn, room_id),
+              "configuration_seq": configuration_locked(conn, room_id)["configuration_seq"],
+              **({"allowed": bool(allowed[0])} if allowed is not None else {})}
+    if head_seq is not None:
+        try:
+            report["head"] = sign_head_locked(conn, room_id, seq=head_seq)
+        except (CustodyError, identity.RoomIdentityError):
+            logger.warning("custody head unavailable for a Group Chat; its page goes unvouched")
+    return report
 
 
 # -- a custodian's copy ------------------------------------------------------------------------
@@ -629,6 +812,9 @@ def after_ingest_locked(
             # The consent the host recorded for this installation: confirms a change made here.
             conn.execute(f"UPDATE {CONSENT_TABLE} SET host_allowed=? WHERE room_id=?",
                          (int(report["allowed"]), room_id))
+        if report.get("head") is not None:
+            # Kept only when it vouches for this copy: the host it follows signed it, and it matches.
+            record_head_locked(conn, room_id, report["head"])
     watermark = custody_watermark_locked(conn, room_id)
     if watermark is None:  # pragma: no cover - the caller just stored this copy
         raise CustodyError("no copy of this Group Chat is held here")
@@ -640,6 +826,7 @@ def custody_status(db_path: DbPath, room_id: str) -> dict[str, Any]:
 
     On the authority the watermarks are the custodians' verified acknowledgments; on a custodian they
     come from its own copy and the authority's last report, and other custodians' are unknown (None).
+    ``head`` is the head that vouches for the history held here (``vouched_head_locked``).
     """
     room_id = rooms._room_id(room_id)
     with closing(open_sqlite(db_path)) as conn:
@@ -649,6 +836,7 @@ def custody_status(db_path: DbPath, room_id: str) -> dict[str, Any]:
             raise rooms.RoomNotFoundError("no history of this Group Chat is held here")
         configuration = configuration_locked(conn, room_id)
         own = custody_watermark_locked(conn, room_id, store=False)
+        vouched = vouched_head_locked(conn, room_id)
         local = rooms.local_authority_gateway_id()
         listed = {custodian["install_id"]: custodian for custodian in configuration["custodians"]
                   if custodian["role"] != "authority"}
@@ -689,7 +877,8 @@ def custody_status(db_path: DbPath, room_id: str) -> dict[str, Any]:
         conn.rollback()
     return {"room_id": room_id, "role": "authority" if table == "hosted_room_events" else "custodian",
             "custodians": custodians, "at_risk_after_seq": at_risk_after,
-            "configuration_seq": configuration["configuration_seq"], "configuration": configuration, "watermark": own}
+            "configuration_seq": configuration["configuration_seq"], "configuration": configuration, "watermark": own,
+            "head": vouched}
 
 
 def wait_protected(db_path: DbPath, room_id: str, seq: int, timeout: float, *, poll_seconds: float = 0.05) -> bool:
@@ -735,6 +924,199 @@ def read_copy_page(conn: sqlite3.Connection, room_id: str, *, after_seq: int, li
     events = [_event_from_row(row) for row in _page_rows(conn, table, room_id, after_seq, limit)]
     return {"room_name": head["name"], "members": json.loads(head["members_json"]),
             "page": _bounded_page(events, after_seq, latest, authority)}
+
+
+# -- catch-up from another custodian -------------------------------------------------------------
+
+PAGES_PATH = "/v1/room-members/custody/pages"
+PAGES_DOMAIN = b"hermes.group.custody.pages.v1"
+PAGES_REPLY_DOMAIN = b"hermes.group.custody.pages-reply.v1"
+# A signed request stays valid this long either side of its issue time.
+REQUEST_SKEW_SECONDS = 300.0
+_PAGES_REQUEST_FIELDS = frozenset({
+    "room_id", "requester_install_id", "source_install_id", "after_seq", "limit", "issued_at", "nonce"})
+_PAGES_REPLY_FIELDS = frozenset({
+    "room_id", "source_install_id", "requester_install_id", "nonce", "room_name", "members", "page", "head"})
+_ANSWERS = ("room_id", "source_install_id", "requester_install_id", "nonce")
+_NONCE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+class CustodyAuthorizationError(CustodyError):
+    """A catch-up request or reply is not signed by a custodian of the Group Chat."""
+
+    reason = "custody_not_authorized"
+
+
+def fetch_custodian_pages(
+    db_path: DbPath, *, room_id: str, source_install_id: str, after_seq: int, limit: int, timeout: float = 10.0,
+) -> dict[str, Any]:
+    """One page of another custodian's history of the room, from its own room or copy.
+
+    The request names both installations and is signed with this installation's room identity key;
+    the source answers only an installation its configuration lists, and its signed reply is checked
+    here against the key pinned for it. Returns ``{room_id, room_name, members, page, head,
+    source_install_id}``: ``head`` is the host-signed head that vouches for the source's history (or
+    None). Nothing here is stored: ``catch_up_from_custodian`` stores only what a head vouches for.
+    """
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    room_id = rooms._room_id(room_id)
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        entry = next((custodian for custodian in configuration_locked(conn, room_id)["custodians"]
+                      if custodian["install_id"] == source_install_id), None)
+        pinned = identity.pinned_key_locked(conn, room_id=room_id, install_id=source_install_id)
+    if entry is None or entry["endpoint"] is None or pinned is None:
+        raise CustodyError("that custodian of the Group Chat is unknown here or has no endpoint")
+    request = {"room_id": room_id, "requester_install_id": rooms.local_authority_gateway_id(),
+               "source_install_id": source_install_id, "after_seq": after_seq, "limit": limit,
+               "issued_at": time.time(), "nonce": secrets.token_hex(16)}
+    client = PeerRunsHTTPClient(base_url=entry["endpoint"], api_key="", timeout_seconds=timeout,
+                                proof_install_id=source_install_id)
+    reply = dict(client.custody_pages(body={**request, "signature": identity.sign(PAGES_DOMAIN, request)}))
+    signature = reply.pop("signature", None)
+    if set(reply) != _PAGES_REPLY_FIELDS or any(reply[key] != request[key] for key in _ANSWERS):
+        raise CustodyError("the custodian's reply does not answer this request")
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        if not identity.verify_locked(conn, room_id, source_install_id, PAGES_REPLY_DOMAIN, reply, signature):
+            raise CustodyAuthorizationError("the custodian's reply is not signed with its pinned key")
+    return {"room_id": room_id, "room_name": reply["room_name"], "members": reply["members"], "page": reply["page"],
+            "head": reply["head"], "source_install_id": source_install_id}
+
+
+def serve_custodian_pages(db_path: DbPath, body: Any, *, now: float | None = None) -> dict[str, Any]:
+    """Answer one custodian's signed catch-up request with a signed page of the history held here.
+
+    Only an installation that the room's latest configuration here lists may ask, signed with the
+    key pinned for it, in a request issued within ``REQUEST_SKEW_SECONDS`` that names this
+    installation as its source. The reply relays the head that vouches for this history.
+    """
+    if not isinstance(body, Mapping) or set(body) != _PAGES_REQUEST_FIELDS | {"signature"}:
+        raise CustodyError("catch-up request fields are invalid")
+    request = {key: body[key] for key in _PAGES_REQUEST_FIELDS}
+    room_id = rooms._room_id(request["room_id"])
+    issued_at, now = request["issued_at"], time.time() if now is None else float(now)
+    if (request["source_install_id"] != rooms.local_authority_gateway_id()
+            or not isinstance(request["requester_install_id"], str)
+            or isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)) or not math.isfinite(issued_at)
+            or abs(now - issued_at) > REQUEST_SKEW_SECONDS
+            or not isinstance(request["nonce"], str) or _NONCE_RE.fullmatch(request["nonce"]) is None):
+        raise CustodyAuthorizationError("catch-up request is not current or not addressed to this installation")
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        conn.execute("BEGIN")  # one snapshot; nothing is written
+        listed = {custodian["install_id"] for custodian in configuration_locked(conn, room_id)["custodians"]}
+        if request["requester_install_id"] not in listed or not identity.verify_locked(
+                conn, room_id, request["requester_install_id"], PAGES_DOMAIN, request, body["signature"]):
+            raise CustodyAuthorizationError("catch-up request is not signed by a custodian of the Group Chat")
+        page = read_copy_page(conn, room_id, after_seq=request["after_seq"], limit=request["limit"])
+        head = vouched_head_locked(conn, room_id)
+        conn.rollback()
+    reply = {**{key: request[key] for key in _ANSWERS}, "room_id": room_id, **page, "head": head}
+    return {**reply, "signature": identity.sign(PAGES_REPLY_DOMAIN, reply)}
+
+
+def _wire_event(room_id: str, event: Mapping[str, Any]) -> dict[str, Any]:
+    """A normalized event back in the replay-page shape ``ingest_page`` takes."""
+    return {"room_id": room_id, "seq": event["seq"], "event_id": event["event_id"], "kind": event["kind"],
+            "actor": json.loads(event["actor_json"]), "authority_epoch": event["authority_epoch"],
+            "payload": json.loads(event["payload_json"]), "created_at": event["created_at"]}
+
+
+def catch_up_from_custodian(
+    db_path: DbPath, *, room_id: str, source_install_id: str, head: Any = None, page_limit: int = rooms.MAX_LOG_LIMIT,
+    timeout: float = 10.0, _verify_transition: Any = None, _fetch: Any = None,
+) -> dict[str, Any]:
+    """Catch this copy up from another custodian, exactly as far as a head its host signed vouches.
+
+    ``head`` (by default the one the source relays) must be signed by the host this copy follows, and
+    the range then holds no change of host; or by the successor of a change of host that is the first
+    event fetched, which ``_verify_transition`` then checks. Its signature checks against keys this
+    copy pinned before the range. The source's pages are fetched from this copy's last seq up to
+    ``head.seq``, never further, so an unvouched tail is dropped; and their chain must reach
+    ``head.chain_hash`` before anything is stored, so keys and configurations are only ever taken
+    from inside a host-signed prefix. On any mismatch nothing is stored (``CustodyError``).
+
+    Returns ``{room_id, stored_seq, watermark, head}``; the head is then kept here too.
+    ``_fetch(db_path, *, room_id, source_install_id, after_seq, limit)`` defaults to
+    ``fetch_custodian_pages``.
+    """
+    from gateway import hosted_room_replicas as replicas
+    fetch = _fetch or (lambda path, **request: fetch_custodian_pages(path, timeout=timeout, **request))
+    room_id = rooms._room_id(room_id)
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        copy = _copy_head_locked(conn, room_id)
+        if copy is None:
+            raise CustodyError("no usable copy of this Group Chat is held here")
+        own = chain_hash_locked(conn, room_id, copy[2], table="hosted_room_replica_events", store=False)
+    host, epoch, last = copy
+
+    def checked(target: Any) -> dict[str, Any]:
+        """The head's statement, signed by the host this copy follows or by a later host."""
+        with closing(open_sqlite(db_path, timeout=1)) as conn:
+            statement = verify_head_locked(conn, room_id, target)
+        if (statement["host"], statement["epoch"]) != (host, epoch) and statement["epoch"] <= epoch:
+            raise CustodyError("the head is signed neither by the host this copy follows nor by its successor")
+        return statement
+
+    statement = checked(head) if head is not None else None
+    events, cursor, held, fetched = [], last, 0, None
+    while statement is None or cursor < statement["seq"]:
+        fetched = fetch(db_path, room_id=room_id, source_install_id=source_install_id, after_seq=cursor,
+                        limit=page_limit)
+        if not isinstance(fetched, Mapping) or not {"room_name", "members", "page"} <= set(fetched):
+            raise CustodyError("the custodian's catch-up page is invalid")
+        if statement is None:
+            if fetched.get("head") is None:
+                raise CustodyError("the custodian holds no head its host signed")
+            head = fetched["head"]
+            statement = checked(head)
+            if statement["seq"] <= cursor:
+                break
+        page_events, _, _ = replicas._validate_page(fetched["page"])
+        new = [event for event in page_events if event["seq"] > cursor]
+        if not new or new[0]["seq"] != cursor + 1:
+            raise CustodyError("the custodian holds less of the history than the head vouches for")
+        held += sum(utf8_len(event["event_id"], event["kind"], event["actor_json"], event["payload_json"])
+                    for event in new)
+        if held > rooms.MAX_GATEWAY_EVENT_BYTES:
+            raise CustodyError("catching up exceeds this gateway's history budget")
+        events.extend(new)
+        cursor = new[-1]["seq"]
+    if statement["seq"] <= last:
+        # Nothing to fetch: the head must still describe this copy's own prefix.
+        with closing(open_sqlite(db_path, timeout=1)) as conn:
+            if chain_hash_locked(conn, room_id, statement["seq"], table="hosted_room_replica_events",
+                                 store=False) != statement["chain_hash"]:
+                raise CustodyError("this copy differs from the history its host signed")
+            return {"room_id": room_id, "stored_seq": last, "head": dict(head),
+                    "watermark": custody_watermark_locked(conn, room_id, store=False)}
+    vouched = events[:statement["seq"] - last]  # the unvouched tail is dropped
+    transitions = [index for index, event in enumerate(vouched) if event["kind"] == "authority.transition"]
+    if (statement["host"], statement["epoch"]) == (host, epoch):
+        if transitions:
+            raise CustodyError("a head of the host this copy follows vouches for no change of host")
+    else:
+        if transitions != [0]:
+            raise CustodyError("a later host's head vouches only for history that starts with its change of host")
+        moved = json.loads(vouched[0]["payload_json"])
+        if (moved.get("from_epoch"), moved.get("to_epoch"), moved.get("successor_gateway_id"),
+                vouched[0]["authority_epoch"]) != (epoch, statement["epoch"], statement["host"], statement["epoch"]):
+            raise CustodyError("the head follows another change of host than this copy's next")
+    chain = own
+    for event in vouched:
+        chain = _fold(chain, event)
+    if chain != statement["chain_hash"]:
+        raise CustodyError("the custodian's history differs from the history its host signed")
+    # Proven to be what the host signed; stored in page-sized parts, the change of host first.
+    authority = {"gateway_id": statement["host"], "epoch": statement["epoch"]}
+    remaining, start = [_wire_event(room_id, event) for event in vouched], last
+    while remaining:
+        page = rooms._bounded_page(remaining[:rooms.MAX_LOG_LIMIT], start, statement["seq"], authority)
+        replicas.ingest_page(db_path, room_id=room_id, room_name=fetched["room_name"], members=fetched["members"],
+                             page=page, _verify_transition=_verify_transition, _from_custodian=True)
+        remaining, start = remaining[len(page["events"]):], page["cursor"]
+    record_head(db_path, room_id, head)
+    with closing(open_sqlite(db_path, timeout=1)) as conn:
+        return {"room_id": room_id, "stored_seq": statement["seq"], "head": dict(head),
+                "watermark": custody_watermark_locked(conn, room_id, store=False)}
 
 
 # -- admissions --------------------------------------------------------------------------------

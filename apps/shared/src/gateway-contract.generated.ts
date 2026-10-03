@@ -1698,6 +1698,7 @@ export interface GroupsCustodyStatusResult {
   configuration_seq: number
   configuration: CustodyConfiguration
   watermark?: CustodyWatermark | null
+  head?: CustodyHead | null
 }
 export interface CustodyCustodianStatus {
   install_id: string
@@ -1732,6 +1733,15 @@ export interface CustodyCustodian {
   successor: boolean
   name?: string | null
   operator_name?: string | null
+}
+/** A head the host signs: the chain hash of its room's prefix ``1..seq`` at its ``epoch``. */
+export interface CustodyHead {
+  room_id: string
+  host: string
+  epoch: number
+  seq: number
+  chain_hash: string
+  signature: string
 }
 export interface GroupsCustodyDesignateParams {
   profile?: string | null

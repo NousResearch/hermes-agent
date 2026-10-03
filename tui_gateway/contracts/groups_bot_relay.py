@@ -642,6 +642,17 @@ class CustodyWatermark(Result):
     event_hash: str
 
 
+class CustodyHead(Result):
+    """A head the host signs: the chain hash of its room's prefix ``1..seq`` at its ``epoch``."""
+
+    room_id: str
+    host: str
+    epoch: int
+    seq: int
+    chain_hash: str
+    signature: str
+
+
 class CustodyCustodian(Result):
     """One entry of a ``custody.configured`` event."""
 
@@ -692,6 +703,8 @@ class GroupsCustodyStatusResult(Result):
     configuration_seq: int
     configuration: CustodyConfiguration
     watermark: CustodyWatermark | None = None
+    #: The host-signed head that vouches for the history held here (signed now on the host).
+    head: CustodyHead | None = None
 
 
 class GroupsCustodyDesignateParams(RoomParams):

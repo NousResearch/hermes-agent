@@ -75,6 +75,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms import api_server_replica_retirement, api_server_room_replicas, api_server_room_work_records
     from gateway.hosted_room_work_records import MAX_BYTES
     limits = {'/v1/room-members/replica': api_server_room_replicas.MAX_REPLICA_HTTP_BYTES,
+              api_server_room_replicas.custody_path(): api_server_room_replicas.MAX_CUSTODY_PAGES_REQUEST_BYTES,
               '/v1/room-members/work-records': MAX_BYTES + 1024,
               '/v1/group-replicas/retire': api_server_replica_retirement.MAX_RETIREMENT_REQUEST_BYTES}
     return [(method, path, wrap(self, handler, max_bytes=limits.get(path))) for method, path, handler in [

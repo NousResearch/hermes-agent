@@ -19,6 +19,8 @@ Two workers rotate the routes. Checkpoints keep the pending page's coordinates (
 events), so a lost reply or a restart re-sends the same page. No transaction spans HTTP, and
 an OS lock per (room, participant) keeps two processes from sending one copy concurrently.
 The workers start only once a route exists, so a gateway without one runs no extra thread.
+Every page carries the head the host signs for the page's end (``custody.head``), which the
+custodian keeps to vouch for its copy.
 """
 
 from __future__ import annotations
@@ -677,7 +679,8 @@ class HostedRoomReplicationPublisher:
             return False
         from gateway import hosted_room_custody as custody
         with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
-            report = custody.report_locked(conn, key[0], route.link.catalog.installation_id)
+            # With every page, the head this host signs for the page's end.
+            report = custody.report_locked(conn, key[0], route.link.catalog.installation_id, head_seq=page["cursor"])
         try:
             reply = client.replicate_page(
                 grant=route.link.grant, room_id=key[0], room_name=name, members=route.room["members"], page=page,

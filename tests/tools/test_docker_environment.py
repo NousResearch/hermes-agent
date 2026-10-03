@@ -1001,7 +1001,7 @@ def test_runtime_reuse_key_error_uses_safe_ephemeral_identity(monkeypatch, caplo
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     _mock_subprocess_run(monkeypatch)
-    docker_env._RUNTIME_REUSE_KEYS.clear()
+    monkeypatch.setattr(docker_env, "_RUNTIME_REUSE_KEYS", {})
     ephemeral_keys = iter((b"a" * 32, b"b" * 32))
 
     class _SecretsProxy:

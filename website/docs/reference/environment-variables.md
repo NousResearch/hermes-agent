@@ -131,6 +131,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_KANBAN_DB` | Pin the kanban database file path directly (highest precedence; beats `HERMES_KANBAN_BOARD` and `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env so profile workers converge on the dispatcher's board |
 | `HERMES_KANBAN_WORKSPACES_ROOT` | Pin the kanban workspaces root directly (highest precedence for workspaces; beats `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env |
 | `HERMES_KANBAN_DISPATCH_IN_GATEWAY` | Runtime override for `kanban.dispatch_in_gateway`. Set to `0`, `false`, `no`, or `off` to keep the gateway from starting the embedded Kanban dispatcher; any other non-empty value enables it. Useful when a separate dispatcher process owns the board. |
+| `HERMES_KANBAN_PROOF_TIMEOUT` | Wall-clock cap in seconds for a card's `proof:<command>` completion contract (default `120`). A proof that exceeds it is killed and completion is refused with classification `timeout` |
 
 ## Provider Auth (OAuth)
 

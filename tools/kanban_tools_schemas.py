@@ -93,7 +93,11 @@ KANBAN_COMPLETE_SCHEMA = _schema(
     "kanban_complete",
     (
         "Mark your current task done with a structured handoff for "
-        "downstream workers and humans. Prefer ``summary`` for a "
+        "downstream workers and humans. If the card declares a "
+        "``proof:<command>`` completion contract (see kanban_show), "
+        "completion runs that command in your workspace and is refused "
+        "unless it exits 0; the error names the exit code and output tail, "
+        "so fix the work and retry rather than blocking. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
@@ -505,7 +509,9 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
         "completion_contract": _prop("string", (
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
-            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+            "PR tasks cannot complete until repository-required exact-head CI passes; on publication pass "
+            "metadata.published_pr. A proof:<command> contract (done only once the command exits 0 in the "
+            "workspace) exists too, but only a human may declare it (CLI/dashboard); this tool rejects it."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "

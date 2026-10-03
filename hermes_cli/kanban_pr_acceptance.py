@@ -23,8 +23,12 @@ _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
+    if isinstance(value, str) and value.startswith("proof:"):
+        from hermes_cli.kanban_proof import validate_proof_contract
+        return validate_proof_contract(value)
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+        raise ValueError("completion_contract must be local-only, OWNER/REPO, an exact GitHub PR URL, "
+                         "or proof:<command>")
     return value
 
 

@@ -17,13 +17,12 @@ ANON = {"sub": "anon-1", "account_tier": "anonymous", "paid_access": False}
 EXHAUSTED = {"sub": "user-1", "paid_access": False, "tool_access": {"enabled": False, "coverage": {}}}
 
 
-def _nous_state(claims: dict, auth_method: str, exp_offset: int = 3600) -> dict:
+def _nous_state(claims: dict, auth_method: str) -> dict:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + exp_offset})}.sig"
+    token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + 3600})}.sig"
     state = {"auth_method": auth_method, "access_token": token, "expires_at": "2099-01-01T00:00:00Z"}
-    # anon_auth persists the tier alongside the token, and it is what survives a failed lookup
-    # (the JWT claim is unreachable once the token is inside its refresh window).
+    # anon_auth persists the tier alongside the token.
     if claims.get("account_tier"):
         state["account_tier"] = claims["account_tier"]
     return state
@@ -99,11 +98,14 @@ def _calls(log):
 def test_unentitled_nous_identity_autodetects_free_fast_search(monkeypatch, tmp_path, gateway_server, state):
     """Guests are the users this route exists for: an anonymous identity and a zero-credit account
     both reach the gateway, while the paid gate stays closed for extract and every other vendor."""
+    from hermes_cli.nous_account import get_nous_portal_account_info
     from tools import web_tools
     from tools.tool_backend_helpers import managed_nous_tools_enabled
 
     _write_home(tmp_path / "home", monkeypatch, nous_state=state)
-    # Premise: the paid-tool gate is closed for this identity and stays closed for extract.
+    # Premise: the guest case really reads as the anonymous tier, and the paid-tool gate is closed
+    # for this identity and stays closed for extract.
+    assert get_nous_portal_account_info().is_anonymous_tier is (state["auth_method"] == "anonymous")
     assert managed_nous_tools_enabled() is False
     assert web_tools.check_firecrawl_api_key() is False
     assert web_tools._get_extract_backend() != "perplexity"

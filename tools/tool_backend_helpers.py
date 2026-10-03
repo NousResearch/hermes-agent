@@ -15,25 +15,18 @@ _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
-def _account_info(force_fresh: bool = False):
-    """The profile's normalized Portal account snapshot, or None when the read itself failed.
-
-    The ``force_fresh`` branch is deliberate, not stylistic: callers stub this reader with a
-    zero-argument lambda, so the falsy path must invoke it without keyword arguments."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-        return (get_nous_portal_account_info(force_fresh=True) if force_fresh
-                else get_nous_portal_account_info())
-    except Exception:
-        return None
-
-
 def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     """Coarse gate: entitled to the Nous Tool Gateway (paid Portal access OR a live free
     pool). Fails closed on unknown/error — never blocks startup. Callers narrow per category
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
-    account_info = _account_info(force_fresh)
-    return bool(account_info is not None and account_info.logged_in and account_info.tool_gateway_entitled)
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        # Branched call, not ``force_fresh=force_fresh``: tests stub the reader with zero-arg lambdas.
+        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
+                        else get_nous_portal_account_info())
+        return bool(account_info.logged_in) and account_info.tool_gateway_entitled
+    except Exception:
+        return False
 
 
 def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,

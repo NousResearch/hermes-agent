@@ -1,4 +1,8 @@
-"""Message hygiene at the resolved auxiliary client boundary."""
+"""Request and codec shapes at the resolved auxiliary client boundary.
+
+Auxiliary callers own clients and requests; these stateless transformations keep
+Relay's intercepted chat surface separate from the adapter's native wire mode.
+"""
 
 from openai import AsyncOpenAI, OpenAI
 
@@ -18,3 +22,15 @@ def prepare_chat_messages(client, kwargs: dict) -> dict:
         kwargs["messages"], model=kwargs.get("model"), base_url=str(getattr(client, "base_url", "") or ""),
     )
     return {**kwargs, "messages": messages}
+
+
+def relay_boundary_api_mode(client: object, api_mode: str | None) -> str:
+    """Select a codec for the intercepted surface, not the adapter's native wire.
+
+    Native mode still selects the client upstream. Responses/Messages adapters
+    expose chat completions here, so Relay must decode their chat-shaped body.
+    Non-chat clients retain their supplied mode.
+    """
+    if getattr(getattr(client, "chat", None), "completions", None) is not None:
+        return "chat_completions"
+    return api_mode or "chat_completions"

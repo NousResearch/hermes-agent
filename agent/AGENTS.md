@@ -102,6 +102,11 @@ cache break — keep it the only one. Full detail:
   `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
   `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
   `pre/post_api_request` events must NOT fire for aux calls (#79733).
+- `agent/auxiliary_wire.py` owns request hygiene and Relay codec selection for the
+  intercepted client surface. Native protocol still selects the auxiliary client;
+  chat-shaped adapters must not be labelled as native Responses at the Relay boundary.
+  `agent/async_stream.py` owns the worker loop adapting native async streams to the
+  synchronous Relay/MoA consumer; callers close it on early exit.
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
 

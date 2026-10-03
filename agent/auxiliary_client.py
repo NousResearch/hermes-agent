@@ -6,6 +6,9 @@ provider (if a supported vision backend) → OpenRouter → Nous → Anthropic �
 ``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. Codex OAuth is
 in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
+Native protocol selection belongs to client resolution; Relay intercepts the
+chat-shaped client surface instead. Streaming callbacks own async-to-sync
+adaptation until the caller closes the resulting stream; no request is replayed.
 """
 
 import contextlib
@@ -20,6 +23,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Generator
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -2651,13 +2655,15 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_boundary_api_mode
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     callback = create or (lambda request: _create_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(
+        provider=provider, api_mode=relay_boundary_api_mode(client, api_mode)
+    )
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
@@ -2685,12 +2691,14 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_boundary_api_mode
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(
+        provider=provider, api_mode=relay_boundary_api_mode(client, api_mode)
+    )
     if route is None:
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
@@ -2714,13 +2722,17 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.async_stream import coerce_sync_stream
+    from agent.auxiliary_wire import prepare_chat_messages, relay_boundary_api_mode
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
-    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    def create(request: dict[str, Any]) -> Any:
+        return coerce_sync_stream(client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client)))
+    route = _relay_auxiliary_metadata(
+        provider=provider, api_mode=relay_boundary_api_mode(client, api_mode)
+    )
     if route is None:
         return create(kwargs)
     provider_name, fallback_model, metadata = route
@@ -8081,17 +8093,27 @@ def call_llm(
             semaphore.release()
 
 
-def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.BoundedSemaphore):
+def _release_sync_semaphore_after_stream(
+    stream: Any, semaphore: threading.BoundedSemaphore,
+) -> Generator[object, None, None]:
     """Release a permit only after a streaming response is consumed or closed."""
-    try:
-        yield from stream
-    finally:
+    def consume() -> Generator[object, None, None]:
         try:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
+            yield None
+            yield from stream
         finally:
-            semaphore.release()
+            try:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            finally:
+                semaphore.release()
+
+    # Closing an unstarted generator skips its finally. Arm cleanup before
+    # handing it to the managed stream owner, without reading a provider chunk.
+    wrapped = consume()
+    next(wrapped)
+    return wrapped
 
 
 def _plan_aux_call(

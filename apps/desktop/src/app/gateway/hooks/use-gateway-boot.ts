@@ -54,6 +54,7 @@ import {
   type ScopedServerRequest,
   setPrimaryGateway,
   setPrimaryGatewayConnection,
+  sweepIdleSecondaries,
   touchSecondaryGateways
 } from '@/store/gateway'
 import { type GatewayReconnectOptions, reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
@@ -1311,6 +1312,10 @@ export function useGatewayBoot({
     // Keep live pool backends alive while this window is open (the main process
     // can't observe the direct renderer↔backend WS). No-op for the primary.
     const keepaliveTimer = setInterval(() => {
+      // Expire lapsed local lingers FIRST: touching a socket the linger no
+      // longer covers would keep its backend alive past POOL_IDLE_MS and
+      // defeat the idle reaper.
+      sweepIdleSecondaries()
       touchActiveGatewayBackend()
       touchSecondaryGateways()
       // The pruner is otherwise event-driven: a socket spared by the

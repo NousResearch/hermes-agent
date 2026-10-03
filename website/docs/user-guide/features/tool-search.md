@@ -50,16 +50,16 @@ A typical interaction looks like:
 ```
 Model: tool_search(["create a github issue", "send a slack message"])
   → { results: [ { query: "create a github issue",
-                   matches: ["mcp_github_create_issue", ...] },
+                   matches: ["mcp__github__create_issue", ...] },
                  { query: "send a slack message",
-                   matches: ["mcp_slack_post_message", ...] } ],
-      tools: { mcp_github_create_issue: { description: "...",
+                   matches: ["mcp__slack__post_message", ...] } ],
+      tools: { mcp__github__create_issue: { description: "...",
                                           required: ["title"], ... },
-               mcp_slack_post_message: { ... } } }
-Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
-  → { tools: { mcp_github_create_issue: { parameters: { ... } },
-               mcp_slack_post_message: { parameters: { ... } } } }
-Model: tool_call({ calls: [{ name: "mcp_github_create_issue",
+               mcp__slack__post_message: { ... } } }
+Model: tool_describe(["mcp__github__create_issue", "mcp__slack__post_message"])
+  → { tools: { mcp__github__create_issue: { parameters: { ... } },
+               mcp__slack__post_message: { parameters: { ... } } } }
+Model: tool_call({ calls: [{ name: "mcp__github__create_issue",
                              arguments: { title: "...", body: "..." } }] })
   → { ok: true, issue_number: 42 }
 ```

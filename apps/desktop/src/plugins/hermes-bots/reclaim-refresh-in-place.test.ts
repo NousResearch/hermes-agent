@@ -79,6 +79,8 @@ vi.mock('./group-chat', async () => {
 
   return {
     $groupChats: nanoAtom({}),
+    $groupClarify: nanoAtom({}),
+    $groupNeedsYou: nanoAtom({}),
     $groupChatWorkspace: nanoAtom(null),
     assignLegacyThreads: (log: unknown[]) => log,
     handleSessionsGatewayTransition: vi.fn(),

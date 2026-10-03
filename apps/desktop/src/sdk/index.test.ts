@@ -30,6 +30,13 @@ vi.mock('@/store/pool-limits', async () => {
   return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
 })
 
+it('exposes group chats through the public runtime SDK without provider registration', async () => {
+  const sdk = await import('@/sdk')
+  expect(sdk.host.groupChats.version).toBe(1)
+  expect(sdk.host.groupChats.status()).toBe('unavailable')
+  expect(sdk).not.toHaveProperty('registerGroupChatsProvider')
+})
+
 describe('host.warmProfile pool-saturation contract', () => {
   beforeEach(() => {
     warmMocks.openGatewayForProfile.mockClear()

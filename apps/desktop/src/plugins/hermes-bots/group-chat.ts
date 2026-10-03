@@ -1028,12 +1028,15 @@ async function groupChatRemoteSnapshot(job: GroupChatSyncJob) {
 
 /** Pull the shared room projection into this Desktop before it publishes any
  *  local state. This is the receive half of the client-only sync contract. */
-export async function pullGroupChatServerState(connectionId: string = groupChatSyncConnectionId()) {
+export async function pullGroupChatServerState(
+  connectionId: string = groupChatSyncConnectionId(),
+  isCurrent: () => boolean = () => true
+) {
   const { snapshot: remote } = await groupChatRemoteSnapshot({
     connectionId
   })
 
-  if (!remote) {
+  if (!isCurrent() || !remote) {
     return false
   }
 

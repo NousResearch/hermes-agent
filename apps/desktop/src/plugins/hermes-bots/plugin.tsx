@@ -26,6 +26,10 @@ import {
 } from '@hermes/plugin-sdk'
 import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
+// Built-in composition only: provider registration is not public plugin API.
+// eslint-disable-next-line no-restricted-imports
+import { registerGroupChatsProvider } from '../../sdk/group-chats'
+
 import { startFaceClock, stopFaceClock } from './avatar'
 import {
   $botChatFocused,
@@ -65,6 +69,7 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { createGroupChatBridge } from './group-chat-bridge'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
@@ -114,6 +119,17 @@ export default {
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
+    const groupBridge = createGroupChatBridge()
+    const unregisterGroupBridge = registerGroupChatsProvider(groupBridge)
+    let groupBridgeLive = true
+
+    const stopGroupBridge = () => {
+      groupBridgeLive = false
+      unregisterGroupBridge()
+      groupBridge.dispose()
+    }
+
+    ctx.onDispose(stopGroupBridge)
     // The user's own roster sections. Read once at register; every mutation
     // writes through.
     loadBotSections()
@@ -265,16 +281,24 @@ export default {
     try {
       // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
       tombstonesHydrated = Promise.resolve(ctx.storage?.get?.('group-chat-tombstones'))
-        .then(value => hydrateGroupChatTombstones(value))
-        .catch(() => undefined)
+        .then(value => {
+          if (groupBridgeLive) {
+            hydrateGroupChatTombstones(value)
+          }
+        })
+        .catch(stopGroupBridge)
     } catch {
-      /* no storage — no remembered disbands this window */
+      stopGroupBridge()
     }
 
     try {
       // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
       Promise.resolve(ctx.storage?.get?.('group-chats'))
         .then(async value => {
+          if (!groupBridgeLive) {
+            return
+          }
+
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             const rooms: Record<string, GroupChat> = {}
 
@@ -323,6 +347,10 @@ export default {
                   ? await Promise.resolve(window.hermesDesktop?.connections?.list?.()).catch(() => null)
                   : null
 
+              if (!groupBridgeLive) {
+                return
+              }
+
               const liveIds = Array.isArray(registry?.connections)
                 ? new Set(registry.connections.map(connection => String(connection?.id || '').trim()).filter(Boolean))
                 : null
@@ -350,12 +378,23 @@ export default {
           // must hydrate the gateway projection instead of merely avoiding an
           // empty overwrite and then rendering an empty conversation.
           await tombstonesHydrated
-          await pullGroupChatServerState().catch(() => false)
+
+          if (!groupBridgeLive) {
+            return
+          }
+
+          await pullGroupChatServerState(undefined, () => groupBridgeLive).catch(() => false)
+
+          if (!groupBridgeLive) {
+            return
+          }
+
           scheduleGroupChatServerSync($groupChats.get())
+          groupBridge.setReady()
         })
-        .catch(() => undefined)
+        .catch(stopGroupBridge)
     } catch {
-      /* no storage — rooms start empty */
+      stopGroupBridge()
     }
 
     // Routines follow the chat you're in: track the focused chat's owner

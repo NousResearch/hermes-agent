@@ -226,7 +226,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     try:
         # Full checkout identity when git can answer; the birth-certificate
         # minimum below only when it cannot (or the tree is read-only).
-        identified = write_source_stamp(root)
+        identified = write_source_stamp(root, adopted=True)
     except OSError as exc:
         # A read-only tree (nix-like layouts without their own stamp)
         # must not crash the boot — it just stays unadopted.

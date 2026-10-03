@@ -869,8 +869,8 @@ class TurnRunner:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
-            source = ctx.source
             runner = self._runner
+            source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is

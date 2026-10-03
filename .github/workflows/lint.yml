@@ -8,8 +8,7 @@ name: Lint (ruff + ty)
 #      Separate job so the advisory diff still runs even when enforcement
 #      fails.
 #
-# CI-sensitive file review was previously here as a ``ci-review`` job but
-# has moved to ``review-labels.yml`` so it can be rerun independently.
+# CI-sensitive file review is enforced by .github/CODEOWNERS, not a CI job.
 
 on:
   workflow_call:
@@ -34,7 +33,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0 # need full history for merge-base + worktree
 
@@ -127,7 +126,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - uses: ./.github/actions/setup-pm
         with:
@@ -155,7 +154,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - uses: ./.github/actions/setup-pm
         with:

@@ -1461,6 +1461,15 @@ class SessionMessagesMixin:
             (session_id, -1 if limit is None else limit, offset, session_id),
         ).fetchall()
 
+    def display_message_count(self, session_id: str) -> int:
+        """Rows a display read of this segment paints: one per ``display_order`` group of
+        ``_display_rows_from_conn``'s set. Unindexed legacy rows count as one group (the read
+        backfills them), so the count is zero exactly when the read paints nothing."""
+        row = self._read_one(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT display_order FROM messages"
+            f" WHERE session_id = ?{_DISPLAY_ACTIVE_CLAUSE}{DISPLAY_VISIBLE_SQL})", (session_id,))
+        return int(row[0])
+
     def _display_messages_from_conn(self, conn, session_id: str) -> Optional[List[Dict[str, Any]]]:
         """Exact display snapshot on an already-held transaction; None means fail closed."""
         if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
@@ -1650,9 +1659,18 @@ class SessionMessagesMixin:
                               include_summary_markers: bool = False) -> List[Dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
-        transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
-        only; ``api_content`` VERBATIM (no sanitize/strip) so replay keeps the provider prompt cache byte-stable."""
+        transcript on flush. Unaddressed live-replay projections also carry the stored-row CAS digest: if a later rewrite
+        loses its physical ``_row_id``, logical ``message_uid`` can recover the row without guessing by
+        mutable payload while the digest still fences a concurrent winner. ``_row_id`` is opt-in (gateway
+        reactions); reasoning restored on assistant rows only; ``api_content`` VERBATIM (no sanitize/strip)
+        so replay keeps the provider prompt cache byte-stable."""
         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
+        # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
+        from agent.transcript_repair import transcript_row_snapshot
+        # Only the unaddressed live replay gets the digest: row-addressed loaders (include_row_ids) keep the
+        # legacy resumed-dict path, whose rewrite never re-writes columns the projection does not decode
+        # (a CAS-match rewrite of a resumed row would otherwise null token_count).
+        stamp_snapshot = repair_alternation and not include_row_ids
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         tool_uid_index: Dict[str, str] = {}  # pairing-id variant -> uid, from the assistant rows indexed so far
@@ -1664,6 +1682,8 @@ class SessionMessagesMixin:
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}
+            if stamp_snapshot:
+                msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
             # Born durable (#92231): this dict is materialized FROM a durable row, so stamp the persistence
             # marker at the source instead of relying on every restore caller to thread the loaded list back
             # through a flush as ``conversation_history=`` — any identity-losing handoff (compression's

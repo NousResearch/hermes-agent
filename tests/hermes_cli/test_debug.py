@@ -887,9 +887,10 @@ class TestCollectShareBundle:
 
         assert query_token not in bundle
         assert password not in bundle
-        # Only the credential values go; the URLs stay readable.
+        # Query credentials are masked in place; strict URL redaction masks the
+        # complete userinfo field while preserving the host and port.
         assert "export.csv?token=***&page=2" in bundle
-        assert "alice:***@10.0.0.5:3128" in bundle
+        assert "***:***@10.0.0.5:3128" in bundle
 
 
 

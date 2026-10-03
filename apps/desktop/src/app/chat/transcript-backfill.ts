@@ -15,7 +15,8 @@
  * drift on the next page.
  */
 
-import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
+import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
+import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   recordTranscriptBackfillPage,
@@ -23,7 +24,51 @@ import {
   type TranscriptProfileScope,
   transcriptTailState
 } from '@/store/transcript-tail'
-import type { SessionMessagesResponse } from '@/types/hermes'
+import type { SessionMessage, SessionMessagesResponse } from '@/types/hermes'
+
+/**
+ * Compaction projection can stamp the session's opening USER row
+ * `display_kind: hidden` (#96875): the durable store holds the greeting but
+ * hydration drops the row, so paging to the very top of a compacted session
+ * renders only the first assistant reply. When an older page carries the
+ * opening user turn, clear the hidden stamp (keeping the content as the
+ * display projection) so `toChatMessages` keeps it on screen. Only the
+ * FIRST user row with content is unhidden — later hidden rows stay hidden
+ * (model scaffolding, muted turns), and an opening row with no content
+ * was never a greeting.
+ */
+export function unhideOpeningUserRows(messages: SessionMessage[]): SessionMessage[] {
+  const openingIndex = messages.findIndex(message => message.role === 'user')
+
+  if (openingIndex < 0) {
+    return messages
+  }
+
+  const opening = messages[openingIndex]
+
+  if (opening.display_kind !== 'hidden') {
+    return messages
+  }
+
+  const content = opening.display_content ?? opening.content
+
+  if (content == null || content === '') {
+    return messages
+  }
+
+  return messages.map((message, index) => {
+    if (index !== openingIndex) {
+      return message
+    }
+
+    const { display_kind: _hidden, ...rest } = message
+
+    return {
+      ...rest,
+      display_content: typeof content === 'string' ? content : String(content)
+    }
+  })
+}
 
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(
@@ -230,13 +275,40 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
+  const refreshedBySource = new Map<number, ChatMessage>()
+
+  for (const message of refreshedTail) {
+    for (const rowId of transcriptRowIds(message)) {
+      refreshedBySource.set(rowId, message)
+    }
+  }
+
   const byRowId = new Map<number, StoredRowSlot>()
 
   const place = (messages: ChatMessage[], fresh: boolean): ChatMessage[] => {
     let pending: ChatMessage[] = []
 
     for (const message of messages) {
-      if (message.rowId === undefined) {
+      const sourceIds = transcriptRowIds(message)
+      const folded = sourceIds.length ? refreshedBySource.get(sourceIds[0]) : undefined
+
+      // A completed live reply is addressed by its final row; hydration can
+      // fold that row into an earlier tool bubble. Give both the fold's slot,
+      // so the fresh copy replaces the live one without losing its leading rows.
+      // Partial/live bubbles may still hold an uncommitted suffix.
+      const covered =
+        !fresh &&
+        !message.pending &&
+        !message.interim &&
+        !message.error &&
+        message.durableComplete !== false &&
+        message.persistedTurn?.complete !== false &&
+        folded?.role === message.role &&
+        sourceIds.every(id => refreshedBySource.get(id) === folded)
+
+      const rowId = covered ? (folded?.rowId ?? message.rowId) : message.rowId
+
+      if (rowId === undefined) {
         // The fresh page's copy of an unstored row wins over the window's.
         if (fresh || !refreshedIds.has(message.id)) {
           pending.push(message)
@@ -245,7 +317,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
         continue
       }
 
-      const existing = byRowId.get(message.rowId)
+      const existing = byRowId.get(rowId)
 
       if (!fresh && existing) {
         pending = []
@@ -256,7 +328,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
       // The fresh page replaces the row; keep the window's leading rows when
       // the page brought none of its own for it.
       const leading = fresh && existing && pending.length === 0 ? existing.leading : pending
-      byRowId.set(message.rowId, { message, leading })
+      byRowId.set(rowId, { message, leading })
       pending = []
     }
 
@@ -488,7 +560,34 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
     // below prepends whatever prefix the store is missing, and the recorded
     // state marks the session fully loaded so the REST action retires.
     recordTranscriptBackfillPage(storedSessionId, page, profile)
-    request.applyOlderPage(toChatMessages(page.messages))
+    const olderRows = unhideOpeningUserRows(page.messages)
+    request.applyOlderPage(toChatMessages(olderRows))
+
+    // #96875: paging can reach the top while the opening USER turn is still
+    // missing — the durable row is compaction-projected to display_kind=hidden
+    // (dropped at hydration) or sits before the last reachable `latest` page.
+    // Once the tail bookkeeping reports the session fully loaded and the page
+    // that landed carries no user turn, fetch the oldest display rows once and
+    // prepend the opening user turn. Best-effort: a failure keeps the older
+    // page that already landed.
+    const openingTurnLoaded = olderRows.some(message => message.role === 'user' && message.display_kind !== 'hidden')
+
+    if (!openingTurnLoaded && !transcriptTailState(storedSessionId, profile)?.possiblyTruncated) {
+      try {
+        const origin = await getSessionMessages(storedSessionId, tail.profile, {
+          includeCompacted: true,
+          limit: 20,
+          offset: 0,
+          order: 'oldest'
+        })
+
+        if (request.isCurrent()) {
+          request.applyOlderPage(toChatMessages(unhideOpeningUserRows(origin.messages)))
+        }
+      } catch {
+        // Origin fetch is best-effort; the already-applied older page stays.
+      }
+    }
 
     return true
   })().finally(() => {

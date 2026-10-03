@@ -10,7 +10,6 @@ here (config, provider resolution, lazy SDK importers) through ``_origin()`` at 
 
 from pm import install_hint
 import asyncio
-import contextlib
 import datetime
 import importlib.util
 import json
@@ -53,19 +52,34 @@ from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts,
 
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
 
+class _SdkInstallError(ImportError):
+    """The SDK is still missing, and pm's first-use install said why — "installed; restart Hermes
+    to activate", declined, platform-gated, or failed. Callers show this instead of a generic
+    "not installed, run pm install" hint, which is wrong right after a successful install."""
+
+
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
 def _sdk_importer(module: str, attr: Optional[str] = None, feature: Optional[str] = None) -> Callable[[], Any]:
     """Lazy SDK importer: returns ``module`` (or ``module.attr``), raising ImportError when absent.
 
     ``feature`` names a ``pm.ensure_import`` extra to best-effort install first (users who enabled
-    a provider in config.yaml never ran the post-setup hook); any failure there falls through so
-    the raw import still raises cleanly. sounddevice also raises OSError without PortAudio."""
+    a provider in config.yaml never ran the post-setup hook). An install failure never masks an SDK
+    that imports anyway; when the import also fails, the install's reason rides out as
+    ``_SdkInstallError``. sounddevice also raises OSError without PortAudio."""
     def _import():
+        install_error: Optional[BaseException] = None
         if feature:
-            with contextlib.suppress(Exception):
+            try:
                 from pm import ensure_import as _pm_ensure
                 _pm_ensure(_PM_FEATURE_ALIASES.get(feature, feature))
-        mod = importlib.import_module(module)
+            except Exception as exc:
+                install_error = exc
+        try:
+            mod = importlib.import_module(module)
+        except ImportError as exc:
+            if install_error is None:
+                raise
+            raise _SdkInstallError(getattr(install_error, "cause", None) or str(install_error)) from exc
         return getattr(mod, attr) if attr else mod
     _import.__name__ = f"_import_{module.split('.')[0]}"
     return _import
@@ -81,9 +95,13 @@ _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed e
 
 
 def _importable(importer: Callable[[], Any]) -> bool:
+    """Whether the SDK imports. ``_SdkInstallError`` propagates: it carries pm's reason, which
+    the synthesis path shows instead of a generic "not installed" hint."""
     try:
         importer()
         return True
+    except _SdkInstallError:
+        raise
     except ImportError:
         return False
 
@@ -209,16 +227,29 @@ def _run_edge_tts(text: str, file_str: str, tts_config: Dict[str, Any]) -> None:
 
 def _select_builtin_engine(provider: str) -> tuple:
     """SDK check -> ``(engine, None)`` or ``(provider, error_json)``. Unknown names take the Edge
-    default; without edge-tts NeuTTS is the fallback (engine != provider)."""
+    default; without edge-tts NeuTTS is the fallback (engine != provider). When pm's first-use
+    install explains the missing SDK (e.g. "installed; restart Hermes"), that reason is the error."""
     entry = _BUILTIN_DISPATCH.get(provider)
     if entry is not None:
-        available, _label, _generator, missing_error = entry
-        return provider, (_error_json(missing_error) if available is not None and not available() else None)
-    if _importable(_import_edge_tts):
+        available, label, _generator, missing_error = entry
+        if available is None:
+            return provider, None
+        try:
+            ready = available()
+        except _SdkInstallError as exc:
+            return provider, _error_json(f"{label} is not ready: {exc}")
+        return provider, (None if ready else _error_json(missing_error))
+    try:
+        edge_ready, edge_reason = _importable(_import_edge_tts), None
+    except _SdkInstallError as exc:
+        edge_ready, edge_reason = False, str(exc)
+    if edge_ready:
         return provider, None  # Edge default; the reported provider stays as configured
     if _check_neutts_available():
         logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
         return "neutts", None
+    if edge_reason:
+        return provider, _error_json(f"Edge TTS is not ready: {edge_reason}")
     return provider, _error_json(
         "No TTS provider available. Enable Edge TTS with: "
         f"{install_hint('edge-tts')} "

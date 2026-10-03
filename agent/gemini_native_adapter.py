@@ -849,7 +849,7 @@ class GeminiNativeClient:
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[Dict[str, Any]] = None,
-        timeout: Any = None, **_: Any,
+        timeout: Any = httpx.USE_CLIENT_DEFAULT, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(

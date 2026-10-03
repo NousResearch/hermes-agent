@@ -31,6 +31,10 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 // one that types those rows `display_kind=hidden`. It is model scaffolding,
 // not something the user wrote, so it never paints as a bubble.
 const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
+// Compaction TODO continuity (`agent/conversation_compression.py::_fold_todo_snapshot`)
+// persisted by a backend older than the one that types those rows
+// `display_kind=hidden`. Model scaffolding, never a human turn.
+const TODO_SNAPSHOT_HEADER = '[Your active task list was preserved across context compression]'
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
@@ -153,7 +157,21 @@ function transcriptContent(
     return null
   }
 
-  return role === 'user' && LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) ? null : content
+  if (role === 'user') {
+    const trimmed = content.trim()
+    if (LEGACY_HEARTBEAT_ROW_RE.test(trimmed)) {
+      return null
+    }
+    const snapshotIdx = content.indexOf(TODO_SNAPSHOT_HEADER)
+    if (snapshotIdx !== -1) {
+      const humanText = content.slice(0, snapshotIdx).trim()
+      // Pure scaffolding hides; a merged carrier keeps only its authentic text
+      // so the live TODO widget (tool results) stays the task source of truth.
+      return humanText ? humanText : null
+    }
+  }
+
+  return content
 }
 
 /**

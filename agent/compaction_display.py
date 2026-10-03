@@ -6,6 +6,11 @@ from typing import Any, Dict, Optional
 
 from agent.context_compressor import ContextCompressor, is_compaction_summary_message
 
+try:
+    from tools.todo_tool import TODO_INJECTION_HEADER
+except Exception:  # tools tree unavailable in minimal imports
+    TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
+
 
 _COMPACTION_INTERNAL_FIELDS = (
     "tool_calls",
@@ -30,16 +35,74 @@ _COMPACTION_INTERNAL_FIELDS = (
 )
 
 
+def _strip_todo_snapshot_content(content: Any) -> Any:
+    """Remove a compaction TODO snapshot block (header to end) from content."""
+    if isinstance(content, str):
+        idx = content.find(TODO_INJECTION_HEADER)
+        return content[:idx].rstrip() if idx != -1 else content
+    if isinstance(content, list):
+        cleaned: list = []
+        for part in content:
+            text = str(part.get("text") or "") if isinstance(part, dict) and part.get("type") == "text" else ""
+            idx = text.find(TODO_INJECTION_HEADER) if text else -1
+            if idx == -1:
+                cleaned.append(part)
+            elif stripped := text[:idx].rstrip():
+                cleaned.append({**part, "text": stripped})
+        return cleaned
+    return content
+
+
+def _todo_snapshot_is_only_content(content: Any, stripped: Any) -> bool:
+    """Whether stripping the snapshot leaves no displayable content."""
+    if isinstance(content, str) and isinstance(stripped, str):
+        return not stripped.strip()
+    if isinstance(content, list) and isinstance(stripped, list):
+        return not stripped
+    return False
+
+
+def is_todo_snapshot_message(message: Any) -> bool:
+    """True for model-only TODO continuity rows (flagged or header-bearing)."""
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if message.get("_todo_snapshot_synthetic"):
+        return True
+    content = message.get("content")
+    if isinstance(content, str):
+        return TODO_INJECTION_HEADER in content
+    if isinstance(content, list):
+        return any(
+            isinstance(p, dict) and p.get("type") == "text"
+            and TODO_INJECTION_HEADER in str(p.get("text") or "")
+            for p in content
+        )
+    return False
+
+
 def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return authentic transcript content, or ``None`` for a pure handoff.
 
     Model-facing recovery history retains the complete carrier. Display
     projections instead remove the handoff, inherited tool state, and internal
     reasoning while preserving any real prior-tail content or live user ask
-    embedded in the carrier.
+    embedded in the carrier. A standalone TODO snapshot is pure scaffolding
+    (``None``); a merged carrier keeps only its authentic human text.
     """
     if not isinstance(message, dict):
         return None
+    if is_todo_snapshot_message(message):
+        content = message.get("content")
+        stripped = _strip_todo_snapshot_content(content)
+        if _todo_snapshot_is_only_content(content, stripped):
+            return None
+        projected = message.copy()
+        projected["content"] = stripped
+        projected.pop("_todo_snapshot_synthetic", None)
+        projected.pop("display_kind", None)
+        for key in _COMPACTION_INTERNAL_FIELDS:
+            projected.pop(key, None)
+        return projected
     if not is_compaction_summary_message(message):
         return message.copy()
 

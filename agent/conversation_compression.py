@@ -3158,9 +3158,14 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
                 _tail["_todo_snapshot_synthetic"] = True
+                # Durable provenance: model-only continuity must never read as a human turn.
+                _tail["display_kind"] = "hidden"
                 merged = True
         if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+            compressed.append({
+                "role": "user", "content": todo_snapshot,
+                "_todo_snapshot_synthetic": True, "display_kind": "hidden",
+            })
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

@@ -234,8 +234,12 @@ def test_native_authorize_mixed_providers_offers_both_choices(gated_client):
     register_provider(_PasswordOnlyProvider())
     _verifier, challenge = _make_pkce()
     r = gated_client.get(
-        "/auth/native/authorize", params=_native_authorize_params(challenge))
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge),
+        headers={"x-forwarded-prefix": "/hermes"},
+    )
     assert r.status_code == 200, r.text
+    assert "url('/hermes/fonts/Collapse-Regular.woff2')" in r.text
     hrefs = re.findall(r'<a class="provider-btn" href="([^"]+)"', r.text)
     assert {parse_qs(urlparse(html.unescape(h)).query)["provider"][0] for h in hrefs} == {
         "stub", "pwonly"}
@@ -243,6 +247,7 @@ def test_native_authorize_mixed_providers_offers_both_choices(gated_client):
     # allocates no broker state / sets no cookie.
     q = parse_qs(urlparse(html.unescape(hrefs[0])).query)
     assert q["code_challenge"] == [challenge] and q["code_challenge_method"] == ["S256"]
+    assert urlparse(html.unescape(hrefs[0])).path == "/hermes/auth/native/authorize"
     assert "set-cookie" not in r.headers
 
 

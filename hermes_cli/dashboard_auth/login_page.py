@@ -12,9 +12,11 @@ href to walk the OAuth flow.
 from __future__ import annotations
 
 import html
+import json
 from urllib.parse import quote, urlencode
 
 from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth.prefix import normalise_prefix
 
 # Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
 _LOGIN_HTML_TEMPLATE = """\
@@ -31,28 +33,28 @@ _LOGIN_HTML_TEMPLATE = """\
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('{base_path}/fonts/Collapse-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
+    src: url('{base_path}/fonts/Collapse-Bold.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
+    src: url('{base_path}/fonts/RulesCompressed-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('{base_path}/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }}
 
   :root {{
@@ -388,6 +390,10 @@ an SSH tunnel or Tailscale.</p>
 </html>
 """
 
+def _render_empty_html(prefix: str) -> str:
+    """Render the no-provider page under the same public path prefix as the auth routes."""
+    return _EMPTY_HTML.replace("url('/fonts/", f"url('{prefix}/fonts/")
+
 
 # Emitted ONLY when a ``supports_password`` provider is listed, so OAuth-only
 # login pages stay script-free. Plain string (not ``str.format``): braces are
@@ -396,6 +402,7 @@ an SSH tunnel or Tailscale.</p>
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
+  var prefix = __HERMES_PREFIX_JSON__;
   function handle(form) {
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -409,7 +416,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch(prefix + '/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -417,7 +424,9 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            var next = (data && data.next) || '/';
+            if (next.charAt(0) === '/') { next = prefix + next; }
+            window.location.assign(next);
           });
         }
         var msg = resp.status === 429
@@ -439,41 +448,47 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
     trip carries it end-to-end. The caller validates it same-origin; it is
     HTML-escaped here as defence in depth.
     """
+    prefix = normalise_prefix(prefix)
     providers = list_session_providers()
     if not providers:
-        return _EMPTY_HTML
+        return _render_empty_html(prefix)
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
     buttons = [
         _render_password_form(p, next_path) if getattr(p, "supports_password", False) else
         f'      <a class="provider-btn" '
-        f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+        f'href="{prefix}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
         f'Sign in with {html.escape(p.display_name)}</a>'
         for p in providers
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
-        password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        password_script=(
+            _PASSWORD_FORM_SCRIPT.replace("__HERMES_PREFIX_JSON__", json.dumps(prefix))
+            if needs_password_script else ""
+        ),
+        base_path=prefix,
     )
 
 
 def render_native_provider_choice_html(
         *, providers, authorize_path: str, code_challenge: str,
-        code_challenge_method: str, redirect_uri: str, state: str) -> str:
+        code_challenge_method: str, redirect_uri: str, state: str, prefix: str = "") -> str:
     """Provider picker for a native authorize request with more than one interactive provider.
 
     Every link re-enters ``/auth/native/authorize`` with the SAME desktop PKCE inputs plus an
     explicit ``provider``, so the choice never leaves the validated native flow.
     """
+    prefix = normalise_prefix(prefix)
     common = {"code_challenge": code_challenge, "code_challenge_method": code_challenge_method,
               "redirect_uri": redirect_uri, "state": state}
     buttons = []
@@ -483,8 +498,9 @@ def render_native_provider_choice_html(
         buttons.append(f'      <a class="provider-btn" href="{href}">'
                        f'Sign in with {html.escape(p.display_name)}</a>')
     if not buttons:
-        return _EMPTY_HTML
-    return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons), password_script="")
+        return _render_empty_html(prefix)
+    return _LOGIN_HTML_TEMPLATE.format(
+        provider_buttons="\n".join(buttons), password_script="", base_path=prefix)
 
 
 def _render_password_form(provider, next_path: str) -> str:

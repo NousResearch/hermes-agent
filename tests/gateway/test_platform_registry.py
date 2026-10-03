@@ -680,7 +680,9 @@ class TestMigratedPlatformWiring:
 
 
 def test_registry_walk_from_plugin_load_worker_does_not_wait_on_parent(monkeypatch):
-    """register() re-walking the registry on its deadline worker must not block on its own load."""
+    """register() re-walking the registry on its deadline worker must not block on its own or a sibling load."""
+    import threading
+
     from hermes_cli import plugins_loader
 
     monkeypatch.setattr(plugins_loader, "_resolve_plugin_load_timeout", lambda: 0.5)
@@ -691,12 +693,21 @@ def test_registry_walk_from_plugin_load_worker_does_not_wait_on_parent(monkeypat
         def _abandon_load(self):
             abandoned.append(True)
 
-    def register():
-        reg.plugin_entries()
-        reg.register(PlatformEntry(name="reentrant", label="Re-entrant", adapter_factory=lambda cfg: None,
-                                   check_fn=lambda: True, source="plugin"))
+    discovery_lock = threading.RLock()  # like PluginManager._discovery_lock, held while joining the worker
 
-    reg.register_deferred("reentrant", lambda: plugins_loader.run_with_load_deadline("reentrant", Ctx(), register))
+    def make_loader(name):
+        def register():
+            reg.plugin_entries()
+            reg.register(PlatformEntry(name=name, label=name, adapter_factory=lambda cfg: None,
+                                       check_fn=lambda: True, source="plugin"))
 
-    assert [e.name for e in reg.plugin_entries()] == ["reentrant"]
+        def loader():
+            with discovery_lock:
+                plugins_loader.run_with_load_deadline(name, Ctx(), register)
+        return loader
+
+    for name in ("reentrant", "sibling"):
+        reg.register_deferred(name, make_loader(name))
+
+    assert sorted(e.name for e in reg.plugin_entries()) == ["reentrant", "sibling"]
     assert abandoned == []

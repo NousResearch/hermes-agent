@@ -158,6 +158,8 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _DSR_CPR_ESC_RE,
     _DSR_CPR_VISIBLE_RE,
     _EXTENDED_ENTER_KEYS_SEQ,
+    _FOCUS_REPORTING_DISABLE_SEQ,
+    _FOCUS_REPORTING_ENABLE_SEQ,
     _IMAGE_EXTENSIONS,
     _KITTY_KEYBOARD_PUSH_SEQ,
     _MODIFY_OTHER_KEYS_SEQ,
@@ -174,6 +176,8 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _detect_file_drop,
     _disable_prompt_toolkit_cpr_warning,
     _enable_extended_enter_keys,
+    _disable_focus_reporting,
+    _enable_focus_reporting,
     _estimate_tui_input_height,
     _file_drop_result,
     _format_image_attachment_badges,
@@ -1496,6 +1500,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 # modified keys distinctly (kitty protocol + modifyOtherKeys); the cleanup reset pops both
                 # modes. See #36823.
                 _mark_tui_input_modes_active()
+                # prompt_toolkit does not enable DECSET 1004 for the classic CLI;
+                # arm it explicitly so the existing CSI I/O recovery path is reachable.
+                _enable_focus_reporting(app.output)
                 if self._tui_multiline_shortcuts:
                     _enable_extended_enter_keys(app.output)
                 self._pet_start_anim()

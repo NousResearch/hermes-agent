@@ -20,11 +20,12 @@ import tempfile
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES, is_secret_store_path, secret_store_matcher
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
@@ -62,24 +63,23 @@ _FS_READDIR_HIDDEN = {
 
 # Basenames the managed-files API must never list, read or download: credential
 # stores that become live secrets in the browsable tree the moment an operator
-# points the managed root at HERMES_HOME. Mirrors the two canonical guards
-# (agent.file_safety.get_read_block_error, gateway.platforms.base
-# ._ROOT_CREDENTIAL_FILES) so the Files tab never lags behind them.
+# points the managed root at HERMES_HOME. Derived from agent.file_safety.SECRET_STORE_FILES, the
+# list the read guard and gateway chat delivery also use, so the Files tab never lags behind them.
 # These typically contain credentials (API keys, tokens) and exposing them through the dashboard file
 # browser is a security leak — see issue #57505.
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
-    "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json", "bws_cache.json", "bws_cache.enc.json",
+    *(os.path.basename(p).lower() for p in SECRET_STORE_FILES),
+    "credentials", "config.yaml", "google_token.json", "google_oauth_pending.json",
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
 })
 
-# Directory names whose whole subtree is credential material (the canonical
-# guards deny these as trees: _ROOT_CREDENTIAL_DIRS and the mcp-tokens/ prefix
-# match). The browser can descend into subdirs, so a basename-only guard would
-# still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
-# trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# Credential store trees (file_safety.SECRET_STORE_DIRS). The browser can descend into subdirs,
+# so a basename-only guard would still expose ``mcp-tokens/<server>.json``; match the store's
+# path components as a run anywhere under the root, no HERMES_HOME resolution. ``vault`` is left
+# to its two file basenames above: a bare ``vault/`` component is also every Obsidian vault.
+_SENSITIVE_MANAGED_DIR_PARTS = tuple(
+    tuple(Path(d).parts) for d in SECRET_STORE_DIRS if d != "vault"
+)
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -93,18 +93,26 @@ def _is_sensitive_filename(name: str) -> bool:
     return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
 
 
-def _is_sensitive_path(path: Path) -> bool:
-    """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
+def _is_sensitive_path(path: Path, is_store: Callable[[Path], bool] = is_secret_store_path) -> bool:
+    """True when the basename is sensitive OR the path (case-insensitive)
+    runs through a credential store directory. Read-side guard (list/read/
     download); the write endpoints are a separate threat class.
 
     Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
     (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
-    to them is out of scope for this fix.
+    to them is out of scope for this fix. A listing passes one ``secret_store_matcher()`` as
+    ``is_store`` so the stores are located once, not once per entry.
     """
     if _is_sensitive_filename(path.name):
         return True
-    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+    # Where the store actually is, not what the requested path is called: a store behind a
+    # symlinked or renamed directory, a case variant, a hardlink or an operator-configured
+    # location (WhatsApp session_path, the Matrix recovery-key file) has no sensitive name.
+    if is_store(path):
+        return True
+    parts = tuple(part.lower() for part in path.parts)
+    return any(parts[i:i + len(store)] == store
+               for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts)))
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
@@ -512,11 +520,12 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
+    is_store = secret_store_matcher()
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
         entries = [
             _managed_file_entry(policy, Path(entry.path))
             for entry in scan
-            if not _is_sensitive_path(Path(entry.path))
+            if not _is_sensitive_path(Path(entry.path), is_store)
         ]
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
@@ -767,9 +776,10 @@ async def fs_list(path: str, profile: Optional[str] = None):
     target = _fs_path(path)
     try:
         entries = []
+        is_store = secret_store_matcher()
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path), is_store):
                     continue
                 entries.append({
                     "name": entry.name,

@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES, _is_under
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -840,18 +841,17 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 
 
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
-# files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
-# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
-# recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
+# files stay deliverable (cache subdirs are allowlisted BEFORE this). Built on the read guard's own
+# SECRET_STORE_FILES / SECRET_STORE_DIRS so exfil never trails it. google_token.json's mtime bumps
+# every turn (defeats the recency window); the store directories are denied as whole trees.
 _ROOT_CREDENTIAL_PATHS = (
-    ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
-    "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
-    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
-    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
-    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
-    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
+    *SECRET_STORE_FILES, *SECRET_STORE_DIRS, "credentials", "config.yaml",
+    # Per-service tokens a skill may read or mount (tools.credential_files), never sent to chat.
+    "google_token.json", "google_oauth_pending.json",
+    # Whole conversation history (every secret ever pasted into a chat); sessions/ is the legacy
+    # transcript dir. SQLite sidecars are listed too: WAL mode touches state.db-wal on every
+    # write, so recency trust alone would leak them.
+    "sessions", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -936,13 +936,28 @@ def _kanban_board_db_paths() -> List[Path]:
     return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
 
 
+def _hermes_credential_store_paths() -> List[Path]:
+    """Hermes' own credential stores and history: denied even inside an allowlisted root."""
+    from agent.file_safety import configured_secret_store_paths
+    return [*(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
+            *_kanban_board_db_paths(), *configured_secret_store_paths()]
+
+
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
-            *_kanban_board_db_paths()]
+            *_hermes_credential_store_paths()]
+
+
+def _is_hermes_credential_store(resolved: Path) -> bool:
+    """True if ``resolved`` is or lies inside one of ``_hermes_credential_store_paths``."""
+    for store in _hermes_credential_store_paths():
+        resolved_store = _resolve_path(store, expand=True)
+        if resolved_store is not None and (resolved == resolved_store or _path_is_within(resolved, resolved_store)):
+            return True
+    return False
 
 
 def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> Optional[Path]:
@@ -982,10 +997,9 @@ def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
-    with contextlib.suppress(ValueError):
-        path.relative_to(root)
-        return True
-    return False
+    """Containment judged like the read guard's (``agent.file_safety._is_under``): by file
+    identity as well as spelling, so a case variant (macOS, Windows) or a hardlink counts."""
+    return _is_under(path, root)
 
 
 def _tenv(name: str, default: str = "") -> str:
@@ -1187,7 +1201,12 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
-    # Cache / operator allowlist is trusted unconditionally, regardless of mode.
+    # A credential store stays denied even where it overlaps an allowlisted root (an operator root
+    # containing it, or a cache dir symlinked onto it). The broad system prefixes (/root, ...) stay
+    # below the allowlist so cache artifacts under them remain deliverable.
+    if _is_hermes_credential_store(resolved):
+        return None
+    # Cache / operator allowlist is trusted otherwise, regardless of mode.
     for root in _media_delivery_allowed_roots():
         resolved_root = _resolve_path(root, expand=True)
         if resolved_root is not None and _path_is_within(resolved, resolved_root):

@@ -303,6 +303,29 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
     assert json.loads(result.stdout) == ["from checkout", argv[1:]]
 
 
+def test_relaunch_keeps_a_scripts_own_directory_on_sys_path(tmp_path):
+    """A script outside the checkout keeps `python script.py` semantics.
+
+    The relaunched wrapper anchored sys.path on the checkout root alone, so a sidecar
+    script -- a WebUI driven by the stubbed venv interpreter -- lost the package
+    sitting next to it and died on `ModuleNotFoundError: No module named 'api'`.
+    """
+    root = tmp_path / "checkout"
+    root.mkdir()
+    sidecar = tmp_path / "webui"
+    sidecar.mkdir()
+    (sidecar / "sibling.py").write_text("value = 'from sidecar'\n")
+    script = sidecar / "server.py"
+    script.write_text("import sibling, json, sys\nprint(json.dumps([sibling.value, sys.argv[1:]]))\n")
+    argv = [str(script), "--profile", "name with spaces"]
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, argv, [sys.executable, *argv], None
+    )
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["from sidecar", argv[1:]]
+
+
 @pytest.mark.parametrize("owner,argv", [(None, []), ("external", []), ("electron-updater", []), ("self", ["-p", "coder", "pm", "repair"])])
 def test_non_self_or_pm_launch_cannot_trigger_update(tmp_path, monkeypatch, owner, argv):
     import pm

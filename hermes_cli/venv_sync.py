@@ -548,7 +548,14 @@ def relaunch_command(
     else:
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
-        body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
+        script = Path(argv[0]).absolute()
+        # `python script.py` puts the script's own directory on sys.path; run_path
+        # does not, and the root insert above only covers a script INSIDE that
+        # checkout. A sidecar app started through a stubbed venv interpreter then
+        # loses the package sitting next to it ("No module named 'api'"). Behind
+        # the root, so the deliberate checkout-first anchor still wins.
+        prefix += f"sys.path.insert(1, {str(script.parent)!r}); "
+        body = f"runpy.run_path({str(script)!r}, run_name='__main__')"
     return [str(python), *options, "-I", "-c", prefix + body]
 
 

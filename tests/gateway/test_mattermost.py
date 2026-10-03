@@ -58,6 +58,67 @@ class TestMattermostDisplayHygiene:
             require_platform_override_for={Platform.MATTERMOST},
         ) is True
 
+    def test_chat_scoped_opt_in_satisfies_mattermost_gate(self):
+        """A chats.<chat_id> entry is explicit operator intent: the gate opens for that chat only.
+
+        Without chat-awareness an operator who opts ONE Mattermost channel into
+        interim_assistant_messages gets it silently gated off because no
+        platform-level key exists.
+        """
+        user_config = {
+            "display": {
+                "platforms": {
+                    "mattermost": {"chats": {"chan-ops": {"interim_assistant_messages": True}}},
+                }
+            }
+        }
+
+        # The chat with its own entry is opted in without any platform-level key.
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=True,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+            chat_id="chan-ops",
+        ) is True
+        # Another chat on the same platform stays gated off.
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=True,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+            chat_id="chan-other",
+        ) is False
+
+    def test_chat_scoped_interim_opt_in_reaches_turn_display_settings(self, monkeypatch):
+        """Wiring: the per-turn surface resolver honors a chat-scoped Mattermost opt-in."""
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {
+                "display": {
+                    "platforms": {
+                        "mattermost": {"chats": {"chan-ops": {"interim_assistant_messages": True}}},
+                    }
+                }
+            },
+        )
+        runner = object.__new__(GatewayRunner)
+        runner._resolve_enabled_toolsets_for_source = lambda *a, **k: None
+        runner._adapter_for_source = lambda source: None
+
+        disp = runner._run_agent_display_settings(
+            SessionSource(platform=Platform.MATTERMOST, chat_id="chan-ops", chat_type="channel")
+        )
+
+        assert disp.interim_assistant_messages_enabled is True
+
 
 # ---------------------------------------------------------------------------
 # Platform & Config

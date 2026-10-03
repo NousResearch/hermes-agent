@@ -537,6 +537,20 @@ PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
 # hermes_cli/web_server.py + ``partition_nous_models_by_tier``, which may hit the Portal.
 _SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
+# Native-provider curated lists (not metered aggregators) that ALSO order entry [0] most-capable-
+# first. ``_SILENT_DEFAULT_PROVIDERS`` doesn't help here: its fallback is the cross-provider
+# ``PREFERRED_SILENT_DEFAULT_MODEL`` (z-ai/glm-5.2), which isn't a member of these providers'
+# catalogs, so the aggregator path falls straight back to entry [0] anyway (#64635 never covered
+# native providers). A profile/session that resolves to one of these providers with no model ever
+# chosen (empty ``model.default``, ``--ignore-user-config`` runs, provider-set-but-model-missing)
+# must land on a real, cheap, working model in THAT provider's own catalog — never the flagship.
+# Anthropic's own list leads with ``claude-fable-5.1`` (priciest, and observed hitting an
+# account-level monthly spend cap with "Usage credits are required for this model" — the exact
+# silent-billing footgun this table exists to prevent).
+_NATIVE_PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
+    "anthropic": "claude-haiku-4-5-20251001",
+}
+
 
 # Retired model IDs kept for /model auto-detect only — not shown in pickers. DeepSeek cut these
 # off; model_normalize remaps them on the wire.

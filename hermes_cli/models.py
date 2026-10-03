@@ -42,6 +42,7 @@ from hermes_cli.models_catalog_static import (
     _COPILOT_MODEL_ALIASES,
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
+    _NATIVE_PROVIDER_SILENT_DEFAULT_OVERRIDES,
     _OPENAI_FAST_MODE_PREFIXES,
     _OPENAI_ULTRAFAST_MODELS,
     _PROVIDER_ALIASES,
@@ -504,6 +505,9 @@ def get_default_model_for_provider(provider: str) -> str:
         # fetched live; its curated snapshot carries the default).
         if preferred and (preferred in models or not models):
             return preferred
+    native_override = _NATIVE_PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
+    if native_override and native_override in models:
+        return native_override
     return models[0] if models else ""
 
 

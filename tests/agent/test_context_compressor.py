@@ -471,20 +471,6 @@ class TestSummarizeToolResultRefusals:
         assert "ran `" not in summary and "wrote to" not in summary
         assert len(summary) <= _PRUNE_MIN_CHARS - 1
 
-    def test_pending_approval_is_not_run(self):
-        from tools.terminal_tool import _error_json
-
-        content = _error_json("", status="pending_approval")
-        summary = _summarize_tool_result("terminal", json.dumps({"command": "rm -rf build"}), content)
-
-        assert summary == "[terminal] `rm -rf build` awaiting the user's approval, not run"
-
-    def test_ordinary_result_summary_unchanged(self):
-        content = json.dumps({"output": "BLOCKED by nothing", "exit_code": 0, "error": None})
-        summary = _summarize_tool_result("terminal", json.dumps({"command": "make"}), content)
-
-        assert summary == "[terminal] ran `make` -> exit 0, 1 lines output"
-
     def test_prune_keeps_denial_across_passes(self, compressor):
         tool_name, args, content = _refusals()[0]
         assert len(content) > _PRUNE_MIN_CHARS

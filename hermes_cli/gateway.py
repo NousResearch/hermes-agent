@@ -3007,6 +3007,19 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _path_exists(path: str) -> bool:
+    """Path.exists() that treats unreadable dirs as absent.
+
+    On WSL with Windows drives mounted but unreadable (/mnt/c),
+    exists() raises PermissionError on Python 3.11-3.12 instead of
+    returning False (#128255).
+    """
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
+
+
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
     Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
@@ -3033,7 +3046,7 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
             "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/",
             "/mnt/c/WINDOWS/System32/OpenSSH/",
         )
-        if Path(entry).exists()
+        if _path_exists(entry)
     ]
 
     result: list[str] = []

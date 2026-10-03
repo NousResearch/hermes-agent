@@ -233,6 +233,36 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
 
 
 
+def test_update_autostash_does_not_remove_pm_managed_tools(tmp_path):
+    """The source-tree autostash must leave the PM runtime available to the updater."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / ".gitignore").write_text("tools/*/\n")
+    (tmp_path / "tracked.txt").write_text("base\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / "tracked.txt").write_text("local\n")
+    runtime = tmp_path / "tools" / "python-runtime" / "Lib"
+    runtime.mkdir(parents=True)
+    (runtime / "py_compile.py").write_text("runtime\n")
+
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+
+    assert stash_ref
+    assert (runtime / "py_compile.py").exists()
+    assert git("status", "--porcelain").stdout == ""
+
+
+
+
 def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
     """Behavioral E2E of the whole permission-denied class with real git:
     root-owned-style undeletable untracked dir → stash succeeds, update-style

@@ -319,3 +319,28 @@ native/fts5_cjk/*.so
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+# PM-managed runtime directories are machine state, not source-tree user work.
+# Keep this list aligned with pm/lock.json. Do not ignore every directory below
+# tools/: that directory also contains importable source packages.
+/tools/agent-browser/
+/tools/bws/
+/tools/chromium/
+/tools/cua-driver/
+/tools/dmgbuild/
+/tools/ffmpeg/
+/tools/gh/
+/tools/git/
+/tools/iron-proxy/
+/tools/llamacpp-cpu/
+/tools/llamacpp-cuda/
+/tools/llamacpp-hip/
+/tools/llamacpp-metal/
+/tools/llamacpp-vulkan/
+/tools/node/
+/tools/npm/
+/tools/python/
+/tools/ripgrep/
+/tools/termux-docker/
+/tools/tirith/
+/tools/uv/
+

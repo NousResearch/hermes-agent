@@ -82,3 +82,13 @@ def test_validator_rejects_wrong_refusal_or_exit_status(artifact):
         result = subprocess.CompletedProcess(["hermes", "update"], status, message, "")
         with pytest.raises(RuntimeError, match="wrong updater refusal"):
             validate_update_refusal(root, result)
+
+
+def test_first_screen_accepts_setup_guard_of_blank_install():
+    from scripts.termux.validate_installed import first_screen_ready
+
+    guard = b"It looks like Hermes isn't configured yet\n\nRun setup now? [Y/n] "
+    assert first_screen_ready(guard)
+    assert first_screen_ready(b"Setup Required ... /model")
+    assert not first_screen_ready(b"Setup Required")
+    assert not first_screen_ready(b"")

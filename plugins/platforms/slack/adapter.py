@@ -3186,7 +3186,13 @@ class SlackAdapter(BasePlatformAdapter):
             url = m.group(2).strip()
             if url.startswith("<") and url.endswith(">"):
                 url = url[1:-1].strip()
-            return _ph(f"<{url}|{m.group(1)}>")
+            # The entity is protected behind a placeholder before the escape pass, so the
+            # label must be escaped here or a bare ``>``/``<`` breaks the ``<url|label>``
+            # entity. Decode-then-encode, like the escape pass, so a pre-escaped label
+            # (``R&amp;D``) is not double-escaped; the URL stays raw (#132074).
+            label = _unescape_slack_entities(m.group(1))
+            label = label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return _ph(f"<{url}|{label}>")
 
         def _convert_header(m):
             inner = re.sub(r"\*\*(.+?)\*\*", r"\1", m.group(1).strip())

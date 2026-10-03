@@ -1153,6 +1153,76 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"sessions": rows})
 
 
+@method("session.peer_deliver")
+def _(rid, params: dict) -> dict:
+    """Admit onto an exact live session's queue without stealing its transport."""
+    source, target, content = (params.get(k) for k in ("source", "target", "content"))
+    if (not isinstance(source, str) or not isinstance(target, str) or not isinstance(content, str)
+            or not source or not target or source == target
+            or len(source) > 128 or len(target) > 128
+            or not content.strip() or len(content) > 17000):
+        return _err(rid, 4000, "invalid peer message")
+    with _sessions_lock:
+        matches = {
+            key: [(sid, session) for sid, session in _sessions.items()
+                  if isinstance(session, dict) and session.get("session_key") == key]
+            for key in (source, target)
+        }
+        if any(len(rows) != 1 or rows[0][1].get("lazy")
+               or rows[0][1].get("_closing") or rows[0][1].get("_finalized")
+               for rows in matches.values()):
+            return _err(rid, 4040, "exact live peer absent or ambiguous")
+        sid, session = matches[target][0]
+    # Never acquire a session history lock while holding the registry lock: lifecycle paths
+    # may take the registry lock after a session lock. Keep the exact object pinned, then
+    # recheck lifecycle state while serializing admission on its own lock.
+    lock = session.get("history_lock")
+    if lock is None:
+        return _err(rid, 4040, "target not ready")
+    should_drain = False
+    with lock:
+        if session.get("_closing") or session.get("_finalized"):
+            return _err(rid, 4040, "exact live peer absent or ambiguous")
+        if len(([session["queued_prompt"]] if session.get("queued_prompt") else [])
+               + list(session.get("queued_prompts") or [])) >= 100:
+            return _err(rid, 5030, "target queue full")
+        running = bool(session.get("running"))
+        try:
+            # A peer owns neither the source nor target frontend transport.
+            envelope = _enqueue_prompt(session, content, None,
+                                       turn_author={"kind": "peer", "label": source})
+            if envelope is None:
+                return _err(rid, 5030, "peer admission failed")
+        except Exception:
+            return _err(rid, 5030, "peer admission failed")
+        # Admission has happened. Persistence failures must never signal a
+        # rejection that could induce a duplicate retry of this envelope.
+        try:
+            _persist_queued_user_row(session, envelope, "peer")
+        except Exception:
+            logger.warning("peer queued-row persistence failed", exc_info=True)
+        session["last_active"] = time.time()
+        if not running and not session.get("_peer_drain_scheduled"):
+            session["_peer_drain_scheduled"] = True
+            should_drain = True
+    if should_drain:
+        def drain_peer_queue():
+            try:
+                _drain_queued_prompt(rid, sid, session)
+            finally:
+                with lock:
+                    session.pop("_peer_drain_scheduled", None)
+        try:
+            threading.Thread(target=drain_peer_queue, daemon=True,
+                             name=f"peer-deliver-{sid[:8]}").start()
+        except Exception:
+            logger.warning("peer idle drain worker could not start; dispatching inline", exc_info=True)
+            # Admission already succeeded, so do not leave an idle accepted
+            # envelope stranded merely because the worker could not start.
+            drain_peer_queue()
+    return _ok(rid, {"accepted": True, "status": "queued"})
+
+
 @_session_method("session.activate")
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""

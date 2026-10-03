@@ -3409,6 +3409,24 @@
       }
     },
     {
+      "name": "session.peer_deliver",
+      "summary": "Atomically queue a peer message between exact live stored session keys without rebinding a transport.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionPeerDeliverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionPeerDeliverResult"
+        }
+      }
+    },
+    {
       "name": "session.redirect",
       "summary": "Redirect the active turn (queued for the next turn while the agent is still building).",
       "params": [
@@ -31097,6 +31115,49 @@
           "session_id"
         ],
         "title": "SessionParams",
+        "type": "object"
+      },
+      "SessionPeerDeliverParams": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "content"
+        ],
+        "title": "SessionPeerDeliverParams",
+        "type": "object"
+      },
+      "SessionPeerDeliverResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted",
+          "status"
+        ],
+        "title": "SessionPeerDeliverResult",
         "type": "object"
       },
       "SessionReclaimedPayload": {

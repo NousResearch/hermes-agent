@@ -3165,6 +3165,15 @@ export interface SessionActiveItem {
   title: string
 }
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working' | 'streaming' | 'resuming'
+export interface SessionPeerDeliverParams {
+  source: string
+  target: string
+  content: string
+}
+export interface SessionPeerDeliverResult {
+  accepted: boolean
+  status: string
+}
 /** ``session_id`` is the STORED id. */
 export interface SessionDeleteParams {
   session_id: string
@@ -5256,6 +5265,8 @@ export interface RpcMethods {
   'session.list': { params: SessionListParams; result: SessionListResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
+  /** Atomically queue a peer message between exact live stored session keys without rebinding a transport. */
+  'session.peer_deliver': { params: SessionPeerDeliverParams; result: SessionPeerDeliverResult }
   /** Redirect the active turn (queued for the next turn while the agent is still building). */
   'session.redirect': { params: SessionCorrectionParams; result: SessionCorrectionResult }
   /** Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild. */
@@ -5572,6 +5583,7 @@ export const RPC_METHODS = [
   'session.interrupt',
   'session.list',
   'session.most_recent',
+  'session.peer_deliver',
   'session.redirect',
   'session.resume',
   'session.save',

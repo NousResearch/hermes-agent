@@ -286,6 +286,18 @@ class SessionActiveListResult(Result):
 method("session.active_list", params=SessionActiveListParams, result=SessionActiveListResult,
        doc="Live sessions in this process, insertion order (not a DB browser).")
 
+class SessionPeerDeliverParams(Params):
+    source: str
+    target: str
+    content: str
+
+class SessionPeerDeliverResult(Result):
+    accepted: bool
+    status: str
+
+method("session.peer_deliver", params=SessionPeerDeliverParams, result=SessionPeerDeliverResult,
+       doc="Atomically queue a peer message between exact live stored session keys without rebinding a transport.")
+
 
 # ── stored-row mutation ───────────────────────────────────────────────────────────────────────
 

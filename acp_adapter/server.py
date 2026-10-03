@@ -613,10 +613,33 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self._schedule_mcp_late_refresh(state)
         logger.info(log, *log_args)
 
+    def _model_state_without_agent(self) -> SessionModelState | None:
+        """Config/inventory picker with no live agent (``new_session`` fallback, #119185).
+
+        Same substrate ``hermes model``/TUI/dashboard read — independent of the
+        default provider's health, so a throttled subscription cannot blank it."""
+        try:
+            picker = build_model_state("", detect_provider() or "openrouter", "")
+            if picker is not None:
+                return picker
+        except Exception:
+            logger.debug("Could not build ACP model state without an agent", exc_info=True)
+        return None
+
     async def new_session(self, cwd: str, mcp_servers: list | None = None, **kwargs: Any) -> NewSessionResponse:
         # Agent construction (config, memory-provider import, SessionDB) is slow and fully
         # blocking; inline it froze the loop serving every JSON-RPC request (#58083).
-        state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+        try:
+            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+        except Exception as exc:
+            # A rate-limited (429) default provider fails the agent build. The model
+            # catalog is config/inventory-derived and independent of the provider
+            # (#119185): returning the real picker with no session (the fork_session
+            # ``session_id=""`` pattern) lets the user pick a healthy provider instead
+            # of the placeholder-collapse trap that blanks the picker until the
+            # cooldown lapses.
+            logger.warning("new_session: agent build failed (%s); returning the model catalog without a session", exc)
+            return NewSessionResponse(session_id="", models=self._model_state_without_agent())
         await self._attach_session_mcp(state, mcp_servers, "New session %s (cwd=%s)", state.session_id, cwd)
         return NewSessionResponse(session_id=state.session_id, **await self._session_response_fields(state))
 

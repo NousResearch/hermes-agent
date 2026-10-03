@@ -10,15 +10,139 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
+from collections.abc import Iterator
 from concurrent.futures import CancelledError, ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from openai import AsyncOpenAI, AsyncStream
 from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 
 from agent import moa_loop
+from run_agent import AIAgent
+
+
+@pytest.mark.parametrize("chunks_to_consume", [0, 1])
+def test_streaming_call_closes_abandoned_aggregator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, chunks_to_consume: int
+) -> None:
+    """#130132: production teardown releases the stream and its concurrency permit.
+
+    Do not close the bridge in the test: abandon consumption and let _call's
+    finally reach it through the real MoA, auxiliary and Relay stream owners.
+    """
+    from agent import auxiliary_client, relay_runtime
+    from agent import chat_completion_helpers as helpers
+
+    def abandon(stream: Iterator[object], **_kwargs: object) -> Iterator[object]:
+        for _ in range(chunks_to_consume):
+            chunk = next(stream)
+            delivered.append(chunk)
+            yield chunk
+        raise KeyboardInterrupt("abandoned aggregator")
+
+    monkeypatch.setattr(helpers, "_iter_provider_stream_chunks", abandon)
+    for managed in (False, True):
+        delivered: list[object] = []
+        home = tmp_path / str(managed)
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "providers:\n  native-test:\n    base_url: http://127.0.0.1:1/v1\n"
+            "    api_key: test-key\n"
+            "auxiliary:\n  moa_aggregator:\n    max_concurrency: 1\n"
+            "moa:\n  presets:\n    cleanup:\n      enabled: false\n"
+            "      aggregator:\n        provider: native-test\n        model: native-actor\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        opened: list[_AsyncStream] = []
+
+        async def create(**_kwargs: object) -> _AsyncStream:
+            source = _AsyncStream([
+                ChatCompletionChunk(
+                    id="chunk",
+                    object="chat.completion.chunk",
+                    created=0,
+                    model="native-actor",
+                    choices=[
+                        Choice(
+                            index=0, delta=ChoiceDelta(content=text), finish_reason=None
+                        )
+                    ],
+                )
+                for text in ("first", "second", "third")
+            ])
+            opened.append(source)
+            return source
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        monkeypatch.setattr(
+            auxiliary_client,
+            "_get_cached_client",
+            lambda *a, **k: (client, "native-actor"),
+        )
+        agent = AIAgent(
+            provider="moa",
+            model="cleanup",
+            api_key="test-key",
+            base_url="moa://local",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=[],
+            max_iterations=1,
+            session_id="moa-cleanup",
+        )
+        relay_runtime._reset_for_tests()
+        lease = turn = None
+        consumer = "test.moa-aggregator-cleanup"
+        if managed:
+            lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id="moa-cleanup",
+                platform="cli",
+            )
+            turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+                lease, turn_id="turn", task_id="task"
+            )
+            lease.host.retain_managed_execution(consumer)
+        try:
+            workers_before = set(threading.enumerate())
+            call = helpers._StreamingCall(
+                agent,
+                {"model": "cleanup", "messages": [{"role": "user", "content": "hi"}]},
+                None,
+            )
+            with pytest.raises(KeyboardInterrupt, match="abandoned aggregator"):
+                call._call()
+
+            assert len(opened) == 1
+            assert len(delivered) == chunks_to_consume
+            if not managed:  # Relay may read ahead; the direct path must stay lazy.
+                assert opened[0]._index == chunks_to_consume
+            leaked = [
+                thread
+                for thread in set(threading.enumerate()) - workers_before
+                if thread.name == "moa-aggregator-async-stream"
+            ]
+            assert (all(source.closed for source in opened), leaked) == (True, [])
+            semaphore = auxiliary_client._acquire_sync_aux_semaphore("moa_aggregator")
+            assert semaphore is not None
+            assert semaphore.acquire(blocking=False), (
+                "abandonment leaked the concurrency permit"
+            )
+            semaphore.release()
+        finally:
+            if lease is not None and turn is not None:
+                lease.host.release_managed_execution(consumer)
+                relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="cancelled")
+                relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+            relay_runtime._reset_for_tests()
 
 
 def _chunk(text):

@@ -23,6 +23,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Generator
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -7940,17 +7941,27 @@ def call_llm(
             semaphore.release()
 
 
-def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.BoundedSemaphore):
+def _release_sync_semaphore_after_stream(
+    stream: Any, semaphore: threading.BoundedSemaphore,
+) -> Generator[object, None, None]:
     """Release a permit only after a streaming response is consumed or closed."""
-    try:
-        yield from stream
-    finally:
+    def consume() -> Generator[object, None, None]:
         try:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
+            yield None
+            yield from stream
         finally:
-            semaphore.release()
+            try:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            finally:
+                semaphore.release()
+
+    # Closing an unstarted generator skips its finally. Arm cleanup before
+    # handing it to the managed stream owner, without reading a provider chunk.
+    wrapped = consume()
+    next(wrapped)
+    return wrapped
 
 
 def _plan_aux_call(

@@ -592,14 +592,24 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         assert ambiguous in parts[0] and "LOCAL XDUP" in "\n".join(parts)
 
         # Disabling a duplicate by the exact path its row shows (what `hermes skills` / the web toggle
-        # save) hides it from list and index and refuses the load.
+        # save) hides it from list and index and refuses the load — but not an unrelated, uniquely named
+        # skill in another tier that merely sits at the same relative path.
+        _make_skill(ext, "other", category="a", body="UNRELATED OTHER")
+        (ext / "a" / "other").rename(ext / "a" / "one")
         disabled = {"a/one"}
         monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda *a, **k: disabled)
         monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: disabled)
-        monkeypatch.setattr(skills_tool_module, "_is_skill_disabled", lambda n, platform=None: n in disabled)
-        assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["b/two", "xdup"]
-        assert "a/one" not in pb.build_skills_system_prompt()
-        assert "disabled" in json.loads(skill_view("a/one"))["error"]
+        monkeypatch.setattr(skills_tool_module, "_is_skill_disabled", lambda *n, platform=None: not disabled.isdisjoint(n))
+        monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
+        pb.clear_skills_system_prompt_cache()
+        assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["b/two", "other", "xdup"]
+        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.startswith("    - ")]
+        assert index == ["- other: Description for other.", "- b/two: Description for dup-demo.",
+                         "- xdup: Description for xdup."]
+        for ident in ("a/one", "one"):  # refused by any alias, as list/index hide it
+            assert "disabled" in json.loads(skill_view(ident))["error"]
+        assert "UNRELATED OTHER" in json.loads(skill_view("other"))["content"]
+        assert build_preloaded_skills_prompt(["other"])[1:] == (["other"], [])
 
 
 class TestBuildSkillInvocationMessage:

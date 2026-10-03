@@ -607,8 +607,11 @@ def skill_view(
         if not skill_matches_platform(frontmatter):
             return _fail(f"Skill '{name}' is not supported on this platform.", readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
         resolved_name = frontmatter.get("name", skill_md.parent.name)
-        # Disabled by declared name or by the exact path its list row shows (same-tier duplicates).
-        if _is_skill_disabled(resolved_name) or _is_skill_disabled(_owned_relative(skill_dir, skill_md, all_dirs)):
+        # Disabled by declared name, or by the exact path that IS this copy's load name (a same-tier
+        # duplicate's row) — whatever alias reached it; an unrelated copy at that path elsewhere is not.
+        rel = _owned_relative(skill_dir, skill_md, all_dirs)
+        if _is_skill_disabled(resolved_name) or (_is_skill_disabled(rel) and any(
+                e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True))):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
             return _serve_skill_file(

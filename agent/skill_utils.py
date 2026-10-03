@@ -481,9 +481,10 @@ def pick_skill_candidate(candidates) -> Tuple[Optional[int], List[int]]:
 
 
 def is_disabled_entry(entry: Dict[str, Any], disabled: Set[str]) -> bool:
-    """``skills.disabled`` matches a resolved catalog entry by its declared name OR its exact relative
-    path — the identifier a same-tier duplicate's list/config/web row shows (``a/one``) and saves."""
-    return bool(disabled) and not disabled.isdisjoint({str(entry["name"]), entry["relative_path"]})
+    """``skills.disabled`` matches a resolved catalog entry by its declared name OR its ``load_name`` —
+    the exact path a same-tier duplicate's list/config/web row shows (``a/one``) and saves. A unique
+    copy elsewhere that merely sits at the same relative path is not matched."""
+    return bool(disabled) and not disabled.isdisjoint({str(entry["name"]), entry.get("load_name")} - {None})
 
 
 def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

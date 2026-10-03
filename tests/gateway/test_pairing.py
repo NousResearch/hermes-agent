@@ -345,6 +345,18 @@ class TestApprovalFlow:
             assert store.approve_code("telegram", digest[:8]) is None
             assert store.approve_request("telegram", digest[:8]) is None
 
+    @pytest.mark.parametrize("request_id", ["tökén", "\ud800"], ids=["non_ascii", "lone_surrogate"])
+    def test_malformed_request_id_rejected_like_unknown_id(self, tmp_path, request_id):
+        """The dashboard posts ``request_id`` from a JSON body; non-ASCII must miss like any unknown
+        id (the route's 404), not raise (a 500)."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1", "Alice")
+            unknown = store.approve_request("telegram", "deadbeefdeadbeef")
+
+            assert store.approve_request("telegram", request_id) == unknown
+            assert len(store.list_pending("telegram")) == 1
+
     def test_stale_request_id_never_locks_out_the_code_path(self, tmp_path):
         """Clicking Approve on an expired row is not a brute-force attempt.
 

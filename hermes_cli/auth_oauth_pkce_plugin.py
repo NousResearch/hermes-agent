@@ -187,7 +187,8 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
     if callback.get("error"):
         raise err(f"authorization failed: {callback.get('error_description') or callback['error']}",
                   "oauth_authorization_denied")
-    if not hmac.compare_digest(str(callback.get("state") or ""), state):
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the state is redirect input.
+    if not hmac.compare_digest(str(callback.get("state") or "").encode(), state.encode()):
         raise err("callback state mismatch — the redirect did not come from this login. Aborting.",
                   "oauth_state_mismatch")
     code = str(callback.get("code") or "").strip()

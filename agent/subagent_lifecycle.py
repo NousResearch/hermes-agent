@@ -211,7 +211,8 @@ _HANDLE_FIELD_CHECKS: tuple[tuple[str, Callable[[Any], bool]], ...] = (
     ("model", _opt_str),
     ("role", lambda v: isinstance(v, str)),
     ("depth", lambda v: type(v) is int),
-    ("capability", lambda v: isinstance(v, str)),
+    # An HMAC hex digest; non-ASCII can't match and would make compare_digest raise TypeError.
+    ("capability", lambda v: isinstance(v, str) and v.isascii()),
 )
 
 # Launch-request rejections in check order: (predicate, error). The type check leads so later predicates may
@@ -391,7 +392,8 @@ class SubagentLifecycleService:
 
     @staticmethod
     def _capability(subagent_id: str, parent_session_id: Optional[str], created_at: float) -> str:
-        value = f"{subagent_id}|{parent_session_id or ''}|{created_at:.6f}".encode()
+        # surrogatepass: a deserialized handle's ids may hold lone surrogates; they must mismatch, not raise.
+        value = f"{subagent_id}|{parent_session_id or ''}|{created_at:.6f}".encode("utf-8", "surrogatepass")
         return hmac.new(_SECRET, value, hashlib.sha256).hexdigest()
 
     @staticmethod

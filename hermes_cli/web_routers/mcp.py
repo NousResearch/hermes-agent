@@ -350,9 +350,11 @@ async def mcp_oauth_callback(
             flow for flow in _mcp_oauth_flows.values()
             if flow.server_name == server_name and flow.status == "authorization_required"
         ]
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and ``state`` is a query param.
     flow = next(
         (c for c in candidates
-         if c.expected_state is not None and state is not None and secrets.compare_digest(c.expected_state, state)),
+         if c.expected_state is not None and state is not None
+         and secrets.compare_digest(c.expected_state.encode(), state.encode())),
         None,
     )
     if flow is None:

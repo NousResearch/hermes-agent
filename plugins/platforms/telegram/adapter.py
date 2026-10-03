@@ -495,6 +495,12 @@ _TEXT_SEND_DEADLINE = 30.0
 # period would re-hang the lock on exactly the wedged socket this bounds, so the rare late landing is
 # accepted; httpx's own timeouts free the pool slot.
 _MEDIA_SEND_DEADLINE = 300.0
+# Per-chat send cooldown after a flood refusal honours Telegram's full ``retry_after``. A local
+# window capped at five minutes let the next queued reply re-probe the API inside a multi-hour
+# penalty; Telegram then re-issued a fresh multi-hour penalty on every probe (measured 2026-09-27:
+# 27156 s -> 26853 s -> 11929 s across one evening, the chat never reopened). Bounded only so a
+# bogus value cannot park a chat for days; real penalties (up to ~8 h observed) fit under it.
+FLOOD_COOLDOWN_MAX_SECONDS = 24 * 3600.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
 
@@ -5617,9 +5623,13 @@ class TelegramAdapter(BasePlatformAdapter):
     def _record_send_flood_cooldown(self, chat_id: Any, wait: float) -> SendResult:
         """A send refused with ``retry_after=wait`` arms a per-chat window during which ``send()`` fails
         closed locally (same ``flood_control:<s>`` result, so ledger recognition and redelivery timing are
-        unchanged) instead of firing more requests into a penalty Telegram lengthens while it is hammered."""
+        unchanged) instead of firing more requests into a penalty Telegram lengthens while it is hammered.
+
+        The window is the FULL ``retry_after`` (bounded by ``FLOOD_COOLDOWN_MAX_SECONDS``): a shorter local
+        window re-probes the API inside the penalty, and each probe restarts it."""
         until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
-        until[str(normalize_telegram_chat_id(chat_id))] = asyncio.get_running_loop().time() + max(1.0, min(float(wait), 300.0))
+        window = max(1.0, min(float(wait), FLOOD_COOLDOWN_MAX_SECONDS))
+        until[str(normalize_telegram_chat_id(chat_id))] = asyncio.get_running_loop().time() + window
         return _flood_cap_result(wait)
 
     def _send_flood_cooldown_remaining(self, chat_id: Any) -> Optional[float]:

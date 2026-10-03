@@ -445,10 +445,6 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind != "login" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
                            "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
-        return json.dumps({"success": False, "error_type": "payment_declined",
-                           "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
-
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
     # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
@@ -479,28 +475,48 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         )
 
     # ── Inspect + classify page controls ────────────────────────────────────
-    nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
-    if not inspect.get("success"):
-        return json.dumps(
-            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
-        )
-    raw_controls = _parse_json_result(inspect.get("result"))
-    if isinstance(raw_controls, str):
-        raw_controls = _parse_json_result(raw_controls)
-    if not isinstance(raw_controls, list):
-        return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
+    def _inspect_page() -> tuple[str, list[ClassifiedLoginControl]] | str:
+        nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
+        inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+        if not inspect.get("success"):
+            return json.dumps(
+                {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
+            )
+        raw_controls = _parse_json_result(inspect.get("result"))
+        if isinstance(raw_controls, str):
+            raw_controls = _parse_json_result(raw_controls)
+        if not isinstance(raw_controls, list):
+            return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
-    classify = classify_login_control if meta.kind == "login" else classify_checkout_control
-    classified: list[ClassifiedLoginControl] = []
-    for raw in raw_controls:
-        if not isinstance(raw, dict):
-            continue
-        result = classify(LoginControl.from_dict(raw))
-        if result is not None:
-            classified.append(result)
-    if not classified:
-        return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
+        classify = classify_login_control if meta.kind == "login" else classify_checkout_control
+        classified: list[ClassifiedLoginControl] = []
+        for raw in raw_controls:
+            if not isinstance(raw, dict):
+                continue
+            result = classify(LoginControl.from_dict(raw))
+            if result is not None:
+                classified.append(result)
+        if meta.kind == "payment" and not any(control.token == "cc-number" for control in classified):
+            return json.dumps({"success": False, "error_type": "no_payment_fields", "error": (
+                "No card number field was found on the current page. Card inputs inside a payment "
+                "processor's embedded frame cannot be filled by the vault; do not retry, hand the card "
+                "entry to the user instead.")})
+        if not classified:
+            return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
+        return nonce, classified
+
+    inspected = _inspect_page()
+    if isinstance(inspected, str):
+        return inspected
+    if meta.kind == "payment":
+        # The prompt can wait while the page changes. Only post-consent stamps may be used for a write.
+        if not _confirm_payment_fill(meta.label, page_origin):
+            return json.dumps({"success": False, "error_type": "payment_declined",
+                               "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
+        inspected = _inspect_page()
+        if isinstance(inspected, str):
+            return inspected
+    nonce, classified = inspected
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:

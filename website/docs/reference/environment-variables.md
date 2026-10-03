@@ -193,6 +193,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `MEM0_HOST` | Base URL of a self-hosted Mem0 server (switches the plugin off the Platform API) |
 | `MEM0_USER_ID` | Override the user id Mem0 memories are stored under |
 | `MEM0_AGENT_ID` | Override the agent id Mem0 memories are tagged with |
+| `MEM0_TELEMETRY` | The mem0ai SDK's anonymous usage telemetry. Hermes defaults it to `false`; set `true` to opt in |
 | `RETAINDB_API_KEY` | RetainDB API key for persistent memory ([retaindb.com](https://retaindb.com)) |
 | `RETAINDB_BASE_URL` | Base URL for self-hosted RetainDB instances (default: `https://api.retaindb.com`) |
 | `OPENVIKING_API_KEY` | OpenViking API key (leave blank for local dev mode) |

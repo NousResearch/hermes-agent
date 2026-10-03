@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import os
 import threading
 import time
 from contextlib import suppress
@@ -24,6 +25,11 @@ from tools.registry import tool_error
 from utils import atomic_json_write, read_json_or_empty
 
 logger = logging.getLogger(__name__)
+
+# mem0ai sends PostHog usage telemetry unless MEM0_TELEMETRY is false, and reads the flag once, when mem0
+# is first imported. Default it off before any import here; MEM0_TELEMETRY=true (shell or .env) opts in.
+# _openai_llm.py repeats this: the plugin loader execs siblings before this file, and it imports mem0 eagerly.
+os.environ.setdefault("MEM0_TELEMETRY", "false")
 
 # Circuit breaker: after _BREAKER_THRESHOLD consecutive failures, pause API
 # calls for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.

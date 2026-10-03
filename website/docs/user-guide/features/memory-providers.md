@@ -447,6 +447,8 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 
 **Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 
+**Telemetry:** the mem0ai SDK's anonymous usage telemetry is off by default in Hermes. To opt in, set `MEM0_TELEMETRY=true` in your shell or `~/.hermes/.env` and restart Hermes.
+
 ---
 
 ### Hindsight

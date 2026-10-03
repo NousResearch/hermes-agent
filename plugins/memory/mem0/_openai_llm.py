@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional, Union
 
-from mem0.configs.llms.base import BaseLlmConfig
+os.environ.setdefault("MEM0_TELEMETRY", "false")  # before the first mem0 import; see the package __init__
+
+from mem0.configs.llms.base import BaseLlmConfig  # noqa: E402
 from mem0.configs.llms.openai import OpenAIConfig
 from mem0.llms.base import LLMBase
 from mem0.llms.openai import OpenAILLM

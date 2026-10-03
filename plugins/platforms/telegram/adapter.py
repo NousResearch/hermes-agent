@@ -5325,11 +5325,13 @@ class TelegramAdapter(BasePlatformAdapter):
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
         delivered = False
+        error = None
         if animations:
             anim_result = await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
             delivered = anim_result.success
+            error = anim_result.error
         if not photos:
-            return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+            return SendResult(success=delivered, error=error if delivered else "all images failed to send")
         from urllib.parse import unquote as _unquote
         CHUNK = 10  # Telegram's album limit
         chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
@@ -5376,6 +5378,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
                 fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
+                if error is None and fallback.error:
+                    error = fallback.error
             finally:
                 for fh in opened_files:
                     with contextlib.suppress(Exception):
@@ -5383,7 +5387,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 for tmp in temp_paths:
                     with contextlib.suppress(OSError):
                         os.remove(tmp)
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+        return SendResult(success=delivered, error=error if delivered else "all images failed to send")
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

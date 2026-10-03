@@ -10,7 +10,8 @@ The `bubblewrap` backend runs every shell command inside its own
 [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) sandbox on
 the machine Hermes runs on. It is not a container: the sandbox sees the host
 filesystem read-only at the host paths, can write to the working directory,
-and cannot read your credentials. It needs no image, no daemon and no
+and cannot read the dot entries of your home directory except the ones on
+an allowlist. It needs no image, no daemon and no
 network round trip, so it fits a personal machine or a small server where
 the `local` backend is too open and Docker is too heavy.
 
@@ -33,9 +34,9 @@ terminal:
 ```
 
 `hermes setup` offers the backend on Linux and asks for the profile.
-`hermes doctor` reports whether `bwrap` is found, its version, and whether
-the sandbox probe passes; `hermes status` shows the profile and the `bwrap`
-path. If the probe fails, unprivileged user namespaces are disabled for
+`hermes doctor` reports whether `bwrap` is found, its version, whether
+the sandbox probe passes and whether the process limit is available on
+this kernel; `hermes status` shows the profile and the `bwrap` path. If the probe fails, unprivileged user namespaces are disabled for
 your user: check your distribution's notes on enabling them for bubblewrap
 (on Ubuntu 24.04 and later this is the AppArmor
 `kernel.apparmor_restrict_unprivileged_userns` restriction).
@@ -48,9 +49,11 @@ degraded result that names the package (or an error under
 
 - The host root, read-only, at the same paths as on the host. `/usr/bin`,
   `/etc`, your project checkouts and your installed toolchains are all there.
+- Your home directory with its dot entries hidden unless they are on an
+  allowlist (see [Your home directory](#your-home-directory)).
 - A fresh `/dev`, a private `/proc` (the command's own pid namespace, so it
   cannot see or signal host processes) and a fresh `/tmp` per command. <!-- no-tmp: ok — describes the sandbox boundary -->
-  Nothing written to `/tmp` survives the command; use the working directory. <!-- no-tmp: ok — explains why /tmp is wrong here -->
+  Nothing written to `/tmp` survives the command; use the working directory or `$TMPDIR`. <!-- no-tmp: ok — explains why /tmp is wrong here -->
 - An empty `/run/user/<uid>`: the gpg-agent, ssh-agent, keyring and D-Bus
   sockets that live there are not reachable, so a command cannot sign or
   decrypt with keys loaded on the host. The docker socket, if present, is
@@ -63,50 +66,127 @@ degraded result that names the package (or an error under
   variables listed under Limitations: `env_passthrough` applies, provider
   API keys stay out, and `HOME` follows `terminal.home_mode`.
 
-## Hidden paths
+## Your home directory
 
-Secrets under your home directory are hidden inside every sandbox: a
-directory shows as empty and a file shows as empty. The set is fixed:
+Credentials live in dot entries of the home directory, and no list of
+them is ever complete: every tool that stores a token picks its own
+name. So the sandbox does not hide a list. It hides every dot entry of
+your home directory and shows only what is on an allowlist.
 
+- **Non-dot entries** (`~/projects`, `~/Documents`, `~/bin`) are visible,
+  read-only unless the working directory or a read-write bind covers them.
+- **Dot entries** (`~/.pgpass`, `~/.mozilla`, `~/.zz-some-tool`) do not
+  exist inside the sandbox unless they are allowed. An allowed dot entry
+  is read-only, always: a command cannot edit `~/.bashrc` or
+  `~/.gitconfig`, which would run code in your own shells later.
+- **`~/.config`, `~/.local` and `~/.local/share`** follow the same rule
+  one level down: only an allowed child is visible. They hold one
+  directory per application, and many of those keep a login session.
+- **Nothing new can be made** at the top of the home directory or of
+  those three directories. `mkdir ~/.ssh` fails with "Read-only file
+  system" whether or not `~/.ssh` exists on the host.
+
+The allowlist has three sources:
+
+1. A shipped list: the shell startup files (`.bashrc`, `.profile`,
+   `.zshrc`, ...), `.gitconfig`, `.editorconfig`, `.tool-versions`,
+   `.terminfo`, `.cache`, the common toolchain directories (`.cargo`,
+   `.rustup`, `.nvm`, `.bun`, `.deno`, `.gem`, `.npm`, `.pyenv`, `.rbenv`,
+   `.sdkman`, `.volta`, `.asdf`, `.m2`, `.gradle`, `.dotnet`, `.pub-cache`,
+   `.conda`, `.nix-profile`), `.config/{git,pip,uv,npm,pnpm,yarn,go,fontconfig}`,
+   `.local/{bin,lib,include}` and
+   `.local/share/{uv,pipx,pnpm,virtualenvs,man,bash-completion,fonts,mime}`.
+2. Every directory on `PATH` that lies under the home directory, as
+   `PATH` stands in the Hermes process when the backend starts. The
+   smallest unit is allowed: `~/.zz-tool/bin` on `PATH` allows `~/.zz-tool`,
+   `~/.local/share/zz/bin` allows `~/.local/share/zz` and not its
+   neighbours.
+3. `terminal.bubblewrap_home_allow`, for anything else a command needs:
+
+```yaml
+terminal:
+  bubblewrap_home_allow:
+    - .zz-tool           # a dot entry at the top of the home directory
+    - .config/nvim       # or one child of .config, .local or .local/share
 ```
-~/.ssh  ~/.aws  ~/.gnupg  ~/.gpg  ~/.config/gcloud  ~/.azure  ~/.docker
-~/.kube  ~/.npmrc  ~/.pypirc  ~/.netrc  ~/.env
+
+A tool that reads `~/.config/<name>` and is not on the list finds no
+configuration there until you add `.config/<name>`.
+
+Credential stores stay hidden whatever the allowlist says. `~/.ssh`,
+`~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`,
+`~/.pypirc`, `~/.pgpass`, `~/.git-credentials`, `~/.config/gh`,
+`~/.config/gcloud`, the browser profiles, the desktop keyrings and the
+other paths Hermes' own file tools refuse are never shown, and a
+`bubblewrap_home_allow` entry that names one is ignored with a warning.
+The same applies below an allowed entry: `~/.cargo` is visible,
+`~/.cargo/credentials.toml` shows as an empty file.
+
+To hide something more, such as a non-dot directory that holds keys:
+
+```yaml
+terminal:
+  bubblewrap_hide:
+    - ~/Documents/keys
 ```
 
-`~/.hermes` (or whatever `HERMES_HOME` points at) is hidden as well: the
-agent already holds its own configuration and keys in memory and does not
-need to read them from inside a command. With `terminal.home_mode: profile`
-the `HERMES_HOME/home` directory is the subprocess `HOME` and stays
-readable and writable; the rest of `HERMES_HOME` stays hidden.
+A symlink at the top of the home directory is shown as a symlink. A
+`~/.bashrc` that links into `~/dotfiles` reads as on the host, and its
+target is read-only. A link that points into a hidden directory leads
+nowhere inside the sandbox. A hidden entry that is itself a symlink (a
+dotfiles repository that links `~/.ssh` to `~/dotfiles/ssh`) is hidden at
+its target, resolved when the backend starts.
 
-When `HERMES_HOME` points elsewhere (a profile at `~/.hermes/profiles/<name>`,
-or any other directory), the default `~/.hermes` is hidden as well, so the
-default home's `.env` and `auth.json` are not readable from that profile's
-sandbox. The profile's own state directory stays reachable, and so does its
-`HERMES_HOME/home` under `terminal.home_mode: profile`.
+The allowlist and the hidden set are fixed when the backend starts, so a
+command cannot widen them by changing `PATH`. The listing of the home
+directory is read at every command, so a directory you create on the host
+shows up in the next command.
 
-A path that does not exist on the host is simply skipped. An entry that
-is a symlink (a dotfiles repository that links `~/.ssh` to
-`~/dotfiles/ssh`) is hidden at its target, resolved when the backend
-starts. Writes into a hidden directory land in the sandbox's copy and
-never reach the host.
+### The Hermes home
+
+`~/.hermes` (or whatever `HERMES_HOME` points at) is hidden: the agent
+already holds its own configuration and keys in memory and does not need
+to read them from inside a command. When `HERMES_HOME` points elsewhere (a
+profile at `~/.hermes/profiles/<name>`, or any other directory), the
+default `~/.hermes` is hidden as well, so the default home's `.env` and
+`auth.json` are not readable from that profile's sandbox.
+
+Four things under `HERMES_HOME` stay reachable, because a command needs
+them:
+
+- the sandbox's own state directory;
+- the scratch directory `HERMES_HOME/cache/scratch`, which is `TMPDIR` for
+  every command. It is writable (read-only in the `restricted` profile)
+  and a file written there is still there for the next command;
+- the staged data directories (attachments, cached documents, images,
+  audio, video, screenshots, pasted text and the other entries Hermes
+  hands the model as file paths), read-only;
+- `HERMES_HOME/home` under `terminal.home_mode: profile`, where it is the
+  subprocess `HOME`, readable and writable.
 
 ## Working directory
 
 The working directory (`terminal.cwd`, the launch directory for the CLI,
 `MESSAGING_CWD` or the home directory for the gateway) is the writable
 set: everything under it can be changed, everything else on the host is
-read-only. Point it at a project or scratch directory. With the home
-directory as the working directory every dotfile outside the hidden set
-(`~/.bashrc`, `~/.profile`, `~/.config/autostart`, `~/.local/bin`, ...) is
-writable, which is a path back into your own shells; Hermes logs a warning
-at startup in that case. A working directory of `/` is refused, since it
-would make the whole root writable. A working directory at or under
-`HERMES_HOME` (`~/.hermes`) or under a hidden path is refused as well: the
-hidden paths are covered inside every sandbox, so no command could run
-there. Under `terminal.home_mode: profile` a directory under a real
-`HERMES_HOME/home` directory is the exception, since that directory is
-bound back into the sandbox. A checkout under `~/.hermes` (for example
+read-only. Point it at a project or scratch directory.
+
+With the home directory as the working directory, the existing non-dot
+entries of it are writable and nothing else is: the dot entries are
+read-only or hidden, and no new file or directory can be made at the top
+of the home directory. Create it on the host first, or work in a
+subdirectory. A file at the top of the home directory can be written in
+place but not replaced: a program that saves by writing a new file and
+renaming it over the old one fails there. Hermes logs a warning at
+startup when the working directory covers the home directory.
+
+A working directory of `/` is refused, since it would make the whole root
+writable. A working directory at or under `HERMES_HOME` (`~/.hermes`) or
+under a hidden path is refused as well: the hidden paths are covered
+inside every sandbox, so no command could run there. Under
+`terminal.home_mode: profile` a directory under a real `HERMES_HOME/home`
+directory is the exception, since that directory is bound back into the
+sandbox. A checkout under `~/.hermes` (for example
 `~/.hermes/hermes-agent`) has to be launched from elsewhere or moved.
 
 If the working directory is deleted on the host (for example by the
@@ -143,6 +223,26 @@ location, so a copy of the tree elsewhere would show them. Bind such a
 source at its own path instead. Because the root is read-only, a `dest`
 must already exist on the host or sit under a writable mount.
 
+An allowed dot entry is read-only, so a tool that writes its cache there
+fails with "Read-only file system". Give it the one directory it writes
+to, at its own path:
+
+```yaml
+terminal:
+  bubblewrap_binds:
+    - {src: ~/.cache/pip, dest: ~/.cache/pip, readonly: false}
+    - {src: ~/.cargo/registry, dest: ~/.cargo/registry, readonly: false}
+```
+
+Bind the cache directory itself, not its parent. A read-write bind (or a
+writable working directory) that contains a credential path which does
+not exist on the host is refused when the backend starts: the backend
+hides a credential path by mounting over it, a path that is not there
+cannot be mounted over, and a command could then create it. A read-write
+bind of all of `~/.cache` is refused while `~/.cache/huggingface/token`
+does not exist, and one of all of `~/.config` while `~/.config/gh` does
+not. The error names the path and the bind.
+
 A read-write bind whose source lies inside the working directory, inside
 another read-write bind or inside the profile home is refused unless it
 has dest equal to src and sits directly under that directory, with no
@@ -169,13 +269,13 @@ that limit.
 |-----|---------|-------|
 | `bubblewrap_memory_mb` | `256` | Virtual memory per process (`RLIMIT_AS`) |
 | `bubblewrap_cpu_seconds` | `30` | CPU time per process (`RLIMIT_CPU`) |
-| `bubblewrap_max_procs` | `256` | Processes the command may add (`RLIMIT_NPROC`) |
+| `bubblewrap_max_procs` | `256` | Processes and threads one command may run (`RLIMIT_NPROC`, counted for that sandbox alone) |
 
-The limits are set by `prlimit` from util-linux, which runs in front of
-`bwrap` for every command: it sets the three limits on itself and then
-starts `bwrap`, so they cover the sandbox and every process inside it.
-`hermes doctor` reports a missing `prlimit` the same way as a missing
-`bwrap`.
+The limits are set by `prlimit` from util-linux. The memory and CPU
+limits are set in front of `bwrap`, so they cover the sandbox and every
+process inside it. The process limit is set inside the sandbox, where the
+kernel counts only the processes of that sandbox. `hermes doctor` reports
+a missing `prlimit` the same way as a missing `bwrap`.
 
 The defaults are deliberately tight and some everyday tools exceed them:
 
@@ -187,10 +287,13 @@ The defaults are deliberately tight and some everyday tools exceed them:
   180 second `terminal.timeout` is reached. The process is killed by the CPU
   limit and the output ends with `Killed` (exit code 137). Raise
   `bubblewrap_cpu_seconds` for such work.
-- `bubblewrap_max_procs` is applied on top of the number of threads your
-  user already runs on the host, because the kernel counts `RLIMIT_NPROC`
-  per user across the whole machine. It bounds what a command can add, so a
-  fork bomb stops at about 256 processes without touching your desktop.
+- `bubblewrap_max_procs` is a ceiling for one command: a fork bomb stops
+  at 256 processes whatever else your user runs on the host, and a
+  command cannot raise the limit from inside. This needs a kernel that
+  counts processes per user namespace, which Linux does from 5.14 on. On
+  an older kernel the backend sets no process limit, logs one warning at
+  startup and keeps the memory and CPU limits; `hermes doctor` reports
+  "bwrap process limit is not available on this kernel".
 
 ```yaml
 terminal:
@@ -214,14 +317,19 @@ detached process could not outlive it.
 - Linux only, with unprivileged user namespaces or a setuid `bwrap`.
 - No seccomp filter: system calls are not filtered. The sandbox is a
   filesystem and process boundary, not a defense against kernel exploits.
-- No cgroup limits: the limits above are per-process rlimits. A command
-  that forks can use more memory in total than `bubblewrap_memory_mb`.
+- No cgroup limits: the memory and CPU limits above are per-process
+  rlimits. A command that forks can use more memory in total than
+  `bubblewrap_memory_mb`, up to that value times `bubblewrap_max_procs`.
 - Network is all or nothing: the `network` profile shares the host network
   with no egress filtering, and the other two have only loopback.
-- The host filesystem is visible: anything your user can read outside the
-  hidden set (`/etc`, other dotfiles, secrets kept inside project
-  directories) is readable by a command. Add to `bubblewrap_binds` only
-  what you want the agent to see, and keep secrets in the hidden paths.
+- The host filesystem outside the dot entries of your home directory is
+  visible: `/etc`, the non-dot entries of your home directory and secrets
+  kept inside project directories are readable by a command. Keep secrets
+  in dot entries, or name them in `bubblewrap_hide`. A dotfiles directory
+  with a non-dot name (`~/dotfiles`) is visible as a whole.
+- The `PATH` rule reads the `PATH` of the Hermes process. A toolchain that
+  only your shell startup files put on `PATH`, in a dot directory the
+  shipped list does not name, needs a `bubblewrap_home_allow` entry.
 - Unix sockets outside `/run/user/<uid>`, `/tmp` and the docker socket <!-- no-tmp: ok — names the paths the sandbox replaces -->
   stay connectable (a read-only mount does not block `connect()`). The
   agent environment variables that name them (`SSH_AUTH_SOCK`,

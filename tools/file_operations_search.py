@@ -491,7 +491,8 @@ class SearchMixin:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
         out: List[str] = []
         for item in self._macos_search_exclusions(path):
-            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
+            out.extend(["--glob", self._escape_shell_arg(f"!{item}"),
+                        "--glob", self._escape_shell_arg(f"!{item}/**")])
         return out
 
     def _path_exists_probe(self, path: str) -> ExecuteResult:
@@ -918,12 +919,17 @@ class SearchMixin:
             scoped_common = posixpath.commonpath(absolute_roots)
             command_roots = [posixpath.relpath(root, scoped_common) for root in absolute_roots]
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
-                for _r, _rel, absolute in effective_exclusions]
+                f"--glob {self._escape_shell_arg(term)}"
+                for _r, _rel, absolute in effective_exclusions
+                for term in (
+                    f"!{posixpath.relpath(absolute, scoped_common)}",
+                    f"!{posixpath.relpath(absolute, scoped_common)}/**",
+                )]
         else:
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
-                for _r, relative, _abs in effective_exclusions]
+                f"--glob {self._escape_shell_arg(term)}"
+                for _r, relative, _abs in effective_exclusions
+                for term in (f"!{relative}", f"!{relative}/**")]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")

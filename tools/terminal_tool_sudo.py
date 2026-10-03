@@ -284,7 +284,10 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         if ch.isspace():
             kind, end = ("skip" if grouped else "ws"), i + 1
             at_start = at_start or ch == "\n"
-        elif ch == "#":
+        elif ch == "#" and (was_start or (i > 0 and command[i - 1] in " \t\n")):
+            # Comments open at word start only (#121759): a bare `#` mid-word
+            # (`a#b`) or after `\r`/`)` is literal. was_start covers operator
+            # positions; the predecessor check covers post-whitespace.
             end = command.find("\n", i)
             kind, end = "comment", (n if end == -1 else end)
         elif background and ch == "\\" and i + 1 < n:

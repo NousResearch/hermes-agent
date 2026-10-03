@@ -5,14 +5,28 @@ const DELETE = "\x7f";
 // Exported so the ChatPage integration and tests share one tunable value.
 export const MOBILE_REPLACEMENT_WINDOW_MS = 350;
 
-function chars(text: string): string[] {
-  return Array.from(text);
+// Created on first use, not at import: Firefox < 125 has no Intl.Segmenter,
+// and a throw while importing ChatPage takes the whole dashboard down.
+let graphemeSegmenter: Intl.Segmenter | null | undefined;
+
+// The PTY composer deletes one grapheme per DEL, so every count of DELs and
+// every tracked-line deletion is in graphemes. Without Intl.Segmenter,
+// fall back to code points.
+export function graphemes(text: string): string[] {
+  if (graphemeSegmenter === undefined) {
+    graphemeSegmenter =
+      typeof Intl.Segmenter === "function"
+        ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+        : null;
+  }
+  if (!graphemeSegmenter) {
+    return Array.from(text);
+  }
+  return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
 }
 
-function removeLastChar(text: string): string {
-  const c = chars(text);
-  c.pop();
-  return c.join("");
+function removeLastGrapheme(text: string): string {
+  return graphemes(text).slice(0, -1).join("");
 }
 
  
@@ -87,7 +101,14 @@ export function shouldTreatInputAsMobileReplacement(
   return isMobileLike && inputType === "insertText" && (data?.length ?? 0) > 1;
 }
 
-export function updatePtyInputLine(currentLine: string, data: string): string {
+// Applies terminal input bytes to a tracked line. `appendText` is false for
+// xterm's hidden textarea, which already holds the text the IME typed and only
+// needs the edits xterm sent on its own (DEL, line boundaries).
+export function applyPtyLineEdits(
+  currentLine: string,
+  data: string,
+  appendText: boolean,
+): string {
   // Escape sequences (arrow keys, home/end, function keys, paste guards)
   // move the cursor or edit the line in ways this flat tracker cannot
   // model — and the per-char loop below would append their printable
@@ -98,18 +119,21 @@ export function updatePtyInputLine(currentLine: string, data: string): string {
     return "";
   }
   let next = currentLine;
-  for (const ch of chars(data)) {
-    if (ch === "\r" || ch === "\n") {
+  // Code points, not graphemes: "\r\n" is one grapheme but two line events.
+  for (const ch of Array.from(data)) {
+    if (ch === "\r" || ch === "\n" || ch === "\x03" || ch === "\x15") {
       next = "";
     } else if (ch === DELETE || ch === "\b") {
-      next = removeLastChar(next);
-    } else if (ch === "\x15") {
-      next = "";
-    } else if (isPlainText(ch)) {
+      next = removeLastGrapheme(next);
+    } else if (appendText && isPlainText(ch)) {
       next += ch;
     }
   }
   return next;
+}
+
+export function updatePtyInputLine(currentLine: string, data: string): string {
+  return applyPtyLineEdits(currentLine, data, true);
 }
 
 export function normalizePtyMobileInput(
@@ -121,7 +145,7 @@ export function normalizePtyMobileInput(
     const replacementLine = replacementLineForMobileInput(currentLine, data);
     if (replacementLine !== null) {
       return {
-        data: DELETE.repeat(chars(currentLine).length) + replacementLine,
+        data: DELETE.repeat(graphemes(currentLine).length) + replacementLine,
         nextLine: replacementLine,
         normalized: true,
       };

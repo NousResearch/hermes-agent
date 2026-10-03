@@ -21,7 +21,10 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static latest: FakeTerminal | null = null;
   options: Record<string, unknown>;
+  textarea = document.createElement("textarea");
+  dataListener: (data: string) => void = () => {};
   rows = 24;
   cols = 80;
   parser = {
@@ -31,6 +34,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.latest = this;
   }
 
   attachCustomKeyEventHandler() {
@@ -55,7 +59,8 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
+  onData(listener: (data: string) => void) {
+    this.dataListener = listener;
     return { dispose() {} };
   }
 
@@ -725,5 +730,147 @@ describe("ChatPage PTY ticket connect deadline", () => {
     // force-close a wedged handshake — the two must not both fire.
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatPage mobile IME textarea edits (#122766)", () => {
+  const graphemes = (text: string) =>
+    Array.from(
+      new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text),
+      ({ segment }) => segment,
+    );
+
+  async function openMobileChat() {
+    vi.stubGlobal("navigator", {
+      ...window.navigator,
+      userAgent: "Mozilla/5.0 (Linux; Android 16) Chrome/153.0 Mobile",
+    });
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    socket.send.mockClear();
+    const term = FakeTerminal.latest!;
+    const { textarea } = term;
+
+    // The Ink composer line the PTY ends up with: one grapheme per DEL.
+    const ptyLine = () => {
+      let line = "";
+      for (const [frame] of socket.send.mock.calls as [string][]) {
+        if (frame.startsWith("\x1b[RESIZE")) continue;
+        for (const ch of frame) {
+          line = ch === "\x7f" ? graphemes(line).slice(0, -1).join("") : line + ch;
+        }
+      }
+      return line;
+    };
+    // Gboard input events as the device traces record them: the IME edits the
+    // textarea at its caret between beforeinput and input; xterm forwards only
+    // insertText, through onData.
+    const imeEdit = (inputType: string, edit: () => void, data: string | null, isComposing = false) => {
+      textarea.dispatchEvent(new InputEvent("beforeinput", { inputType, data }));
+      edit();
+      textarea.dispatchEvent(new InputEvent("input", { inputType, data, isComposing }));
+      if (inputType === "insertText" && data) term.dataListener(data);
+    };
+    const type = (text: string) =>
+      imeEdit("insertText", () => textarea.setRangeText(text, textarea.selectionStart, textarea.selectionEnd, "end"), text);
+    const deleteBack = (count: number, isComposing = false) => {
+      const caret = textarea.selectionStart;
+      const removed = graphemes(textarea.value.slice(0, caret)).slice(-count).join("");
+      imeEdit(
+        "deleteContentBackward",
+        () => textarea.setRangeText("", caret - removed.length, caret, "end"),
+        null,
+        isComposing,
+      );
+    };
+    return { deleteBack, ptyLine, term, textarea, type };
+  }
+
+  it("replays IME deletions xterm drops, so the PTY line matches what the keyboard produced", async () => {
+    const { deleteBack, ptyLine, textarea, type } = await openMobileChat();
+
+    // Scenario A: `xin chaof`. Telex deletes two characters in ONE event.
+    for (const ch of "xin chao") type(ch);
+    deleteBack(2);
+    type("ào");
+    expect(ptyLine()).toBe("xin chào");
+
+    // Scenario B: `vieejt`, one-character deletions, plus a decomposed mark whose
+    // cluster the composer removes with a single DEL.
+    for (const ch of " vie") type(ch);
+    deleteBack(1);
+    type("ê");
+    deleteBack(1);
+    type("e\u0323\u0302");
+    deleteBack(1);
+    type("ệ");
+    type("t");
+    expect(ptyLine()).toBe("xin chào việt");
+
+    // Defensive, not reproduced on a device (scenario D): a caret moved mid-line
+    // (the PTY cursor stays at the end). The retained tail is retyped after the
+    // deletion and the caret is moved to the end, so mid-line editing is not
+    // supported: what is typed next lands at the end, on both sides.
+    textarea.setSelectionRange("xin chào".length, "xin chào".length);
+    deleteBack(1);
+    expect(ptyLine()).toBe("xin chà việt");
+    type("!");
+    expect(textarea.value).toBe("xin chà việt!");
+    expect(ptyLine()).toBe("xin chà việt!");
+
+    // A deletion inside an active composition belongs to the composition path.
+    const line = ptyLine();
+    deleteBack(1, true);
+    expect(ptyLine()).toBe(line);
+  });
+
+  // Picking a suggestion for a reduplicated word: Gboard sends the minimal
+  // diff, so the inserted text can equal the last word left on the line
+  // (`ok ha` + `ha `) or start with the whole line (`ha` + `ha!`). The
+  // deletion already reached the PTY; the insertion is a plain append.
+  it.each([
+    ["ok haja", 2, "ha ", "ok haha "],
+    ["hajo", 2, "ha!", "haha!"],
+  ])("does not re-delete after a replayed deletion: %j", async (typed, removed, inserted, expected) => {
+    const { deleteBack, ptyLine, textarea, type } = await openMobileChat();
+
+    for (const ch of typed) type(ch);
+    deleteBack(removed);
+    type(inserted);
+
+    expect(textarea.value).toBe(expected);
+    expect(ptyLine()).toBe(expected);
+  });
+
+  it("keeps the hidden textarea in step with input xterm forwards itself", async () => {
+    const { term, textarea, type } = await openMobileChat();
+
+    type("đ");
+    type("ã");
+    // xterm consumes a Backspace keydown: it sends DEL and cancels the event,
+    // so the textarea would keep text the line no longer has.
+    term.dataListener("\x7f");
+    expect(textarea.value).toBe("đ");
+
+    // A mouse report is not typed input and leaves the line alone.
+    term.dataListener("\x1b[<64;10;5M");
+    expect(textarea.value).toBe("đ");
+
+    // Enter, ^C, ^U and cursor keys (history recall) leave a line the
+    // textarea cannot model; the IME must start from empty, not stale text.
+    for (const boundary of ["\r", "\x03", "\x15", "\x1b[A"]) {
+      type("ab");
+      term.dataListener(boundary);
+      expect(textarea.value).toBe("");
+    }
   });
 });

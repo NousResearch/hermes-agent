@@ -214,6 +214,16 @@ async def test_request_restart_waits_for_async_delegation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_restart_wait_for_async_delegation_is_bounded(monkeypatch):
+    """A delegation that outlives restart_after_turn_timeout must not block the restart."""
+    runner, _adapter = make_restart_runner()
+    runner._restart_after_turn_timeout = 0.2
+    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 1)
+
+    assert await runner._await_active_work_before_restart() is False
+
+
+@pytest.mark.asyncio
 async def test_request_restart_after_turn_timeout_zero_enters_stop_immediately():
     """restart_after_turn_timeout=0 preserves legacy immediate drain."""
     runner, _adapter = make_restart_runner()

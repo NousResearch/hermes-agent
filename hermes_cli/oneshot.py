@@ -555,6 +555,14 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # Mirrors cli.py / gateway/run.py / acp_adapter/server.py: agent.disabled_toolsets is a
+    # tool-granular subtraction on top of enabled_toolsets — _get_platform_tools only prunes
+    # toolset NAMES, so without this an explicit --toolsets list (or the config default) still
+    # exposed every tool in a disabled toolset (2c12e7ae fixed the same gap for the ACP path).
+    from agent.skill_utils import parse_config_string_list
+
+    disabled_toolsets = parse_config_string_list((cfg.get("agent") or {}).get("disabled_toolsets")) or None
+
     # Oneshot builds AIAgent directly, bypassing cli.py's MCP background discovery and
     # _init_agent's wait, so the construction-time tool snapshot would miss late MCP servers.
     # Idempotent start + bounded wait with the single-query bound (there is no later turn).
@@ -579,6 +587,7 @@ def _run_agent(
             api_mode=runtime.get("api_mode"),
             model=choice.model,
             enabled_toolsets=toolsets_list,
+            disabled_toolsets=disabled_toolsets,
             quiet_mode=True,
             platform="cli",
             session_db=session_db,

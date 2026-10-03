@@ -30,7 +30,7 @@ class TestHandleBusyCommand(unittest.TestCase):
         stub = self._make_cli("queue")
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
+            patch("hermes_cli.config_values.save_config_value") as mock_save,
         ):
             cli_mod.HermesCLI._handle_busy_command(stub, "/busy")
 
@@ -44,7 +44,7 @@ class TestHandleBusyCommand(unittest.TestCase):
         stub = self._make_cli("interrupt")
         with (
             patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch("hermes_cli.config_values.save_config_value", return_value=True) as mock_save,
         ):
             cli_mod.HermesCLI._handle_busy_command(stub, "/busy queue")
 
@@ -56,7 +56,7 @@ class TestHandleBusyCommand(unittest.TestCase):
         stub = self._make_cli("interrupt")
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch("hermes_cli.config_values.save_config_value", return_value=True) as mock_save,
         ):
             cli_mod.HermesCLI._handle_busy_command(stub, "/busy steer")
 
@@ -70,7 +70,7 @@ class TestHandleBusyCommand(unittest.TestCase):
         stub = self._make_cli()
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
+            patch("hermes_cli.config_values.save_config_value") as mock_save,
         ):
             cli_mod.HermesCLI._handle_busy_command(stub, "/busy nonsense")
 

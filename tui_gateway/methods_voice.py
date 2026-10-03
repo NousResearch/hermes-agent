@@ -383,7 +383,7 @@ def _wake_resume_if_owner(owner: "Transport", *, retry_seconds: float = 15.0,
 def _persist_wake_enabled(enabled: bool) -> bool:
     """Write ``wake_word.enabled``; only for explicit gestures (ear toggle, /wake on|off)."""
     try:
-        from cli import save_config_value
+        from hermes_cli.config_values import save_config_value
         return bool(save_config_value("wake_word.enabled", enabled))
     except Exception as e:
         logger.warning("wake: failed to persist wake_word.enabled=%s: %s", enabled, e)

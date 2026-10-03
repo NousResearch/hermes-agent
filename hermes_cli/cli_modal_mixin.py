@@ -62,7 +62,7 @@ def _gated_confirm(self, command, key, *, title, detail, choices, unchanged, alw
     ``persist_failed_msg`` is the full sentence printed when the opt-out could not be saved;
     ``once_verb`` is the legacy fragment spliced into the default sentence.
     """
-    from cli import save_config_value
+    from hermes_cli.config_values import save_config_value
     if not _approval_gate_on(key):
         return "once"
     raw = self._prompt_text_input_modal(title=title, detail=detail, choices=choices)

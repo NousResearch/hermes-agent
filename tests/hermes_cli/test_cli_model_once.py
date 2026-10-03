@@ -57,7 +57,7 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
     printed = []
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: printed.append(str(s)))
-    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not persist")))
+    monkeypatch.setattr("hermes_cli.config_values.save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not persist")))
     monkeypatch.setattr(
         "hermes_cli.inventory.load_picker_context",
         lambda: SimpleNamespace(

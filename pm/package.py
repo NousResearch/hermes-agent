@@ -333,11 +333,41 @@ def _missing_reason(binary: Path, entry: Path) -> str:
     return f"{rel} missing under {entry}; {_entry_listing(entry)}"
 
 
+def _ntstatus_hint(returncode: int) -> str:
+    """Decode a known Windows NTSTATUS fatal-exit code, else an empty string.
+
+    Windows reports loader/CRT deaths as the raw unsigned status — the probe
+    surfaced them as bare numbers twice already: ripgrep's ARM64 rg.exe exited
+    3221225781 (STATUS_DLL_NOT_FOUND) and ffmpeg's win32-x64 build exited
+    3221225785 (STATUS_ENTRYPOINT_NOT_FOUND) on Windows Server 2016, where the
+    MinGW-w64 toolchain's static SetThreadDescription import cannot resolve."""
+    code = returncode - 0xC0000000
+    reason = _NTSTATUS_REASONS.get(code)
+    if reason is None:
+        return ""
+    return f" (0x{returncode:08X} STATUS_{reason[0]}: {reason[1]})"
+
+
+# High half of the 32-bit exit status, keyed off the offset from 0xC0000000.
+_NTSTATUS_REASONS = {
+    0x0005: ("ACCESS_VIOLATION", "the binary crashed on a memory access"),
+    0x001D: ("ILLEGAL_INSTRUCTION", "the binary uses an instruction this CPU lacks"),
+    0x135: ("DLL_NOT_FOUND", "a DLL the binary imports is missing"),
+    0x138: ("ORDINAL_NOT_FOUND", "a DLL is present but lacks an exported ordinal"),
+    0x139: ("ENTRYPOINT_NOT_FOUND",
+            "the binary imports an entry point this Windows version does not "
+            "export; the build likely targets a newer Windows"),
+    0x142: ("DLL_INIT_FAILED", "a DLL's initialization routine failed"),
+    0x409: ("STACK_BUFFER_OVERRUN", "the binary failed a stack-buffer overrun check"),
+}
+
+
 def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:
     """Why a --version probe failed: the exit code plus output tail."""
     out = (proc.stdout or b"") + (proc.stderr or b"")
     tail = out.decode(errors="replace").strip()[-300:]
-    return f"{binary} --version exited {proc.returncode}" + (f": {tail}" if tail else "")
+    return (f"{binary} --version exited {proc.returncode}{_ntstatus_hint(proc.returncode)}"
+            + (f": {tail}" if tail else ""))
 
 
 class Runner:

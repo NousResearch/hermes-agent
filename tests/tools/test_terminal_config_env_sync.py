@@ -147,3 +147,19 @@ def test_save_config_set_bridges_every_cli_terminal_key():
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "
         f"hermes_cli/config.py (set_config_value bridges through it)."
     )
+
+
+def test_docker_tmpfs_sizes_are_bridged_everywhere():
+    """``terminal.docker_workspace_tmpfs_size`` / ``docker_home_tmpfs_size`` cap the tmpfs
+    mounts of non-persistent sandboxes and must reach the container on every entry-point,
+    like docker_shm_size."""
+    cli_map = _cli_env_map()
+    gw_map = _gateway_env_map()
+    save_keys = _save_config_env_sync_keys()
+    for key, env_var in (
+        ("docker_workspace_tmpfs_size", "TERMINAL_DOCKER_WORKSPACE_TMPFS_SIZE"),
+        ("docker_home_tmpfs_size", "TERMINAL_DOCKER_HOME_TMPFS_SIZE"),
+    ):
+        assert cli_map.get(key) == env_var
+        assert gw_map.get(key) == env_var
+        assert key in save_keys

@@ -141,8 +141,8 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
         return True  # cannot compare -> cannot prove death; a misread must not rewrite state
     # Drifted same-host readings (#117505) are not proof of death; a live misread is still
     # bounded by the stale-claim sweep below.
-    from gateway.status import start_time_fingerprints_match
-    return start_time_fingerprints_match(started_at, current)
+    from gateway.status import _process_start_time_matches
+    return _process_start_time_matches(pid, started_at, tolerance=200)
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

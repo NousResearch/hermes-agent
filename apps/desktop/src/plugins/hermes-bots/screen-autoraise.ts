@@ -43,8 +43,9 @@ interface RaiseState {
 }
 
 const raiseState = new Map<string, RaiseState>()
-/** Bot keys whose Screen tab is open right now (mirrors `screen-open`'s tab map without coupling to it). */
-const openTabs = new Set<string>()
+/** Open Screen surfaces per bot key, refcounted: a bot's own tab (`screen-open`) and the
+ *  titlebar's global pane (`screen-titlebar`) can both show the same bot at once. */
+const openTabs = new Map<string, number>()
 
 export function isScreenTool(name: string | undefined): boolean {
   return typeof name === 'string' && SCREEN_TOOL_PREFIXES.some(prefix => name.startsWith(prefix))
@@ -107,14 +108,42 @@ export function shouldAutoRaise(
 }
 
 export function noteScreenTabOpened(bot: RosterRow): void {
-  openTabs.add(botSelectionKey(bot))
+  const key = botSelectionKey(bot)
+
+  openTabs.set(key, (openTabs.get(key) ?? 0) + 1)
+}
+
+function releaseScreenTab(key: string): void {
+  const count = (openTabs.get(key) ?? 0) - 1
+
+  if (count > 0) {
+    openTabs.set(key, count)
+  } else {
+    openTabs.delete(key)
+  }
+}
+
+/** A user Close: hold auto-raise through the current burst (see the file header). */
+export function holdScreenAutoRaise(bot: RosterRow, now = Date.now()): void {
+  const key = botSelectionKey(bot)
+
+  raiseState.set(key, { lastRaisedAt: raiseState.get(key)?.lastRaisedAt ?? 0, closedAt: now })
 }
 
 export function noteScreenTabClosed(bot: RosterRow, now = Date.now()): void {
+  releaseScreenTab(botSelectionKey(bot))
+  holdScreenAutoRaise(bot, now)
+}
+
+/** A surface that shows `bot` for a while without being its tab (the titlebar's
+ *  global pane follows the focused chat). Returns the release; releasing is not
+ *  a user Close, so it sets no hold. */
+export function retainScreenTab(bot: RosterRow): () => void {
   const key = botSelectionKey(bot)
 
-  openTabs.delete(key)
-  raiseState.set(key, { lastRaisedAt: raiseState.get(key)?.lastRaisedAt ?? 0, closedAt: now })
+  noteScreenTabOpened(bot)
+
+  return () => releaseScreenTab(key)
 }
 
 export function handleScreenToolStart(event: RpcEvent, now = Date.now()): boolean {

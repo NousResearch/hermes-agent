@@ -6,6 +6,8 @@ contactIds — stable across renames, see ``/contacts``) · SIMPLEX_ALLOW_ALL_US
 SIMPLEX_AUTO_ACCEPT ('false' disables contact-request auto-accept; default true) ·
 SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) · SIMPLEX_HOME_CHANNEL[_NAME] ·
 HERMES_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
+Config (``platforms.simplex.extra``): files_folder — absolute path of the daemon's ``--files-folder``;
+the daemon reports received-attachment paths relative to it, so they are joined against this base.
 ``websockets`` is imported lazily so the plugin stays discoverable when the package is missing.
 """
 
@@ -14,7 +16,9 @@ import base64
 import contextlib
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import random
 import re
 import time
@@ -121,6 +125,11 @@ class SimplexAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=Platform("simplex"))
         extra = getattr(config, "extra", {}) or {}
         self.ws_url = extra.get("ws_url", "ws://127.0.0.1:5225").rstrip("/")
+        # Mirrors the daemon's ``--files-folder`` flag. The daemon reports received-file
+        # paths relative to it and offers no WS API to query it (``/_files_folder`` is a
+        # setter only), so the base has to be configured on this side.
+        self.files_folder = extra.get("files_folder", "")
+        self._warned_relative_files = False  # one warning per adapter, not per message
         # Auto-accept is on by default; env wins over the ``_env_enablement`` seed.
         env_auto = _get_scoped_secret("SIMPLEX_AUTO_ACCEPT")
         if env_auto is not None:
@@ -362,6 +371,22 @@ class SimplexAdapter(BasePlatformAdapter):
             file_source = file_info.get("fileSource", {}) or {}
             file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
             file_id = file_info.get("fileId")
+            # The daemon reports filePath relative to its --files-folder; downstream
+            # consumers need an absolute path they can actually open. The path belongs
+            # to the daemon's world, so judge it by daemon semantics instead of the
+            # host's os.path (ntpath on Windows, and since Python 3.13 ntpath.isabs
+            # judges a drive-less POSIX root relative): a POSIX daemon's "/srv/x.jpg"
+            # and a Windows daemon's "C:/x.jpg" must both pass through untouched.
+            if file_path and not (posixpath.isabs(file_path) or ntpath.isabs(file_path)):
+                if self.files_folder:
+                    file_path = posixpath.join(self.files_folder, file_path)
+                elif not self._warned_relative_files:
+                    self._warned_relative_files = True
+                    logger.warning(
+                        "SimpleX: received a relative file path %r but platforms.simplex.extra.files_folder"
+                        " is unset; point it at the daemon's --files-folder or the file cannot be opened",
+                        file_path,
+                    )
             ext = Path(file_path).suffix.lower() if file_path else ""
             if not ext and file_info.get("fileName", ""):
                 ext = Path(file_info["fileName"]).suffix.lower()

@@ -984,12 +984,23 @@ function Invoke-SourceCompletion([bool]$Desktop) {
     $bootPy = Get-BootstrapPython
     $completionArgs = @('-I', '-B', '-X', 'utf8', 'hermes_cli/source_completion.py', '--source', $InstallDir)
     if ($Desktop) { $completionArgs += '--desktop' }
+    # Installer-local builds must stamp the checkout, not a CI shell's ref.
+    # Preserve the caller's process environment (including irm | iex users).
+    $githubVars = @('GITHUB_SHA', 'GITHUB_REF_NAME', 'GITHUB_HEAD_REF')
+    $previousGithub = @{}
+    foreach ($name in $githubVars) {
+        $previousGithub[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
     Push-Location $InstallDir
     try {
         Invoke-Logged "Building the hermes command and apps" { & $bootPy @completionArgs }
         $code = $LASTEXITCODE
     } finally {
         Pop-Location
+        foreach ($name in $githubVars) {
+            [Environment]::SetEnvironmentVariable($name, $previousGithub[$name], 'Process')
+        }
     }
     if ($code) { Fail "app products or command publication failed (exit $code)" }
     Write-Ok "app products and hermes command ready"
@@ -1158,11 +1169,16 @@ function Confirm-DesktopArtifact {
 }
 
 function Stage-Complete {
-    $commit = $Commit
-    if (-not $commit) {
-        if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
+    # Rollback protection can leave HEAD ahead of the requested -Commit.
+    # A marker describes the installed checkout; the pin is only a fallback
+    # when Git cannot inspect an archive checkout.
+    $requestedCommit = $Commit
+    $commit = $null
+    if (Ensure-Git) {
         $commit = Invoke-Native { git -C $InstallDir rev-parse HEAD 2>$null }
+        if ($LASTEXITCODE -ne 0) { $commit = $null }
     }
+    if (-not $commit) { $commit = $requestedCommit }
     if ($commit) {
         $marker = [ordered]@{
             schemaVersion = 1

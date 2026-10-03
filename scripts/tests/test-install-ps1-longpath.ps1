@@ -97,8 +97,7 @@ function Join-Parts {
 # diagnostics still go to stderr; the machine-readable contract is on stdout,
 # which is the only stream that survives everywhere.
 #
-# Environment overrides are applied to this process and restored afterwards,
-# since that is what the child inherits.
+# Environment overrides are applied only to the child, preserving the parent.
 function Invoke-Normalization {
     param(
         [hashtable]$Environment = @{},
@@ -121,49 +120,40 @@ function Invoke-Normalization {
     foreach ($key in $Environment.Keys) { $env0[$key] = $Environment[$key] }
 
     $psExe = (Get-Process -Id $PID).Path
-    $outFile = [System.IO.Path]::GetTempFileName()
-    $errFile = [System.IO.Path]::GetTempFileName()
-    $saved = @{}
-    foreach ($key in $env0.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
-
+    $callArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installScript) + $ExtraArgs + @('-ShowResolvedPaths')
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $psExe
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($key in $env0.Keys) { $startInfo.EnvironmentVariables[$key] = [string]$env0[$key] }
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $callArgs) { $startInfo.ArgumentList.Add($argument) }
+    } else {
+        # Windows PowerShell 5.1 uses .NET Framework without ArgumentList.
+        # Quote each native argument, doubling backslashes before quotes and
+        # the closing quote so explicit InstallDir values retain their bytes.
+        $quoted = $callArgs | ForEach-Object {
+            '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+        }
+        $startInfo.Arguments = $quoted -join ' '
+    }
+    $child = New-Object System.Diagnostics.Process
+    $child.StartInfo = $startInfo
     try {
-        foreach ($key in $env0.Keys) { Set-Item -Path "Env:$key" -Value $env0[$key] }
-        $callArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installScript) + $ExtraArgs + @('-ShowResolvedPaths')
-        # The call operator, not Start-Process: on Windows Start-Process does
-        # not hand the parent's modified environment block to the child, so the
-        # installer saw the runner's real TEMP instead of the aliased one this
-        # case sets, and every rewrite assertion came back "not rewritten".
-        # `&` inherits the environment on every host.
-        #
-        # stderr is merged into the same file rather than redirected separately:
-        # Windows PowerShell 5.1 wraps ANY stderr from a native command in a
-        # NativeCommandError record, and a bare `2>$file` still emits that
-        # record into this script's error stream, which fails the 5.1 lane even
-        # under 'Continue'. Merging with 2>&1 keeps the bytes and produces no
-        # error record. The installer's stdout here is a single JSON object and
-        # its diagnostics are all `[hermes] `-prefixed, so the two separate
-        # cleanly on the way back out.
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        $global:LASTEXITCODE = 0
-        try {
-            & $psExe @callArgs *> $outFile
-        } finally {
-            $ErrorActionPreference = $prevEAP
-        }
-        $exitCode = $LASTEXITCODE
-        $raw = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue)
-        $stderr = ($raw | Where-Object { $_ -like '`[hermes`]*' }) -join "`n"
-        $stdout = ($raw | Where-Object { $_ -notlike '`[hermes`]*' }) -join "`n"
+        $null = $child.Start()
+        # Drain both pipes concurrently. PowerShell can emit startup diagnostics
+        # for a deliberately invalid TEMP before install.ps1 normalizes it;
+        # those bytes belong to stderr, not the resolved-path JSON on stdout.
+        $outTask = $child.StandardOutput.ReadToEndAsync()
+        $errTask = $child.StandardError.ReadToEndAsync()
+        $child.WaitForExit()
+        $stdout = $outTask.Result
+        $stderr = $errTask.Result
+        $exitCode = $child.ExitCode
     } finally {
-        foreach ($key in $saved.Keys) {
-            if ($null -eq $saved[$key]) {
-                Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
-            } else {
-                Set-Item -Path "Env:$key" -Value $saved[$key]
-            }
-        }
-        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        $child.Dispose()
     }
 
     if ($null -eq $stdout) { $stdout = '' }

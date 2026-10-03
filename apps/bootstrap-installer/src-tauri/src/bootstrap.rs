@@ -299,13 +299,11 @@ fn read_existing_marker_commit(marker_path: &Path) -> Option<String> {
     is_full_sha(commit).then(|| commit.to_string())
 }
 
-/// Same order as install.ps1's Stage-Complete: the pinned commit, else the
-/// checkout's HEAD; the prior receipt is the last resort.
+/// Record the checkout that actually completed installation, not a stale
+/// requested pin. An archive pin or prior receipt provides the fallback.
 fn resolve_marker_commit(install_root: &Path, pin: &Pin, marker_path: &Path) -> Option<String> {
-    pin.commit
-        .clone()
-        .filter(|commit| !commit.trim().is_empty())
-        .or_else(|| read_checkout_head(install_root))
+    read_checkout_head(install_root)
+        .or_else(|| pin.commit.clone().filter(|commit| !commit.trim().is_empty()))
         .or_else(|| read_existing_marker_commit(marker_path))
 }
 
@@ -1208,6 +1206,48 @@ mod tests {
             resolve_hermes_desktop_app(&root).is_none(),
             "no resolved app when nothing has been built"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_records_installed_head_ahead_of_requested_pin() {
+        let root = unique_tmp_dir("marker-installed-head");
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git should run")
+        };
+
+        assert!(run_git(&["init", "-q"]).status.success());
+        let commit = run_git(&[
+            "-c",
+            "user.name=Hermes Test",
+            "-c",
+            "user.email=hermes@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "installed",
+        ]);
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        let head = run_git(&["rev-parse", "HEAD"]);
+        assert!(head.status.success());
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+        let pin = Pin {
+            commit: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            branch: Some("main".to_string()),
+        };
+        let marker =
+            write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+
+        assert_eq!(marker["pinnedCommit"], head);
         let _ = std::fs::remove_dir_all(&root);
     }
 

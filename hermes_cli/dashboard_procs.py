@@ -602,8 +602,8 @@ def _kill_stale_dashboard_processes(
     ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
     used by ``dashboard --stop`` and the per-profile update cleanup.
 
-    Manually-started dashboards are not auto-restarted because we don't know the original launch args
-    (--host, --port, --insecure, --tui, --no-open). See #68934.
+    Without ``restart_managed``, stopped manual backends stay down; only the update path captures
+    their original launch args (--host, --port, --insecure, --tui, --no-open). See #68934.
     *already_restarted_units* names units (no ``.service`` suffix) the caller already restarted directly —
     e.g. ``hermes update``'s systemd fleet-restart loop, which restarts ``hermes-serve*`` units before this
     function runs. Without excluding them, a Serve-only install's freshly restarted process is found again
@@ -625,7 +625,7 @@ def _kill_stale_dashboard_processes(
     pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
-    # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
+    # Snapshot supervisor ownership and argv BEFORE killing (they die with the process).
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
     pid_launchd: dict[int, tuple[str, str, int | None]] = {}
@@ -641,12 +641,13 @@ def _kill_stale_dashboard_processes(
     def _launchd_owner(pid: int, cmdline: list[str] | None):
         return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
 
-    if restart_managed and sys.platform != "win32":
+    if restart_managed:
         for pid in pids:
-            pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
-            pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
-            if pid_service[pid]:
-                continue
+            if sys.platform != "win32":
+                pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
+                pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
+                if pid_service[pid]:
+                    continue
             cmdline = _dash._dashboard_cmdline_for_pid(pid)
             if launchd_jobs and (job := _launchd_owner(pid, cmdline)):
                 pid_launchd[pid] = job
@@ -1015,4 +1016,3 @@ def _reap_orphaned_desktop_local_serves(
     with contextlib.suppress(Exception):
         print(f"⟲ Reaped {len(killed)} orphaned desktop-local serve backend(s) ({reason}): {killed or matched}")
     return {"matched": matched, "killed": killed, "failed": failed}
-

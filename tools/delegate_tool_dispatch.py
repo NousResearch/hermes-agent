@@ -472,6 +472,13 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )
+    from tools.delegate_tool_config import _get_sequential
+    if _get_sequential(batch.parent_agent):
+        # Model-facing callers request background dispatch automatically. Override
+        # that here for every entry point, and keep all tasks in this batch serial.
+        logger.info("delegate_task: sequential mode; parent waits for child completion.")
+        batch = replace(batch, max_children=1)
+        background = False
     if background:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

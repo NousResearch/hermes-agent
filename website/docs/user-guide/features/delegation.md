@@ -189,6 +189,43 @@ When a top-level agent provides a `tasks` array, Hermes returns one background h
 
 Set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead. The model-facing `group` field and grouping guidance are only advertised when this option is enabled. Start a new session after changing it so the tool schema can reflect the setting without changing an existing conversation's cached prefix. Old calls containing `group` remain accepted; with the option off, the whole call still returns together.
 
+For workflows that need one delegated child to finish before another starts, set
+`delegation.sequential: true`. Each accepted batch runs one child at a time and
+returns all results before the parent resumes, even when the caller requests
+background dispatch. Independent completion delivery is disabled in this mode.
+`max_concurrent_children` still limits how many tasks a single call accepts;
+setting it to 1 alone does not make the parent wait for background work.
+The agent snapshots this option with its tool definitions. Changing the profile
+configuration does not change an existing agent's dispatch policy or its cached
+tool description; start a new session to use the new policy. This does not create
+task dependencies or pass one child's results into the next child's assignment.
+
+This controls the current delegation workflow, not other sessions or processes
+using the same inference server. It is off by default and is not a general
+speedup: parallel tool work or a server that batches requests can benefit from
+normal background delegation.
+
+For larger workflows, reuse the existing orchestration mechanisms:
+
+- **Parallel work, then sequential verification:** [Kanban Swarm v1](./kanban#kanban-swarm-topology-helper)
+  creates worker cards, a verifier gated on every worker, and a synthesizer gated
+  on the verifier. Dispatch limits determine how many eligible workers actually run.
+- **Sequential preparation, then parallel work:** use [Kanban dependencies](./kanban-tutorial)
+  to gate independent implementation cards on a planning card, then gate the final
+  verification card on every implementation card. Create the dependency edges
+  before dispatch, rather than trying to gate work that has already started.
+- **Communication with other agents:** [A2A](../messaging/a2a) provides peer discovery
+  and calls between configured agents. Parent steering of a delegated child is a
+  different mechanism; it does not expose arbitrary sibling messaging.
+
+[Towards a Science of Scaling Agent Systems](https://arxiv.org/abs/2512.08296)
+distinguishes **Centralized MAS** (orchestrator/worker coordination) from **Hybrid
+MAS** (orchestrator plus directed peer communication). These describe communication
+topology, independently of whether execution is sequential or concurrent. A
+phased schedule or shared task board alone does not establish Hybrid MAS. Choose
+using verified task outcomes, elapsed time and resource cost on the intended
+backend; the paper does not establish a universally best architecture for Hermes.
+
 When independent completions are enabled:
 
 - Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
@@ -636,6 +673,7 @@ delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
+  # sequential: false                       # true = one child at a time; parent waits for the complete batch
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.

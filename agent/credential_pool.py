@@ -6,6 +6,7 @@ from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 
 import logging
+from contextlib import nullcontext
 import os
 import random
 import threading
@@ -869,6 +870,9 @@ def _update_root_pool_rows(
     provider: str, payloads: List[Dict[str, Any]], global_path: Path,
     *, status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
+    policy_update: bool = False,
+    expected_policy_generation: Optional[int] = None,
+    expected_policy_source: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
@@ -903,7 +907,14 @@ def _update_root_pool_rows(
             if updated != disk_entry:
                 changed = True
             merged.append(updated)
-        if changed:
+        from agent.credential_pool_policy import policy_generation, preserve_newer_policy
+        generation = policy_generation(store, provider)
+        if policy_update:
+            store.setdefault("credential_pool_generations", {})[provider] = generation + 1
+        elif ((expected_policy_generation is not None and expected_policy_generation != generation)
+              or (expected_policy_source is not None and expected_policy_source != str(global_path))):
+            merged = preserve_newer_policy(merged, existing_list)
+        if changed or policy_update:
             pool[provider] = merged
             _save_auth_store(store, target_path=global_path)
         return merged
@@ -916,6 +927,9 @@ def persist_pool_entries(
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
+    policy_update: bool = False,
+    expected_policy_generation: Optional[int] = None,
+    expected_policy_source: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -934,6 +948,8 @@ def persist_pool_entries(
                 return _update_root_pool_rows(
                     provider, payloads, global_path,
                     status_cleared_ids=status_cleared_ids, token_bases=token_bases,
+                    policy_update=policy_update, expected_policy_generation=expected_policy_generation,
+                    expected_policy_source=expected_policy_source,
                 )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
@@ -947,7 +963,9 @@ def persist_pool_entries(
             return None
     return write_credential_pool(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
-        token_bases=token_bases,
+        token_bases=token_bases, policy_update=policy_update,
+        expected_policy_generation=expected_policy_generation,
+        expected_policy_source=expected_policy_source,
     )
 
 
@@ -1013,6 +1031,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._borrowed_root_ids: Set[str] = set()
         self._persisted_token_pairs: Dict[str, Tuple[Any, Any]] = {}
         self._strategy = get_pool_strategy(provider)
+        from hermes_constants import hermes_home_key
+        self._policy_home = hermes_home_key()
+        self._policy_generation = 0
+        self._policy_source = str(auth_mod._auth_file_path())
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
         # design) still serializes its pool mutations; in-lock callers
@@ -1147,16 +1169,23 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         *,
         removed_ids: Optional[List[str]] = None,
         status_cleared_ids: Optional[List[str]] = None,
+        policy_update: bool = False,
     ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
-        with self._lock:
+        with self._lock, (_auth_store_lock() if policy_update else nullcontext()):
             payloads = [entry.to_dict() for entry in self._entries]
             written = persist_pool_entries(
                 self.provider, payloads,
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
                 token_bases=self._persisted_token_pairs,
+                policy_update=policy_update,
+                expected_policy_generation=getattr(self, "_policy_generation", None),
+                expected_policy_source=getattr(self, "_policy_source", None),
             )
+            if policy_update:
+                _, self._policy_generation, self._policy_source = read_credential_pool(
+                    self.provider, include_generation=True)
             if written is None:
                 return
             rows = auth_mod._entry_ids(written)
@@ -3067,13 +3096,16 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     return seed.result
 
 
-def load_pool(provider: str) -> CredentialPool:
+def load_pool(provider: str, *, policy_snapshot=None) -> CredentialPool:
     provider = (provider or "").strip().lower()
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
         # before the clone-strip / root write-through existed (#100339).
         auth_mod.heal_forked_single_use_oauth_grants(provider)
-    raw_entries = read_credential_pool(provider)
+    if policy_snapshot is None:
+        raw_entries, generation, source = read_credential_pool(provider, include_generation=True)
+    else:
+        raw_entries, generation, source = policy_snapshot
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
     # Ownership (auth.json read) after the heal above; re-read at the tail only if _persist() ran.
     owns_provider: Optional[bool] = None
@@ -3128,6 +3160,8 @@ def load_pool(provider: str) -> CredentialPool:
 
     pool = CredentialPool(provider, entries)
     pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
+    pool._policy_generation = generation
+    pool._policy_source = source
     if changed:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this

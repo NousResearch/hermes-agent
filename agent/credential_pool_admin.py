@@ -59,7 +59,7 @@ class CredentialPoolAdminMixin:
                 return None
             removed = self._entries.pop(index - 1)
             self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
-            self._persist(removed_ids=[removed.id])
+            self._persist(removed_ids=[removed.id], policy_update=True)
             if self._current_id == removed.id:
                 self._current_id = None
             return removed
@@ -78,7 +78,7 @@ class CredentialPoolAdminMixin:
             # Apply load-time ordering now so the reported position survives reload.
             _normalize_pool_priorities(self.provider, entries)
             self._entries = sorted(entries, key=lambda e: e.priority)
-            self._persist()
+            self._persist(policy_update=True)
             return self._find(lambda e: e.id == credential_id)
 
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
@@ -124,10 +124,12 @@ class CredentialPoolAdminMixin:
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
                 written = write_credential_pool(
                     self.provider, [e.to_dict() for e in self._entries],
-                    token_bases=self._persisted_token_pairs,
+                    token_bases=self._persisted_token_pairs, policy_update=True,
                 )
+                _, self._policy_generation, self._policy_source = auth_mod.read_credential_pool(
+                    self.provider, include_generation=True)
                 self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
                 self._borrowed_root_ids = set()
             else:
-                self._persist()
+                self._persist(policy_update=True)
             return entry

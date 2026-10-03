@@ -1703,7 +1703,7 @@ export const esOverrides = {
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
       attachmentSizeTitle: 'Tamaño máximo de vista previa / carga de imagen',
       attachmentSizeDesc:
-        'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
+        'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 25. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
       showOptions: 'Mostrar opciones'

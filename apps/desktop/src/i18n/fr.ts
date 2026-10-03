@@ -1709,7 +1709,7 @@ export const frOverrides = {
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",
       attachmentSizeTitle: 'Taille maximale de chargement des aperçus / images',
       attachmentSizeDesc:
-        "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
+        "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 25. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
       showOptions: 'Afficher les options'

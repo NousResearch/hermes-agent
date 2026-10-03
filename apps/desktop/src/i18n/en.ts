@@ -1391,7 +1391,7 @@ export const en: Translations = {
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
-        'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
+        'How big a local file Desktop will load for previews and image attach, in MB. Default is 25. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       voiceShortcutHintTitle: 'Voice recording shortcut',

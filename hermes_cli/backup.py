@@ -730,6 +730,13 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    # ``--verify-only`` runs the same pipeline into a throwaway home and never publishes
+    # anything: the pre-rebuild gate that proves a capture is restorable (#117005).
+    if getattr(args, "verify_only", False):
+        from hermes_cli.backup_verify import run_verify_import
+
+        run_verify_import(args)
+        return
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():

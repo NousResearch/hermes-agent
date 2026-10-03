@@ -318,15 +318,14 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     elif _enabled_without_own_credential(platform, config):
-        # Enabled block but the credential was removed (duplicate-token cleanup): a routed satellite
-        # borrows its host bot; any routed-but-unprovable host fails closed; with no route at all the
-        # profile keeps its pre-existing behaviour.
+        # Enabled token-platform block with no usable credential of this profile's own (e.g. after
+        # duplicate-token cleanup): borrow the unique host bot, otherwise refuse before transport —
+        # a tokenless send can never deliver.
         host, reason = _shared_bot_host(platform_name, platform, config)
         if host is not None:
             return platform, host.pconfig, entry, None
-        if not reason.startswith(_no_host_route_prefix()):
-            msg = _not_configured_error(platform_name, platform, entry)
-            return None, None, None, f"{msg} Host-bot fallback: {reason}."
+        msg = _not_configured_error(platform_name, platform, entry)
+        return None, None, None, f"{msg} Host-bot fallback: {reason}." if reason else msg
     if pconfig is None:
         # Credentialless multiplex satellite: send through the host profile's bot that already
         # serves this profile via gateway.profile_routes (tools/send_message_shared_bot.py).
@@ -347,11 +346,6 @@ def _enabled_without_own_credential(platform, config):
     except Exception:  # noqa: BLE001 - unknown: let the host lookup decide and fail closed
         logger.debug("own-credential check failed for %s", platform, exc_info=True)
         return True
-
-
-def _no_host_route_prefix():
-    from tools.send_message_shared_bot import NO_HOST_ROUTE_PREFIX
-    return NO_HOST_ROUTE_PREFIX
 
 
 def _shared_bot_host(platform_name, platform, config):

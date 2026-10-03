@@ -31,10 +31,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Reason prefix for a complete census in which no profile routes this platform to the current one.
-NO_HOST_ROUTE_PREFIX = "no profile has an enabled"
-
-
 @dataclass(frozen=True)
 class SharedBotHost:
     name: str
@@ -111,16 +107,20 @@ def own_credential_present(platform, config) -> bool:
     from gateway.config import _getenv
     from gateway.config_env import _ENV_ENABLE_CREDENTIALS
     pconfig = config.platforms.get(platform)
-    if pconfig is not None and (getattr(pconfig, "token", None) or getattr(pconfig, "api_key", None)):
+    if pconfig is not None and any(_usable(getattr(pconfig, attr, None)) for attr in ("token", "api_key")):
         return True
-    return any((_getenv(name) or "").strip() for name in _ENV_ENABLE_CREDENTIALS.get(platform) or ())
+    return any(_usable(_getenv(name)) for name in _ENV_ENABLE_CREDENTIALS.get(platform) or ())
+
+
+def _usable(value) -> bool:
+    """A credential value is usable when it is a non-blank string (no network validation)."""
+    return isinstance(value, str) and bool(value.strip())
 
 
 def resolve_shared_bot_host(platform_name: str, platform, config) -> tuple[Optional[SharedBotHost], str]:
     """``(host, "")`` when the current profile may send through a host profile's bot, else
-    ``(None, reason)`` with a one-line, secret-free reason. A reason of exactly
-    :data:`NO_HOST_ROUTE_PREFIX`-prefixed text means the census was complete and nothing routes
-    here; every other refusal is an eligible-but-unprovable host (ambiguous, unreadable, no token)."""
+    ``(None, reason)`` with a one-line, secret-free reason (no route, ambiguous, unreadable census,
+    host without token). Every refusal is fail-closed for the caller."""
     from gateway.config import PLATFORM_TOKEN_ENV_NAMES, PlatformConfig
     from hermes_cli.profiles import get_active_profile_name
     from hermes_constants import get_hermes_home
@@ -144,7 +144,7 @@ def resolve_shared_bot_host(platform_name: str, platform, config) -> tuple[Optio
             logger.debug("profile_routes unreadable for %s", home, exc_info=True)
             unreadable.append(name)
     if not candidates and not unreadable:
-        return None, (f"{NO_HOST_ROUTE_PREFIX} gateway.profile_routes {platform_name} entry for "
+        return None, (f"no profile has an enabled gateway.profile_routes {platform_name} entry for "
                       f"profile '{current_name}' with bot_profile unset")
     if len(candidates) > 1 or unreadable:
         # Only a live gateway verified to serve this profile establishes authority independently

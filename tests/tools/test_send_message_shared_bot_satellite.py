@@ -211,13 +211,57 @@ def test_enabled_block_without_own_token_still_borrows(estate):
     assert _env_snapshot() == before
 
 
-def test_enabled_block_without_route_keeps_existing_behaviour(estate):
-    """No route anywhere: an enabled credentialless block is returned as before (no new refusal)."""
+def test_enabled_block_without_route_refuses_before_transport(estate):
+    """No route anywhere: an enabled credentialless block fails closed with the not-configured error
+    and never reaches the transport with token=None (settled: "Ambiguous or none -> fail closed")."""
     root, gen, sat = estate
     _write_host(gen, [])
     (sat / "config.yaml").write_text("platforms:\n  slack:\n    enabled: true\n", encoding="utf-8")
     _, pconfig, _, err = _resolve_platform_config("slack", load_gateway_config())
-    assert err is None and pconfig is not None and not pconfig.token
+    assert pconfig is None and "not configured" in err and "no profile has an enabled" in err
+    reached = []
+
+    async def dry_sender(*args, **kwargs):
+        reached.append(args[1].token)
+        return {"success": True}
+
+    with patch("tools.send_message_tool._send_to_platform", side_effect=dry_sender):
+        result = json.loads(send_message_tool({"action": "send", "target": "slack:C0BTM8L69HQ", "message": "dry"}))
+    assert not reached and "not configured" in result["error"]
+
+
+@pytest.mark.parametrize("blank", ['"   "', '""', '"\\t"'])
+def test_blank_config_token_borrows_host(estate, blank):
+    """A blank/whitespace config token is not a usable own credential: the unique host still lends."""
+    _, _, sat = estate
+    (sat / "config.yaml").write_text(f"platforms:\n  slack:\n    enabled: true\n    token: {blank}\n", encoding="utf-8")
+    before = _env_snapshot()
+    _, pconfig, _, err = _resolve_platform_config("slack", load_gateway_config())
+    assert err is None and pconfig.token == HOST_TOKEN
+    assert _env_snapshot() == before
+
+
+def test_blank_config_token_without_host_fails_closed(estate):
+    _, gen, sat = estate
+    _write_host(gen, [])
+    (sat / "config.yaml").write_text('platforms:\n  slack:\n    enabled: true\n    token: "   "\n', encoding="utf-8")
+    _, pconfig, _, err = _resolve_platform_config("slack", load_gateway_config())
+    assert pconfig is None and "not configured" in err
+
+
+def test_blank_env_token_borrows_host(estate, monkeypatch):
+    _, _, sat = estate
+    (sat / "config.yaml").write_text("platforms:\n  slack:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "   ")
+    _, pconfig, _, err = _resolve_platform_config("slack", load_gateway_config())
+    assert err is None and pconfig.token == HOST_TOKEN
+
+
+def test_own_config_token_unchanged(estate):
+    _, _, sat = estate
+    (sat / "config.yaml").write_text(f"platforms:\n  slack:\n    enabled: true\n    token: {OWN_TOKEN}\n", encoding="utf-8")
+    _, pconfig, _, err = _resolve_platform_config("slack", load_gateway_config())
+    assert err is None and pconfig.token == OWN_TOKEN
 
 
 def test_enabled_block_with_ambiguous_host_fails_closed(estate):

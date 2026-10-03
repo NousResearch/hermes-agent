@@ -636,6 +636,7 @@ _REASONING_ECHO_RULES: tuple = (
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
+    ("fireworks", frozenset(), frozenset({"fireworks", "fireworks-ai", "fw"}), (), ("api.fireworks.ai",)),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 
@@ -654,14 +655,14 @@ def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_u
 
 
 def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> "str | None":
-    """``"kimi"`` / ``"deepseek"`` / ``"mimo"`` (first match in table order) when the
-    endpoint enforces reasoning_content echo-back, else ``None`` (strip side)."""
+    """First matching family whose endpoint consumes reasoning_content on replay,
+    else ``None`` (strip side)."""
     families = (rule[0] for rule in _REASONING_ECHO_RULES)
     return next((f for f in families if matches_reasoning_echo_family(f, provider, model, base_url)), None)
 
 
 def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
-    """True when the endpoint requires reasoning_content echo-back."""
+    """True when reasoning_content must be replayed for reasoning continuity."""
     return reasoning_echo_family(provider, model, base_url) is not None
 
 

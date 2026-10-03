@@ -109,15 +109,26 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
 const textSegments = (segments: Msg[]) =>
   segments.filter(msg => msg.role === 'assistant' && msg.kind !== 'diff').map(msg => msg.text)
 
-const finalTail = (finalText: string, segments: Msg[]) => {
+const finalTail = (finalText: string, segments: Msg[], extendOnly = false) => {
   let tail = finalText
 
   for (const text of textSegments(segments)) {
     const trimmed = text.trim()
 
-    if (trimmed && tail.startsWith(trimmed)) {
-      tail = tail.slice(trimmed.length).trimStart()
+    if (!trimmed || !tail.startsWith(trimmed)) {
+      continue
     }
+
+    const rest = tail.slice(trimmed.length).trimStart()
+
+    // `extendOnly`: a segment the final repeats verbatim is a bubble of its own
+    // (#65919 review: duplicate-message blocker) — strip it only when the final
+    // adds text on top, else the final would collapse into an empty duplicate.
+    if (extendOnly && !rest) {
+      continue
+    }
+
+    tail = rest
   }
 
   return tail
@@ -652,15 +663,22 @@ class TurnController {
     }
 
     const split = splitReasoning(rawText)
-    // Only dedupe segments AFTER the interim boundary — interim-sealed
-    // segments are preserved even if the final text includes them.
-    // Exception: when response_previewed is true, the final text is the
-    // same model response that was published provisionally as an interim
-    // message. Dedupe against ALL segments (including sealed interims) so
-    // the identical text doesn't render as a duplicate message. (#65919
-    // review: duplicate-message blocker)
-    const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
-    const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
+    // Dedupe the final against the segments it repeats, sealed ones first.
+    const boundary = this.interimBoundaryIndex ?? 0
+
+    // Post-boundary segments dedupe as before; an interim-SEALED segment is
+    // stripped only when the final extends it with new text. A verbatim repeat
+    // stays a bubble of its own (#65919) instead of collapsing into an empty
+    // duplicate, while an extended sealed lead-in stops rendering twice
+    // (#126524). response_previewed means the final IS the provisional interim
+    // republished, so then every segment dedupes.
+    const finalText = payload.response_previewed
+      ? finalTail(split.text, this.segmentMessages)
+      : finalTail(
+          finalTail(split.text, this.segmentMessages.slice(0, boundary), true),
+          this.segmentMessages.slice(boundary)
+        )
+
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc

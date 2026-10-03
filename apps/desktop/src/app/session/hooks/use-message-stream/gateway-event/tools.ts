@@ -6,7 +6,7 @@ import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
-import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { isTerminalSubagentCompletion, promoteDelegateFallbackOwnership, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
@@ -158,25 +158,25 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-    // A Stop interrupts the parent TURN, not the children: a delegation can
-    // still be finishing in the background, and its `subagent.complete` is the
-    // only thing that terminalizes the row. Dropping it leaves a permanently
-    // 'running' spinner (#75505). Terminal completions are accepted past the
-    // interrupt; only live progress keeps the guard, so a stopped turn's
-    // late mid-flight frames still can't repaint its stream. upsertSubagent's
-    // retired-id and terminal-status guards make a stale completion a no-op.
+    // Terminal child completion still settles rows after parent interruption.
+    // Only creation events can promote or prune fallback ownership.
     const acceptWhileInterrupted = isTerminalSubagentCompletion(event.type, payload)
 
     if (sessionId && payload && (!sessionInterrupted(sessionId) || acceptWhileInterrupted)) {
-      if (!nativeSubagentSessionsRef.current.has(sessionId)) {
+      const creationCapable = event.type === 'subagent.spawn_requested' || event.type === 'subagent.start'
+      const ownedPayload = creationCapable
+        ? promoteDelegateFallbackOwnership(sessionId, payload as Record<string, unknown>)
+        : (payload as Record<string, unknown>)
+
+      if (creationCapable && !nativeSubagentSessionsRef.current.has(sessionId)) {
         pruneDelegateFallbackSubagents(sessionId)
       }
 
       nativeSubagentSessionsRef.current.add(sessionId)
       upsertSubagent(
         sessionId,
-        payload as Record<string, unknown>,
-        event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
+        ownedPayload,
+        creationCapable,
         event.type
       )
     }

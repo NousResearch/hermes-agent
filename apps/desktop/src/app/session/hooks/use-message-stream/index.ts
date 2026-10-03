@@ -854,9 +854,20 @@ export function useMessageStream({
         // turn completing without deltas still starts its own occurrence.
         const hasCurrentResponse = Boolean(streamId || state.sawAssistantPayload || interimBoundaryPending)
 
-        const lastUserIndex = prev.findLastIndex(
-          message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
-        )
+        const currentResponseIndex = streamId ? prev.findIndex(message => message.id === streamId) : -1
+        const lastUserIndex = prev.findLastIndex((message, index) => {
+          if (message.role !== 'user') return false
+          const syntheticQueue = message.id === `user-queued-${sessionId}`
+          const durableQueue =
+            message.queuedPrompt === true &&
+            typeof message.rowId === 'number' &&
+            Number.isSafeInteger(message.rowId) &&
+            message.rowId > 0
+          // The same accepted row becomes this turn's prompt after dispatch.
+          // Only a queue beyond the current reply belongs to the next turn.
+          const followsResponse = currentResponseIndex >= 0 ? index > currentResponseIndex : syntheticQueue
+          return !(hasCurrentResponse && followsResponse && (syntheticQueue || durableQueue))
+        })
 
         const streamIndex = streamId
           ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)

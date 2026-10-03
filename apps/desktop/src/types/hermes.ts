@@ -652,6 +652,7 @@ export interface SessionInfo {
 }
 
 export type TimelineDisplayMetadata =
+  | { _queued_prompt: boolean }
   | { model: string; provider?: string }
   | {
       delegation_id: string
@@ -700,6 +701,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
+    | null
     | 'async_delegation_complete'
     | 'auto_continue'
     | 'failed_turn'
@@ -713,7 +715,7 @@ export interface SessionMessage {
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
    */
-  display_metadata?: string | TimelineDisplayMetadata
+  display_metadata?: null | string | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   /**
    * Durable `messages.id` from the backend. The renderer's own message ids are

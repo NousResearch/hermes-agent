@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { listAllProfileSessions, setSessionArchived } from '@/hermes'
 import { en } from '@/i18n/en'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
+import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
@@ -56,5 +58,24 @@ describe('SessionsSettings unarchive', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['matrix-1'])
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
+  })
+})
+
+
+describe('SessionsSettings sidebar tab preference', () => {
+  it('shows the tab-first default and lets the user switch to opening in main', async () => {
+    window.localStorage.clear()
+    $sidebarSessionsOpenInNewTab.set(true)
+    vi.mocked(listAllProfileSessions).mockResolvedValue({ sessions: [], total: 0 } as never)
+    render(
+      <MemoryRouter>
+        <SessionsSettings />
+      </MemoryRouter>
+    )
+
+    const toggle = await screen.findByRole('switch', { name: en.settings.sessions.sidebarOpenInNewTabTitle })
+    expect(toggle.getAttribute('data-state')).toBe('checked')
+    fireEvent.click(toggle)
+    expect($sidebarSessionsOpenInNewTab.get()).toBe(false)
   })
 })

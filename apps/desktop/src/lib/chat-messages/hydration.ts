@@ -172,7 +172,7 @@ const NOTICE_DISPLAY_KINDS = [
 ] as const
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
-  return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
+  return typeof displayKind === 'string' && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
 }
 
 // A remote backend older than this app serves display_metadata as raw JSON text,
@@ -302,6 +302,40 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 }
 
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
+  // Accepted next-turn rows are persisted before the current reply. They do
+  // not break its tool/result chain or precede its eventual final in the view.
+  const ordered: SessionMessage[] = []
+  const accepted: SessionMessage[] = []
+  let unansweredUser = false
+  for (const message of messages) {
+    const sourceId = message.row_id ?? message.id
+    const isAccepted =
+      message.role === 'user' &&
+      unansweredUser &&
+      parseDisplayMetadata(message.display_metadata)?._queued_prompt === true &&
+      typeof sourceId === 'number' &&
+      Number.isSafeInteger(sourceId) &&
+      sourceId > 0
+    if (isAccepted) {
+      accepted.push(message)
+      continue
+    }
+    if (message.role === 'user' && message.display_kind !== 'steer') {
+      ordered.push(...accepted.splice(0))
+      unansweredUser = true
+    } else if (
+      message.role === 'assistant' &&
+      typeof message.content === 'string' &&
+      message.content.trim() &&
+      (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) &&
+      !message.display_kind
+    ) {
+      unansweredUser = false
+    }
+    ordered.push(message)
+  }
+  ordered.push(...accepted)
+  messages = ordered
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
   let pendingToolTimestamp: number | undefined
@@ -608,6 +642,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(isMachineNotice(message.display_kind) ? { systemNotice: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...(message.role === 'user' && parseDisplayMetadata(message.display_metadata)?._queued_prompt === true
+        ? { queuedPrompt: true as const }
+        : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),

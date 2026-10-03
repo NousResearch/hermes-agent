@@ -84,13 +84,6 @@ export function transcriptRowContentKey(message: ChatMessage): string {
     .join('|')}`
 }
 
-function isAnswerableClarifyMessage(message: ChatMessage): boolean {
-  return (
-    message.pending === true &&
-    message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
-  )
-}
-
 export function suppressTranscriptForView(
   state: ClientSessionState,
   cutoff: TranscriptViewCutoff | null
@@ -99,31 +92,51 @@ export function suppressTranscriptForView(
     return state
   }
 
-  if (cutoff.cutoffIds.size === 0) {
-    // Fail-closed for history: the gate was armed before any cached row
-    // existed, so there is no unproven prefix to hide selectively (#73646).
-    // A clarify row published from the activate snapshot is not that prefix.
-    const messages = state.messages.filter(isAnswerableClarifyMessage)
+  // The open clarify correlated to the active input request is the one held
+  // row that must stay actionable: hiding it leaves the session waiting on an
+  // answer the user cannot see. Only its clarify part survives, so unproven
+  // commentary in the same row stays hidden until REST authority lands.
+  const pendingClarifyMessage = state.needsInput
+    ? state.messages.find(message => message.id === state.streamId && message.role === 'assistant' && message.pending)
+    : undefined
 
-    return messages.length === state.messages.length ? state : { ...state, messages }
+  const pendingClarifyPart = pendingClarifyMessage?.parts.findLast(
+    part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined
+  )
+
+  const pendingClarify =
+    pendingClarifyMessage && pendingClarifyPart
+      ? pendingClarifyMessage.parts.length === 1
+        ? pendingClarifyMessage
+        : { ...pendingClarifyMessage, parts: [pendingClarifyPart] }
+      : null
+
+  if (cutoff.cutoffIds.size === 0) {
+    // Fail-closed: the gate was armed before any cached row existed, so there
+    // is no unproven prefix to hide selectively — everything stays off the
+    // view until REST authority lands (#73646).
+    if (pendingClarify && state.messages.length === 1 && state.messages[0] === pendingClarify) return state
+    return { ...state, messages: pendingClarify ? [pendingClarify] : [] }
   }
 
-  const messages = state.messages.filter(message => {
-    if (cutoff.cutoffIds.has(message.id)) {
-      return false
+  let changed = false
+  const messages: ChatMessage[] = []
+
+  for (const message of state.messages) {
+    if (!cutoff.cutoffIds.has(message.id) && !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)) {
+      messages.push(message)
+
+      continue
     }
 
-    // Content fingerprints hide a re-sequenced copy of the unproven prefix.
-    // They must not hide the snapshot clarify row, whose parts can match a
-    // cached question that is itself still suppressed by id.
-    if (isAnswerableClarifyMessage(message)) {
-      return true
+    changed = true
+
+    if (pendingClarify && message === pendingClarifyMessage) {
+      messages.push(pendingClarify)
     }
+  }
 
-    return !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)
-  })
-
-  if (messages.length === state.messages.length) {
+  if (!changed) {
     return state
   }
 

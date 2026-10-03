@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearSingleFlightSessionResumeState,
   registerRecoveredRuntime,
+  sessionResumeFlightKey,
   singleFlightSessionResume,
   takeRecoveredRuntime
 } from './single-flight-resume'
@@ -52,6 +53,45 @@ describe('singleFlightSessionResume', () => {
     expect(a).toBe('rt-stored-a')
     expect(b).toBe('rt-stored-b')
     expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
+  it('same-id sessions on different exact owners resume independently', async () => {
+    const ownerA = { connectionId: 'source-a', profile: 'default' }
+    const ownerB = { connectionId: 'source-b', profile: 'default' }
+    const runA = vi.fn(async () => ({ session_id: 'runtime-a' }))
+    const runB = vi.fn(async () => ({ session_id: 'runtime-b' }))
+
+    const [a, b] = await Promise.all([
+      singleFlightSessionResume('shared-id', runA, ownerA),
+      singleFlightSessionResume('shared-id', runB, ownerB)
+    ])
+
+    expect(a.session_id).toBe('runtime-a')
+    expect(b.session_id).toBe('runtime-b')
+    expect(runA).toHaveBeenCalledOnce()
+    expect(runB).toHaveBeenCalledOnce()
+  })
+
+  it('coalesces equivalent owner routes across informational mode and implicit target shape', async () => {
+    const first = { connectionId: 'source-a', mode: 'local' as const, profile: 'default' }
+    const second = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'default'
+    }
+    const run = vi.fn(async () => ({ session_id: 'runtime-a' }))
+
+    expect(sessionResumeFlightKey('shared-id', first)).toBe(sessionResumeFlightKey('shared-id', second))
+
+    const [a, b] = await Promise.all([
+      singleFlightSessionResume('shared-id', run, first),
+      singleFlightSessionResume('shared-id', run, second)
+    ])
+
+    expect(a.session_id).toBe('runtime-a')
+    expect(b.session_id).toBe('runtime-a')
+    expect(run).toHaveBeenCalledOnce()
   })
 
   it('a rejected flight is not cached: the next caller retries', async () => {

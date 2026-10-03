@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
+import { $routeTiles, closeRouteTile } from '@/store/route-tiles'
 import {
   _resetLegacyDiscardForTests,
   getRememberedRoute,
@@ -90,8 +91,12 @@ it('restores a remembered plugin page whose route registers after the session li
 
   act(() => $diskPluginsScanPending.set(false))
 
-  expect(navigate).toHaveBeenCalledWith('/html-gallery', { replace: true })
+  // A plugin page re-opens as its centered route tile; main returns to the
+  // last chat, and the remembered page survives for the next boot.
+  expect($routeTiles.get()).toContainEqual({ dir: 'center', path: '/html-gallery' })
+  expect(navigate).toHaveBeenCalledWith('/sess-1', { replace: true })
   expect(getRememberedRoute('default')).toBe('/html-gallery')
+  closeRouteTile('/html-gallery')
   dispose()
 })
 

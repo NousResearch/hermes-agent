@@ -18,6 +18,7 @@ import {
   $selectedStoredSessionId,
   $sessionStartedAt,
   $turnStartedAt,
+  _resetSessionOwnerHintsForTests,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -25,9 +26,11 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setMessages,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
+  setSessionOwnerHint,
   setTurnStartedAt
 } from '@/store/session'
 import {
@@ -36,6 +39,7 @@ import {
   clearAllSessionStates,
   closeSessionTile,
   openSessionTile,
+  prepareSessionOwnerRetarget,
   reconcileBusyStatesOnReconnect,
   type SessionTileDelegate,
   setSessionTileDelegate,
@@ -476,6 +480,93 @@ describe('useSessionStateCache — journal migration on stored-id rotation', () 
 
     expect(window.localStorage.getItem(journalKey('stored-A'))).toBeNull()
     expect(window.localStorage.getItem(journalKey('stored-B'))).toBeNull()
+  })
+})
+
+describe('useSessionStateCache — source-qualified runtime binding', () => {
+  afterEach(() => {
+    cleanup()
+    _resetSessionOwnerHintsForTests()
+    clearAllSessionStates()
+    setSelectedStoredSessionId(null)
+  })
+
+  it('refuses to relabel a late owner-A runtime after owner B claimed the stored id', () => {
+    let cache!: Cache
+    const routeA = { connectionId: 'source-a', profile: 'profile-a', targetProfile: 'profile-a' }
+    const routeB = { connectionId: 'source-b', profile: 'profile-b', targetProfile: 'profile-b' }
+
+    setSessionOwnerHint('shared-id', routeA)
+    setSessionOwnerHint('shared-id', routeB)
+    setSelectedStoredSessionId('shared-id')
+    prepareSessionOwnerRetarget('shared-id', routeB, true)
+    render(
+      <Harness activeSessionId="runtime-b" onReady={value => (cache = value)} selectedStoredSessionId="shared-id" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-b', state => ({ ...state }), 'shared-id', routeB)
+      cache.updateSessionState('runtime-a', state => ({ ...state, busy: true }), 'shared-id', routeA)
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('shared-id')).toBe('runtime-b')
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-b')).toMatchObject({
+      storedSessionId: 'shared-id',
+      busy: false
+    })
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-a')).toBeUndefined()
+    expect($sessionStates.get()).not.toHaveProperty('runtime-a')
+  })
+
+  it('rejects a source target mismatch even when the Desktop route name matches', () => {
+    let cache!: Cache
+
+    const canonicalRoute = {
+      connectionId: 'source-a',
+      profile: 'desktop-alias',
+      targetProfile: 'backend-a'
+    }
+
+    const mismatchedSource = {
+      connectionId: 'source-a',
+      profile: 'desktop-alias',
+      targetProfile: 'backend-b'
+    }
+
+    setSelectedStoredSessionId('shared-id')
+    prepareSessionOwnerRetarget('shared-id', canonicalRoute, true)
+    render(
+      <Harness activeSessionId="runtime-a" onReady={value => (cache = value)} selectedStoredSessionId="shared-id" />
+    )
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-wrong-target',
+        state => ({ ...state, busy: true }),
+        'shared-id',
+        mismatchedSource
+      )
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('shared-id')).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.has('runtime-wrong-target')).toBe(false)
+  })
+
+  it('keeps legacy untagged single-source binding when no exact owner conflicts', () => {
+    let cache!: Cache
+    render(
+      <Harness
+        activeSessionId="runtime-legacy"
+        onReady={value => (cache = value)}
+        selectedStoredSessionId="legacy-id"
+      />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-legacy', state => ({ ...state }), 'legacy-id')
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('legacy-id')).toBe('runtime-legacy')
   })
 })
 
@@ -1392,3 +1483,79 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
     expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
   })
 })
+
+describe('useSessionStateCache — held transcript projection', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setMessages([])
+  })
+
+  it('keeps only an actionable pending clarify card visible while the transcript is held', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <ProjectionHarness
+        activeSessionId="runtime-A"
+        onReady={value => (cache = value)}
+        selectedStoredSessionId="stored-A"
+      />
+    )
+
+    act(() => {
+      cache.holdSessionTranscriptView('runtime-A')
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          busy: true,
+          needsInput: true,
+          streamId: 'clarify',
+          messages: [
+            { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'unproven history' }] },
+            {
+              id: 'clarify',
+              role: 'assistant',
+              pending: true,
+              parts: [
+                { type: 'text', text: 'unproven commentary' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'req-1',
+                  toolName: 'clarify',
+                  args: { choices: ['safe'], question: 'Which path?' },
+                  argsText: '{"question":"Which path?","choices":["safe"]}'
+                }
+              ]
+            }
+          ]
+        }),
+        'stored-A'
+      )
+    })
+
+    expect($messages.get()).toEqual([
+      expect.objectContaining({
+        id: 'clarify',
+        parts: [expect.objectContaining({ toolCallId: 'req-1', toolName: 'clarify', type: 'tool-call' })]
+      })
+    ])
+  })
+})
+function ProjectionHarness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
+  const busyRef: MutableRefObject<boolean> = { current: false }
+
+  const cache = useSessionStateCache({
+    activeSessionId,
+    busyRef,
+    selectedStoredSessionId,
+    setAwaitingResponse: () => undefined,
+    setBusy: () => undefined,
+    setMessages
+  })
+
+  onReady(cache)
+
+  return null
+}

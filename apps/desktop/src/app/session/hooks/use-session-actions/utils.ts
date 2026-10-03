@@ -68,6 +68,8 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { mergeLiveAssistantRun } from './live-turn-remainder'
+
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -236,6 +238,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'queuedPrompt',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -362,6 +365,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.rowId !== b.rowId ||
+    a.queuedPrompt !== b.queuedPrompt ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||
@@ -832,6 +836,198 @@ function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage):
   )
 }
 
+function persistedCompactionIdentity(message: ChatMessage): string | null {
+  if (
+    message.rowId === undefined ||
+    message.timestamp === undefined ||
+    message.pending === true ||
+    isLiveTailRow(message)
+  ) {
+    return null
+  }
+
+  return JSON.stringify([message.role, message.timestamp, chatMessageText(message), message.attachmentRefs ?? []])
+}
+
+/**
+ * Adopt a newer durable payload without changing the renderer identity of the
+ * row already mounted at this logical position. `rowId` remains the backend
+ * authority; `id` is the React/assistant-ui key that keeps local DOM state.
+ */
+function withStableRendererIdentity(authoritative: ChatMessage, mounted: ChatMessage): ChatMessage {
+  return authoritative.id === mounted.id ? authoritative : { ...authoritative, id: mounted.id }
+}
+
+/**
+ * A refreshed include-compacted tail can contain authoritative copies whose
+ * durable row ids already occur in its grafted prefix. Keep the first logical
+ * position, but adopt the later refreshed payload for that row.
+ */
+export function adoptLatestDuplicatePersistedRows(
+  messages: ChatMessage[],
+  mountedMessages: readonly ChatMessage[] = []
+): ChatMessage[] {
+  const mountedByRowId = new Map(
+    mountedMessages.flatMap(message => (message.rowId === undefined ? [] : [[message.rowId, message] as const]))
+  )
+
+  const indexByRowId = new Map<number, number>()
+  const reconciled: ChatMessage[] = []
+  let changed = false
+
+  for (const message of messages) {
+    if (message.rowId === undefined) {
+      reconciled.push(message)
+
+      continue
+    }
+
+    const mounted = mountedByRowId.get(message.rowId)
+    const stableMessage = mounted ? withStableRendererIdentity(message, mounted) : message
+
+    if (stableMessage !== message) {
+      changed = true
+    }
+
+    const existingIndex = indexByRowId.get(message.rowId)
+
+    if (existingIndex === undefined) {
+      indexByRowId.set(message.rowId, reconciled.length)
+      reconciled.push(stableMessage)
+
+      continue
+    }
+
+    reconciled[existingIndex] = withStableRendererIdentity(message, reconciled[existingIndex])
+    changed = true
+  }
+
+  return changed ? reconciled : messages
+}
+
+/**
+ * Keep durable display rows that were already loaded when `session.compress`
+ * replaces the runtime transcript with copied active rows. Compression assigns
+ * new backend row ids to its protected survivors, so ordinary row-id anchoring
+ * cannot recognize the rewrite. Match the copied survivors by the same
+ * role/timestamp/content identity the producer preserves, adopt those new rows,
+ * and retain the compacted rows between them.
+ *
+ * This intentionally refuses ordinary rewinds and live/optimistic projections:
+ * a compaction rewrite is a shorter, fully persisted projection with at least
+ * two in-order logical matches whose authoritative row ids all changed.
+ */
+export function preserveLoadedHistoryThroughCompaction(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[]
+): ChatMessage[] {
+  const splitPersistedPrefix = (messages: ChatMessage[]) => {
+    let persistedEnd = messages.length
+
+    while (persistedEnd > 0 && persistedCompactionIdentity(messages[persistedEnd - 1]) === null) {
+      const message = messages[persistedEnd - 1]
+
+      if (message.role !== 'system' || message.pending === true || isLiveTailRow(message)) {
+        return null
+      }
+
+      persistedEnd--
+    }
+
+    return {
+      persisted: persistedEnd === messages.length ? messages : messages.slice(0, persistedEnd),
+      trailingSystem: messages.slice(persistedEnd)
+    }
+  }
+
+  const next = splitPersistedPrefix(nextMessages)
+  const previous = splitPersistedPrefix(previousMessages)
+
+  if (!next || !previous) {
+    return nextMessages
+  }
+
+  const persistedNextMessages = next.persisted
+  const persistedPreviousMessages = previous.persisted
+
+  if (
+    persistedNextMessages.length === 0 ||
+    persistedPreviousMessages.length === 0 ||
+    persistedNextMessages.length >= persistedPreviousMessages.length ||
+    persistedNextMessages.some(message => persistedCompactionIdentity(message) === null) ||
+    persistedPreviousMessages.some(message => persistedCompactionIdentity(message) === null)
+  ) {
+    return nextMessages
+  }
+
+  const previousIndicesByIdentity = new Map<string, number[]>()
+
+  for (const [index, message] of persistedPreviousMessages.entries()) {
+    const identity = persistedCompactionIdentity(message)!
+    const indices = previousIndicesByIdentity.get(identity) ?? []
+
+    indices.push(index)
+    previousIndicesByIdentity.set(identity, indices)
+  }
+
+  const previousIndexByNextIndex = new Map<number, number>()
+  let lastPreviousIndex = -1
+
+  for (const [nextIndex, message] of persistedNextMessages.entries()) {
+    const identity = persistedCompactionIdentity(message)!
+    const previousIndex = (previousIndicesByIdentity.get(identity) ?? []).find(index => index > lastPreviousIndex)
+
+    if (previousIndex === undefined) {
+      continue
+    }
+
+    const previousMessage = persistedPreviousMessages[previousIndex]
+
+    if (previousMessage.rowId === message.rowId) {
+      return nextMessages
+    }
+
+    previousIndexByNextIndex.set(nextIndex, previousIndex)
+    lastPreviousIndex = previousIndex
+  }
+
+  if (previousIndexByNextIndex.size < 2) {
+    return nextMessages
+  }
+
+  const merged: ChatMessage[] = []
+  let previousCursor = 0
+
+  for (const [nextIndex, message] of persistedNextMessages.entries()) {
+    const previousIndex = previousIndexByNextIndex.get(nextIndex)
+
+    if (previousIndex === undefined) {
+      merged.push(message)
+
+      continue
+    }
+
+    merged.push(
+      ...persistedPreviousMessages.slice(previousCursor, previousIndex),
+      withStableRendererIdentity(message, persistedPreviousMessages[previousIndex])
+    )
+    previousCursor = previousIndex + 1
+  }
+
+  const previousSystemIds = new Set(previous.trailingSystem.map(message => message.id))
+
+  const trailingSystemMessages = [
+    ...previous.trailingSystem,
+    ...next.trailingSystem.filter(message => !previousSystemIds.has(message.id))
+  ]
+
+  merged.push(...persistedPreviousMessages.slice(previousCursor), ...trailingSystemMessages)
+
+  const rowIds = merged.flatMap(message => (message.rowId === undefined ? [] : [message.rowId]))
+
+  return new Set(rowIds).size === rowIds.length ? merged : nextMessages
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -1041,6 +1237,16 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    if (isOptimisticUser && message.timestamp !== undefined && nextMessages.some(candidate =>
+      candidate.role === 'user' && !isGatewaySystemMarker(candidate) &&
+      candidate.timestamp !== undefined && candidate.timestamp === message.timestamp &&
+      !conflictingTranscriptIdentity(message, candidate) &&
+      (textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message)) ||
+        sameAttachmentTurn(candidate, message))
+    )) {
+      continue
+    }
+
     const ordinalMatch = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
     const authoritative =
@@ -1161,11 +1367,11 @@ export function preserveLocalPendingTurnMessages(
 /**
  * Append the backend-only tail of a live turn to a stored transcript.
  *
- * Session history is committed only when a turn finishes. During a reconnect,
+ * A live turn can persist user and tool rows before its final reply. On reconnect,
  * `inflight` is therefore the authority for the currently running user/assistant
- * pair, while `queued` is an accepted next-turn prompt waiting in gateway
- * memory. Stable ids let repeated activate/resume hydration reconcile instead
- * of growing duplicate rows.
+ * pair, while `queued` is an accepted next-turn prompt that may already
+ * have its own persisted user row. Stable ids let repeated activate/resume
+ * hydration reconcile instead of growing duplicate rows.
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
@@ -1177,7 +1383,79 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
+/** A marked durable queue is a source occurrence, never an equal-text history row. */
+export function acceptedQueuedPrompt(
+  messages: ChatMessage[],
+  projection: Pick<SessionResumeResult, 'queued'>
+): ChatMessage | undefined {
+  const queued = textWithoutReferenceLines(projection.queued?.user ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!queued) return undefined
+
+  const index = messages.findLastIndex(
+    message =>
+      message.role === 'user' &&
+      message.queuedPrompt === true &&
+      typeof message.rowId === 'number' &&
+      Number.isSafeInteger(message.rowId) &&
+      message.rowId > 0
+  )
+  if (index < 0) return undefined
+
+  const candidate = messages[index]
+  if (textWithoutReferenceLines(chatMessageText(candidate)).replace(/\s+/g, ' ').trim() !== queued) return undefined
+  // An answered historical queue is no longer the accepted next-turn slot.
+  if (
+    messages
+      .slice(index + 1)
+      .some(
+        message =>
+          message.role === 'assistant' &&
+          !isLiveTailRow(message) &&
+          !hasStructuralParts(message) &&
+          chatMessageText(message).trim()
+      )
+  )
+    return undefined
+
+  return candidate
+}
+
+/** Keep divergent occurrences distinct while the marked queue owns the runtime tail. */
+export function mergeQueuedAssistantRun(
+  projected: ChatMessage[],
+  cached: ChatMessage[],
+  sessionId: string,
+  context: ChatMessage[]
+): ChatMessage[] {
+  const canonicalId = `assistant-stream-${sessionId}`
+  // A replay pairs its already-canonical terminal, not the earlier divergence.
+  const merged =
+    cached.length > 1 && cached.at(-1)?.id === canonicalId
+      ? [...cached.slice(0, -1), ...mergeLiveAssistantRun(projected, cached.slice(-1))]
+      : mergeLiveAssistantRun(projected, cached)
+  if (merged.at(-1)?.pending !== true) return merged
+
+  const used = new Set([...context, ...merged].map(message => message.id))
+  let ordinal = 0
+  return merged.map((message, index) => {
+    if (index === merged.length - 1) return { ...message, id: canonicalId }
+    if (message.id !== canonicalId) return message
+    let id: string
+    do {
+      id = `inflight-assistant-segment-queued-${sessionId}-${ordinal++}`
+    } while (used.has(id))
+    used.add(id)
+    return { ...message, id }
+  })
+}
+
 export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
+  const acceptedQueue = acceptedQueuedPrompt(messages, projection)
+  const acceptedQueueIndex = acceptedQueue ? messages.indexOf(acceptedQueue) : -1
+  if (acceptedQueue) messages = messages.filter(message => message !== acceptedQueue)
+
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
@@ -1351,8 +1629,6 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   const committedPartial =
     liveAssistantOfCurrentTurn && !isLiveTailRow(liveAssistantOfCurrentTurn) ? liveAssistantOfCurrentTurn : null
 
-  const committedPartialAt = committedPartial ? messages.lastIndexOf(committedPartial) : -1
-
   const committedPartialText = committedPartial ? chatMessageText(committedPartial) : ''
 
   const turnPartiallyCommitted = Boolean(
@@ -1367,7 +1643,20 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       isStrictAnswerTextExtension(inflightAssistant, committedPartialText))
   )
 
-  const foldTarget = turnPartiallyCommitted ? committedPartial : null
+  const cachedAssistantIndex = liveAssistantOfCurrentTurn ? messages.indexOf(liveAssistantOfCurrentTurn) : -1
+  const queuedLiveAssistant =
+    acceptedQueue &&
+    inflightUserAlreadyPersisted &&
+    projectAssistantDump &&
+    !correctionOffsetsUsable &&
+    cachedAssistantIndex > latestUserIndex &&
+    cachedAssistantIndex < acceptedQueueIndex &&
+    liveAssistantOfCurrentTurn?.pending === true &&
+    liveAssistantOfCurrentTurn.parts.every(part => part.type === 'text')
+      ? liveAssistantOfCurrentTurn
+      : null
+  const foldTarget = queuedLiveAssistant ?? (turnPartiallyCommitted ? committedPartial : null)
+  const foldTargetAt = foldTarget ? messages.indexOf(foldTarget) : -1
 
   const pushCorrection = (correction: string, index: number): void => {
     if (persistedInLatestRun(correction)) {
@@ -1437,7 +1726,11 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         // Structure the flat dump cannot express (tool calls, reasoning)
         // carries over; row id and reactions stay so nothing blinks off
         // mid-turn and a reaction toggle still reaches the persisted row.
-        projected.push(carryRowIdentity(preserveStructuralParts(liveRow, foldTarget), foldTarget))
+        if (queuedLiveAssistant) {
+          projected.push(...mergeQueuedAssistantRun([liveRow], [queuedLiveAssistant], sessionId, messages))
+        } else {
+          projected.push(carryRowIdentity(preserveStructuralParts(liveRow, foldTarget), foldTarget))
+        }
       } else {
         projected.push(liveRow)
       }
@@ -1449,20 +1742,50 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   }
 
   if (queuedUser) {
-    projected.push({
-      id: `user-queued-${sessionId}`,
-      role: 'user',
-      parts: [textPart(queuedUser)]
-    })
+    projected.push(
+      acceptedQueue
+        ? { ...acceptedQueue, id: `user-queued-${sessionId}` }
+        : { id: `user-queued-${sessionId}`, role: 'user', parts: [textPart(queuedUser)] }
+    )
   }
 
   if (foldTarget) {
     // Splice the folded live row (plus any corrections/queued tail) into the
     // committed partial's slot instead of appending beside it.
-    return [...messages.slice(0, committedPartialAt), ...projected, ...messages.slice(committedPartialAt + 1)]
+    return [...messages.slice(0, foldTargetAt), ...projected, ...messages.slice(foldTargetAt + 1)]
   }
 
   return projected.length ? [...messages, ...projected] : messages
+}
+
+/**
+ * A running resume projection owns a stable assistant tail id. Adopt that id
+ * before later gateway deltas arrive; otherwise mutateStream invents a second
+ * assistant row and leaves this empty boundary mounted in the transcript.
+ * The gateway can append its one accepted queued user after the live assistant;
+ * only that exact matching synthetic pair may displace the stream from the tail.
+ */
+export function runningProjectionStreamId(messages: ChatMessage[], running: boolean): string | null {
+  if (!running) {
+    return null
+  }
+
+  const visible = messages.filter(message => !message.hidden)
+  const tail = visible.at(-1)
+
+  const durableQueue = tail?.role === 'user' && tail.queuedPrompt === true &&
+    typeof tail.rowId === 'number' && Number.isSafeInteger(tail.rowId) && tail.rowId > 0
+  const candidate = durableQueue
+    ? visible.at(-2)
+    : tail?.role === 'user' && tail.id.startsWith('user-queued-')
+      ? visible.at(-2)?.id === `assistant-stream-${tail.id.slice('user-queued-'.length)}`
+        ? visible.at(-2)
+        : undefined
+      : tail
+
+  return candidate?.role === 'assistant' && candidate.pending === true && candidate.id.startsWith('assistant-stream-')
+    ? candidate.id
+    : null
 }
 
 function normalizedMessageText(message: ChatMessage): string {
@@ -1533,7 +1856,8 @@ export function dedupeInflightUserAgainstTranscript(
     suffixStart = persistedAnchorIndex + 1
   }
 
-  const persistedTail = persistedMessages.slice(suffixStart)
+  const acceptedQueue = acceptedQueuedPrompt(persistedMessages, projection)
+  const persistedTail = persistedMessages.slice(suffixStart).filter(message => message !== acceptedQueue)
   const lastPersistedMessage = persistedTail[persistedTail.length - 1]
 
   const persistedUserPresent =
@@ -2079,16 +2403,27 @@ function upsertResolvedSession(
     return
   }
 
-  const prepend = (prev: SessionInfo[]) => [
-    session,
-    ...prev.filter(existing => {
-      if (sessionMatchesStoredId(existing, storedSessionId)) {
-        return false
-      }
+  const prepend = (prev: SessionInfo[]) => {
+    const connectionId = session.connection_id?.trim()
+    const existing = connectionId
+      ? prev.find(
+          candidate =>
+            candidate.id === session.id &&
+            candidate.connection_id?.trim() === connectionId &&
+            normalizeProfileKey(candidate.profile) === normalizeProfileKey(session.profile)
+        )
+      : undefined
+    return [
+      existing ? { ...existing, ...session } : session,
+      ...prev.filter(existing => {
+        if (sessionMatchesStoredId(existing, storedSessionId)) {
+          return false
+        }
 
-      return (existing._lineage_root_id ?? existing.id) !== lineage
-    })
-  ]
+        return (existing._lineage_root_id ?? existing.id) !== lineage
+      })
+    ]
+  }
 
   // A resolve can observe a source move (cross-room /resume rewrites the row to
   // source='matrix', #113827): the row belongs to its current slice, and the

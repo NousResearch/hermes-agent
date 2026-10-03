@@ -10,6 +10,8 @@ import {
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
+  discardOpenClarifyToolCalls,
+  discardPendingClarifyToolCall,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
@@ -57,6 +59,44 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('hydrates accepted queue markers only from strict user metadata without losing attachments or identity', () => {
+    const metadata = [
+      { _queued_prompt: true },
+      JSON.stringify({ _queued_prompt: true }),
+      { _queued_prompt: false },
+      { _queued_prompt: 'true' },
+      { _queued_prompt: 1 },
+      '{bad json',
+      null
+    ]
+    for (const [index, display_metadata] of metadata.entries()) {
+      const rows = toChatMessages([
+        {
+          id: 10,
+          role: 'user',
+          timestamp: 1,
+          content: '@file:/tmp/input.txt\n@image:/tmp/image.png\n\nnext prompt',
+          display_metadata: display_metadata as never
+        },
+        {
+          id: 11,
+          role: 'assistant',
+          timestamp: 2,
+          content: 'History stays visible.',
+          display_metadata: { _queued_prompt: true } as never
+        }
+      ])
+      expect(rows.map(chatMessageText)).toEqual(['next prompt', 'History stays visible.'])
+      expect(rows[0]).toMatchObject({
+        id: '1-0-user',
+        rowId: 10,
+        attachmentRefs: ['@file:/tmp/input.txt', '@image:/tmp/image.png']
+      })
+      expect(rows[0].queuedPrompt).toBe(index < 2 ? true : undefined)
+      expect(rows[1].queuedPrompt).toBeUndefined()
+    }
+  })
+
   it('does not render an opaque native_assistant reasoning_details carrier as Thought (#126588)', () => {
     const carrier = JSON.stringify([
       {
@@ -1553,6 +1593,195 @@ describe('stripPendingClarifyProjectionForCache', () => {
   })
 })
 
+describe('discardPendingClarifyToolCall', () => {
+  it('keeps one provider-authored row carrying a concurrent settled answer', () => {
+    const args = { choices: ['safe', 'fast'], question: 'Which path?' }
+
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      },
+      {
+        id: 'synthetic',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'req-answer',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args),
+            result: { question: 'Which path?', user_response: 'safe' }
+          }
+        ],
+        pending: false
+      }
+    ]
+
+    const reconciled = discardPendingClarifyToolCall(messages, { args, tool_id: 'req-answer' }, true)
+    const clarifyParts = reconciled.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+
+    expect(clarifyParts).toHaveLength(1)
+    expect(clarifyParts[0]).toMatchObject({
+      result: { question: 'Which path?', user_response: 'safe' },
+      toolCallId: 'call-provider'
+    })
+    expect(clarifyParts[0]).not.toMatchObject({ result: expect.objectContaining({ timed_out: true }) })
+  })
+
+  it('does not transplant an older identical clarification result onto the current open row', () => {
+    const args = { choices: ['safe', 'fast'], question: 'Which path?' }
+    const historicalResult = { question: 'Which path?', user_response: 'fast' }
+
+    const messages: ChatMessage[] = [
+      {
+        id: 'historical',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-historical',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args),
+            result: historicalResult
+          }
+        ]
+      },
+      {
+        id: 'current-provider',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-current-provider',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      }
+    ]
+
+    const reconciled = discardPendingClarifyToolCall(messages, { args, tool_id: 'req-current' }, true)
+
+    expect(reconciled).toEqual([messages[0]])
+    expect(reconciled[0].parts[0]).toMatchObject({
+      result: historicalResult,
+      toolCallId: 'call-historical'
+    })
+  })
+
+  it('transfers an exact settled result only to an earlier provider row', () => {
+    const args = { choices: ['same'], question: 'Repeated question?' }
+    const answer = { question: 'Repeated question?', user_response: 'same' }
+
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider-old',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider-old',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      },
+      {
+        id: 'settled-exact',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'req-old',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args),
+            result: answer
+          }
+        ]
+      },
+      {
+        id: 'newer-open',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'req-newer',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      }
+    ]
+
+    const reconciled = discardPendingClarifyToolCall(messages, { args, tool_id: 'req-old' }, true)
+    const clarifyParts = reconciled.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+
+    expect(clarifyParts).toHaveLength(2)
+    expect(clarifyParts.find(part => part.toolCallId === 'call-provider-old')).toMatchObject({
+      result: answer,
+      toolCallId: 'call-provider-old'
+    })
+    expect(clarifyParts.find(part => part.toolCallId === 'req-newer')).not.toHaveProperty('result')
+    expect(clarifyParts).not.toEqual(expect.arrayContaining([expect.objectContaining({ toolCallId: 'req-old' })]))
+  })
+
+  it('removes every open clarify while preserving settled history and unrelated parts', () => {
+    const args = { choices: ['same'], question: 'Repeated question?' }
+
+    const settled = {
+      type: 'tool-call' as const,
+      toolCallId: 'call-settled',
+      toolName: 'clarify',
+      args,
+      argsText: JSON.stringify(args),
+      result: { question: 'Repeated question?', user_response: 'same' }
+    }
+
+    const textPart = { type: 'text' as const, text: 'Still running.' }
+
+    const messages: ChatMessage[] = [
+      { id: 'history', role: 'assistant', parts: [settled] },
+      {
+        id: 'mixed',
+        role: 'assistant',
+        parts: [
+          textPart,
+          {
+            type: 'tool-call',
+            toolCallId: 'req-open',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ],
+        pending: true
+      }
+    ]
+
+    const filtered = discardOpenClarifyToolCalls(messages)
+
+    expect(filtered).toHaveLength(2)
+    expect(filtered[0].parts).toEqual([settled])
+    expect(filtered[1].parts).toEqual([textPart])
+  })
+})
+
 describe('sealOpenToolParts', () => {
   const toolPart = (over: Partial<ChatMessagePart> = {}): ChatMessagePart =>
     ({
@@ -1718,4 +1947,48 @@ describe('toChatMessages backend-row accounting', () => {
     expect(messages).toHaveLength(1)
     expect(messages[0].serverRowSpan).toBe(3)
   })
+})
+
+it('hydrates a marked accepted queue after the active reply without reordering ordinary or answered history', () => {
+  const active = { id: 6, role: 'user' as const, content: 'Active', timestamp: 6 }
+  const queued = {
+    id: 7,
+    role: 'user' as const,
+    content: 'Next',
+    timestamp: 7,
+    display_metadata: JSON.stringify({ _queued_prompt: true }),
+    display_kind: null
+  }
+  const final = { id: 8, role: 'assistant' as const, content: 'Finished active', timestamp: 8 }
+  const input = [active, queued, final]
+  const hydrated = toChatMessages(input)
+  expect(hydrated.map(row => [row.role, chatMessageText(row), row.rowId])).toEqual([
+    ['user', 'Active', 6],
+    ['assistant', 'Finished active', 8],
+    ['user', 'Next', 7]
+  ])
+  expect(hydrated.at(-1)?.queuedPrompt).toBe(true)
+  expect(input.map(row => row.id)).toEqual([6, 7, 8])
+  expect(toChatMessages([active, { ...queued, display_metadata: null }, final]).map(row => row.rowId)).toEqual([
+    6, 7, 8
+  ])
+  expect(toChatMessages([queued, final, active]).map(row => row.rowId)).toEqual([7, 8, 6])
+  const structured = toChatMessages([
+    active,
+    {
+      id: 10,
+      role: 'assistant',
+      content: 'Working',
+      tool_calls: [{ id: 'call-active', function: { name: 'read_file', arguments: '{}' } }]
+    },
+    queued,
+    { id: 11, role: 'tool', tool_call_id: 'call-active', content: 'read result' },
+    final
+  ])
+  expect(structured.at(-1)).toMatchObject({ role: 'user', rowId: 7, queuedPrompt: true })
+  expect(structured.flatMap(row => row.parts)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'tool-call', toolCallId: 'call-active', result: 'read result' })
+    ])
+  )
 })

@@ -496,6 +496,23 @@ class TestAuthHeaders:
         assert result.count('"') == 2, result  # both quotes survive
         assert result.endswith('"'), result
 
+    def test_mixed_case_authorization_header_masked(self):
+        # Regression for #108807: header names are case-insensitive in HTTP,
+        # but the fast-path gate only folded lower/upper spellings - mixed
+        # case skipped _AUTH_HEADER_RE entirely.
+        secret = "SyntheticOpaque" + "Credential92837465"
+        result = redact_sensitive_text("aUtHoRiZaTiOn: Bearer " + secret, force=True)
+        assert secret not in result
+        assert "Bearer " in result
+
+    def test_mixed_case_proxy_authorization_header_masked(self):
+        # Regression for #108807: same gate bypass through Proxy-Authorization.
+        secret = "SyntheticOpaque" + "Credential92837465"
+        result = redact_sensitive_text("Proxy-AuThOrIzAtIoN: Basic " + secret, force=True)
+        assert secret not in result
+        assert "Basic " in result
+
+
 
 
 class TestApiKeyHeaders:

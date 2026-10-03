@@ -438,6 +438,27 @@ class TestLifecycleConfig:
             "max_lifetime_seconds",
         ) == 42.0
 
+    def test_get_lifecycle_seconds_default_applies_only_when_unset(self):
+        from tools.mcp_tool_common import (
+            _DEFAULT_IDLE_TIMEOUT_SECONDS,
+            _get_lifecycle_seconds,
+        )
+
+        assert _DEFAULT_IDLE_TIMEOUT_SECONDS == 1800.0
+        # Unset -> backstop (top-level and nested alike).
+        assert _get_lifecycle_seconds({}, "idle_timeout_seconds", 1800.0) == 1800.0
+        assert (
+            _get_lifecycle_seconds(
+                {"lifecycle": {}}, "idle_timeout_seconds", 1800.0
+            )
+            == 1800.0
+        )
+        # Explicit values always win, including 0 = disable.
+        assert _get_lifecycle_seconds({"idle_timeout_seconds": 60}, "idle_timeout_seconds", 1800.0) == 60.0
+        assert _get_lifecycle_seconds({"idle_timeout_seconds": 0}, "idle_timeout_seconds", 1800.0) is None
+        # No default passed -> legacy behaviour (None) preserved.
+        assert _get_lifecycle_seconds({}, "idle_timeout_seconds") is None
+
     def test_get_lifecycle_seconds_ignores_invalid_values(self):
         from tools.mcp_tool_common import _get_lifecycle_seconds
 

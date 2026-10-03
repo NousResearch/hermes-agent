@@ -308,6 +308,68 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// ─── Image gallery (MEDIA-GALLERY) ──────────────────────────────────────────
+// A gallery renders a sequence of screenshots as one auto-playing carousel
+// (Replit-agent style progress reel). It is encoded as a `#gallery:` markdown
+// link — parallel to the `#media:` links used for single attachments — so it
+// rides the existing Streamdown → React link pipeline with no new
+// assistant-ui message-part type.
+export interface MediaGalleryImage {
+  src: string
+  title?: string
+}
+
+export interface MediaGalleryPayload {
+  title?: string
+  intervalMs?: number
+  images: MediaGalleryImage[]
+}
+
+const GALLERY_HREF_PREFIX = '#gallery:'
+
+export function galleryMarkdownHref(payload: MediaGalleryPayload): string {
+  return `${GALLERY_HREF_PREFIX}${encodeURIComponent(JSON.stringify(payload))}`
+}
+
+// Decode a `#gallery:` href back into a payload. Returns null for anything that
+// isn't a valid gallery link, or that has fewer than two images (a single/zero
+// image "gallery" is meaningless and falls back to plain MEDIA rendering).
+export function galleryPayloadFromHref(href?: string): MediaGalleryPayload | null {
+  if (!href?.startsWith(GALLERY_HREF_PREFIX)) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(
+      decodeURIComponent(href.slice(GALLERY_HREF_PREFIX.length))
+    ) as Partial<MediaGalleryPayload>
+
+    if (!Array.isArray(parsed.images)) {
+      return null
+    }
+
+    const images = parsed.images
+      .filter((img): img is MediaGalleryImage => !!img && typeof img.src === 'string' && img.src.length > 0)
+      .map(img => ({
+        src: img.src,
+        title: typeof img.title === 'string' && img.title ? img.title : undefined
+      }))
+
+    if (images.length < 2) {
+      return null
+    }
+
+    return {
+      images,
+      intervalMs:
+        typeof parsed.intervalMs === 'number' && Number.isFinite(parsed.intervalMs) ? parsed.intervalMs : undefined,
+      title: typeof parsed.title === 'string' && parsed.title ? parsed.title : undefined
+    }
+  } catch {
+    return null
+  }
+}
+
 export function filePathFromMediaPath(path: string): string {
   if (!path.startsWith('file:')) {
     return path

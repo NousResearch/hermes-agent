@@ -12,6 +12,7 @@ import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, u
 import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { MediaCarousel } from '@/components/chat/media-carousel'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
@@ -26,6 +27,7 @@ import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
+  galleryPayloadFromHref,
   isFileMediaPath,
   isMarkdownDocumentPath,
   isRemoteGateway,
@@ -281,7 +283,40 @@ function flattenChildrenToText(node: unknown): string {
   return ''
 }
 
+// A `#gallery:` link renders <MediaCarousel> — a <div>. Streamdown wraps link
+// text in a <p>, and a <div> cannot be a child of <p> (React drops/errors on
+// the nesting, so the carousel never paints). Walk the subtree and detect any
+// carousel so the paragraph override can escape the <p> for that case only.
+function subtreeContainsGallery(node: ReactNode): boolean {
+  if (!node) {return false}
+
+  if (Array.isArray(node)) {return node.some(subtreeContainsGallery)}
+
+  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') {return false}
+
+  if (!isValidElement<{ 'data-slot'?: string; href?: string; children?: ReactNode }>(node)) {return false}
+
+  if (node.props['data-slot'] === 'aui_media-carousel') {return true}
+
+  // Also catch the raw link element whose href is a gallery href.
+  if (typeof node.props.href === 'string' && node.props.href.startsWith('#gallery:')) {return true}
+
+  return subtreeContainsGallery(node.props.children)
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const galleryPayload = galleryPayloadFromHref(href)
+
+  if (galleryPayload) {
+    return (
+      <MediaCarousel
+        images={galleryPayload.images}
+        intervalMs={galleryPayload.intervalMs}
+        title={galleryPayload.title}
+      />
+    )
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -667,6 +702,13 @@ function MarkdownTextSurface({
         p: ({ children, ...props }: ComponentProps<'p'>) =>
           previewOnly ? (
             <p {...props}>{decorateText ? decorateText(children) : children}</p>
+          ) : subtreeContainsGallery(children) ? (
+            // A `#gallery:` link expands to <MediaCarousel> (a <div>), which is
+            // invalid inside a <p>. Render the block in a <div> instead so the
+            // block-level carousel is valid HTML and actually paints.
+            <div className={cn('wrap-anywhere leading-(--dt-line-height)', props.className)}>
+              {decorateText ? decorateText(children) : children}
+            </div>
           ) : (
             <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
               {decorateText ? decorateText(children) : children}

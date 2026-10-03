@@ -37,3 +37,38 @@ describe('MEDIA tag capture validity', () => {
     expect(renderMediaTags('MEDIA:report.md prose')).toBe(`${card('report.md')} prose`)
   })
 })
+
+describe('MEDIA-GALLERY block collapsing', () => {
+  it('collapses a block of images into a single #gallery link', () => {
+    const gallery = [
+      'MEDIA-GALLERY: Login flow (1200ms)',
+      'MEDIA:/tmp/login-1.png',
+      'MEDIA:/tmp/login-2.png',
+      'MEDIA:/tmp/login-3.png',
+      '<!-- /MEDIA-GALLERY -->'
+    ].join('\n')
+
+    const rendered = renderMediaTags(gallery)
+
+    expect(rendered.startsWith('[Gallery: 3 images](#gallery:')).toBe(true)
+    // Non-image MEDIA in/around the block still renders normally.
+    expect(renderMediaTags(`${gallery}\nMEDIA:/tmp/clip.mp4`)).toContain('[Video: clip.mp4](#media:%2Ftmp%2Fclip.mp4)')
+  })
+
+  it('leaves the block alone when there are fewer than two gallery images', () => {
+    const gallery = ['MEDIA-GALLERY: Lonely', 'MEDIA:/tmp/only.png', '<!-- /MEDIA-GALLERY -->'].join('\n')
+
+    const rendered = renderMediaTags(gallery)
+    // Not collapsed to a gallery; the single image still renders as a thumbnail
+    // and the gallery markers are preserved.
+    expect(rendered).toContain('MEDIA-GALLERY: Lonely')
+    expect(rendered).toContain('[Image: only.png](#media:%2Ftmp%2Fonly.png)')
+    expect(rendered).not.toContain('#gallery:')
+  })
+
+  it('ignores unterminated MEDIA-GALLERY blocks', () => {
+    const gallery = 'MEDIA-GALLERY: No close\nMEDIA:/tmp/a.png\nMEDIA:/tmp/b.png'
+
+    expect(renderMediaTags(gallery)).toContain('MEDIA-GALLERY: No close')
+  })
+})

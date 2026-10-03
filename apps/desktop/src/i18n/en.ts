@@ -5581,6 +5581,10 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
+    carouselPlay: 'Play slideshow',
+    carouselPause: 'Pause slideshow',
+    carouselPrevious: 'Previous image',
+    carouselNext: 'Next image',
     dropFiles: 'Drop files',
     handoff: {
       pickPlatform: 'Choose a destination',

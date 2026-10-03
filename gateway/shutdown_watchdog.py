@@ -76,6 +76,26 @@ class _LoopLivenessWatchdogHandle:
         self.stop, self.join, self.is_alive = stop_event.set, thread.join, thread.is_alive
 
 
+def _host_load_suffix() -> str:
+    """Return ``load1=<x> ncpu=<n>`` for the missed-probe CRITICAL.
+
+    A wedged event loop and a CPU-starved one produce the same watchdog
+    symptom, and the log line alone could not tell them apart. Attaching the
+    host's 1-minute load average and CPU count makes the line self-diagnosing.
+    Best-effort: this runs on a path that is about to hard-exit, so a platform
+    without ``os.getloadavg`` reports ``unknown`` rather than raising.
+    """
+    try:
+        load1 = f"{os.getloadavg()[0]:.2f}"
+    except (OSError, AttributeError, IndexError):
+        load1 = "unknown"
+    try:
+        ncpu = str(os.cpu_count() or "unknown")
+    except Exception:
+        ncpu = "unknown"
+    return f"load1={load1} ncpu={ncpu}"
+
+
 def _arm_loop_floor_timer(
     loop: asyncio.AbstractEventLoop, interval: float = DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S
 ) -> _LoopFloorTimerHandle:
@@ -125,9 +145,10 @@ def start_loop_liveness_watchdog(
                 return
             with contextlib.suppress(Exception):
                 logger.critical(
-                    "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
-                    "stacks and exiting with code %d so the service supervisor can restart it.",
-                    strikes, exit_code)
+                    "Gateway event loop missed %d consecutive liveness probes; host %s; dumping "
+                    "all thread stacks and exiting with code %d so the service supervisor can "
+                    "restart it.",
+                    strikes, _host_load_suffix(), exit_code)
             try:
                 faulthandler.dump_traceback(all_threads=True)
             except Exception:

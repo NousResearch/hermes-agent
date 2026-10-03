@@ -40,6 +40,43 @@ const STORAGE_KEY = "hermes-dashboard-theme";
  *  the React tree mounts (see `main.tsx`) to avoid a font flash. */
 const FONT_STORAGE_KEY = "hermes-dashboard-font";
 
+/** LocalStorage key caching the *full* definition of the active user theme
+ *  (name alone isn't enough to paint — the definition lives in
+ *  ~/.hermes/dashboard-themes/*.yaml and only reaches the client via the
+ *  async `/api/dashboard/themes` call). Without this, a user-theme name
+ *  cached under `STORAGE_KEY` still resolves to `defaultTheme` on the very
+ *  first render (userThemeDefs starts empty), so `applyTheme` paints the
+ *  built-in palette via inline styles — which win the cascade over the
+ *  server's critical-CSS flash mitigation — and only repaints correctly
+ *  once the API response lands a moment later. Seeding this cache lets the
+ *  first render already resolve the real user theme, closing that gap. */
+const THEME_DEF_STORAGE_KEY = "hermes-dashboard-theme-def";
+
+/** Best-effort read of the cached user-theme-definitions map. Never throws —
+ *  a corrupt/missing cache just means the flash-mitigation gap reopens
+ *  until the next successful `/api/dashboard/themes` response repopulates it. */
+export function readCachedThemeDefs(): Record<string, DashboardTheme> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(THEME_DEF_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeCachedThemeDefs(defs: Record<string, DashboardTheme>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(THEME_DEF_STORAGE_KEY, JSON.stringify(defs));
+  } catch {
+    // Storage full/unavailable — the flash-mitigation cache is best-effort,
+    // never worth failing the theme apply over.
+  }
+}
+
 /** Renames of built-in theme keys we've shipped previously. Without this,
  *  users who saved one of the old names in localStorage (or had it
  *  persisted server-side) would silently fall back to `defaultTheme`
@@ -433,10 +470,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   /** Full definitions for user themes keyed by name — the API provides
-   *  these so custom YAMLs apply without a client-side stub. */
+   *  these so custom YAMLs apply without a client-side stub. Seeded from
+   *  the localStorage cache so a returning visitor's user theme resolves
+   *  correctly on the very first render (see `THEME_DEF_STORAGE_KEY`). */
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
-  >({});
+  >(readCachedThemeDefs);
 
   /** Active font-override id (independent of theme). `THEME_DEFAULT_FONT_ID`
    *  = no override. Seeded from localStorage so it's applied flash-free. */
@@ -493,7 +532,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
               defs[entry.name] = entry.definition;
             }
           }
-          if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
+          if (Object.keys(defs).length > 0) {
+            setUserThemeDefs(defs);
+            writeCachedThemeDefs(defs);
+          } else {
+            // No user themes on the server (all deleted, or none ever
+            // existed) — drop the stale cache so a future visit doesn't
+            // resolve a since-removed theme from localStorage alone.
+            writeCachedThemeDefs({});
+          }
         }
         if (resp.active) {
           const migratedActive = migrateThemeName(resp.active);

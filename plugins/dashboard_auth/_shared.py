@@ -190,7 +190,8 @@ def make_jwks_client(jwks_url: str) -> Any:
 
 
 def verify_jwt(
-    token: str, jwks_client: Any, *, algorithms: list[str], audience: str, issuer: str, label: str) -> Dict[str, Any]:
+    token: str, jwks_client: Any, *, algorithms: list[str], audience: str, issuer: str, label: str,
+    leeway: float = 0.0) -> Dict[str, Any]:
     """Verify ``token`` against ``jwks_client`` with pinned ``aud``/``iss``.
 
     Unreachable JWKS → ``ProviderError`` (503); a bearer that is not one of our JWTs
@@ -211,7 +212,7 @@ def verify_jwt(
         raise classify_jwks_lookup_error(exc) from exc
     try:
         return jwt.decode(
-            token, signing_key.key, algorithms=algorithms, audience=audience, issuer=issuer,
+            token, signing_key.key, algorithms=algorithms, audience=audience, issuer=issuer, leeway=leeway,
             options={"require": ["exp", "iat", "aud", "iss", "sub"]})
     except jwt.ExpiredSignatureError as exc:
         raise InvalidCodeError(f"{label} expired: {exc}") from exc

@@ -749,6 +749,25 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 `GET /api/auth/me` then returns the verified session (`provider: nous`). For an internet-facing host, register with `--redirect-uri https://hermes.example.com/auth/callback` and set `HERMES_DASHBOARD_PUBLIC_URL` so the OAuth callback resolves to your public URL (see [Public URL override](#public-url-override)).
 
+### Nous Portal token clock skew
+
+If a correctly signed Portal token fails with `The token is not yet valid (iat)`,
+synchronize the dashboard host's clock first. For small unavoidable differences,
+set an explicit tolerance in `config.yaml` and restart the dashboard:
+
+```yaml
+dashboard:
+  oauth:
+    access_token_leeway: 30  # seconds; default 0 (strict)
+```
+
+This applies to the Nous provider's login, refresh, and bearer/session verification.
+It accepts finite, non-negative seconds; invalid values prevent that provider from
+registering. Use the smallest tolerance needed: PyJWT applies it to `iat`, `nbf`,
+and `exp`, so it also permits a token past its stated expiry by that many seconds.
+Signature, issuer, audience, and required-claim checks remain enforced. This setting
+does not configure the self-hosted OIDC provider and has no environment override.
+
 ### Username/password provider (no OAuth IDP)
 
 If you don't want to wire up an OAuth identity provider — a self-hosted "just put a password on my dashboard" deployment — the bundled `plugins/dashboard_auth/basic` plugin registers a `DashboardAuthProvider` named `basic` that authenticates with a **username and password** instead of an OAuth redirect.

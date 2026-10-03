@@ -290,6 +290,30 @@ it.each([
   h.dispose()
 })
 
+it('settles an unfinished bubble when the stream binding was already cleared', async () => {
+  const h = mount()
+  const streamed = 'The answer is'
+  await h.submit()
+  await h.send('message.start')
+  await h.send('message.delta', { text: streamed })
+  await flush()
+
+  h.update(state => ({
+    ...state,
+    streamId: null,
+    messages: state.messages.map(message => ({ ...message, pending: false }))
+  }))
+
+  await h.send('message.complete', { text: ANSWER })
+
+  expect(timeline(h.state().messages)).toEqual([
+    ['user', 'Give the answer.'],
+    ['assistant', ANSWER]
+  ])
+  expect(h.state().messages.at(-1)).toMatchObject({ pending: false, completedAt: expect.anything() })
+  h.dispose()
+})
+
 // A completion whose text IS the sealed pre-redirect reply, with nothing
 // streamed since, is that reply's own completion (rejected redirect race, or a
 // steer the model absorbed without new output): it settles the seal and the

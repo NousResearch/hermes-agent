@@ -28,7 +28,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
-from gateway.platforms.api_server_runs import _RunStream
+from gateway.platforms.api_server_runs import _RunStream, _run_usage
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -592,6 +592,31 @@ class TestRunStatus:
                     "input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
                     "cache_read_tokens": 84, "cache_write_tokens": 11,
                 }
+
+
+class TestRunUsageCost:
+    """``_run_usage`` reports the run's estimated USD spend beside the token counters.
+
+    A cost ledger that books ``cost_usd`` otherwise has to price tokens itself from a model
+    catalog it does not own, and ends up recording tokens at a zero cost.
+    """
+
+    def test_positive_estimate_rides_along_as_float(self):
+        agent = MagicMock()
+        agent.session_prompt_tokens = 100
+        agent.session_estimated_cost_usd = 0.0123456
+
+        usage = _run_usage(agent)
+
+        assert usage["input_tokens"] == 100
+        assert usage["cost_usd"] == pytest.approx(0.012346)
+
+    @pytest.mark.parametrize("value", [0, 0.0, None, "n/a", True])
+    def test_no_estimate_is_omitted_rather_than_reported_as_zero(self, value):
+        agent = MagicMock()
+        agent.session_estimated_cost_usd = value
+
+        assert "cost_usd" not in _run_usage(agent)
 
 
 # ---------------------------------------------------------------------------

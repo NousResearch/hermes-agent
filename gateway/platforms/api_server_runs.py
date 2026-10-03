@@ -89,6 +89,11 @@ _USAGE_FIELDS = (
     ("input_tokens", "session_prompt_tokens"), ("output_tokens", "session_completion_tokens"),
     ("total_tokens", "session_total_tokens"), ("cache_read_tokens", "session_cache_read_tokens"),
     ("cache_write_tokens", "session_cache_write_tokens"))
+# Estimated USD spend for THIS run, beside the token counters. A cost ledger (Paperclip books
+# ``cost_usd``) otherwise has to price tokens itself from a model catalog it does not own, and
+# ends up recording tokens with a zero cost. Float, unlike the integer counters above; omitted
+# when the run produced no estimate, so a consumer can still tell "unpriced" from "free".
+_USAGE_COST_FIELDS = (("cost_usd", "session_estimated_cost_usd"),)
 # Tool-progress event -> SSE payload fields (tool_name, preview, kwargs); key order is wire format.
 _FIXED_EVENT_FIELDS = {
     "tool.started": lambda tool, preview, kw: {"tool": tool, "preview": preview},
@@ -756,13 +761,17 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
-def _run_usage(agent) -> Dict[str, int]:
+def _run_usage(agent) -> Dict[str, Any]:
     """Terminal ``usage`` payload from the agent's session counters; a missing or non-numeric
     counter (test doubles, agents without cache accounting) reads as ``0``."""
-    usage = {}
+    usage: Dict[str, Any] = {}
     for key, attr in _USAGE_FIELDS:
         value = getattr(agent, attr, 0)
         usage[key] = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    for key, attr in _USAGE_COST_FIELDS:
+        value = getattr(agent, attr, 0)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            usage[key] = round(float(value), 6)
     return usage
 
 

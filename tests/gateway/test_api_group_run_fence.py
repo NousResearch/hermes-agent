@@ -160,6 +160,32 @@ async def test_owner_freeze_still_lists_and_freezes_a_fenced_participant(adapter
 
 
 @pytest.mark.asyncio
+async def test_a_freeze_outlives_a_verified_move_and_refuses_the_new_hosts_work(adapter, monkeypatch):
+    create = MagicMock()
+    monkeypatch.setattr(adapter, "_create_agent", create)
+    path = adapter._run_idempotency_store.path
+    async with TestClient(TestServer(app_for(adapter))) as cli:
+        old = await invite(cli)
+        participant = participation(scoped(old))
+        adapter._run_idempotency_store.reserve(
+            runs.room_run_scope_key(participant), "identity", "fp", "run-identity", {"status": "running"},
+            identity=participant)
+        stopped = await cli.post(STOP, headers=OWNER, json=command(participant))
+        assert stopped.status == 200, await stopped.json()
+        # The group moves: this participant promised the next epoch to the successor, then learned it took over.
+        promise(adapter)
+        fence.learn_authority(path, room_id=ROOM, epoch=2, install_id=SUCCESSOR)
+        successor = await invite(cli, SUCCESSOR, 2)
+        refused = await submit(cli, successor, scoped(successor, SUCCESSOR, 2, task="task-after-move"))
+        body = await refused.json()
+        assert refused.status == 403, body
+        assert body["error"]["code"] == "group_work_frozen"
+        assert create.call_count == 0
+        listed = await (await cli.get(PARTICIPANTS, headers=OWNER)).json()
+        assert [item["admissions_frozen"] for item in listed["data"]] == [True]
+
+
+@pytest.mark.asyncio
 async def test_canonical_fenced_epoch_refuses_answers_and_passes_status_and_stop_to_the_successor(canonical):
     adapter, authority, runner = canonical
     entered, interrupted = asyncio.Event(), asyncio.Event()

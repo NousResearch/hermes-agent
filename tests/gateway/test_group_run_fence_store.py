@@ -73,9 +73,12 @@ def test_the_owner_freeze_is_unaffected_by_a_fence(store):
         reserve(store, "new-run")
     with store.group_control_open(room_run_scope_key(IDENTITY)) as allowed:
         assert allowed is False
-    # A fence elsewhere never freezes, and freezing never fences.
-    reserve(store, "successor-run", identity=SUCCESSOR)
-    store.freeze_room_scope(SUCCESSOR, "owner-stop-successor")
+    # The freeze outlives the move: the promised successor's new work for this participant is refused
+    # too. Freezing never fences, and a fence never freezes the group's other Bots.
+    with pytest.raises(storage.GroupRunFrozen):
+        reserve(store, "successor-run", identity=SUCCESSOR)
+    other = {**SUCCESSOR, "member_id": IDENTITY["member_id"] + "-other"}
+    assert reserve(store, "other-run", identity=other)[0] == "created"
     assert fence.room_fence_state(store.path, IDENTITY["room_id"])["fenced_epoch"] == IDENTITY["authority_epoch"]
     assert store.room_stop_snapshot("owner-stop")["frozen_at"] == snapshot["frozen_at"]
 

@@ -730,6 +730,11 @@ original run ID, but cannot relaunch it. The existing local interruption path st
 known work; another updated listener sharing that store picks up the intent through
 its existing periodic sweep.
 
+The freeze outlives a change of the group's host. The same Bot in the same group
+(room, member and profile on this gateway) stays frozen at the frozen epoch and every
+later one, whichever computer hosts the group then: a successor's new work is refused
+the same way, its runs stop, and the list shows its scopes as frozen.
+
 Interpret `work_state` separately from the admission barrier:
 
 - `stopping`: this listener still tracks local work being interrupted.

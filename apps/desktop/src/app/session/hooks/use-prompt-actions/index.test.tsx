@@ -2312,6 +2312,72 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
+  it('silences a read-aloud on a typed send only while voice.barge_in is on (#126681)', async () => {
+    const { $voicePlayback, setVoicePlaybackState } = await import('@/store/voice-playback')
+    const { $bargeInEnabled } = await import('@/store/voice-prefs')
+
+    const speaking = {
+      audioElement: null,
+      messageId: 'assistant-1',
+      sequence: 0,
+      source: 'read-aloud' as const,
+      status: 'speaking' as const
+    }
+
+    // Default (barge_in on): a typed send still cuts the readout and still
+    // annotates the turn as an interruption. This is the shipped default.
+    const loudRequest = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={loudRequest} />
+    )
+
+    setVoicePlaybackState(speaking)
+    await handle!.submitText('typed over the readout')
+
+    expect($voicePlayback.get().status).toBe('idle')
+    expect(loudRequest).toHaveBeenLastCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'typed over the readout',
+        interrupted: true
+      },
+      1_800_000
+    )
+
+    // `voice.barge_in: false` — the same typed send leaves the readout running
+    // and carries no interruption note, so a reading-and-typing user can answer
+    // a reply without silencing it.
+    const quietRequest = vi.fn(async () => ({}) as never)
+
+    handle = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={quietRequest} />
+    )
+
+    $bargeInEnabled.set(false)
+
+    try {
+      setVoicePlaybackState(speaking)
+      await handle!.submitText('typed over the readout')
+
+      expect($voicePlayback.get().status).toBe('speaking')
+      expect(quietRequest).toHaveBeenLastCalledWith(
+        'prompt.submit',
+        {
+          session_id: RUNTIME_SESSION_ID,
+          text: 'typed over the readout'
+        },
+        1_800_000
+      )
+    } finally {
+      $bargeInEnabled.set(true)
+      setVoicePlaybackState({ ...speaking, status: 'idle' })
+    }
+  })
+
   it('a fromQueue drain sends even when busyRef is still true on the settle edge', async () => {
     // busyRef lags $busy by one effect tick on the busy→false settle edge, so a
     // drained queue send would otherwise hit the busy guard and silently no-op.

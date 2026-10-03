@@ -148,7 +148,9 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     with our PID BEFORE first use — another hermes process's orphan reaper rmtree's any
     ownerless agent-browser-* dir in the shared tmpdir."""
     socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
-    os.makedirs(socket_dir, mode=0o700, exist_ok=True)
+    from tools.spill_safety import ensure_owned_private_dir
+
+    ensure_owned_private_dir(socket_dir)
     _lifecycle._write_owner_pid(socket_dir, session_name)
     return socket_dir
 

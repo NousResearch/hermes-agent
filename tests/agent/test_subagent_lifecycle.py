@@ -129,6 +129,11 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
             "summary": "aggregated",
             "api_calls": 1,
             "duration_seconds": 0.25,
+            "worker_route": "sol",
+            "worker_provider": "test",
+            "worker_model_requested": "test-model",
+            "route_receipt_id": None,
+            "fallback_used": False,
             "_child_role": "leaf",
             "_child_cost_usd": 2.5,
         },
@@ -150,6 +155,11 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         child_role="leaf",
         child_summary="aggregated",
         child_status="completed",
+        worker_route="sol",
+        worker_provider="test",
+        worker_model_requested="test-model",
+        route_receipt_id=None,
+        fallback_used=False,
         # Redacted tool history rides the shared finalization pipeline
         # (#62011/#72403); empty here because the fabricated result carries
         # no tool_trace.

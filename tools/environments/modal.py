@@ -118,7 +118,13 @@ class _AsyncWorker:
         future = safe_schedule_threadsafe(coro, self._loop)
         if future is None:
             raise RuntimeError("AsyncWorker loop is not running")
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            # A caller may retry with newer state; do not let the expired coroutine
+            # resume later and send the old upload after that retry has committed.
+            future.cancel()
+            raise
 
     def stop(self):
         if self._loop and self._loop.is_running():

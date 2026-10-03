@@ -35,6 +35,7 @@ from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
+    preflight_compression_should_continue_turn,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
@@ -2732,7 +2733,14 @@ def run_conversation(
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
-            if messages is _pre_api_input and compression_skipped_due_to_lock(agent):
+            _pre_api_continue = preflight_compression_should_continue_turn(
+                agent,
+                original_messages=_pre_api_input,
+                compressed_messages=messages,
+                request_tokens=request_pressure_tokens,
+                context_length=int(getattr(_compressor, "context_length", 0) or 0),
+            )
+            if _pre_api_continue == "defer_lock":
                 # #69870 lock-skip: another path holds this session's
                 # compression lock, so this pass no-oped. That is a temporary
                 # DEFER, not evidence about compressibility — refund the
@@ -2746,6 +2754,37 @@ def run_conversation(
                 _last_preflight_pressure = None
                 if pending_moa_prepared_request is _moa_prepared_request:
                     pending_moa_prepared_request = None
+            elif _pre_api_continue is False:
+                # Timeout/failure no-op left the request at or over the model
+                # window. Do not send that payload as if compaction succeeded.
+                logger.error(
+                    "Pre-API compression no-op left ~%s request tokens at or "
+                    "over context=%s; refusing to send over-limit input",
+                    f"{request_pressure_tokens:,}",
+                    f"{int(getattr(_compressor, 'context_length', 0) or 0):,}",
+                )
+                agent._emit_status(
+                    "❌ Context compression timed out or failed while the "
+                    "request is still over the model window. No messages "
+                    "were dropped, and the over-limit request was not sent. "
+                    "Run /compress to retry, /new for a clean session, or "
+                    "check auxiliary.compression."
+                )
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                try:
+                    agent.iteration_budget.refund()
+                except Exception:
+                    pass
+                final_response = (
+                    "Context compression failed while the request is over "
+                    "the model context window. The over-limit request was "
+                    "not sent. Run /compress to retry or /new for a clean "
+                    "session."
+                )
+                failed = True
+                _turn_exit_reason = "compression_timeout_over_limit"
+                break
             else:
                 # Reset retry/empty-response state so the compacted request
                 # gets a fresh chance instead of inheriting stale recovery

@@ -718,7 +718,7 @@ class CompressionCommitFence:
 
 # Defaults for the in-agent (non-hygiene) progress-aware compress_context wrap.
 # Mirror hermes_cli.config.DEFAULT_CONFIG["compression"] keys of the same name.
-DEFAULT_CONTEXT_TIMEOUT_SECONDS = 120.0
+DEFAULT_CONTEXT_TIMEOUT_SECONDS = 300.0
 DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS = 600.0
 
 # Shared daemon pool for sync compress_context timeout wraps — analogous to
@@ -1238,6 +1238,32 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     """
     _sig = getattr(agent, "_compression_skipped_due_to_lock", None)
     return _sig is True or isinstance(_sig, str)
+
+
+def preflight_compression_should_continue_turn(
+    agent: Any,
+    *,
+    original_messages: Any,
+    compressed_messages: Any,
+    request_tokens: int,
+    context_length: int,
+) -> bool | str:
+    """Whether a pre-API compression pass may send the next provider request.
+
+    Returns:
+      ``True`` — send (successful shrink, or a no-op still under the window)
+      ``False`` — fail closed; a timeout/failure no-op left the request at or
+        over the model window. Sending would silently grow unsafe over-limit
+        input.
+      ``\"defer_lock\"`` — another path holds the session compression lock.
+    """
+    if compression_skipped_due_to_lock(agent):
+        return "defer_lock"
+    if compressed_messages is not original_messages:
+        return True
+    if context_length > 0 and request_tokens >= context_length:
+        return False
+    return True
 
 
 def _adopt_live_compression_child(

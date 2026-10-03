@@ -24,7 +24,7 @@ from agent.conversation_compression import (
 class TestResolveContextCompressionTimeouts:
     def test_defaults_when_empty_cfg(self):
         idle, ceiling = resolve_context_compression_timeouts({})
-        assert idle == 120.0
+        assert idle == 300.0
         assert ceiling == 600.0
 
     def test_zero_idle_disables_wrapper(self):

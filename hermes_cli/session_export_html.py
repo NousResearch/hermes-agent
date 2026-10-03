@@ -5,6 +5,7 @@ import secrets
 from typing import Any, Dict, List
 from urllib.parse import quote
 
+from hermes_cli.session_export import _content_part_text
 from hermes_cli.timefmt import coerce_epoch
 
 # --- Icons (Lucide-style SVGs) ---
@@ -673,6 +674,8 @@ def _content_text(content: Any) -> str:
             parts.append(part.get("text", ""))
         elif part.get("type") == "image_url":
             parts.append("[Image Attachment]")
+        else:
+            parts.append(_content_part_text(part))
     return "\n".join(parts)
 
 

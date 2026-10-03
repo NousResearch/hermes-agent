@@ -94,8 +94,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         _print_json({
             **{k: getattr(res, k)
-               for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
-                         "reaped_terminal_workers")},
+               for k in ("reclaimed", "crashed", "timed_out", "stale", "progress_stalled",
+                         "auto_blocked", "promoted", "reaped_terminal_workers")},
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
@@ -122,6 +122,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         ("Crashed:     ", res.crashed),
         ("Timed out:   ", res.timed_out),
         ("Stale:       ", res.stale),
+        ("Progress stall:", res.progress_stalled),
         ("Auto-blocked:", res.auto_blocked),
     ):
         print(f"{label} {len(items)}")

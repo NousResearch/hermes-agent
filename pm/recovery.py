@@ -52,12 +52,15 @@ def repair_dependencies(project_root: Path) -> None:
     from hermes_cli.venv_sync import collect_superseded_generations
     from pm.client import sync_venv
     from pm.paths import repo_root
+    from pm.workspace import heal_installed_workspaces
 
     if Path(project_root).resolve() != repo_root().resolve():
         raise InstallError("venv", "recovery root does not match this PM installation")
+    heal_installed_workspaces(project_root)
     with contextlib.redirect_stdout(sys.stderr):
         sync_venv(repair=True)
     collect_superseded_generations(project_root)
+
 
 
 def refresh_dependencies(project_root: Path) -> str:

@@ -1458,6 +1458,10 @@ def _render_skills_index(
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
+    # Global dedup: a bare name advertised twice (different categories) cannot be
+    # loaded by that name — skill_view rejects it as ambiguous (fixes #64392).
+    # First category wins, matching _find_all_skills first-wins.
+    seen_global: set = set()
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
         if category in demoted:
@@ -1467,8 +1471,9 @@ def _render_skills_index(
         index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
         seen = set()
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
-            if name not in seen:
+            if name not in seen and name not in seen_global:
                 seen.add(name)
+                seen_global.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
     if is_single_query_session():

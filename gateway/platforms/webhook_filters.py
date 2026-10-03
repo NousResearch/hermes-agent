@@ -177,7 +177,7 @@ class WebhookRouteProcessor:
             logger.warning("[webhook] script ignored webhook: %s", error)
             return False, None
         is_shell = path.suffix.lower() in {".sh", ".bash"}
-        interpreter = sys.executable
+        env_overlay: dict[str, str] = {}
         if is_shell:
             # ``shutil.which("bash")`` inherits PATH order and returns System32's WSL stub on
             # Windows hosts where System32 precedes Git (#116818); ``_find_bash`` probes Git Bash first.
@@ -187,12 +187,32 @@ class WebhookRouteProcessor:
             except RuntimeError as exc:
                 logger.warning("[webhook] script ignored webhook: %s", exc)
                 return False, None
+            argv = [interpreter, str(path)]
+        else:
+            # ``sys.executable`` is the bare store Python on a store install, and
+            # ``build_subprocess_env()`` strips Hermes's repo root and dependency site-packages
+            # from PYTHONPATH, so a ``.py`` route script could import neither Hermes nor its
+            # dependencies there — the shape cron fixed for its scripts (#123044). Ride cron's
+            # resolver (dependency-venv interpreter + repo bootstrap on a store install) and
+            # keep lazy installs off for the script's process tree on every OS (#129100).
+            from cron.scheduler_script import _script_argv
+            try:
+                argv, env_overlay, script_error = _script_argv(path)
+            except Exception as exc:  # the resolver reads PM's install records; the route must not crash
+                logger.warning("[webhook] script ignored webhook: %s", exc)
+                return False, None
+            if argv is None:
+                logger.warning("[webhook] script ignored webhook: %s", script_error)
+                return False, None
+            env_overlay = {**env_overlay, "HERMES_DISABLE_LAZY_INSTALLS": "1"}
         try:
             from tools.environments.local import build_subprocess_env
+            env = build_subprocess_env()
+            env.update(env_overlay)
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             result = subprocess.run(
-                [interpreter, str(path)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=build_subprocess_env(), **popen_kwargs,
+                argv, input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=env, **popen_kwargs,
             )
         except subprocess.TimeoutExpired:
             logger.warning("[webhook] script timed out: %s", path)

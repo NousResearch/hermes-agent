@@ -223,6 +223,49 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
 
 
+# A stand-in `op` enforcing the service-account contract: `op item get` without `--vault`
+# fails exactly like op 2.x does for a service account; `op item list` works and names each vault.
+_FAKE_OP_SERVICE_ACCOUNT = r'''#!/usr/bin/env python3
+import json, os, sys
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a")
+argv = sys.argv[1:]
+log.write(json.dumps(argv) + "\n")
+if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    sys.stderr.write("[ERROR] not signed in\n"); sys.exit(1)
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{"id": "nibo1", "title": "Nibo", "vault": {"id": "vaultA", "name": "Agent"},
+                       "urls": [{"href": "https://passport.example.com"}]}])); sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    if "--vault" not in argv:
+        sys.stderr.write("[ERROR] a vault query must be provided when this command is called by a service account. "
+                         "Please specify one either through the --vault flag or through piped input\n"); sys.exit(1)
+    if argv[argv.index("--vault") + 1] != "vaultA":
+        sys.stderr.write("[ERROR] item not found in vault\n"); sys.exit(1)
+    print("123456" if "--otp" in argv else "plain sentence nobody would flag 7"); sys.exit(0)
+sys.exit(2)
+'''
+
+
+def test_onepassword_service_account_resolves_with_the_items_vault(tmp_path, monkeypatch):
+    """A service account cannot `op item get` without --vault; resolving a listed login must
+    pass the vault the item lives in, for both the password and the one-time code."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP_SERVICE_ACCOUNT, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_fake_service_token")
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    assert [m.id for m in backend.list_items()] == ["op:nibo1"]
+    assert backend.resolve_password("op:nibo1") == "plain sentence nobody would flag 7"
+    assert backend.resolve_otp("op:nibo1") == "123456"
+    gets = [json.loads(line) for line in (tmp_path / "op.log").read_text().splitlines()
+            if json.loads(line)[:2] == ["item", "get"]]
+    assert gets and all(argv[argv.index("--vault") + 1] == "vaultA" for argv in gets)
+
+
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     """Vault reads use the same explicit 1Password CLI config location."""
     from agent.vault_backends.onepassword import OnePasswordLoginBackend

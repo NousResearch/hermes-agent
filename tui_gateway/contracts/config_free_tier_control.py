@@ -57,6 +57,7 @@ class ConfigGetResult(Result):
     prompt: str | None = None
     mtime: float | None = None
     mcp_rev: str | None = None
+    change_events: bool | None = None
 
 
 method("config.get", params=ConfigGetParams, result=ConfigGetResult,

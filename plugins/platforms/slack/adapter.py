@@ -4627,9 +4627,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Mentions may live only in Block Kit blocks.
         # See #52387.
         routing_text = _slack_mention_detection_text(event) or original_text or ""
-        is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
-            or self._slack_message_matches_mention_patterns(routing_text))
+        directly_mentioned = bool(bot_uid and f"<@{bot_uid}>" in routing_text)
+        pattern_mentioned = self._slack_message_matches_mention_patterns(routing_text)
+        is_mentioned = directly_mentioned or pattern_mentioned
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
         # Internal triggers (reactions) skip the mention requirement but NOT
@@ -4672,7 +4672,19 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
-                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
+                pattern_allows_silence=(
+                    pattern_mentioned and self._slack_mention_patterns_allow_silence()
+                ),
+                addressed=(
+                    is_one_to_one_dm
+                    or directly_mentioned
+                    or is_command_text
+                    or force_process
+                    or (
+                        pattern_mentioned
+                        and not self._slack_mention_patterns_allow_silence()
+                    )
+                )))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -6364,6 +6376,8 @@ class SlackAdapter(BasePlatformAdapter):
     _slack_strict_mention = _extra_or_env_flag_getter("strict_mention", "SLACK_STRICT_MENTION")
     _slack_ignore_other_user_mentions = _extra_or_env_flag_getter(
         "ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS")
+    _slack_mention_patterns_allow_silence = _extra_or_env_flag_getter(
+        "mention_patterns_allow_silence", "SLACK_MENTION_PATTERNS_ALLOW_SILENCE")
     _slack_thread_require_mention = _extra_or_env_flag_getter(
         "thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION")
     _slack_disable_dms = _extra_or_env_flag_getter("disable_dms", "SLACK_DISABLE_DMS", strip=True)
@@ -6381,16 +6395,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reply_expected(
         self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
-        opens_own_session: bool) -> Optional[bool]:
+        opens_own_session: bool, pattern_allows_silence: bool = False) -> Optional[bool]:
         """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
-        stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
-        free-response channel admitted as the start of its own session (a new top-level thread).
-        A plain follow-up in a conversation the bot is part of (a thread, or a flat
-        ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
-        gateway keeps its visible fallback (#110952)."""
+        stand) when an opt-in custom wake pattern owns the turn, when the message opens by
+        @mentioning someone else, or when an unaddressed message is admitted as the start of a
+        free-response channel's own session (a new top-level thread). Direct bot mentions and
+        other explicitly addressed turns always require a reply. A plain follow-up in a conversation
+        the bot is part of (a thread, or a flat ``reply_in_thread: false`` channel) is None: it is
+        usually meant for the bot, so the gateway keeps its visible fallback (#110952)."""
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if addressed or self._slack_message_mentions_self(routing_text, self_uids):
             return True
+        if pattern_allows_silence:
+            return False
         if self._slack_message_addressed_to_other_user(routing_text, self_uids):
             return False
         return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
@@ -6874,6 +6891,7 @@ def interactive_setup() -> None:
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
     ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
+    ("mention_patterns_allow_silence", "SLACK_MENTION_PATTERNS_ALLOW_SILENCE", "lower"),
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),

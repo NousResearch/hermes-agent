@@ -56,7 +56,18 @@ _DOH_PROVIDERS: list[dict] = [
 ]
 # Last-resort IPv4 Bot API endpoints (149.154.160.0/20). Used when DoH is blocked AND as
 # first-try connect targets so a blackholed IPv6 AAAA for the hostname can't pin initialize().
-SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
+# Quad9 is intentionally not included as a provider: its DoH endpoint no longer supports
+# the JSON response format used by _query_doh_provider.
+SEED_FALLBACK_IPS: list[str] = [
+    "149.154.166.110",
+    "149.154.167.220",
+    "149.154.160.17",
+    "149.154.161.120",
+    "149.154.162.8",
+    "149.154.164.21",
+    "149.154.165.100",
+    "149.154.172.40",
+]
 _UNSET = object()
 
 
@@ -257,7 +268,7 @@ async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list
 
 
 async def discover_fallback_ips() -> list[str]:
-    """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
+    """Resolve api.telegram.org via Google and Cloudflare DoH; unique A records, in order. IPs matching the
     system resolver are deliberately KEPT (often the most reliable path). Falls back to
     ``SEED_FALLBACK_IPS`` only when DoH yields nothing usable.
 

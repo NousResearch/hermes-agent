@@ -365,18 +365,28 @@ class TestMalformedInputs:
 
 class TestMergeSemantics:
 
-    def test_existing_mcp_server_conflicts_without_overwrite(
+    def test_existing_mcp_server_conflicts_without_overwrite_and_is_replaced_with_it(
             self, claude_tree, hermes_home):
+        # An HTTP server the import replaces with a stdio one: --overwrite drops url/headers on
+        # purpose, so the write is a full-state replacement, not an omission to refuse.
         (hermes_home / "config.yaml").write_text(
-            yaml.safe_dump({"mcp_servers": {"github": {"command": "mine"}}}),
+            yaml.safe_dump({"display": {"theme": "dark"}, "mcp_servers": {"github": {
+                "url": "https://example.invalid/mcp", "headers": {"X-Region": "eu"}}}}),
             encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
         config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
-        assert config["mcp_servers"]["github"]["command"] == "mine"
+        assert config["mcp_servers"]["github"]["url"] == "https://example.invalid/mcp"
         assert any(
             i["status"] == "conflict" and i["source"] == "github"
             for i in report["items"]
         )
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True, overwrite=True)
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert "url" not in config["mcp_servers"]["github"]
+        assert "headers" not in config["mcp_servers"]["github"]
+        assert config["mcp_servers"]["github"]["command"]
+        assert config["display"] == {"theme": "dark"}
 
 
     def test_existing_skill_conflicts_without_overwrite(
@@ -661,9 +671,10 @@ class TestExistingConfigPreserved:
         def boom(*_args, **_kwargs):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(agent_import, "atomic_yaml_write", boom)
+        monkeypatch.setattr("utils._roundtrip_dump", boom)  # dump_yaml_file → atomic_config_write → here
         with pytest.raises(OSError):
-            agent_import.dump_yaml_file(config_path, {"model": "replacement"})
+            agent_import.dump_yaml_file(  # the caller's shape: the loaded document, with its change
+                config_path, {**agent_import.load_yaml_file(config_path), "model": "replacement"})
 
         assert config_path.read_bytes() == before
 

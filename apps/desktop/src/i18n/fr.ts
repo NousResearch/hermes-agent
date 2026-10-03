@@ -5116,6 +5116,23 @@ export const frOverrides = {
       off: 'Désactivé',
       offDescription: "Exécuter sans invites d'approbation"
     },
+    settingsLock: {
+      title: 'Verrou des paramètres',
+      locked: 'Verrouillé',
+      unlocked: 'Déverrouillé',
+      ariaLabel: state => `Verrou des paramètres : ${state}`,
+      lockedDescription: 'Ni cette application, ni la CLI, ni un agent ne peuvent modifier ces paramètres tant que vous ne les déverrouillez pas.',
+      unlockedDescription: "Les paramètres verrouillés peuvent être modifiés jusqu'à la fermeture de la fenêtre.",
+      unusable: "Le verrou est activé mais ne désigne rien à verrouiller. Toute écriture de configuration est refusée tant que settings_lock n'est pas corrigé dans le config.yaml racine.",
+      passwordLabel: 'Mot de passe',
+      passwordPlaceholder: 'Mot de passe de déverrouillage',
+      unlock: 'Déverrouiller 15 min',
+      relock: 'Verrouiller maintenant',
+      wrongPassword: 'Mot de passe incorrect.',
+      remaining: left => `Déverrouillé — encore ${left}`,
+      lockedPaths: 'Chemins verrouillés',
+      setupHint: 'Configurez-le avec : hermes config lock approvals.mode command_allowlist'
+    },
     statusbar: {
       unknown: 'inconnu',
       restart: 'redémarrage',

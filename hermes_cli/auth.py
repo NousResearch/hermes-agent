@@ -2362,11 +2362,6 @@ def _update_config_for_provider(
     finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
     removes ``model.default`` in that same write, for a caller that has no model to offer and must
     not leave the previous provider's model paired with the new host."""
-    with _auth_store_lock():  # so auto-resolution picks this provider
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = provider_id
-        _save_auth_store(auth_store)
-
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
@@ -2396,7 +2391,14 @@ def _update_config_for_provider(
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
+    # config.yaml first: it is the write the operator settings lock may refuse, and a refusal must
+    # not leave auth.json already pointing at a provider the config does not select.
     atomic_config_replace(config_path, config)
+
+    with _auth_store_lock():  # so auto-resolution picks this provider
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        _save_auth_store(auth_store)
     return config_path
 
 
@@ -2483,6 +2485,10 @@ def logout_command(args) -> None:
             return
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
+    if should_reset_config:
+        # config.yaml first: it is the write the operator settings lock may refuse, and a refusal
+        # must not leave auth state already cleared under a config that still selects the provider.
+        _reset_config_provider()
     if not (clear_provider_auth(target) or should_reset_config):
         print(f"No auth state found for {provider_name}.")
         return
@@ -2490,8 +2496,6 @@ def logout_command(args) -> None:
         # A profile logout must not be re-adopted from the cross-profile store on the next boot.
         from hermes_cli.auth_nous import _clear_shared_nous_state
         _clear_shared_nous_state("logout")
-    if should_reset_config:
-        _reset_config_provider()
     print(f"Logged out of {provider_name}.")
     if not should_reset_config:
         print("Model provider configuration was unchanged.")

@@ -387,9 +387,10 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
             continue
         approve_session(session_key, key)
         if choice == "always" and not is_tirith:
-            approve_permanent(key)
+            # Published by the save, not before it: a refused write (settings lock on
+            # command_allowlist) must not leave a cross-session approval live in memory.
             with _lock:
-                snapshot = set(_permanent_set())
+                snapshot = set(_permanent_set()) | {key}
             save_permanent_allowlist(snapshot)
 
 

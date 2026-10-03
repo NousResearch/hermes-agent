@@ -448,13 +448,29 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None) -> None:
-    def _write(f) -> None:
-        yaml_rt.dump(config, f)
-        if extra_content:
-            f.write(extra_content)
+def _roundtrip_dump(path: Path, text: str) -> None:
+    _atomic_write(path, lambda f: f.write(text), prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+
+def _guarded_roundtrip_dump(path: Path, yaml_rt, config, before: Any, *,
+                            extra_content: "str | None" = None) -> None:
+    """Emit *config* once, and commit exactly those bytes under the operator settings lock.
+
+    The lock judges what a reader will see, not the round-trip object: a ``<<:`` merge key caches
+    inherited values the emitter does not write back, so the object can say ``manual`` while the
+    emitted bytes read back as ``off``. Re-reading the emitted text canonically closes that gap.
+    """
+    import io
+
+    from hermes_cli.settings_lock import authorized_config_write
+
+    buffer = io.StringIO()
+    yaml_rt.dump(config, buffer)
+    if extra_content:
+        buffer.write(extra_content)
+    text = buffer.getvalue()
+    with authorized_config_write(path, before, yaml.safe_load(text) or {}):
+        _roundtrip_dump(path, text)
 
 
 def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
@@ -477,6 +493,8 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
 
     mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
+    # The document as a reader sees it, for the settings-lock diff.
+    before = (yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None) or {}
     current = config
     keys = _split_key_path(key_path)
     i = 0
@@ -497,7 +515,7 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
             current[seg] = next_value
         current = next_value
         i += consumed
-    _roundtrip_dump(path, yaml_rt, config)
+    _guarded_roundtrip_dump(path, yaml_rt, config, before)
 
 
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
@@ -546,7 +564,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     from hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
-    require_readable_config_before_write(path)
+    before = require_readable_config_before_write(path)
     creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
     yaml_rt, existing = _roundtrip_load(path)
 
@@ -583,7 +601,10 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
             del dst[key]
 
     _merge(existing, new_state)
-    _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
+    # Operator settings lock, against the MERGED document as written: a YAML alias shares one node
+    # between two keys, so merging an unlocked key can change a locked one ``new_state`` left alone.
+    _guarded_roundtrip_dump(path, yaml_rt, existing, before,
+                            extra_content=extra_content_on_create if creating else None)
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:

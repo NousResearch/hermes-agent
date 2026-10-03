@@ -2175,6 +2175,60 @@ updates:
 
 
 # =============================================================================
+# Settings Lock
+# =============================================================================
+# Named config paths that no writer may change until an unlock window is open.
+# Every shipped writer is refused alike: `hermes config set`, the desktop's
+# config.set and model switch, the gateway slash commands, the credential
+# lifecycle, `hermes auth`, `hermes agent import`, the update-time restores.
+# Read from the SHARED ROOT config.yaml only, never a profile's, so a profile
+# cannot unlock itself; `hermes config lock` (and `--clear`) writes it there
+# too, whichever profile it is run from. The stanza protects itself: `settings_lock.*` is always
+# locked while enabled.
+#
+#   hermes config lock approvals.mode command_allowlist   # prompts for a password, stores only its hash
+#   hermes config unlock --minutes 5           # opens a time-boxed window (password if set)
+#   hermes config relock                       # closes it early
+#
+# A window belongs to the lock it was opened against. Any change to the
+# stanza (new keys or password, disable, clear, re-enable) closes it, even if
+# the identical lock is put back later: the next change needs a new unlock.
+# A window lasts at most 24 hours (`--minutes 1440`); a longer or non-numeric
+# request (`inf`) is refused and opens nothing.
+#
+# `hermes config relock` returning means the window is closed: a locked change
+# that was already being saved either reached the file before relock returned
+# or is refused. If the receipt cannot be removed, relock fails and says the
+# window is still open. Two saves of the same file that overlap can still
+# overwrite each other as they can without a lock; the lock does not order them.
+#
+# The check is made on the bytes as they will be written, read back the way
+# every reader reads them: a YAML alias (`other: *a`) or merge key (`<<: *d`)
+# cannot carry a change onto a locked key, and a value that changes kind
+# (`max_turns: 1` to `true`) is a change.
+#
+# It locks config.yaml, not runtime overrides that never write it: a session's
+# YOLO toggle (Shift+Tab, `/yolo`) and `--yolo` are not covered.
+#
+# Fails closed: a stanza this build cannot apply (an unrecognised `enabled`, no
+# usable `keys`, a malformed password hash), a root config.yaml that names a
+# lock but no longer parses, or a root config.yaml that exists but cannot be
+# read (permissions, I/O error) refuses every config write until it is fixed.
+# Only a root config.yaml that does not exist at all means "no lock".
+#
+# Not a security boundary against anyone who can edit this file directly: they
+# can change a locked value or delete the stanza in one line. Back it with file
+# ownership if that is the threat.
+#
+# settings_lock:
+#   enabled: true
+#   keys: [approvals.mode, command_allowlist, providers.*]   # dotted paths or `prefix.*`; matched by
+#                                                 # spelling, so a literal `approvals.mode:` key is
+#                                                 # locked like the nested approvals: {mode: ...}
+#   password: "scrypt$16384$8$1$<salt>$<hash>"    # written by `hermes config lock`; optional (--no-password)
+
+
+# =============================================================================
 # Web Dashboard
 # =============================================================================
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.

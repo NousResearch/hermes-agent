@@ -511,7 +511,7 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 @router.delete("/attachments/{attachment_id}")
 def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
-        if kanban_db.delete_attachment(conn, attachment_id) is None:
+        if kanban_db.delete_attachment(conn, attachment_id, board=board) is None:
             raise HTTPException(status_code=404, detail="attachment not found")
         return {"ok": True, "id": attachment_id}
 

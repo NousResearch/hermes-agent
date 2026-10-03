@@ -1978,8 +1978,11 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
     return None if r is None else Attachment.from_row(r)
 
 
-def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
-    """Delete the row (source of truth) and best-effort its blob; None when no row matched."""
+def delete_attachment(conn: sqlite3.Connection, attachment_id: int,
+                      board: Optional[str] = None) -> Optional[Attachment]:
+    """Delete the row (source of truth) and best-effort its blob; None when no row matched. The blob
+    is unlinked only under *board*'s attachments root (``conn``'s board; None = the current one), as
+    download_attachment checks: a tampered/imported row must not make this delete any host file."""
     with write_txn(conn):
         att = get_attachment(conn, attachment_id)
         if att is None:
@@ -1993,7 +1996,7 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     if not has_remaining_blob_reference:
         with contextlib.suppress(OSError):
             p = Path(att.stored_path)
-            if p.is_file():
+            if p.is_file() and p.resolve().is_relative_to(attachments_root(board=board).resolve()):
                 p.unlink()
     return att
 

@@ -474,6 +474,74 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
     assert "NO TESTS RAN" not in proc.stdout
 
 
+def test_parse_summary_counts_setup_errors() -> None:
+    """"41 passed, 7 errors" parses both counts (the input the Summary relies on)."""
+    import importlib.util
+
+    runner = Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("_rtp_errors_probe", runner)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fake = (
+        "tests/tools/test_plugin_guard.py ....EEEEEEE\n"
+        "ERROR tests/tools/test_plugin_guard.py::test_x - RuntimeError: boom\n"
+        "======= 41 passed, 7 errors in 3.21s =======\n"
+    )
+    assert mod._parse_pytest_summary(fake) == {"passed": 41, "errors": 7}
+
+
+def test_setup_errors_are_named_on_the_summary_line(tmp_path: Path) -> None:
+    """Setup ERRORs must appear on the Summary line, not hide behind "0 failed".
+
+    A file whose tests all pass except for fixture-setup ERRORs exits 1, but
+    the Summary used to read "N tests passed, 0 failed" and the file was
+    filed under "all tests passed but pytest exited non-zero". The error
+    count must be on the Summary line and in its own failure bucket.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_setup_errors.py").write_text(
+        textwrap.dedent(
+            """
+            import pytest
+
+            @pytest.fixture
+            def broken():
+                raise RuntimeError("setup boom")
+
+            def test_ok_one():
+                assert True
+
+            def test_ok_two():
+                assert True
+
+            @pytest.mark.parametrize("n", range(3))
+            def test_needs_broken(broken, n):
+                assert True
+            """
+        )
+    )
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode == 1, proc.stdout
+    summary = next(l for l in proc.stdout.splitlines() if "=== Summary:" in l)
+    assert "2 tests passed, 0 failed, 3 errors" in summary, summary
+    assert "with pytest ERRORs" in proc.stdout
+    assert "(2 passed, 3 errors)" in proc.stdout
+    assert "all tests passed but pytest exited non-zero" not in proc.stdout
+    assert "where no tests ran" not in proc.stdout
+
+
+def test_clean_run_summary_has_no_errors_note(tmp_path: Path) -> None:
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir)
+    assert proc.returncode == 0, proc.stdout
+    summary = next(l for l in proc.stdout.splitlines() if "=== Summary:" in l)
+    assert "error" not in summary, summary
+
+
 # ── --files-from: file-backed explicit file lists ───────────────────────────
 #
 # --files carries the whole list as ONE argv element, and Linux caps a

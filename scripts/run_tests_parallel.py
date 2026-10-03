@@ -1316,6 +1316,10 @@ def main() -> int:
     tests_passed = 0
     tests_failed = 0
     tests_skipped = 0
+    # pytest setup/teardown ERRORs ("41 passed, 7 errors"). Not failures, but
+    # they make pytest exit non-zero, so the Summary line must name them or it
+    # reads "0 failed" under an exit code of 1.
+    tests_errored = 0
     # Every collected outcome, not just pass/fail: a legitimately all-skipped
     # (platform-gated) file reports "2 skipped" and must NOT trip the
     # nothing-ran guard, whereas a file that died before collection reports
@@ -1326,7 +1330,7 @@ def main() -> int:
 
     def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, Dict[str, int], float]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
-        nonlocal tests_collected, files_crashed
+        nonlocal tests_collected, files_crashed, tests_errored
         n_tests = test_counts.get(file, 0)
         try:
             fpath, rc, output, summary, subproc_wall = fut.result()
@@ -1351,6 +1355,7 @@ def main() -> int:
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
             tests_skipped += summary.get("skipped", 0)
+            tests_errored += summary.get("errors", 0)
             files_crashed += summary.get("crashed", 0)
             tests_collected += sum(
                 summary.get(k, 0)
@@ -1410,7 +1415,13 @@ def main() -> int:
         f", {files_crashed} file{'s' if files_crashed != 1 else ''} CRASHED"
         if files_crashed else ""
     )
-    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{crashed_note}{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    # Setup/teardown ERRORs likewise have no failed-test count; without this
+    # note a run with "41 passed, 7 errors" summarised as "0 failed" + exit 1.
+    errors_note = (
+        f", {tests_errored} error{'s' if tests_errored != 1 else ''}"
+        if tests_errored else ""
+    )
+    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{errors_note}{crashed_note}{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Host-OS gating note: tests marked for another OS were skipped by the
     # conftest hook, not run. Say so explicitly — a green local run on Linux
@@ -1504,10 +1515,17 @@ def main() -> int:
         crashed_files = [(f, o, s) for f, o, s in failures if s.get("crashed")]
         rest = [(f, s) for f, _o, s in failures if not s.get("crashed")]
         test_fail_files = [(f, s) for f, s in rest if s.get("failed", 0) > 0]
+        # Setup/teardown ERRORs with no test failures get their own bucket;
+        # they used to land under "all tests passed but pytest exited
+        # non-zero", which reads like a warnings-as-errors quirk.
+        test_error_files = [(f, s) for f, s in rest
+                            if s.get("failed", 0) == 0 and s.get("errors", 0) > 0]
         all_passed_but_nonzero = [(f, s) for f, s in rest
-                                  if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
+                                  if s.get("failed", 0) == 0 and s.get("errors", 0) == 0
+                                  and s.get("passed", 0) > 0]
         no_tests_ran = [(f, s) for f, s in rest
-                        if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+                        if s.get("failed", 0) == 0 and s.get("errors", 0) == 0
+                        and s.get("passed", 0) == 0]
         if crashed_files:
             print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
             for file, output, _s in crashed_files:
@@ -1518,6 +1536,12 @@ def main() -> int:
             for file, s in test_fail_files:
                 nf = s.get("failed", 0)
                 print(f"  {_format_file(file, repo_root)}  ({nf} test{'s' if nf != 1 else ''} failed)")
+        if test_error_files:
+            total_te = sum(s.get("errors", 0) for _, s in test_error_files)
+            print(f"=== {len(test_error_files)} file{'s' if len(test_error_files) != 1 else ''} with pytest ERRORs (fixture setup/teardown or collection) ({total_te} error{'s' if total_te != 1 else ''}; grep '^ERROR ' in the failure output) ===")
+            for file, s in test_error_files:
+                ne = s.get("errors", 0)
+                print(f"  {_format_file(file, repo_root)}  ({s.get('passed', 0)} passed, {ne} error{'s' if ne != 1 else ''})")
         if all_passed_but_nonzero:
             print(f"=== {len(all_passed_but_nonzero)} file{'s' if len(all_passed_but_nonzero) != 1 else ''} where all tests passed but pytest exited non-zero (warnings-as-errors, hook failures, etc.) ===")
             for file, s in all_passed_but_nonzero:

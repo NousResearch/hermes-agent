@@ -99,22 +99,39 @@ _escalation_warned: set = set()               # sids already warned that a bypas
 # message is rewritten, so prompt-cache prefixes stay intact. Staleness is bounded by a consecutive-omission streak
 # cap: full pixels are re-delivered before compaction (which keeps only the newest image-bearing tool results)
 # could evict the image the note refers to. State is per session; sessionless calls never dedup.
+#
+# Identical bytes are also what a capture pipeline that stopped repainting looks like: a browser-hosted remote
+# desktop or video canvas hands back the same last frame while the real screen moves on, so the "unchanged" note
+# would assert the pixels are current while they are stale — every call still succeeds and the model keeps
+# clicking into a frozen image (#132125). `identical` counts byte-identical captures of one target independently
+# of whether the image was delivered, so re-sending pixels after the streak cap cannot launder the evidence; past
+# _SCREENSHOT_FROZEN_IDENTICAL_RUNS the note stops certifying the frame and names the check that separates an idle
+# screen from a stuck one. Only the wording escalates — the image is still withheld or delivered exactly as the
+# omission streak decided, so a genuinely idle long session keeps its context saving.
 _screenshot_dedup_lock = threading.Lock()
-_last_screenshot_state: Dict[str, Dict[str, Any]] = {}  # session_id -> {"digest", "target": (app, window), "streak"}
+_last_screenshot_state: Dict[str, Dict[str, Any]] = {}  # session_id -> {"digest", "target", "streak", "identical"}
 _SCREENSHOT_DEDUP_MAX_STREAK = 2
+_SCREENSHOT_FROZEN_IDENTICAL_RUNS = 3
 
-def _screenshot_dedup_check(session_id: str, digest: str, target: Tuple[str, str]) -> bool:
-    """True when this capture should be delivered WITHOUT its image: the previous frame for this session had identical
-    bytes for the same target and the omission streak is below _SCREENSHOT_DEDUP_MAX_STREAK. Any miss (new pixels,
-    new target, streak exhausted, first capture) resets the stored state to this digest so the image goes out."""
+def _screenshot_dedup_check(session_id: str, digest: str, target: Tuple[str, str]) -> Tuple[bool, int]:
+    """``(omit_image, identical_runs)`` for this capture. ``omit_image`` is True when the previous frame for this
+    session had identical bytes for the same target and the omission streak is below
+    _SCREENSHOT_DEDUP_MAX_STREAK. Any miss (new pixels, new target, streak exhausted, first capture) restarts
+    ``identical_runs`` at 1 for this digest so the image goes out.
+
+    ``identical_runs`` counts every consecutive byte-identical capture of this target in this session, delivered or
+    omitted, so a stuck stream keeps accumulating evidence across the streak-cap re-deliveries that would otherwise
+    reset it. It is 1 for the first frame — that frame cannot be stale, it is what everything else is compared to."""
     with _screenshot_dedup_lock:
         state = _last_screenshot_state.get(session_id)
-        if (state is not None and state.get("digest") == digest and state.get("target") == target
-                and int(state.get("streak", 0)) < _SCREENSHOT_DEDUP_MAX_STREAK):
-            state["streak"] = int(state.get("streak", 0)) + 1
-            return True
-        _last_screenshot_state[session_id] = {"digest": digest, "target": target, "streak": 0}
-        return False
+        if state is not None and state.get("digest") == digest and state.get("target") == target:
+            identical = int(state.get("identical", 1)) + 1
+            streak = int(state.get("streak", 0))
+            omit = streak < _SCREENSHOT_DEDUP_MAX_STREAK
+            state["streak"], state["identical"] = (streak + 1 if omit else 0), identical
+            return omit, identical
+        _last_screenshot_state[session_id] = {"digest": digest, "target": target, "streak": 0, "identical": 1}
+        return False, 1
 
 def _reset_screenshot_dedup(session_id: Optional[str] = None) -> None:
     """Forget dedup state (all sessions, or one scoped key)."""
@@ -677,16 +694,40 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                       session_id: Optional[str] = None) -> Any:
     v = _capture_view(cap, max_elements)
     lines = _capture_summary_lines(v)
-    summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
-    if v.has_image and session_id and _screenshot_dedup_check(
-            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
+    # Dedup runs for every image-bearing capture, not only the ones it suppresses: a stuck pipeline keeps
+    # returning the same bytes, and the re-delivered frame after the streak cap must carry the warning too.
+    omit_image, identical_runs = (False, 0)
+    if v.has_image and session_id:
+        omit_image, identical_runs = _screenshot_dedup_check(
+            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or "")))
+    frozen = identical_runs >= _SCREENSHOT_FROZEN_IDENTICAL_RUNS
+    extra = None
+    if frozen:
+        # Identical bytes for many captures in a row: an idle desktop looks exactly like this, and so
+        # does a capture pipeline that stopped repainting — a remote desktop or a video in a browser
+        # canvas keeps handing back its last frame while the real screen moves on, every call still
+        # succeeding. The ordinary note below asserts the pixels are current, which is the one claim a
+        # stuck pipeline makes false, so past this many repeats it is replaced by the check that
+        # separates the two cases instead. The image itself is still omitted/delivered exactly as the
+        # dedup policy decided: the fix is the wording, not the token budget (#132125).
+        lines.append(f"  (no change in {identical_runs} consecutive captures of this window. That is what an idle "
+                     "screen looks like, and also what a capture pipeline that stopped repainting looks like — a "
+                     "remote desktop or a video in a browser canvas keeps handing back its last frame while the "
+                     "real screen moves on, and every call still succeeds. Do not treat these pixels as current "
+                     "yet: click something harmless (empty desktop, taskbar clock) and capture again. If the frame "
+                     "is still byte-identical after real input reached the window, the image is stale, not the "
+                     "screen, and clicks are landing on a frozen frame.)")
+        extra = {"screen_unchanged": omit_image, "capture_frozen_suspected": True,
+                 "identical_captures": identical_runs}
+    elif omit_image:
         # Unchanged frame: same pixels for the same target in this session — no image (and no aux-vision call);
         # the text metadata is fresh and the note says which earlier result still applies.
         lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
                      "capture's screenshot/analysis still shows the current state. Element indices below are fresh "
                      "and remain the preferred way to act.)")
         extra = {"screen_unchanged": True}
-    elif v.has_image:
+    summary = "\n".join(lines)  # multimodal/aux paths carry every note appended above, so build it last
+    if v.has_image and not omit_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
         if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
@@ -711,7 +752,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # now break with a provider error, so degrade to text.
         lines.append("  (vision unavailable: the auxiliary vision model could not be reached; screenshot "
                      "omitted. Element-index actions still work — drive via the element list above.)")
-        extra = {"vision_unavailable": True}
+        extra = {**(extra or {}), "vision_unavailable": True}  # keep an earlier frozen-frame verdict on the payload
     if v.truncated:  # text paths carry the `elements` array, so the truncation note applies
         lines.append(f"  (response truncated to {len(v.visible)} of {v.total} elements; the full tree is in "
                      "elements_file — read_file/search_files it, or pass app= to narrow scope)")

@@ -270,14 +270,43 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+# Finder and Explorer drop these into any directory they browse, so they can
+# appear between extraction and the flatten pass below — at the staging root
+# or inside the wrapper itself. They are never package payload, and must not
+# count as (or block) an entry at either level.
+_OS_METADATA_FILES = frozenset({".DS_Store", ".localized", "Thumbs.db", "Desktop.ini"})
+_APPLE_DOUBLE_PREFIX = "._"
+
+
+def _purge_os_metadata(dest: Path) -> None:
+    # Walk the whole subtree, not just the direct children: a node-style
+    # wrapper carries lib/node_modules/..., and Finder drops strays into
+    # freshly browsed directories at any depth, not only beside the layout.
+    for dirpath, _, filenames in os.walk(dest):
+        for fname in filenames:
+            if fname in _OS_METADATA_FILES or fname.startswith(_APPLE_DOUBLE_PREFIX):
+                try:
+                    (Path(dirpath) / fname).unlink()
+                except OSError:
+                    # A metadata file the OS refuses to delete right now (e.g. a
+                    # locked Thumbs.db) is inert next to the hoisted layout —
+                    # and tree_digest skips it, so it cannot move the digest.
+                    pass
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
     (bin/, cmd/, lib/...). Refuses on name collisions."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
+    _purge_os_metadata(dest)
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
+    # The wrapper was created moments before the hoist, so it gets its own
+    # strays seconds later; purge them or the rename loop would publish one
+    # beside the layout and leave the closing rmdir() to trip over it.
+    _purge_os_metadata(inner)
     for item in list(inner.iterdir()):
         target = dest / item.name
         if target.exists():
@@ -311,7 +340,11 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+    OS metadata sidecars (``_OS_METADATA_FILES``, AppleDouble ``._*``) are
+    the same category: Finder/Explorer write them at any time after the
+    staging purge, so hashing them would make a verified build read as a
+    different one and trip the freshness comparison in verified_tools."""
     import hashlib
 
     files: list[tuple[str, Path]] = []
@@ -325,6 +358,8 @@ def tree_digest(root: Path) -> str:
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:
+            if fname in _OS_METADATA_FILES or fname.startswith(_APPLE_DOUBLE_PREFIX):
+                continue
             path = Path(dirpath) / fname
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])

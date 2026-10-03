@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from pm.store import extract, flatten_single_dir
+from pm.store import extract, flatten_single_dir, tree_digest
 
 posix_only = pytest.mark.platforms("posix")  # POSIX symlink/mode semantics
 win_only = pytest.mark.platforms("windows")  # pins win32 degradation specifically
@@ -246,6 +246,126 @@ class TestCollisionsAndClobbering:
         flatten_single_dir(dest)
 
         assert (dest / "bin" / "gh").is_file()
+
+    def test_finder_metadata_does_not_mask_a_wrapper(self, tmp_path):
+        """macOS drops .DS_Store into any directory Finder browses, so one
+        can appear between extraction and the flatten pass; the payload is
+        still a lone wrapper and must still unwrap."""
+        archive = _tar(
+            tmp_path / "node.tar.gz",
+            {"node-v26.7.0-darwin-arm64/bin/node": b"x"},
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        (dest / ".DS_Store").write_bytes(b"\x00\x00metadata")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "node").is_file()
+        assert not (dest / ".DS_Store").exists()
+
+    def test_os_metadata_sidecars_are_ignored_too(self, tmp_path):
+        """AppleDouble ._*, .localized, Thumbs.db and Desktop.ini are
+        equally never payload; none may block the hoist or ride along."""
+        archive = _tar(tmp_path / "tool.tar.gz", {"tool-1.0/bin/tool": b"x"})
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        for name in ("._anything", ".localized", "Thumbs.db", "Desktop.ini"):
+            (dest / name).write_bytes(b"metadata")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "tool").is_file()
+        assert list(dest.iterdir()) == [dest / "bin"]
+
+    def test_metadata_cannot_fake_a_wrapper(self, tmp_path):
+        """Ignoring metadata must not loosen anything else: with two real
+        entries the hoist is still refused."""
+        archive = _tar(
+            tmp_path / "two.tar.gz", {"wrapper/bin/tool": b"x", "real/other": b"y"}
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        (dest / ".DS_Store").write_bytes(b"")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "wrapper" / "bin" / "tool").is_file()
+        assert (dest / "real" / "other").is_file()
+
+    def test_wrapper_metadata_does_not_ride_along(self, tmp_path):
+        """Finder browses freshly created directories too, so a stray can
+        land inside the wrapper itself seconds after extract; the hoist
+        must drop it instead of publishing it beside the layout."""
+        archive = _tar(
+            tmp_path / "node.tar.gz",
+            {"node-v26.7.0-darwin-arm64/bin/node": b"x"},
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        (dest / "node-v26.7.0-darwin-arm64" / ".DS_Store").write_bytes(
+            b"\x00\x00metadata"
+        )
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "node").is_file()
+        assert not (dest / ".DS_Store").exists()
+        assert list(dest.iterdir()) == [dest / "bin"]
+
+    def test_wrapper_nested_metadata_does_not_ride_along(self, tmp_path):
+        """Finder browses freshly created directories at ANY depth, and a
+        node-style wrapper carries lib/node_modules/... below the top level.
+        A one-level purge misses those; the published layout must not keep
+        them (a stray riding along keeps the member-stamp/freshness layers
+        tripping on the published copy — the #124547 loop, one level down)."""
+        archive = _tar(
+            tmp_path / "node.tar.gz",
+            {
+                "node-v26.7.0-darwin-arm64/bin/node": b"x",
+                "node-v26.7.0-darwin-arm64/lib/node_modules/npm/index.js": b"y",
+            },
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        wrapper = dest / "node-v26.7.0-darwin-arm64"
+        (wrapper / "lib" / "node_modules" / ".DS_Store").write_bytes(b"\x00meta")
+        (wrapper / "lib" / "._index.js").write_bytes(b"\x00meta")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "node").is_file()
+        assert (dest / "lib" / "node_modules" / "npm" / "index.js").is_file()
+        assert not (dest / "lib" / "node_modules" / ".DS_Store").exists()
+        assert not (dest / "lib" / "._index.js").exists()
+
+    def test_tree_digest_skips_os_metadata_sidecars(self, tmp_path):
+        """The staging purge cannot see the future: Finder/Explorer write
+        sidecars at any time afterwards. tree_digest hashes what pm
+        published, so a late .DS_Store/._* file must not make a verified
+        build read as a different one (verified_tools compares this digest
+        against the lock fact) — while a real byte change still must."""
+        root = tmp_path / "entry"
+        (root / "bin").mkdir(parents=True)
+        (root / "lib" / "node_modules").mkdir(parents=True)
+        (root / "bin" / "node").write_bytes(b"node-bytes")
+        (root / "lib" / "node_modules" / "npm.js").write_bytes(b"npm-bytes")
+        before = tree_digest(root)
+
+        for stray in (
+            root / ".DS_Store",
+            root / "lib" / ".DS_Store",
+            root / "lib" / "._npm",
+            root / "Thumbs.db",
+            root / "Desktop.ini",
+            root / ".localized",
+        ):
+            stray.write_bytes(b"\x00sidecar")
+
+        assert tree_digest(root) == before, "an OS sidecar must not move the digest"
+
+        (root / "bin" / "node").write_bytes(b"node-bytes!")
+        assert tree_digest(root) != before, "a real byte change must move the digest"
 
 
 class TestStoreIsolation:

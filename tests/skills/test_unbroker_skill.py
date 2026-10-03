@@ -156,13 +156,16 @@ def test_plan_excludes_disallowed_fields():
 
 
 
-def _mini_broker(bid, owns=None, requires=None, notes="", quirks=None):
-    return {"id": bid, "name": bid.title(), "priority": "high",
+def _mini_broker(bid, owns=None, requires=None, notes="", quirks=None, jurisdictions=None):
+    b = {"id": bid, "name": bid.title(), "priority": "high",
             "search": {"by": ["name"]},
             "optout": {"method": "web_form", "url": f"https://{bid}.example/optout",
                        "requires": requires or {}, "inputs": ["full_name"], "owns": owns or [],
                        "notes": notes, "quirks": quirks or []},
             "owns": owns or []}
+    if jurisdictions is not None:
+        b["jurisdictions"] = jurisdictions
+    return b
 
 
 def test_batch_plan_groups_by_ledger_state():
@@ -181,6 +184,31 @@ def test_batch_plan_groups_by_ledger_state():
     assert bp["counts"]["blocked"] == 1
     assert bp["counts"]["unscanned"] == 1
     assert any("PHASE 1" in t for t in bp["next_actions"])
+
+
+def test_out_of_scope_brokers_skipped_for_non_us_residency():
+    # issue #58149: a PH-resident subject must not queue US-only brokers for scan
+    d = _consenting()
+    d["residency_jurisdiction"] = "PH"
+    bl = [_mini_broker("us1", jurisdictions=["US"]),
+          _mini_broker("us2"),  # missing jurisdictions defaults to US-only
+          _mini_broker("eu1", jurisdictions=["EU"])]
+    assert tiers.in_scope(bl[0], "PH") is False
+    assert tiers.in_scope(bl[0], "US") is True
+    assert tiers.in_scope(bl[0], "US-CA") is True  # region prefix covers states
+    actions = tiers.plan(d, bl, config.DEFAULT_CONFIG)
+    assert [a["out_of_scope"] for a in actions] == [True, True, True]
+    bp = tiers.batch_plan(d, bl, config.DEFAULT_CONFIG, {})
+    assert bp["counts"]["unscanned"] == 0
+    assert bp["counts"]["skipped_jurisdiction"] == 3
+    assert not any("PHASE 1" in t for t in bp["next_actions"])
+    assert any("skipped" in t for t in bp["next_actions"])
+    # US subject unaffected: everything still queued
+    d_us = _consenting()
+    d_us["residency_jurisdiction"] = "US-CA"
+    bp_us = tiers.batch_plan(d_us, bl[:2], config.DEFAULT_CONFIG, {})
+    assert bp_us["counts"]["unscanned"] == 2
+    assert bp_us["counts"]["skipped_jurisdiction"] == 0
 
 
 

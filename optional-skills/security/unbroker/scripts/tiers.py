@@ -14,6 +14,21 @@ import vectors as vectors_mod
 HARD_HUMAN = ("gov_id", "fax", "mail", "phone_voice")
 
 
+def in_scope(broker: dict, residency: str | None) -> bool:
+    """True when the broker indexes records for the subject's residency.
+
+    Broker `jurisdictions` entries are region prefixes: "US" covers "US-CA".
+    Missing/empty broker jurisdictions default to ["US"] (the curated and
+    BADBOOL-live records are US people-search). Residency defaults to "US".
+    """
+    # ponytail: prefix match only, no alias map (UK/GB etc.) until a non-US broker lands
+    res = (residency or "US").upper()
+    jurs = broker.get("jurisdictions") or ["US"]
+    if isinstance(jurs, str):
+        jurs = [jurs]
+    return any(res == j.upper() or res.startswith(j.upper() + "-") for j in jurs)
+
+
 def select_tier(broker: dict, email_mode: str = "draft_only",
                 browser_clears_captcha: bool = False) -> str:
     req = ((broker.get("optout") or {}).get("requires")) or {}
@@ -41,6 +56,7 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
          browser_clears_captcha: bool = False) -> list[dict]:
     email_mode = (subject_dossier.get("preferences") or {}).get("email_mode") \
         or cfg.get("email_mode", "draft_only")
+    residency = (subject_dossier.get("residency_jurisdiction") or "US")
     actions: list[dict] = []
     for b in brokers_list:
         opt = b.get("optout") or {}
@@ -63,6 +79,8 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
             "broker_id": b.get("id"),
             "broker_name": b.get("name"),
             "priority": b.get("priority"),
+            "jurisdictions": b.get("jurisdictions") or ["US"],
+            "out_of_scope": not in_scope(b, residency),
             "method": opt.get("method"),
             "tier": tier,
             "human_required": tier == "T3",
@@ -142,6 +160,7 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         "human": [],            # human_task_queued -> the end-of-run digest, NOT re-scanning
         "done": [],             # confirmed_removed
         "not_found": [],
+        "skipped_jurisdiction": [],  # broker indexes another region -> never scanned
     }
     covered_by_parent: dict[str, list[str]] = {}
 
@@ -158,6 +177,7 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
 
         row = {"broker_id": bid, "broker_name": a["broker_name"], "priority": a["priority"],
                "tier": a["tier"], "method": a["method"], "state": st,
+               "jurisdictions": a.get("jurisdictions") or ["US"],
                "optout_url": a["optout_url"], "optout_email": a.get("optout_email"),
                "clears_children": a.get("owns") or [],
                "optout_requires": a.get("optout_requires") or {},
@@ -165,7 +185,9 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
                "deletion": a.get("deletion") or {},
                "optout_playbook": a.get("optout_playbook") or [],
                "notes": a.get("notes", "")}
-        if st in ("submitted", "verification_pending", "awaiting_processing"):
+        if a.get("out_of_scope"):
+            groups["skipped_jurisdiction"].append(row)
+        elif st in ("submitted", "verification_pending", "awaiting_processing"):
             groups["in_progress"].append(row)
         elif st == "confirmed_removed":
             groups["done"].append(row)
@@ -280,4 +302,7 @@ def _batch_next(groups: dict, covered: dict) -> list[str]:
     if groups.get("human"):
         tips.append(f"{len(groups['human'])} parked human task(s): present via `tasks` at end of run "
                     "(do not re-scan or re-queue them).")
+    if groups.get("skipped_jurisdiction"):
+        tips.append(f"{len(groups['skipped_jurisdiction'])} broker(s) skipped: outside the subject's "
+                    "residency -- not scanned, no action needed.")
     return tips

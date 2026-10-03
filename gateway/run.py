@@ -419,6 +419,33 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_abi_matches(venv_dir: Path) -> bool:
+    """True when *venv_dir*'s pinned interpreter matches the running one (major.minor).
+
+    The overlay exists to make a detached run importable; overlaying a foreign-ABI
+    site-packages instead poisons the process — a cp311 ``pydantic_core`` under a 3.14
+    interpreter fails its first dependency import (``No module named
+    'pydantic_core._pydantic_core'``, #123185's crash-loop), because the guard runs after
+    the interpreter is already chosen and can only refuse to worsen the mismatch, not
+    repair it. A venv without a readable ``pyvenv.cfg`` pin fails open (legacy behavior).
+    """
+    try:
+        text = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    version = ""
+    for line in text.splitlines():
+        key, _sep, value = line.partition("=")
+        if key.strip().lower() in ("version", "version-info"):
+            version = value.strip()
+            if version:
+                break
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return True
+    return (int(match.group(1)), int(match.group(2))) == (sys.version_info[0], sys.version_info[1])
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -448,6 +475,12 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        # A foreign-ABI venv (e.g. the pinned cp311 tree, spawned under a newer system
+        # Python that won the PATH race) must not be overlaid: its compiled extensions
+        # can never import under this interpreter (#123185).
+        if not _venv_abi_matches(resolved_venv):
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

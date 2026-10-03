@@ -74,3 +74,13 @@ def test_vision_auto_lane_expands_the_config_default_alias(tmp_path, monkeypatch
 
     assert client is not None
     assert calls[0] == ("custom", "hf:deepseek-ai/DeepSeek-V4.1-Flash", OTHER_URL, "sk-alias")
+
+
+def test_main_agent_fallback_expands_the_config_default_alias(tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch, OTHER_URL)
+    calls, patched = _route_calls()
+    with patched:
+        client, model, label = aux._try_main_agent_model_fallback("openrouter", task="goal_judge")
+
+    assert (model, label) == ("hf:deepseek-ai/DeepSeek-V4.1-Flash", "main-agent(custom)")
+    assert calls == [("custom", "hf:deepseek-ai/DeepSeek-V4.1-Flash", OTHER_URL, "sk-alias")]

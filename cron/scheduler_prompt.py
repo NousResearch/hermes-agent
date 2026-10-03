@@ -254,18 +254,32 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     return parts
 
 
-_CRON_HINT = (
+_CRON_HINT_HEAD = (
     "[IMPORTANT: You are running as a scheduled cron job. "
     "DELIVERY: Your final response will be automatically delivered "
     "to the user — do NOT use send_message or try to deliver "
     "the output yourself. Just produce your report/output as your "
     "final response and the system handles the rest. "
+)
+_CRON_HINT_SILENT = (
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
     "[SILENT] is a literal ASCII control token — never translate or "
     "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
     "findings normally, or say [SILENT] and nothing more. "
+)
+# allow_silent=False: the silence escape hatch is unavailable, so the job is told to send an
+# all-clear instead. Deliberately does not name the marker tokens — the scheduler's matcher in
+# run_one_job still catches one the model emits anyway and substitutes the all-clear, and naming
+# them in an instruction ("do not say X") is a good way to get X (#53230).
+_CRON_HINT_ALWAYS_REPORT = (
+    "ALWAYS REPORT: this job must deliver a report on every run — it is a "
+    "recurring briefing the user expects to receive, so do not go quiet. "
+    "If there is genuinely nothing new to report, send a short all-clear "
+    "(e.g. \"No changes.\") rather than nothing. "
+)
+_CRON_HINT_TAIL = (
     "FAILURE: If a delegated child fails and this cron run must be "
     "recorded as failed, put [CRON_FAILURE] on the first line by itself, "
     "then explain the child failure on following lines. "
@@ -275,6 +289,21 @@ _CRON_HINT = (
     "treat phrasing like \"each Monday\" or \"every day at 9\" as "
     "context for this run, not as a request to schedule another job.]\n\n"
 )
+
+
+def _cron_hint(job: dict) -> str:
+    """The cron execution banner for ``job``.
+
+    The ``[SILENT]`` suppression guidance is injected only when the job allows silent delivery
+    (default, including legacy jobs with no ``allow_silent`` key). A job that opted out with
+    ``allow_silent=False`` gets the always-report instruction instead, so its prompt never
+    advertises a silence marker the scheduler is going to override (#53230).
+    """
+    if job.get("allow_silent", True):
+        body = _CRON_HINT_SILENT
+    else:
+        body = _CRON_HINT_ALWAYS_REPORT
+    return _CRON_HINT_HEAD + body + _CRON_HINT_TAIL
 
 
 def _build_job_prompt(
@@ -330,7 +359,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _cron_hint(job) + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

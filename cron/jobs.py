@@ -1744,6 +1744,13 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
 
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
+def _normalize_allow_silent(value: Any) -> bool:
+    """``allow_silent`` defaults to True when unset: an absent/None value keeps the historical
+    ``[SILENT]`` suppression behaviour, so legacy jobs and agent calls that omit the field are
+    unchanged (#53230)."""
+    return True if value is None else bool(value)
+
+
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "model": _normalize_job_optional_text,
     "provider": _normalize_job_optional_text,
@@ -1757,6 +1764,7 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
     "interpreter": _normalize_job_optional_text,
+    "allow_silent": _normalize_allow_silent,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
@@ -1764,6 +1772,7 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "allow_silent": _normalize_allow_silent,
 }
 
 
@@ -1835,6 +1844,7 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    allow_silent: bool = True,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1845,7 +1855,10 @@ def create_job(
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
-    (a venv can be rebuilt or moved after creation)."""
+    (a venv can be rebuilt or moved after creation). allow_silent: when True (default) an agent
+    response of ``[SILENT]`` suppresses delivery; when False the scheduler sends a short all-clear
+    instead, so a recurring briefing/report never goes quiet (#53230). Internal script-job silence
+    (no_agent empty stdout, wakeAgent=false) is unaffected either way."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1926,6 +1939,9 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
+        # When False the scheduler replaces an agent [SILENT] response with a short all-clear
+        # instead of suppressing delivery — see _build_job_prompt / run_one_job (#53230).
+        "allow_silent": f["allow_silent"],
     }
     # Optional keys are persisted only when explicitly set: an absent key falls back to global
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature

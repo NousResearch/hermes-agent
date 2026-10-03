@@ -1611,6 +1611,7 @@ def _run_no_agent_job(
 
 def _apply_monitor_gate(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str],
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[Optional[tuple], Optional[str], Optional[str]]:
     """Monitor gate (hash-suppressed change detection). Must run BEFORE any agent machinery so an
     unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt,
@@ -1621,7 +1622,7 @@ def _apply_monitor_gate(
 
     if not job_has_monitor(job):
         return None, extra_prompt, None
-    _mon = check_monitor(job)
+    _mon = check_monitor(job, cancel_event=cancel_event)
     _mon_now = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
     header = _job_doc_header(job_name, job_id, _mon_now, "monitor")
     if not _mon.ok:
@@ -2274,7 +2275,8 @@ def _prepare_job_prompt(
     if job_payload_is_empty(job):
         return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None
 
-    _early, extra_prompt, monitor_context = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
+    _early, extra_prompt, monitor_context = _apply_monitor_gate(
+        job, job_id, job_name, extra_prompt, cancel_event=cancel_event)
     if _early is not None:
         return _early, None
 

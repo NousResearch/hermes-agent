@@ -47,8 +47,10 @@ export function LocalModelsModelsSection({
         <ListRow
           action={
             <Button
-              onClick={() =>
-                document.getElementById('local-model-browse')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              onClick={() => {
+                const browse = document.getElementById('local-model-browse')
+                browse?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                browse?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true })
               }
               size="sm"
             >

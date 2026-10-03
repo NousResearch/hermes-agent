@@ -2111,6 +2111,8 @@ export const frOverrides = {
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
+      speed: 'Vitesse',
+      speedStandard: 'Standard',
       defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
       loadFailed: 'Impossible de charger les modèles',
       restartRequired:
@@ -5133,6 +5135,8 @@ export const frOverrides = {
       options: 'Options',
       thinking: 'Réflexion',
       fast: 'Rapide',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Utiliser la vitesse standard',
       effort: 'Effort',
       minimal: 'Minimal',
       low: 'Faible',

@@ -181,7 +181,16 @@ also carries `call_role` (`primary` or `auxiliary`), `outcome` (`success`,
 `failed`, `cancelled`) and `error_class`: the error classifier's own
 `FailoverReason` value (`rate_limit`, `auth`, `context_overflow`, ...) for the
 last failed attempt of that logical call, or `none`. A `success` row with a
-non-`none` class is a call that recovered after that error. The previous
+non-`none` class is a call that recovered after that error. Auxiliary calls
+(titles, compression, vision, ...) follow the same rules: one row per logical
+call however many fallback attempts it took, classified by the same classifier
+(an HTTP-200 body carrying a provider `error` object is classified from that
+object), `cancelled` with `none` when Hermes aborted it (`/stop`, Ctrl+C, an
+interrupt, shutdown), and `unknown` only when the classifier cannot name the
+failure. An auxiliary call that runs beside the turn (title generation) and
+finishes under the turn's own live scopes is still counted: its result closes
+the scope when the turn drains it. Auxiliary rows report `ttft_bucket`
+`unknown`: most auxiliary calls are not streamed. The previous
 `hermes.model_call.count` contract remains readable only so pending local
 counters created by older builds can be exported without losing data.
 

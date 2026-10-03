@@ -2099,6 +2099,8 @@ export const esOverrides = {
       defaultsLabel: 'Valores predeterminados',
       reasoning: 'Razonamiento',
       reasoningOff: 'Desactivado',
+      speed: 'Velocidad',
+      speedStandard: 'Estándar',
       defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
       loadFailed: 'No se pudieron cargar los modelos',
       restartRequired:
@@ -5109,6 +5111,8 @@ export const esOverrides = {
       options: 'Opciones',
       thinking: 'Razonamiento',
       fast: 'Rápido',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Usar velocidad estándar',
       effort: 'Esfuerzo',
       minimal: 'Mínimo',
       low: 'Bajo',

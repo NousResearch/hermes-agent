@@ -591,10 +591,23 @@ class ProcessSession:
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
         with self._lock:
-            self.output_buffer += text
-            self.total_output_chars += len(text)
-            if len(self.output_buffer) > self.max_output_chars:
-                self.output_buffer = self.output_buffer[-self.max_output_chars:]
+            self._append_locked(text)
+
+    def append_output_if_running(self, text: str) -> bool:
+        """Append unless the session has exited. Decided under the lock a kill holds while it
+        snapshots the output and sets ``exited``, so a chunk is either in the kill's receipt or
+        dropped, never added after it."""
+        with self._lock:
+            if self.exited:
+                return False
+            self._append_locked(text)
+        return True
+
+    def _append_locked(self, text: str) -> None:
+        self.output_buffer += text
+        self.total_output_chars += len(text)
+        if len(self.output_buffer) > self.max_output_chars:
+            self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
         """Record an exit. A kill that raced the observer already recorded its own
@@ -1681,6 +1694,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if not _IS_WINDOWS:
             from tools.pty_query_responder import PtyQueryResponder
             responder = PtyQueryResponder(rows=30, cols=120)
+
+        def ingest(text: str) -> None:
+            # A kill can leave this reader running while a detached descendant holds the
+            # slave open (_release_finished_handles defers the close to it). Keep draining,
+            # but leave the killed session's output as the kill reported it.
+            self._ingest_output(session, text, unless_exited=True)
+
         try:
             while pty.isalive():
                 try:
@@ -1699,7 +1719,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                                     )
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
-                            self._ingest_output(session, text)
+                            ingest(text)
                 except Exception:  # EOFError included
                     break
         except Exception as e:
@@ -1708,14 +1728,18 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # A query prefix split across the final reads is plain output after all.
             tail = decoder.decode(responder.flush())
             if tail:
-                self._ingest_output(session, tail)
+                ingest(tail)
         self._finish_reader(
-            session, decoder, lambda t: self._ingest_output(session, t), "PTY",
+            session, decoder, ingest, "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
 
-    def _ingest_output(self, session: ProcessSession, text: str) -> None:
-        """Buffer a freshly-read chunk, then scan watch patterns and stream it live."""
-        session.append_output(text)
+    def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
+        """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
+        ``unless_exited`` drops the chunk once the session has exited (atomically with a kill)."""
+        if not unless_exited:
+            session.append_output(text)
+        elif not session.append_output_if_running(text):
+            return
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
 
@@ -1794,6 +1818,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()
         if session._pty is not None:
+            # A live ptyprocess reader sits in a blocking read holding the PTY file
+            # object's buffer lock, and that read only ends once every holder of
+            # the slave side is gone. A descendant that setsid()s past the kill
+            # keeps it open, so close() here would block forever (under _lock on
+            # the prune path). The reader closes the PTY itself via
+            # _finish_reader once its read ends. pywinpty reads don't block, so
+            # Windows closes here as before.
+            reader = session._reader_thread
+            if (not _IS_WINDOWS and reader is not None and reader.is_alive()
+                    and reader is not threading.current_thread()):
+                return
             # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
             # closes the master fd exactly once; it raises only if the child
             # ignores SIGKILL, which we don't want to surface on the finish path.

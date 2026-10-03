@@ -40,6 +40,15 @@ def parse_service_tier(raw: Any) -> str | None:
     return None if value in NORMAL_TIER_WORDS else SERVICE_TIER_WORDS.get(value)
 
 
+def parse_exact_service_tier(raw: Any) -> str:
+    """Strict :func:`parse_service_tier` for an explicit client pick: ``""`` pins normal, an unknown
+    word raises ``ValueError`` instead of silently reading as normal."""
+    value = str(raw or "").strip().lower()
+    if value not in NORMAL_TIER_WORDS and value not in SERVICE_TIER_WORDS:
+        raise ValueError(f"unknown service tier: {value}")
+    return parse_service_tier(value) or ""
+
+
 def service_tier_word(tier: Any) -> str:
     """The user-facing word for a stored tier (``priority`` -> ``fast``, None/"" -> ``normal``)."""
     return {"priority": "fast", None: "normal", "": "normal"}.get(tier, tier)

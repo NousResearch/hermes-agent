@@ -369,6 +369,8 @@ export const arChrome = {
       options: 'الخيارات',
       thinking: 'التفكير',
       fast: 'سريع',
+      ultrafast: 'فائق السرعة',
+      useStandardSpeed: 'استخدام السرعة القياسية',
       effort: 'الجهد',
       minimal: 'أدنى',
       low: 'منخفض',

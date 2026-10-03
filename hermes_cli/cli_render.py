@@ -378,17 +378,63 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
-def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
+_CODE_FENCE_RE = re.compile(r"^(\s*(?:>\s*)*)(`{3,}|~{3,})(.*)$")
+
+
+def _code_fence_step(open_fence: str | None, line: str) -> tuple[bool, str | None]:
+    """``(is_fence_line, open_fence_after)`` for one line, CommonMark style: a closer repeats the
+    opener's character at least as many times with nothing after it; a backtick opener's info
+    string holds no backtick (so an inline ```x``` span is not a fence)."""
+    match = _CODE_FENCE_RE.match(line)
+    if match is None:
+        return False, open_fence
+    marker, rest = match.group(2), match.group(3)
+    if open_fence is None:
+        if marker[0] == "`" and "`" in rest:
+            return False, None
+        return True, marker
+    if marker[0] == open_fence[0] and len(marker) >= len(open_fence) and not rest.strip():
+        return True, None
+    return False, open_fence
+
+
+def _strip_markdown_syntax(text: str, table_width: int | None = None) -> str:
+    """Best-effort markdown marker removal for plain-text display; ``table_width`` also re-pads prose tables."""
     from cli import _rich_text_from_ansi
-    plain = _rich_text_from_ansi(text or "").plain
+    # NUL is invisible on a terminal and delimits the shelf placeholders below.
+    plain = _rich_text_from_ansi(text or "").plain.replace("\x00", "")
+    # Code shares its characters with the markers below (``__init__``, ``**kwargs``, ``# comment``),
+    # so fenced bodies and inline spans are shelved first and restored verbatim at the end (#84377).
+    blocks: list[str] = []
+    spans: list[str] = []
+
+    def _shelve(shelf: list[str], code: str) -> str:
+        shelf.append(code)
+        return f"\x00{'b' if shelf is blocks else 's'}{len(shelf) - 1}\x00"
+
+    lines: list[str] = []
+    body: list[str] = []
+    fence = None
+    for line in plain.split("\n"):
+        was_open = fence
+        is_fence, fence = _code_fence_step(fence, line)
+        if was_open is not None and not is_fence:
+            body.append(line)
+            continue
+        if was_open is not None:
+            lines.append(_shelve(blocks, "\n".join(body)))
+            body = []
+        lines.append(line)
+    if fence is not None:
+        lines.append(_shelve(blocks, "\n".join(body)))
+    plain = "\n".join(lines)
     # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Blockquotes, lists, and checkboxes are preserved because they carry structure.
     plain = re.sub(r"(```+|~~~+)", "", plain)
-    plain = re.sub(r"`([^`]*)`", r"\1", plain)
+    plain = re.sub(r"`([^`]*)`", lambda m: _shelve(spans, m.group(1)), plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
@@ -400,6 +446,12 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
+    plain = re.sub(r"\x00s(\d+)\x00", lambda m: spans[int(m.group(1))], plain)
+    if table_width is not None:
+        # Before fenced bodies return, so a `|` line inside code is never re-padded as a table.
+        from cli import realign_markdown_tables
+        plain = realign_markdown_tables(plain, table_width)
+    plain = re.sub(r"\x00b(\d+)\x00", lambda m: blocks[int(m.group(1))], plain)
     return plain.strip("\n")
 
 
@@ -433,7 +485,7 @@ def _terminal_width_for_streaming() -> int:
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
-    from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns, realign_markdown_tables
+    from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns
     from rich.markdown import Markdown
 
     # 1 border cell each side + margin so resize races don't push a borderline table into soft-wrap.
@@ -442,15 +494,36 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
         # Strip first (inline markdown changes cell width), then re-align padding.
-        return _RichText(realign_markdown_tables(_strip_markdown_syntax(text), panel_width))
+        return _RichText(_strip_markdown_syntax(text, table_width=panel_width))
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
     # Normalising under-padded tables up front gives narrow-panel fallbacks consistent input.
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
-    plain = realign_markdown_tables(plain, panel_width)
+    plain = _realign_tables_outside_code(plain, panel_width)
     return Markdown(plain)
+
+
+def _realign_tables_outside_code(text: str, width: int) -> str:
+    """``realign_markdown_tables`` over the prose between fenced blocks only: code keeps its own spacing."""
+    from cli import realign_markdown_tables
+    out: list[str] = []
+    run: list[str] = []
+    fence = None
+    for line in text.split("\n"):
+        was_open = fence
+        is_fence, fence = _code_fence_step(fence, line)
+        if was_open is None and not is_fence:
+            run.append(line)
+            continue
+        if run:
+            out.append(realign_markdown_tables("\n".join(run), width))
+            run = []
+        out.append(line)
+    if run:
+        out.append(realign_markdown_tables("\n".join(run), width))
+    return "\n".join(out)
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:

@@ -173,6 +173,11 @@ def _platform_enablement(
     required = entry["required_env"]
     if scoped:
         configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        if platform_id == "whatsapp":
+            # Baileys has no required env credentials: pairing lives in this
+            # profile's session. An empty required_env tuple must not turn a
+            # live named-profile WhatsApp account into "not_configured".
+            configured = (_whatsapp_session_path() / "creds.json").is_file()
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
@@ -350,7 +355,7 @@ def _normalize_whatsapp_allowed_users(value: Any) -> str:
 def _whatsapp_phone_from_identifier(value: Any) -> str | None:
     """Return a phone number only for a phone-addressable WhatsApp JID."""
     raw = str(value or "").strip()
-    match = re.fullmatch(r"([1-9]\d{6,14})(?::\d+)?@s\.whatsapp\.net", raw)
+    match = re.fullmatch(r"([1-9][0-9]{6,14})(?::[0-9]+)?@s\.whatsapp\.net", raw)
     return match.group(1) if match else None
 
 

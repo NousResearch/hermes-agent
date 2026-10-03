@@ -156,6 +156,41 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---
 
+## Read-only live self-chat identity (internal callers)
+
+`GET /api/messaging/whatsapp/identity` is a protected dashboard management API,
+not a public WhatsApp or tenant-authentication endpoint. The concrete downstream
+use case is sensitive self-chat delivery by internal services in issue #130469;
+Reciclajes is the external consumer identified by the reporter in PR #130478.
+No dashboard widget or Reciclajes integration is added here.
+
+Use the existing dashboard session-token header (`X-Hermes-Session-Token`) or
+its equivalent bearer authentication; deployments with the dashboard OAuth gate
+must also satisfy that gate. Do not expose a management credential to tenants.
+
+The response contains `connected`, `account_id`, `account_name`, and
+`account_phone`. Identity is returned only for a live gateway with connected
+WhatsApp state, `self-chat` mode, and a phone-addressable `@s.whatsapp.net` JID
+(7–15 ASCII digits, nonzero first digit, optional numeric device suffix).
+Otherwise `connected` is false and all three identity fields are null, including
+when stored credentials remain after the gateway stops or the ID is LID-only.
+The call does not create, cancel, or supersede onboarding sessions.
+
+Without `profile`, the route reads the dashboard process's scoped profile.
+An authenticated management caller may explicitly select an existing profile
+with `?profile=worker`; dashboard `fetchJSON` attaches the management switcher's
+selection. This follows existing management API semantics, rather than the
+active-profile-only alternative described in #130469. A session token grants
+management access, **not per-tenant profile authorization**: external services
+must bind the target profile on their trusted side, never accept a tenant's
+arbitrary profile parameter, and validate the returned phone against their
+expected recipient before sending. This probe is a snapshot, not a delivery
+lease or a guarantee that the account cannot change before delivery.
+
+The onboarding payload intentionally differs: a connected LID-only pairing can
+retain its raw `account_id` and name, but `account_phone` is null. Inbound gateway
+LID resolution is unchanged.
+
 ## Session Persistence
 
 The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:

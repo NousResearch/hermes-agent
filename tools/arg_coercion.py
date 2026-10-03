@@ -47,6 +47,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # "null" becomes None (not ["null"]). None itself is preserved: the tool's
         # own default handling decides between "omit" and "empty list".
         if expected == "array" and value is not None and not is_container:
+            unwrapped = _unwrap_single_key_array_envelope(value, schema=prop_schema)
+            if unwrapped is not value:
+                # A lone-element wrapper like {"item": [...]} carries the array
+                # itself; the wrap below would otherwise bury it one level deeper
+                # and surface as "items[0] is a required property" downstream.
+                # {"item": {...}} for an array of objects is an array of ONE element.
+                args[key] = unwrapped if isinstance(unwrapped, list) else [unwrapped]
+                logger.info("coerce_tool_args: unwrapped single-key array envelope for %s.%s",
+                            tool_name, key)
+                continue
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
@@ -89,6 +99,56 @@ def _schema_accepts_kind(schema: Any, kind: str) -> bool:
         return True
     return any(isinstance(branches := schema.get(union_key), list) and any(_schema_accepts_kind(b, kind) for b in branches)
                for union_key in ("anyOf", "oneOf", "allOf"))
+
+
+def _schema_item_kind(schema: Any) -> str:
+    """The JSON type name the array's ``items`` describes, or ``""`` when unknown."""
+    items = schema.get("items") if isinstance(schema, dict) else None
+    if not isinstance(items, dict):
+        return ""
+    for kind in ("string", "object", "array", "number", "integer", "boolean"):
+        if _schema_accepts_kind(items, kind):
+            return kind
+    return ""
+
+
+# Envelope keys models invent for a single-element array. "item" is the one
+# observed in the field; the rest appear in provider/gateway output.
+_ARRAY_ENVELOPE_KEYS = ("item", "value", "values", "elements", "entry", "entries")
+
+
+def _unwrap_single_key_array_envelope(value: Any, schema: Any = None) -> Any:
+    """Unwrap ``{"item": <array>}``-style lone-element envelopes emitted for one array arg.
+
+    Several models serialize a single-element array as a one-key object instead of a
+    bare list, and an array of one object as ``{"item": {...}}``. The generic
+    "wrap the bare value in a list" repair then produces ``[{"item": ...}]``, so the
+    real element arrives one level too deep and the tool reports a missing property
+    on ``items[0]`` (or a type error) instead of running.
+
+    Conservative on purpose. The object must have exactly one key, that key must be a
+    known envelope name, and the schema's ``items`` type decides what the inner value
+    may be: an array of objects accepts ``{"item": {...}}`` (one element) as well as
+    ``{"item": [...]}``, while an array of scalars accepts ONLY the list form --
+    a dict is never valid there, so unwrapping cannot destroy a legitimate value.
+    Returns *value* unchanged (identity) when nothing applies.
+    """
+    if not isinstance(value, dict) or len(value) != 1:
+        return value
+    key, inner = next(iter(value.items()))
+    if key not in _ARRAY_ENVELOPE_KEYS:
+        return value
+    item_kind = _schema_item_kind(schema) if schema is not None else ""
+    if item_kind and item_kind != "object":
+        # An array of scalars: the envelope's value is either the list itself, or a
+        # lone scalar that is the single element. A dict is never valid here, so
+        # unwrapping a one-key object can never destroy a legitimate value.
+        if isinstance(inner, (list, dict)):
+            return inner if isinstance(inner, list) else value
+        return inner
+    # Array of objects, or an unknown item type: a list is the array, a lone dict is
+    # the single element. Anything else is left untouched.
+    return inner if isinstance(inner, (list, dict)) else value
 
 
 def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:

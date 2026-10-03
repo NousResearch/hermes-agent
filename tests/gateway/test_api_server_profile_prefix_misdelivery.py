@@ -80,8 +80,8 @@ class TestMultiplexOnUnchanged:
             config=SimpleNamespace(multiplex_profiles=True)
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [("worker", object())],
+            "hermes_cli.profiles.profile_is_served",
+            lambda name, multiplex: name == "worker",
         )
         assert adapter._resolve_request_profile(_request("worker")) == "worker"
         assert adapter._resolve_request_profile(_request("ghost")) is _PROFILE_REJECTED

@@ -332,7 +332,11 @@ def _project_tree_row(r: dict) -> dict:
         **{k: r.get(k) or 0 for k in (
             "message_count", "tool_call_count", "input_tokens", "output_tokens")},
         **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},
-        is_active=False, **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
+        is_active=False,
+        # Grouping consults this so a pinned chat stays in its stored workspace
+        # project instead of drifting when cwd later matches a different folder.
+        pinned=bool(r.get("pinned")),
+        **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
     return row
 
 

@@ -18,7 +18,7 @@ import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
+import { $pinnedSessionIds, $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -33,6 +33,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  sessionPinId,
   setCurrentCwd,
   setSessions,
   workspaceCwdForNewSession
@@ -250,12 +251,48 @@ export function projectNameForCwd(cwd: string): null | string {
   return best
 }
 
+// True when the conversation currently on screen is pinned (local pin ids or
+// the durable `sessions.pinned` flag). A pin is "keep this chat where I put
+// it" — the sidebar must not treat that as a licence to follow cwd into
+// another project.
+export function isActiveSessionPinned(): boolean {
+  const selected = $selectedStoredSessionId.get()
+
+  if (!selected) {
+    return false
+  }
+
+  const pinnedIds = $pinnedSessionIds.get()
+
+  if (pinnedIds.includes(selected)) {
+    return true
+  }
+
+  const row = $sessions.get().find(session => sessionMatchesStoredId(session, selected))
+
+  if (!row) {
+    return false
+  }
+
+  return pinnedIds.includes(sessionPinId(row)) || pinnedIds.includes(row.id) || row.pinned === true
+}
+
+// Whether a same-session cwd move should drill the sidebar into `nextProjectId`.
+// Membership still follows cwd on the next tree refresh; this only gates the
+// view yank (`enterProject`). A pin refuses the yank so a pinned chat cannot
+// silently relocate the user from Project 1 into Project 2.
+export function shouldEnterFollowedProject(nextProjectId: string | null, pinned: boolean): boolean {
+  return Boolean(nextProjectId) && !pinned
+}
+
 // The active session's agent relocated itself (created/entered another repo or
 // worktree via the terminal — backend re-anchors its cwd and emits session.info).
 // Re-pull projects + tree so a freshly created/auto project and the relocated
 // session row show live, then follow the view into the session's new project
 // (from the overview or a now-stale project alike). Caller gates this on a real
 // same-session cwd move, so a plain session switch never reaches here.
+// Pinned sessions skip the drill-in: the tree still refreshes, but `$projectScope`
+// stays put so a pin cannot be overridden by an unsolicited project hop.
 export async function followActiveSessionCwd(cwd: string): Promise<void> {
   const target = cwd.trim()
 
@@ -268,15 +305,17 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   // Resolve only after the refresh, so a just-created/auto project is in the tree.
   const projectId = projectIdForCwd(target)
 
-  if (projectId) {
-    // The Projects tree only renders in grouped mode, so flip the sidebar into
-    // it — otherwise following from the flat Sessions list would change scope
-    // invisibly. Then drill into the thread's project.
-    setSidebarAgentsGrouped(true)
+  if (!shouldEnterFollowedProject(projectId, isActiveSessionPinned())) {
+    return
+  }
 
-    if (projectId !== $projectScope.get()) {
-      enterProject(projectId)
-    }
+  // The Projects tree only renders in grouped mode, so flip the sidebar into
+  // it — otherwise following from the flat Sessions list would change scope
+  // invisibly. Then drill into the thread's project.
+  setSidebarAgentsGrouped(true)
+
+  if (projectId && projectId !== $projectScope.get()) {
+    enterProject(projectId)
   }
 }
 

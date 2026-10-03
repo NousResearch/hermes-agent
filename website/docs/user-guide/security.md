@@ -843,6 +843,8 @@ Tirith's verdict integrates with the approval flow: safe commands pass through, 
 
 Two known Tirith false positives are downgraded to "allow" so they never prompt (or, in cron, never deny): a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
 
+`pipe_to_interpreter` has a third downgrade. The rule matches the shape `<stage> | <interpreter>` and cannot tell a remote download from the user's own wrapper, so `my-wrapper | python3` was blocked exactly like `curl | sh` (#32737). When every finding on the command is `pipe_to_interpreter` and every stage upstream of the interpreter resolves to a user-owned, executable, non-world-writable file inside a trusted scripts directory, the report is a false positive and the command is allowed. Trusted by default: the active profile's `bin/`, the root home's `bin/` and `profiles/*/bin/`, and the login user's `bin/` and `.local/bin/`. Add more with `security.trusted_executable_dirs`. Everything else fails closed: an unresolvable command word, a `$(…)` substitution, a subshell, a symlink out of the directory, a world-writable file, a fetcher name (`curl`, `wget`, `nc`, `ssh`, …) — each of those keeps the block, and a remote pipe is still caught by its own `curl_pipe_shell`/`wget_pipe_shell` rules regardless of this downgrade.
+
 ### Context File Injection Protection
 
 Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injection before being included in the system prompt. The scanner checks for:

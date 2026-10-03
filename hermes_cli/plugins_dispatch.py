@@ -45,8 +45,9 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+# Policy hooks: timeout / still-running must fail closed (block the tool). command_guard gates
+# every terminal command (tools/approval.py): a hung guard denies instead of wedging the session.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "command_guard"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -54,6 +55,13 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+
+
+def _policy_timeout_block_directive(hook_name: str) -> Dict[str, str]:
+    """Block directive for a fail-closed hook whose callback timed out, naming the hook."""
+    if hook_name == "pre_tool_call":
+        return {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+    return {"action": "block", "message": f"{hook_name} plugin callback timed out or is still running"}
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> Dict[str, str]:
@@ -230,7 +238,7 @@ class PluginDispatchMixin:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            results.append(_policy_timeout_block_directive(hook_name))
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -509,7 +517,7 @@ class PluginDispatchMixin:
             except asyncio.TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                    results.append(_policy_timeout_block_directive(hook_name))
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).

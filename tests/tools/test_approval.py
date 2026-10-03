@@ -1615,11 +1615,14 @@ class TestApprovalTimeoutIsNotConsent:
         t = threading.Thread(target=_check)
         t.start()
 
-        # Wait for the queue entry to appear, then resolve.
-        for _ in range(200):
-            if mod._gateway_queues.get(self.SESSION_KEY):
-                break
+        # Wait for the queue entry to appear, then resolve. The guards ahead of
+        # the queue (the command_guard hook check) lazy-discover plugins on the
+        # first call, which can take seconds, so wait on a deadline rather than
+        # a fixed number of short polls.
+        deadline = time.monotonic() + 30
+        while not mod._gateway_queues.get(self.SESSION_KEY) and time.monotonic() < deadline:
             time.sleep(0.005)
+        assert mod._gateway_queues.get(self.SESSION_KEY), "approval request was never queued"
         mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
         t.join(timeout=5)
         assert "r" in result_holder, "approval wait did not return after deny"

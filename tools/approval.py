@@ -1165,6 +1165,46 @@ def _tirith_scan(command: str) -> dict:
         }]}
 
 
+def _command_guard_block(command: str, env_type: str) -> dict | None:
+    """Consult ``command_guard`` plugin hooks: a callback returns ``None`` / ``{"action": "allow"}``
+    to let the command through or ``{"action": "block", "message": reason}`` to refuse it; the first
+    valid block wins. Evaluated with the floors — before yolo, ``mode=off``, the permanent allowlist
+    and the container fast path — so a plugin guard is not bypassable by session settings, and every
+    ``terminal_tool()`` caller meets it (``pre_tool_call`` only sees model-issued tool calls).
+    ``command_guard`` is a fail-closed hook: a callback that raises, times out or is still running
+    yields a block directive from ``invoke_hook``. Only an unimportable plugin system (bare tool-only
+    imports) or no registered guard means allow; a dispatch failure after a guard is known to exist
+    blocks, like ``_tirith_scan``."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+    except ImportError as exc:  # plugin system unavailable: no guard can be registered
+        logger.debug("command_guard unavailable: %s", exc)
+        return None
+    try:
+        if not has_hook("command_guard"):
+            return None
+        results = invoke_hook("command_guard", command=command, env_type=env_type,
+                              session_key=get_current_session_key(default=""))
+    except Exception as exc:
+        logger.warning("command_guard dispatch failed; blocking command: %s (command: %s)", exc, command[:200])
+        reason = f"command guard dispatch failed ({type(exc).__name__})"
+        return {**_blocked(f"BLOCKED: {reason}. Do NOT retry or rephrase this command.",
+                           pattern_key="command_guard", description=reason),
+                "outcome": "blocked", "blocked_by": "command_guard"}
+    for result in results:
+        if not isinstance(result, dict) or result.get("action") != "block":
+            continue
+        reason = result.get("message")
+        if not isinstance(reason, str) or not reason.strip():
+            continue
+        reason = reason.strip()
+        logger.warning("command_guard blocked command: %s (command: %s)", reason, command[:200])
+        return {**_blocked(f"BLOCKED by a command guard: {reason}. Do NOT retry or rephrase this command.",
+                           pattern_key="command_guard", description=reason),
+                "outcome": "blocked", "blocked_by": "command_guard"}
+    return None
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1173,9 +1213,9 @@ def check_all_command_guards(command: str, env_type: str,
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
+        return _user_deny_block(command) or _command_guard_block(command, env_type) or _approved()
 
-    blocked = _floor_block(command, sudo_guard=True)
+    blocked = _floor_block(command, sudo_guard=True) or _command_guard_block(command, env_type)
     if blocked is not None:
         return blocked
 

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -260,6 +261,29 @@ class TestGitPullPluginDirAutostash:
         assert ok is True
         assert "Already up to date" in msg
         assert git(checkout, "stash", "list").strip() == ""
+
+    def test_update_pull_uses_configured_network_timeout(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins_cmd as pc
+        import hermes_cli.plugins_cmd_git as git_cmd
+
+        monkeypatch.setattr(pc, "_resolve_git_executable", lambda: "git")
+        monkeypatch.setattr(pc, "_clone_timeout_seconds", lambda: 137)
+        monkeypatch.setattr(git_cmd, "_autostash_dirty_tree", lambda *args: ("", ""))
+        calls = []
+
+        def run_git(git_exe, target, *args, **kwargs):
+            calls.append((args, kwargs))
+            if args == ("remote", "get-url", "origin"):
+                return subprocess.CompletedProcess([git_exe, *args], 0, "https://example.test/plugin.git\n", "")
+            raise subprocess.TimeoutExpired([git_exe, *args], kwargs["timeout"])
+
+        monkeypatch.setattr(pc, "_run_plugin_git", run_git)
+        ok, message = pc._git_pull_plugin_dir(tmp_path)
+
+        assert ok is False
+        assert "timed out after 137 seconds" in message
+        pull = next(call for call in calls if call[0] == ("pull", "--ff-only"))
+        assert pull[1]["timeout"] == 137
 
     def test_autostash_addresses_git_by_sha_never_brace_selector(self, tmp_path, monkeypatch):
         """Native Windows: MSYS strips the braces from ``stash@{0}`` in git.exe's argv, so the

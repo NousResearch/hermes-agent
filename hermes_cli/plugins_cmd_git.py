@@ -331,12 +331,14 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     git_exe = _pc()._resolve_git_executable()
     if not git_exe:
         return False, "git is not installed or not in PATH."
+    timeout = _pc()._clone_timeout_seconds()
     try:
         stash_sha, err = _autostash_dirty_tree(git_exe, target)
         if err:
             return False, err
         origin = _pc()._run_plugin_git(git_exe, target, "remote", "get-url", "origin", timeout=15)
-        result = _pc()._run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip())
+        result = _pc()._run_plugin_git(
+            git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip(), timeout=timeout)
         if result.returncode != 0:
             err = _safe_git_error(result) or "git pull failed."
             if not stash_sha:
@@ -365,4 +367,4 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
     except subprocess.TimeoutExpired:
-        return False, "Git operation timed out after 60 seconds."
+        return False, f"Git operation timed out after {timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}"

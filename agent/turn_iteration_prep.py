@@ -505,15 +505,29 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
-            # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
-            # iteration budget and re-issuing, or a runaway turn holds the turn lease
-            # indefinitely (rebuilt restarts previously had no bound).
+        # A rebuilt restart IS the fallback walk in motion, so the bound must clear the whole
+        # chain. Sized on ``max_retries`` alone (the API retry count, unrelated to chain
+        # length) a 5-rung chain died on the 3rd hop and reported the restart budget, blaming
+        # providers that were never tried — the local rung's real failure (its context window)
+        # was therefore invisible to every triage (triage #668: 39/39 turns, response_len=0,
+        # no provider error logged for the local rung). ``max_retries`` stays the floor for a
+        # flag that re-arms against ONE target; chain length is the floor for a forward walk.
+        # ``restart_count`` accumulates for the whole turn, so the bound stays absolute.
+        _rebuilt_restart_cap = max(
+            max_retries, len(getattr(agent, "_fallback_chain", ()) or ()) + 1
+        )
+        if restart_count > _rebuilt_restart_cap:
             _turn_exit_reason = "rebuilt_restart_limit_exceeded"
+            # Name where the walk actually got to: the next triage must not have to infer
+            # the active rung from a buffered failover notice (see the cap comment above).
             logger.warning(
-                "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
-                "refunding the iteration budget indefinitely.",
-                max_retries,
+                "Rebuilt-message restart limit (%s: retry budget %s, fallback chain %s) exceeded "
+                "after %s restarts; ending turn instead of refunding the iteration budget "
+                "indefinitely. active_provider=%s active_model=%s fallback_index=%s response=%s",
+                _rebuilt_restart_cap, max_retries,
+                len(getattr(agent, "_fallback_chain", ()) or ()), restart_count,
+                getattr(agent, "provider", "unknown"), getattr(agent, "model", "unknown"),
+                getattr(agent, "_fallback_index", "unknown"), type(response).__name__,
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

@@ -577,6 +577,21 @@ def set_pinned(skill_name: str, pinned: bool) -> bool:
     return _set_field(skill_name, "pinned", bool(pinned))
 
 
+def carry_pin(old_name: str, new_name: str) -> None:
+    """Pin *new_name* when *old_name* is pinned: a skill whose frontmatter ``name:`` was rewritten keeps the pin
+    its old name held. Additive (two skills may share the old name, so a rename never unpins anything) and not
+    curation-gated, since it preserves a user's pin rather than creating one."""
+    if not old_name or not new_name or old_name == new_name:
+        return
+
+    def _carry(data):
+        if not (data.get(old_name) or {}).get("pinned") or (rec := data.setdefault(new_name, _empty_record())).get("pinned"):
+            return None, False
+        rec["pinned"] = True
+        return None, True
+    _locked_update(new_name, _carry, "skill_usage.carry_pin(%s) failed: %s")
+
+
 def set_sync(skill_name: str, sync: bool) -> None:
     """Opt-in ``sync`` flag (read by ``skills_sync_client``); curation-gated so bundled/hub/external can't be marked."""
     _set_field(skill_name, "sync", bool(sync))

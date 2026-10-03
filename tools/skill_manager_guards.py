@@ -130,33 +130,46 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
     return f"Refusing to delete '{skill_dir}': path does not resolve inside any known skills root."
 
 
-def _is_pinned(name: str, what: str) -> Optional[bool]:
-    """skill_usage pinned flag; None (logged at debug) when the record is unreadable."""
+def _skill_identities(name: str, skill_dir: Optional[Path]) -> list[str]:
+    """Every name a pin or essential marker can be recorded under for this skill: skill_manage
+    finds it by folder, but skills_list, `hermes curator pin` and the usage records name it by
+    its frontmatter ``name:`` — the two differ whenever a folder was named independently."""
+    names = [name]
+    if skill_dir is not None:
+        from tools import skill_usage
+        names += [skill_dir.name, skill_usage._read_skill_name(skill_dir / "SKILL.md", fallback=skill_dir.name)]
+    return list(dict.fromkeys(names))
+
+
+def _pinned_name(names: list[str], what: str) -> Optional[str]:
+    """The first of *names* whose skill_usage record is pinned; None when none is, or (logged at
+    debug) when the record is unreadable."""
     try:
         from tools import skill_usage
-        return bool(skill_usage.get_record(name).get("pinned"))
+        return next((n for n in names if skill_usage.get_record(n).get("pinned")), None)
     except Exception:
-        logger.debug("%s lookup failed for %s", what, name, exc_info=True)
+        logger.debug("%s lookup failed for %s", what, names, exc_info=True)
         return None
 
 
-def _pinned_guard(name: str) -> Optional[str]:
-    """Refusal message if *name* is pinned or essential, else None. Pin only guards DELETION;
-    patches/edits stay allowed. ESSENTIAL_SKILLS are permanently pinned (the system prompt
-    references them). Best-effort: an unreadable sidecar lets the delete through."""
+def _pinned_guard(name: str, skill_dir: Optional[Path] = None) -> Optional[str]:
+    """Refusal message if the skill is pinned or essential under any of its names, else None. Pin
+    only guards DELETION; patches/edits stay allowed. ESSENTIAL_SKILLS are permanently pinned (the
+    system prompt references them). Best-effort: an unreadable sidecar lets the delete through."""
+    names = _skill_identities(name, skill_dir)
     try:
         from agent.skill_utils import ESSENTIAL_SKILLS
-        if name in ESSENTIAL_SKILLS:
+        if essential := next((n for n in names if n in ESSENTIAL_SKILLS), None):
             return (
-                f"Skill '{name}' is essential to Hermes (the agent's own "
+                f"Skill '{essential}' is essential to Hermes (the agent's own "
                 f"operating manual referenced by the system prompt) and "
                 f"cannot be deleted. Patches and edits are still allowed.")
     except Exception:
         logger.debug("essential-guard lookup failed for %s", name, exc_info=True)
-    if _is_pinned(name, "pinned-guard"):
+    if pinned := _pinned_name(names, "pinned-guard"):
         return (
             f"Skill '{name}' is pinned and cannot be deleted by skill_manage. Ask the user to "
-            f"run `hermes curator unpin {name}` if they want to delete it. Patches and edits "
+            f"run `hermes curator unpin {pinned}` if they want to delete it. Patches and edits "
             f"are allowed on pinned skills; only deletion is blocked.")
     return None
 
@@ -168,11 +181,11 @@ def _background_review_write_guard(
     if not _is_background_review():
         return None
     refuse = f"Refusing background curator {action} for"
-    if _is_pinned(name, "pinned skill guard"):
+    if pinned := _pinned_name(_skill_identities(name, skill_dir), "pinned skill guard"):
         return _refusal(
             f"{refuse} pinned skill '{name}': pinned skills "
             f"are off-limits to autonomous maintenance. Ask the user to run `hermes curator "
-            f"unpin {name}` if they want it changed.")
+            f"unpin {pinned}` if they want it changed.")
     try:
         from agent.skill_utils import is_external_skill_path
         if is_external_skill_path(skill_dir):

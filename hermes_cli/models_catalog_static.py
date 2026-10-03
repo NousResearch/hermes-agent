@@ -213,7 +213,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],
     "minimax": list(_MINIMAX_MODELS),
-    "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+    "minimax-oauth": ["MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
         "claude-fable-5.1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",

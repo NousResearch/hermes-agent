@@ -695,23 +695,43 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
   // keep its configured friendly identity after activation (#89131).
   // Best-effort and feature-detected — a failed read keeps the last
   // good index rather than dropping identities mid-session.
+  let routes: ProfileRoute[] = []
+
   if (typeof host.profileRoutes === 'function') {
     const epoch = beginAliasRouteIndex()
 
     try {
-      indexAliasRoutes(await host.profileRoutes(), epoch)
+      routes = await host.profileRoutes()
+      indexAliasRoutes(routes, epoch)
     } catch {
       /* keep the previous alias index */
     }
   }
 
-  // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-  // resolves the active owner itself, no captured route needed here.
+  // The rows are cached under `activeConnectionId`, so they must come from
+  // that connection. A retry or late run of a query keyed to the connection
+  // the window just switched away from would otherwise be answered by the
+  // one it switched to and cached under the old key — the cross-machine
+  // swap that relabelled a VPS bot with the local bot's title.
+  if ((host.state.connectionId?.get?.() || null) !== (activeConnectionId || null)) {
+    throw new Error('Bot roster query outlived its connection')
+  }
+
   const activeBot = {
     name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
   }
 
-  const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+  // Ask the keyed connection by name rather than the ambient socket, which
+  // can sit on another machine (a secondary foregrounded across a connection
+  // apply). No exact route (older Desktop host) → the ambient owner.
+  const route = Array.isArray(routes)
+    ? routes.find(r => r?.connectionId === activeConnectionId && r?.profile === activeBot.name)
+    : undefined
+
+  const local = route
+    ? await host.requestProfile<RosterSnapshot>(route, 'profiles.list', {})
+    : await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+
   // Newer backends inject the teammate-messaging protocol into every
   // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
   // carry a second copy. Older gateways lack the flag: keep appending.

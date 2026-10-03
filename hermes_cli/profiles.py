@@ -469,7 +469,7 @@ def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
         return False
 
 
-def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
+def iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
     """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones.
 
     A dir is a profile only when it carries an identity marker (``named_profile_has_identity``):
@@ -487,6 +487,9 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
         and named_profile_has_identity(entry)
         and not (live_only and named_profile_is_deleted(entry))
     ]
+
+
+_iter_named_profile_dirs = iter_named_profile_dirs  # original private spelling, kept as an alias
 
 
 def list_profile_names() -> List[str]:

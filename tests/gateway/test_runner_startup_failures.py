@@ -383,9 +383,13 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     assert ok is True
     assert runner.should_exit_cleanly is False
     assert runner.adapters == {}
-    # Runtime state must remain "running", not "startup_failed".
+    # Cron still runs, but missing enabled platforms must not look healthy.
     state = read_runtime_status()
-    assert state["gateway_state"] == "running"
+    assert state["gateway_state"] == "degraded"
+    for platform in ("telegram", "discord"):
+        assert state["platforms"][platform]["state"] == "fatal"
+        assert state["platforms"][platform]["error_code"] == "adapter_unavailable"
+        assert state["platforms"][platform]["needs_attention"] is True
     # A warning must be emitted explaining why no platforms connected.
     assert any(
         "No adapter could be created" in record.message

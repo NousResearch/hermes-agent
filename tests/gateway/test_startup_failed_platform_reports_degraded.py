@@ -137,3 +137,40 @@ async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, 
         )
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monkeypatch, tmp_path):
+    """An enabled missing plugin must appear in status even when a sibling connects."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+            Platform.SLACK: PlatformConfig(enabled=False, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner, "_create_adapter",
+        lambda platform, platform_config: _HealthyAdapter() if platform is Platform.TELEGRAM else None,
+    )
+
+    async def _no_secondary_profiles():
+        return 0
+
+    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", _no_secondary_profiles)
+    try:
+        assert await runner.start() is True
+        state = read_runtime_status()
+        assert state["gateway_state"] == "degraded"
+        assert state["platforms"]["telegram"]["state"] == "connected"
+        assert state["platforms"]["discord"]["state"] == "fatal"
+        assert state["platforms"]["discord"]["error_code"] == "adapter_unavailable"
+        assert state["platforms"]["discord"]["needs_attention"] is True
+        assert "restart" in state["platforms"]["discord"]["error_message"]
+        assert "slack" not in state["platforms"]
+        assert runner._failed_platforms == {}  # No adapter exists to reconnect.
+    finally:
+        await runner.stop()

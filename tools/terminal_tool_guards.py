@@ -289,3 +289,46 @@ def self_repo_block(
         return None
     logger.warning("Blocked self-repo git mutation (command: %s)", _safe_command_preview(command))
     return _blocked_json(msg, "blocked")
+
+
+_UNMANAGED_INPUT_RE = re.compile(r"keybd_event|sendinput", re.IGNORECASE)
+_DRIVER_KILL_RE = re.compile(
+    r"(taskkill|stop-process|pkill|killall)[^\n]*cua-driver", re.IGNORECASE
+)
+
+
+def unmanaged_input_block(*, command: str) -> Optional[str]:
+    """Refuse raw Win32 input synthesis and cua-driver kills from terminal.
+
+    #105293: the agent escaped a dead computer_use session into terminal,
+    ran win32api.keybd_event without try/finally (Alt stuck down, host
+    needed a reboot), then taskkill /F cua-driver.exe severed the MCP
+    transport. The managed driver already revives ended sessions; this
+    closes the escape hatch. Unconditional (force cannot bypass).
+    Returns the JSON error string when blocked, else None.
+    """
+    # ponytail: substring guard, over-blocks prose mentioning these tokens;
+    # tighten to AST/script scan only if a legit use ever surfaces.
+    if not isinstance(command, str) or not command:
+        return None
+    if _UNMANAGED_INPUT_RE.search(command):
+        logger.warning(
+            "Blocked unmanaged input synthesis (command: %s)",
+            _safe_command_preview(command),
+        )
+        return _blocked_json(
+            "Blocked: raw input synthesis (keybd_event/SendInput) outside the "
+            "managed computer_use driver can wedge host modifier state with no "
+            "cleanup on exception. Use computer_use instead.",
+            "blocked",
+        )
+    if _DRIVER_KILL_RE.search(command):
+        logger.warning(
+            "Blocked cua-driver kill (command: %s)", _safe_command_preview(command)
+        )
+        return _blocked_json(
+            "Blocked: killing cua-driver from terminal severs the computer_use "
+            "MCP transport. Recover via start_session/retry instead.",
+            "blocked",
+        )
+    return None

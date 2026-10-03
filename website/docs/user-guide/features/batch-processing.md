@@ -155,7 +155,7 @@ The `conversations` field uses a ShareGPT-like format with `from` and `value` fi
 The batch runner has robust checkpointing for fault tolerance:
 
 - **Checkpoint file:** Saved after each batch completes, tracking which prompt indices are done
-- **Content-based resume:** On `--resume`, the runner scans existing batch files and matches completed prompts by their actual text content (not just indices), enabling recovery even if the dataset order changes
+- **Content-based resume:** On `--resume`, the runner scans existing batch files and matches each completed row to a dataset row by the row's content (the whole entry, not its index), enabling recovery even if the dataset order changes. Each completed row accounts for one dataset row, so repeated prompts and rows that share a prompt but differ in per-row fields such as `image` or `cwd` are each run until they complete
 - **Failed prompts:** Only successfully completed prompts are marked as done — failed prompts will be retried on resume
 - **Batch merging:** On completion, all batch files (including from previous runs) are merged into a single `trajectories.jsonl`
 

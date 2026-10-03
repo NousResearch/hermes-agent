@@ -80,3 +80,9 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/run_tests.sh tests/tools/test_process_registry_windows_live.py
+
+      - name: Run MCP orphan tree reap live E2E (#108084)
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/run_tests.sh tests/tools/test_mcp_tree_reap_windows_live.py

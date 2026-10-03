@@ -758,11 +758,9 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
                 os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok — inside `if not IS_WINDOWS` gate
         except Exception:
             pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
     if IS_WINDOWS:
+        # Before proc.kill(): ``taskkill /T`` walks the tree from a LIVE root, so killing the root
+        # first leaves its descendants (the ones holding our pipes) running.
         # No identity guard on purpose: *proc* is our own retained Popen handle, so the PID cannot
         # be recycled while we hold it. The fail-closed ``pid_is_hermes`` guard is for BARE pids.
         try:
@@ -772,6 +770,10 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
                            creationflags=windows_hide_flags())
         except Exception:
             pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def bounded_probe_run(

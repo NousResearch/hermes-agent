@@ -332,7 +332,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert calls[1][0] == "/Create"
     assert "/XML" in calls[1]
     assert "/SC" not in calls[1]
-    assert "<Delay>PT30S</Delay>" in xml_seen["text"]
+    assert "<Delay>PT5S</Delay>" in xml_seen["text"]
     assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_seen["text"]
     assert "<StopOnIdleEnd>false</StopOnIdleEnd>" in xml_seen["text"]
     assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml_seen["text"]

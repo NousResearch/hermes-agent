@@ -199,8 +199,18 @@ def _cmd_skills_trust(args):
     action = args.skills_action
     raw_path = getattr(args, "path", None)
     if raw_path:
-        root = Path(raw_path).expanduser().resolve()
-        if not root.is_dir():
+        root = Path(raw_path).expanduser()
+        try:
+            root = root.resolve()
+        except OSError:
+            # Dead mount or unreadable parent: keep the un-resolved path so an
+            # entry that can no longer be resolved is still removable.
+            pass
+        if action != "untrust" and not root.is_dir():
+            # A missing directory is a real error for trust, but it is the
+            # normal case for untrust: trust is granted per project root, and
+            # retiring a worktree deletes the very directory that must now be
+            # removed from the allowlist.
             print(f"Not a directory: {root}")
             return
     else:
@@ -218,9 +228,15 @@ def _cmd_skills_trust(args):
         trusted = [trusted]
     trusted = [str(t) for t in trusted]
     root_str = str(root)
+    raw_str = str(raw_path) if raw_path else None
 
     def _same(t: str) -> bool:
-        return str(Path(t).expanduser().resolve()) == root_str
+        if t == root_str or (raw_str is not None and t == raw_str):
+            return True          # literal match: survives an unresolvable path
+        try:
+            return str(Path(t).expanduser().resolve()) == root_str
+        except OSError:
+            return False
 
     if action == "untrust":
         kept = [t for t in trusted if not _same(t)]

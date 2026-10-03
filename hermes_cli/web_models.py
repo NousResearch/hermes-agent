@@ -233,6 +233,9 @@ class DebugShareRequest(BaseModel):
 
 class TTSSpeakRequest(BaseModel):
     text: str
+    # Synthesis-side playback speed (provider-honored where supported, e.g.
+    # Kokoro); pitch-perfect. Absent/None = provider default (1.0).
+    speed: Optional[float] = None
 
 class VoiceLiveSessionRequest(BaseModel):
     """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior

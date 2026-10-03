@@ -3979,6 +3979,8 @@ export const ru = defineLocale({
       readAloudFailed: 'Не удалось зачитать вслух',
       preparingAudio: 'Подготовка аудио...',
       stopReading: 'Остановить чтение',
+      playbackSpeed: 'Скорость воспроизведения',
+      playbackSpeedNormal: 'обычная',
       readAloud: 'Зачитать вслух',
       copyFullResponse: 'Копировать весь ответ',
       readAloudFullResponseHint: 'Shift+клик: прочитать весь ответ',

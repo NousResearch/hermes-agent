@@ -75,6 +75,8 @@ export const arAssistant = {
       readAloudFailed: 'فشلت القراءة بصوت عال',
       preparingAudio: 'جار تجهيز الصوت',
       stopReading: 'إيقاف القراءة',
+      playbackSpeed: 'سرعة التشغيل',
+      playbackSpeedNormal: 'عادي',
       readAloud: 'قراءة بصوت عال',
       copyFullResponse: 'نسخ الرد الكامل',
       readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',

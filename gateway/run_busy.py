@@ -112,6 +112,7 @@ class GatewayBusySessionMixin:
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
+        self._prefetch_queued_voice_transcript(queued_event, adapter)
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]

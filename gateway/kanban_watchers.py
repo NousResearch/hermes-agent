@@ -37,6 +37,33 @@ _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
 
 
+async def _spawn_ready_with_optional_decompose(
+    dispatcher: Any,
+    ad_enabled: bool,
+    ad_per_tick: int,
+) -> Any:
+    """Run ``tick_once``, concurrently with ``auto_decompose_tick`` when enabled.
+
+    Already-ready work must spawn even if this tick's decompose is slow or
+    raises. Children created here may wait until the next tick (#106985).
+    """
+    if not ad_enabled:
+        return await _to_thread_process_service(dispatcher.tick_once)
+
+    decomp_result, results = await asyncio.gather(
+        _to_thread_process_service(dispatcher.auto_decompose_tick, ad_per_tick),
+        _to_thread_process_service(dispatcher.tick_once),
+        return_exceptions=True,
+    )
+    if isinstance(decomp_result, BaseException):
+        if isinstance(decomp_result, asyncio.CancelledError):
+            raise decomp_result
+        logger.warning("kanban dispatcher: auto-decompose tick failed: %s", decomp_result)
+    if isinstance(results, BaseException):
+        raise results
+    return results
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -301,11 +328,12 @@ class GatewayKanbanWatchersMixin:
                 else:
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
+                    # See #49638. Concurrent with spawn so a stuck decompose
+                    # cannot block already-ready work (#106985).
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
-                    # See #49638.
-                    if _ad_enabled:
-                        await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(dispatcher.tick_once)
+                    results = await _spawn_ready_with_optional_decompose(
+                        dispatcher, _ad_enabled, _ad_per_tick,
+                    )
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
@@ -330,3 +358,30 @@ class GatewayKanbanWatchersMixin:
             await self._sleep_between_ticks(interval)
 
         self._release_kanban_dispatcher_lock()
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Callable  # noqa: F401,E402
+from contextvars import Context  # noqa: F401,E402
+import logging  # noqa: F401,E402
+import re  # noqa: F401,E402
+import sqlite3  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    't': ('agent.i18n', 't'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

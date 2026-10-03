@@ -18,6 +18,7 @@ import pytest
 
 import hermes_state_common
 import hermes_state_pidns
+from agent.conversation_compression import _compression_lock_holder
 from hermes_state import SessionDB
 from hermes_state_pidns import LocalPidNamespace
 
@@ -58,9 +59,15 @@ def test_turn_lease_of_sibling_namespace_is_not_stolen(tmp_path) -> None:
     assert db.try_acquire_session_turn_lease("legacy", contender, ttl_seconds=300) is False
 
 
-def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch) -> None:
+def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch, tmp_path) -> None:
     dead = _dead_pid()
     provably_dead = hermes_state_common._lock_holder_provably_dead
+
+    # Writers stamp our namespace: the flock record and the compression holder.
+    with open(tmp_path / "lock", "w+b") as handle:
+        hermes_state_common._write_lock_holder_record(handle)
+        assert hermes_state_common._read_lock_holder_record(handle)["pidns"] == _OURS
+    assert f":pidns={_OURS}:" in _compression_lock_holder(object())
 
     # Same namespace + provably gone: break the orphaned lock (unchanged).
     assert provably_dead({"pid": dead, "pidns": _OURS, "start_ticks": 1, "acquired_at": 0.0}) is True

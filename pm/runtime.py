@@ -246,8 +246,7 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
             # Resolve the managed Python even when the read-only probe missed it
             # because its recorded facts use a different lock version.
             realized = _toolchain(explicit=True)
-            if realized is None:
-                raise InstallError("pm-runtime", "pinned Python is unavailable", "run `hermes pm install python`")
+            assert realized is not None  # realize=True returns a pair or raises.
             tools = staged, realized[1]
         else:
             # Non-shell bootstrap callers (CI) already have a host interpreter.

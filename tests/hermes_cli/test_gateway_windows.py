@@ -70,6 +70,10 @@ def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
         ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
         capture_output=True, timeout=30,
     )
+    if created.returncode != 0 and gateway_windows._is_access_denied(
+        created.stderr.decode(acp, errors="replace")
+    ):
+        pytest.skip("schtasks /Create is denied for this user; the live round-trip needs elevation")
     assert created.returncode == 0, created.stderr
     try:
         code, out, _err = gateway_windows._exec_schtasks(["/Query", "/TN", task, "/XML"])

@@ -32,7 +32,7 @@ from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
 from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, cast
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -1761,13 +1761,30 @@ class GatewayAdapterLifecycleMixin:
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
-    async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
-        # Observer failures must never break the adapter's update loop.
-        with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
+    def _is_user_authorized_for_source(self, source) -> bool:
+        """Use GatewayRunner's established normalized-source authorization."""
+        return cast(Any, self)._is_user_authorized_for_source(source)
+
+    async def _handle_gateway_platform_event(self, event: dict, source) -> Optional[list]:
+        """Authorize and publish one normalized adapter event to plugin hooks.
+
+        A ``callback_query`` is an action event, not a passive observation: existing plugins
+        claim and answer their own callbacks by returning a truthy result. Other platform events
+        remain observer-only.
+        """
+        callback_query = event.get("event_type") == "callback_query"
+        if callback_query:
+            auth_check = getattr(self, "_is_user_authorized_for_source", None)
+            if not callable(auth_check) or not auth_check(source):
+                return []
+            with _log_suppressed(logging.DEBUG, "gateway platform action dispatch failed", exc_info=True):
+                from hermes_cli.lifecycle import invoke_hook
+                return await asyncio.to_thread(invoke_hook, "gateway_platform_action", **event)
+        with _log_suppressed(logging.DEBUG, "gateway platform observer dispatch failed", exc_info=True):
             from hermes_cli.lifecycle import has_hook, invoke_hook
             if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
-                invoke_hook("gateway_platform_event", **event)
+                return invoke_hook("gateway_platform_event", **event)
+        return None
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

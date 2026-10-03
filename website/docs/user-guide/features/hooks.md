@@ -1311,6 +1311,27 @@ The bot's own progressive message edits (streaming) never fire `message_edited` 
 
 This hook is observer-only: it does **not** add raw-event access or adapter access. **Raw SDK payload access is deliberately not shipped** — adapter SDK objects change shape without notice and would become un-evolvable API surface; where genuinely needed it requires its own explicit capability (`gateway.raw_events`) with a "no stability guarantee" label and its own design (tracked in #64228). For *acting* on a platform (adding a reaction, renaming a thread), use the capability-gated `ctx.platform_actions` facade documented in the [plugins guide](plugins.md#platform-actions) — it is gated off by default behind the `gateway.platform_actions` capability. `PluginContext.dispatch_tool()` can only call tools registered in the tool registry; `send_message` is intentionally not registered there (its transport is reserved for explicit CLI, cron, kanban, and MCP delivery paths). A future outbound-delivery contract must first provide stable delivered content/handles across all adapters; this slice does not pre-register an inert `gateway_message_delivered` hook.
 
+### `gateway_platform_action`
+
+This separate hook is for action-bearing platform events that have one clear owner, such as Telegram inline-button taps. It runs only after the gateway authenticates the tapper, uses the same plain `platform`, `event_type`, `payload` envelope, and has a bounded callback timeout. Ordinary `gateway_platform_event` observers are never called for action events and cannot claim or acknowledge them.
+
+Return a truthy value only when your plugin accepted and is handling that specific action. Return `None` or a false value when the action does not belong to your plugin. On timeout, exception, unauthorized caller, or no truthy owner result, the Telegram adapter replies `Niet verwerkt`; a callback-owning plugin answers the callback itself when it returns truthy.
+
+```python
+def on_button(platform, event_type, payload, **kwargs):
+    if platform != "telegram" or event_type != "callback_query":
+        return None
+    if not payload.get("data", "").startswith(("ok:", "edit:")):
+        return None
+    handle_owned_button(payload)
+    return True
+
+def register(ctx):
+    ctx.register_hook("gateway_platform_action", on_button)
+```
+
+The callback envelope contains `platform="telegram"`, `event_type="callback_query"`, and a payload with `platform`, `user_id`, `chat_id`, `message_id`, `data`, tap `date`, and `callback_query_id`. IDs are strings; missing fields are never invented.
+
 ---
 
 ### `pre_approval_request`

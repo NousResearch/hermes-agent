@@ -1367,13 +1367,14 @@ class TestSenderAuthentication(unittest.TestCase):
 
 
     def test_only_topmost_exact_authserv_id_is_trusted(self):
-        """Never search below the authoritative field or relax an authserv-id pin."""
+        """Never search below the authoritative field or relax an authserv-id pin.
+        The subdomain and comment-smuggled rows carry dmarc=pass, so only the exact pin rejects them."""
         forged_lower = "mx.ourserver.com; dmarc=pass header.from=example.com"
         for topmost in (
             "mx.ourserver.com; dmarc=fail header.from=example.com",
             "edge.receiver.test; dmarc=fail header.from=example.com",
-            "child.mx.ourserver.com; dmarc=fail header.from=example.com",
-            "(mx.ourserver.com) edge.receiver.test; dmarc=fail header.from=example.com",
+            "child.mx.ourserver.com; dmarc=pass header.from=example.com",
+            "(mx.ourserver.com) edge.receiver.test; dmarc=pass header.from=example.com",
         ):
             with self.subTest(topmost=topmost):
                 ok, reason = self._verify(

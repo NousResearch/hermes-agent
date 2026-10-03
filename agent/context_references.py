@@ -549,9 +549,23 @@ def _ensure_reference_path_allowed(path: Path) -> None:
 def _strip_trailing_punctuation(value: str) -> str:
     stripped = value.rstrip(TRAILING_PUNCTUATION)
     # Drop unbalanced closers so "(see @file:x.py)" does not swallow the ")".
-    while stripped.endswith((")", "]", "}")) and stripped.count(stripped[-1]) > stripped.count(_OPENERS[stripped[-1]]):
-        stripped = stripped[:-1]
-    return stripped
+    # The rule compares counts over the prefix ending at each trailing closer, so one
+    # reverse pass keeps those counts as totals minus what it already walked past.
+    # Reference values come from inbound messages and are unbounded (\S+), which makes
+    # a recount-per-dropped-character loop quadratic on crafted input.
+    total = {ch: stripped.count(ch) for ch in ")]}([{"}
+    tail = dict.fromkeys(total, 0)
+    cut = len(stripped)
+    for i in range(len(stripped) - 1, -1, -1):
+        ch = stripped[i]
+        if ch not in _OPENERS:
+            break
+        opener = _OPENERS[ch]
+        if total[ch] - tail[ch] <= total[opener] - tail[opener]:
+            break
+        tail[ch] += 1
+        cut = i
+    return stripped[:cut]
 
 
 def _strip_reference_wrappers(value: str) -> str:

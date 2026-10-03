@@ -4,6 +4,7 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
+from agent.anthropic_adapter import _is_claude_model, _supports_adaptive_thinking, adaptive_thinking_wire_fields
 from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -69,6 +70,25 @@ class CustomProfile(ProviderProfile):
         # effort arrives here already filled by default_reasoning_config). Never emit
         # think=True (Ollama-only flag).
         if reasoning_config and isinstance(reasoning_config, dict):
+            model_id = str(ctx.get("model") or "")
+            # Adaptive Claude on OpenAI-compat relays (CometAPI → Bedrock): top-level
+            # ``reasoning_effort`` is translated to legacy ``thinking.type=enabled`` and 400s
+            # on Opus 5.5+ (#122672). Emit the adaptive + output_config shape instead.
+            # Haiku matches the adaptive classifier but has no extended thinking, so the
+            # helper returns {} (or a disable a chat-completions relay rejects). It must
+            # fall through to the reasoning_effort ladder. Every other adaptive Claude
+            # still returns here when the helper is empty: that empty is the
+            # mandatory-thinking omit, and rewriting it to reasoning_effort="none" is
+            # the 400 this branch exists to avoid.
+            if (
+                _is_claude_model(model_id)
+                and _supports_adaptive_thinking(model_id)
+                and "haiku" not in model_id.lower()
+            ):
+                adaptive = adaptive_thinking_wire_fields(reasoning_config, model_id)
+                if adaptive:
+                    extra_body.update(adaptive)
+                return extra_body, top_level
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
                 # See #14820.

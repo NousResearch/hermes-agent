@@ -64,6 +64,11 @@ class TestThinkingOffIsSentExplicitly:
         kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})
         assert "thinking" not in kwargs
 
+    def test_opus_55_mandatory_thinking_keeps_the_omission(self) -> None:
+        """Bedrock Opus 5.5 rejects ``thinking: disabled`` — omit like other mandatory families."""
+        kwargs = _kwargs("claude-opus-5-5-thinking", {"enabled": False})
+        assert "thinking" not in kwargs
+
     def test_legacy_manual_thinking_models_keep_the_omission(self) -> None:
         """Pre-4.6 thinking is opt-in via budget_tokens: absence IS off."""
         kwargs = _kwargs("claude-sonnet-4-5", {"enabled": False})

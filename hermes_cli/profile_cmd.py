@@ -106,11 +106,23 @@ def _profile_status(args):
     print()
 
 
+def _profile_gateway_service_name(profile) -> str:
+    """Resolve the row's service identity without borrowing or changing the caller's home."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli import gateway
+
+    token = set_hermes_home_override(profile.path)
+    try:
+        return gateway.get_service_name()
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _profile_gateway_scope(profile) -> str:
     """Return the Linux service-manager scope that owns a profile's gateway, if any."""
     if sys.platform != "linux":
         return "—"
-    unit = "hermes-gateway" if profile.is_default else f"hermes-gateway-{profile.name}"
+    unit = _profile_gateway_service_name(profile)
     for scope, prefix in (("user", ["systemctl", "--user"]), ("system", ["systemctl"])):
         try:
             result = subprocess.run(

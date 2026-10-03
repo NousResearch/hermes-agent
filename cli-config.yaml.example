@@ -401,6 +401,10 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Per-profile structural tool fence (#126923): tool names this profile's sessions never
+  # offer, subtracted after every grant — including the dispatcher-spawned worker lifecycle
+  # handoff. List or JSON-array string. e.g. this makes the profile read-only on the board:
+  # worker_excluded_tools: ["kanban_complete", "kanban_request_review", "kanban_block"]
 
 # =============================================================================
 # Terminal Tool Configuration

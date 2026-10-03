@@ -132,3 +132,50 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     with delegated_child_context():
         assert not _names(["kanban"])
     assert "kanban_complete" in _names(["file"])
+
+
+def test_worker_excluded_tools_fence_strips_even_lifecycle_handoff(tmp_path, monkeypatch):
+    """``kanban.worker_excluded_tools`` is a structural fence (#126923): named tools never
+    reach the schema, including the dispatcher-spawned worker lifecycle handoff that
+    normally re-adds kanban_complete, and the strip applies on every grant path."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    from hermes_cli.config import load_config, save_config
+
+    save_config({"platform_toolsets": {"cli": ["file"]}})
+
+    # Dispatcher-spawned worker context: the lifecycle handoff would grant kanban_complete.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_reviewer")
+    assert "kanban_complete" in _names(["file"])  # fence absent: handoff intact
+
+    cfg = load_config()
+    cfg["kanban"] = {"worker_excluded_tools": ["kanban_complete", "kanban_block", "  "]}
+    save_config(cfg)
+    fenced = _names(["file"])
+    assert "kanban_complete" not in fenced
+    assert "kanban_block" not in fenced
+    assert "kanban_heartbeat" in fenced  # unlisted lifecycle tool stays
+    # non-kanban tools are untouched (_names filters to kanban_*, so check the full schema)
+    assert "read_file" in {
+        row["function"]["name"]
+        for row in __import__("model_tools").get_tool_definitions(
+            ["file"], quiet_mode=True, skip_tool_search_assembly=True)}
+
+    # Quoted JSON-array string form (how `hermes config set` stores lists) parses the same.
+    cfg["kanban"] = {"worker_excluded_tools": '["kanban_heartbeat"]'}
+    save_config(cfg)
+    unfenced = _names(["file"])
+    assert "kanban_heartbeat" not in unfenced
+    assert "kanban_complete" in unfenced  # the earlier fence is gone with its entry
+
+    # Outside worker context the fence still holds on the profile's own opt-in.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    cfg["kanban"] = {"worker_excluded_tools": ["kanban_create"]}
+    save_config(cfg)
+    assert "kanban_create" not in _names(["kanban"])
+    assert "kanban_list" in _names(["kanban"])
+
+    # No fence entry -> no behavior change at all.
+    cfg["kanban"] = {"worker_excluded_tools": None}
+    save_config(cfg)
+    assert "kanban_create" in _names(["kanban"])

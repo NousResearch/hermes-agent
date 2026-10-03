@@ -1898,3 +1898,92 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+# --- Image-user $HOME bootstrap (#127341) ---
+
+def _home_bootstrap_exec_calls(calls):
+    return [c for c in calls
+            if isinstance(c, list) and len(c) >= 2 and c[1] == "exec" and "-u" in c and "0" in c]
+
+
+def _make_booted_env(monkeypatch, container_user):
+    """Boot a DockerEnvironment with docker mocked: ``version`` ok, ``run`` returns a fresh
+    container id, ``ps`` finds no reusable container, and ``inspect`` (the container query,
+    not ``image inspect``) reports *container_user* as the container's ``Config.User``."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    docker_env._cgroup_limits_ok = True
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+            if cmd[1] == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{container_user}\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return _make_dummy_env(), calls
+
+
+def test_container_boot_ensures_home_for_non_root_image_user(monkeypatch):
+    """A non-root image user (hermes-sandbox:desktop's `pn`) must get a root-side, idempotent
+    $HOME bootstrap after container start — without it every $HOME write (browser cache,
+    agent-browser install) fails or hangs (#127341)."""
+    env, calls = _make_booted_env(monkeypatch, "pn")
+
+    execs = _home_bootstrap_exec_calls(calls)
+    assert execs, "a non-root image user must get a root-side $HOME bootstrap exec"
+    argv = execs[0]
+    assert argv[0] == "/usr/bin/docker"
+    assert argv[1:4] == ["exec", "-u", "0"]
+    assert env._container_id in argv
+    script_index = argv.index("-c") + 1
+    script = argv[script_index]
+    assert "getent passwd" in script
+    assert "mkdir -p" in script
+    assert "chown" in script
+    # The user spec travels as a parameter, never spliced into the script text.
+    assert argv[-1] == "pn"
+    assert "pn" not in script
+
+
+@pytest.mark.parametrize("container_user", ["", "root", "0:0", "root:root"])
+def test_container_boot_skips_home_ensure_for_root_image_user(monkeypatch, container_user):
+    """Root images keep the exact pre-fix startup sequence: no extra exec after docker run."""
+    _, calls = _make_booted_env(monkeypatch, container_user)
+    assert not _home_bootstrap_exec_calls(calls)
+
+
+def test_home_bootstrap_failure_keeps_container_boot_working(monkeypatch):
+    """The $HOME bootstrap is best-effort: a timeout or missing shell in the image must
+    degrade to the pre-fix behaviour instead of failing the sandbox start."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    docker_env._cgroup_limits_ok = True
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run":
+            return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, stdout="pn\n", stderr="")
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "exec":
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    env = _make_dummy_env()
+    assert env._container_id
+
+
+def test_home_ensure_is_a_noop_without_a_container():
+    """Recovery paths that clear the container id must not probe docker at all."""
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = None
+    env._docker_exe = "/usr/bin/docker"
+    env._ensure_image_user_home()

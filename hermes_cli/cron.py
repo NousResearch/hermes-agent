@@ -613,9 +613,16 @@ def _print_active_jobs_summary(jobs) -> None:
 
 
 def _scripts_dir_for_cron() -> Path:
-    """Scripts dir for cron jobs — via ``CRON_DIR`` so monkeypatched cron storage is honoured."""
-    from cron.jobs import CRON_DIR
-    return CRON_DIR.parent / "scripts"
+    """Scripts dir the active cron store's jobs are run from.
+
+    Resolved through the store's own home rather than the import-time ``CRON_DIR`` constant: a
+    process that picks its profile scope after ``cron.jobs`` was imported (a re-pointed
+    ``HERMES_HOME``, an explicit ``use_cron_store`` scope) would otherwise validate a job against
+    the seat's scripts dir — a dir its scheduler never consults. A re-pointed ``CRON_DIR`` still
+    wins, because that is the store the jobs in this process were read from.
+    """
+    from cron.jobs import get_cron_home
+    return get_cron_home() / "scripts"
 
 
 def _script_health_issue(script: str) -> Optional[str]:
@@ -626,9 +633,10 @@ def _script_health_issue(script: str) -> Optional[str]:
     try:
         path.relative_to(scripts_dir)
     except ValueError:
-        return f"script resolves outside {scripts_dir}: {script!r}"
+        return (f"script resolves outside {scripts_dir}: {script!r}. Cron scripts are run from that "
+                f"one directory — save the script there and pass its bare filename.")
     if not path.exists():
-        return f"script not found: {path}"
+        return f"script not found: {path} (expected under {scripts_dir})"
     if not path.is_file():
         return f"script path is not a file: {path}"
     return None

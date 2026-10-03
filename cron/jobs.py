@@ -195,6 +195,14 @@ def get_cron_output_dir() -> Path:
     return _current_cron_store().output_dir
 
 
+def get_cron_home() -> Path:
+    """Hermes home owning the active cron store — the home whose jobs this process reads, and
+    the one the scheduler runs them under. Anything that has to name a path the user must put a
+    cron script in resolves it here, so the name always matches the store the job lands in rather
+    than the home frozen at import."""
+    return _current_cron_store().cron_dir.parent
+
+
 # Fallback stale-recovery window for a one-shot's running-claim when HERMES_CRON_TIMEOUT=0
 # (unlimited, no bound to derive from); also the floor so a tiny timeout can't expire a claim
 # mid-run.

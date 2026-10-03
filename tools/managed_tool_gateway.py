@@ -126,6 +126,12 @@ def read_nous_access_token() -> Optional[str]:
         if isinstance(exc, AnonCredentialDead):
             return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
         logger.debug("Nous access token refresh failed: %s", exc)
+    # A refresh that just failed cannot revive a token we already know is past expiry: never send a
+    # provably-dead bearer (gateway 401 while status still reports the tools available). An unknown
+    # expiry cannot be proven dead, so the best-effort cached return stays.
+    expires = _parse_timestamp(nous_provider.get("expires_at"))
+    if expires is not None and expires <= datetime.now(timezone.utc):
+        return None
     return cached_token
 
 

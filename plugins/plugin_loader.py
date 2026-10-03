@@ -5,7 +5,6 @@ or an ABC-subclass fallback."""
 
 from __future__ import annotations
 
-import contextlib
 import importlib.machinery
 import importlib.util
 import logging
@@ -76,7 +75,7 @@ def _new_module(name: str, file: Path, search_locations: Optional[List[str]] = N
     return mod
 
 
-def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
+def _exec(mod: Any, logger: Optional[logging.Logger] = None, *, raise_errors: bool = False) -> bool:
     """Exec a ``_new_module`` module (None -> False); False + debug-log if it raised. The sys.modules
     entry stays on failure; callers needing a clean retry pop it themselves."""
     if mod is None:
@@ -85,13 +84,17 @@ def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
         mod.__spec__.loader.exec_module(mod)
         return True
     except Exception as e:
+        if raise_errors:
+            sys.modules.pop(mod.__name__, None)
+            raise
         if logger:
             logger.debug("Failed to exec_module %s: %s", mod.__name__, e)
         return False
 
 
 def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str, ...],
-                       logger: logging.Logger, synthetic_namespace: Optional[str] = None) -> Optional[Any]:
+                       logger: logging.Logger, synthetic_namespace: Optional[str] = None,
+                       raise_errors: bool = False) -> Optional[Any]:
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
@@ -106,7 +109,8 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     for parent in parents:
         parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
         if parent not in sys.modules and (parent_path / "__init__.py").exists():
-            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
+            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]),
+                  logger, raise_errors=raise_errors)
     if synthetic_namespace:
         register_synthetic_package(synthetic_namespace, [])
     # Reserve the name before siblings exec so their relative imports resolve.
@@ -119,11 +123,11 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
         if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
             continue
         sub_mod = _new_module(full_sub_name, sub_file)
-        if _exec(sub_mod, logger):
+        if _exec(sub_mod, logger, raise_errors=raise_errors):
             loaded_submodules.append((sub_file.stem, sub_mod))
         else:
             sys.modules.pop(full_sub_name, None)
-    if not _exec(mod, logger):
+    if not _exec(mod, logger, raise_errors=raise_errors):
         sys.modules.pop(module_name, None)
         return None
     parent_name, child_name = module_name.rsplit(".", 1)
@@ -145,7 +149,7 @@ class NoopPluginContext:
 
 
 def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_cls: type, name: str,
-                         logger: logging.Logger) -> Optional[Any]:
+                         logger: logging.Logger, raise_errors: bool = False) -> Optional[Any]:
     """Extract the provider instance: ``register(ctx)`` first, then any ``base_cls`` subclass."""
     if hasattr(mod, "register"):
         try:
@@ -154,12 +158,17 @@ def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_
             if instance:
                 return instance
         except Exception as e:
+            if raise_errors:
+                raise
             logger.debug("register() failed for %s: %s", name, e)
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
         if isinstance(attr, type) and issubclass(attr, base_cls) and attr is not base_cls:
-            with contextlib.suppress(Exception):
+            try:
                 return attr()
+            except Exception:
+                if raise_errors:
+                    raise
     return None
 
 

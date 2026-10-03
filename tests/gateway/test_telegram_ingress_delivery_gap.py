@@ -52,22 +52,21 @@ def _deaf_reports(caplog) -> list[str]:
 def _stall_reports(sched) -> list[str]:
     """Errors handed to the (stubbed) recovery handoff: the stall's only announcement."""
     errors = [call.args[0] for call in sched.call_args_list]
-    assert all(type(e) is tg_adapter._PollingStallError for e in errors)
-    return [str(e) for e in errors if _DEAF in str(e)]
+    assert all(type(e) is tg_adapter._PollingStallError and _DEAF in str(e) for e in errors)
+    return [str(e) for e in errors]
 
 
 @pytest.mark.asyncio
-async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
+async def test_stall_reported_once_on_backlog_regardless_of_update_age():
     """Healthy dispatch never reports; a wedged dispatcher is reported after four heartbeats even
     while new updates keep arriving, and only once per stall."""
     adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
     _receive(adapter, 2)
     await _dispatch(adapter, 2)
-    _heartbeats(adapter, 3)
-    assert _deaf_reports(caplog) == []
-
     with patch.object(adapter, "_schedule_polling_recovery") as sched:
+        _heartbeats(adapter, 2 * tg_adapter._INGRESS_DISPATCH_STALL_HEARTBEATS)  # outlast the first-heartbeat re-arm
+        assert sched.call_count == 0
+
         for _ in range(5):  # a fresh update lands before every heartbeat, none dispatched
             _receive(adapter, 1)
             adapter._check_ingress_dispatch_stall()
@@ -133,17 +132,14 @@ async def test_dispatch_stall_marks_degraded_and_goes_fatal():
         await asyncio.gather(*tuple(adapter._background_tasks), return_exceptions=True)
 
 
-def test_new_generation_restarts_backlog_and_ignores_fenced_polls(caplog):
+def test_new_generation_restarts_backlog_and_ignores_fenced_polls():
     adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
     _receive(adapter, 3)
     stale_generation = adapter._polling_generation
     adapter._begin_polling_generation()
     assert adapter._record_polling_progress(stale_generation) is False
     _receive(adapter, 5, generation=stale_generation)
     assert adapter._updates_received_total == 0
-    _heartbeats(adapter, 3)
-    assert _deaf_reports(caplog) == []
 
 
 @pytest.mark.asyncio

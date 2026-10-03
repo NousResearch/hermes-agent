@@ -46,30 +46,30 @@ def test_evict_modules_tolerates_concurrent_imports():
     can release the GIL — so a concurrent insert surfaced as ``dictionary changed size during
     iteration`` inside the plugin's import and the platform was randomly dropped from that
     process.
+
+    Reproduced deterministically: the snapshot must finish before any per-key comparison runs,
+    so a name whose ``__eq__`` inserts into ``sys.modules`` mid-walk only endangers the live-dict
+    comprehension, never the up-front ``list()`` snapshot.
     """
-    previous_interval = sys.getswitchinterval()
-    sys.setswitchinterval(2e-5)  # widen the race window: a comprehension step can switch mid-walk
-    stop = threading.Event()
+    injected = "evict_walk_injected_mid_iteration"
+    target = "evict_walk_target"
+    sub = "evict_walk_target.sub"
 
-    def concurrent_importer():
-        batch = 0
-        while not stop.is_set():
-            keys = [f"_evict_race_fake_{batch}_{j}" for j in range(4)]
-            for name in keys:
-                sys.modules[name] = sys
-            for name in keys:
-                del sys.modules[name]
-            batch += 1
+    class MutatingName(str):
+        def __eq__(self, other):
+            sys.modules.setdefault(injected, sys)
+            return str.__eq__(self, other)
 
-    writer = threading.Thread(target=concurrent_importer, daemon=True)
-    writer.start()
+        __hash__ = str.__hash__
+
+    sys.modules[target] = sys
+    sys.modules[sub] = sys
     try:
-        for _ in range(200):
-            plugins_loader._evict_modules("_evict_race_target")
+        plugins_loader._evict_modules(MutatingName(target))
     finally:
-        stop.set()
-        writer.join(timeout=5)
-        sys.setswitchinterval(previous_interval)
+        sys.modules.pop(injected, None)
+        sys.modules.pop(target, None)
+        sys.modules.pop(sub, None)
 
-    # A RuntimeError escaping _evict_modules is the bug — it fails the whole plugin load.
-    assert True
+    assert target not in sys.modules
+    assert sub not in sys.modules

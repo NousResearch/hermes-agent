@@ -164,6 +164,7 @@ def test_ensure_import_syncs_when_missing(monkeypatch, synced, tmp_path):
 def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch, synced):
     import builtins
 
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(extras, "available", lambda _: False)
     monkeypatch.setattr(extras, "missing", lambda _: ["fal_client"])
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
@@ -185,6 +186,24 @@ def test_ensure_import_propagates_install_error(monkeypatch):
     monkeypatch.setattr(extras, "available", lambda e: False)
     with pytest.raises(pm.InstallError):
         extras.ensure_import("fal")
+
+
+def test_disabled_lazy_installs_refuse_without_prompting_on_a_tty(monkeypatch, tmp_path):
+    """A daemon launched in tmux must reach the policy refusal without reading stdin."""
+    from pathlib import Path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "security:\n  allow_lazy_installs: false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: pytest.fail("disabled install prompted on stdin"))
+
+    with pytest.raises(pm.InstallError, match="lazy"):
+        extras.ensure_import("no-such-extra-anywhere")
 
 
 @pytest.mark.parametrize("failure", [None, "install", "import"])

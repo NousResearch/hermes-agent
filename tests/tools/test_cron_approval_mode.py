@@ -307,6 +307,8 @@ class TestCronDenyModeAllGuards:
         """When tirith is unavailable and security.tirith_fail_open is false,
         cron-deny mode blocks rather than silently allowing (a cron session has
         no user to approve). Mirrors the fail-closed handling in the main flow."""
+        # conftest sets TIRITH_ENABLED=false; the env override now reaches this path too.
+        monkeypatch.delenv("TIRITH_ENABLED", raising=False)
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)

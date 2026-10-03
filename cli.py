@@ -981,10 +981,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self._tirith_security_checked = True
         try:
             from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
+            from hermes_cli.tirith_config import tirith_enabled
 
             if (
                 ensure_installed(log_failures=False) is None and is_platform_supported()
-                and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
+                and tirith_enabled(self.config)
             ):
                 # First launch after install downloads tirith in the background;
                 # warning then would report a fault that resolves itself.

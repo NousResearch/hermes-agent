@@ -14,6 +14,7 @@ unsubscribe) and ``_format_kanban_event_text``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import tui_gateway.server as server
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -192,6 +193,41 @@ class TestCollectKanbanNotifications:
         assert _collect_kanban_notifications({"session_key": ""}) == []
         assert _collect_kanban_notifications({"session_key": None}) == []
         assert len(_sub_rows(tid)) == 1
+
+    def test_completion_created_before_compression_replays_on_the_continuation(self, monkeypatch, tmp_path):
+        """A task created by a session that later rotated must still notify that conversation.
+
+        ``kanban_create`` binds the subscription's ``chat_id`` to ``HERMES_SESSION_KEY`` at creation
+        time. Context compression ends that session and forks a continuation, and every resume path
+        follows the tip (``session.resume`` answers with the child as ``session_key``), so after a
+        reconnect the live session key is the continuation while the subscription still names the
+        rotated-out parent. Claiming on exact equality left the completion unclaimed forever: the
+        cursor stayed at the creation event and the completion never replayed.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("parent_root", source="tui")
+        db.end_session("parent_root", "compression")
+        db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        try:
+            tid = _create_subscribed_task(chat_id="parent_root")
+            pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+            _complete(tid, summary="survived the rotation")
+
+            texts = _collect_kanban_notifications(_session("cont_tip"))
+
+            assert len(texts) == 1, texts
+            assert tid in texts[0]
+            assert "survived the rotation" in texts[0]
+            # Claimed exactly once: the continuation now owns the subscription's cursor.
+            assert _collect_kanban_notifications(_session("cont_tip")) == []
+            rows = _sub_rows(tid)
+            assert len(rows) == 1
+            assert rows[0]["last_event_id"] > pre_cursor
+        finally:
+            db.close()
 
     def test_profile_scoped_session_reads_the_shared_board(self, tmp_path):
         """The kanban board is shared across profiles BY DESIGN (see the

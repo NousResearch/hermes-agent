@@ -47,7 +47,8 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         search = b.get("search") or {}
         # Defensive shape coercion: a subagent may have written a malformed record (requires as a
         # list, quirks as a string). Normalize here so nothing downstream crashes on a bad broker file.
-        req = opt.get("requires") if isinstance(opt.get("requires"), dict) else {}
+        raw_req = opt.get("requires")
+        req = raw_req if isinstance(raw_req, dict) else {}
         q = opt.get("quirks")
         quirks = q if isinstance(q, list) else ([q] if isinstance(q, str) and q else [])
         tier = select_tier(b, email_mode, browser_clears_captcha)
@@ -59,6 +60,12 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         if req.get("dob") and not (subject_dossier.get("identity") or {}).get("date_of_birth"):
             prewarn.append("date_of_birth: this broker's identity gate requires DOB to match records; "
                            "collect it up front (intake --dob) or expect a mid-flow human pause")
+        if req.get("address_or_dob"):
+            prewarn.append(
+                "city/state/postal plus explicit approval of date_of_birth or street: this broker's "
+                "verified second stage requires location and one sensitive matching field; those "
+                "fields are not added to disclosure_fields automatically, so expect a human pause"
+            )
         actions.append({
             "broker_id": b.get("id"),
             "broker_name": b.get("name"),
@@ -162,6 +169,8 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
                "clears_children": a.get("owns") or [],
                "optout_requires": a.get("optout_requires") or {},
                "optout_quirks": a.get("optout_quirks") or [],
+               "disclosure_fields": a.get("disclosure_fields") or [],
+               "needs_operator_input": a.get("needs_operator_input") or [],
                "deletion": a.get("deletion") or {},
                "optout_playbook": a.get("optout_playbook") or [],
                "notes": a.get("notes", "")}

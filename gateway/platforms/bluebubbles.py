@@ -611,7 +611,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             originator = await self._lookup_message(reply_to_id)
             if originator:
                 reply_to_text = self._value(originator.get("text"))
-                reply_to_is_own = bool(originator.get("isFromMe"))
+                reply_to_is_own = bool(originator.get("isFromMe") or originator.get("fromMe")
+                                       or originator.get("is_from_me"))
         if not reply_to_id:  # legacy fallback: partial-quote reaction messages
             reply_to_id = self._value(record.get("associatedMessageGuid"))
         if not sender or not (chat_guid or chat_identifier) or not text:

@@ -297,6 +297,7 @@ def _default_persist_guard(is_cancelled: Callable[[], bool]) -> Callable[[], Con
 def run_sign_in(
     *,
     timeout_seconds: float = 15.0,
+    portal_base_url: Optional[str] = None,
     cancelled: Optional[Callable[[], bool]] = None,
     cancel_wins_after_promotion: bool = True,
     persist_guard: Optional[Callable[[], ContextManager[bool]]] = None,
@@ -319,6 +320,8 @@ def run_sign_in(
     transfer the user approved in the browser is irreversible and discarding it would leave the
     connectors moved with no account to reach them.
     *persist_guard* lets a surface make its own cancel check and the save atomic under its own lock.
+    *portal_base_url* pins every network leg to an endpoint the caller already resolved under its
+    profile scope; otherwise the guest's stored endpoint and then the active override are used.
     *scope* is entered only around the two non-network blocks (preconditions/mint, persist/settle),
     never across a ``yield``: ``run_in_executor`` does not carry contextvars, so the scope has to be
     entered inside the generator, on whichever thread is advancing it.
@@ -357,8 +360,11 @@ def run_sign_in(
         yield precondition_state
         return
 
+    assert state is not None
     anon_token = str(state.get("anon_token") or "")
-    portal = (state.get("portal_base_url") or _core._portal_base_url()).rstrip("/")
+    portal = (
+        portal_base_url or state.get("portal_base_url") or _core._portal_base_url()
+    ).rstrip("/")
 
     outcome: Dict[str, Any] = {}
     account_state: Optional[Dict[str, Any]] = None

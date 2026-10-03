@@ -7,7 +7,6 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import asyncio
 import contextlib
 import logging
-import os
 import secrets
 import sys
 import threading
@@ -422,13 +421,11 @@ async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
     (the transfer's consent link and code) and hands that to the UI, then the poller drains the rest.
     Without a free-tier identity it is the plain device-code flow."""
     from hermes_cli import anon_auth
-    from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
+    from hermes_cli.auth import PROVIDER_REGISTRY, _nous_portal_env_override, _request_device_code
     from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
     pconfig = PROVIDER_REGISTRY["nous"]
-    portal_base_url = (
-        os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
-    ).rstrip("/")
     with _profile_scope(_oauth_profile_name(profile)):
+        portal_base_url = (_nous_portal_env_override() or pconfig.portal_base_url).rstrip("/")
         guest = anon_auth.current_nous_state() if anon_auth.guest_enabled() else None
 
     if not anon_auth.is_guest_state(guest):
@@ -464,6 +461,7 @@ async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
 
     gen = anon_auth.run_sign_in(
         timeout_seconds=15.0,
+        portal_base_url=portal_base_url,
         cancelled=_cancelled,
         # A DELETE from this machine means "not here": nothing is persisted and the install
         # re-mints a free tier on next use.
@@ -530,8 +528,11 @@ async def _start_minimax_device_code(profile: Optional[str]) -> Dict[str, Any]:
     from hermes_cli.auth import (
         MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_GLOBAL_BASE, _minimax_pkce_pair, _minimax_request_user_code,
     )
+    from agent.secret_scope import get_secret
+    from hermes_cli.web_server_profiles import _config_profile_scope
     verifier, challenge, state = _minimax_pkce_pair()
-    portal_base_url = (os.getenv("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE).rstrip("/")
+    with _config_profile_scope(_oauth_profile_name(profile)):
+        portal_base_url = (get_secret("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE).rstrip("/")
     device_data = await _httpx_call(lambda client: _minimax_request_user_code(
         client=client, portal_base_url=portal_base_url, client_id=MINIMAX_OAUTH_CLIENT_ID,
         code_challenge=challenge, state=state,

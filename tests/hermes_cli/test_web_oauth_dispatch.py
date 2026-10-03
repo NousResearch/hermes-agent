@@ -21,10 +21,14 @@ The fix:
 
 These tests pin the corrected behavior.
 """
+import base64
 import contextlib
 import json
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -59,6 +63,47 @@ def _fake_nous_device_data():
     }
 
 
+def _oauth_test_jwt(*, label):
+    def segment(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+    payload = {
+        "sub": f"nas_user:{label}",
+        "client_id": "hermes-cli",
+        "account_tier": "free",
+        "scope": "inference:invoke",
+        "exp": int(time.time()) + 3600,
+    }
+    return f"{segment({'alg': 'RS256'})}.{segment(payload)}.sig"
+
+
+def _seed_guest(home, *, portal_base_url=None):
+    state = {
+        "auth_method": "anonymous",
+        "account_tier": "anonymous",
+        "anon_token": f"anon-{home.name}",
+        "client_id": "nas-anonymous",
+    }
+    if portal_base_url is not None:
+        state["portal_base_url"] = portal_base_url
+    (home / "auth.json").write_text(
+        json.dumps({"version": 1, "active_provider": "nous", "providers": {"nous": state}}),
+        encoding="utf-8",
+    )
+
+
+def _wait_for_oauth_session(session_id, timeout=5):
+    deadline = time.monotonic() + timeout
+    session = {}
+    while time.monotonic() < deadline:
+        with _web_server_oauth._oauth_sessions_lock:
+            session = dict(_web_server_oauth._oauth_sessions.get(session_id) or {})
+        if session.get("status") != "pending":
+            return session
+        time.sleep(0.01)
+    raise AssertionError(f"OAuth session did not finish: {session}")
+
+
 def _invoke_scope_refusal():
     request = httpx.Request("POST", "https://portal.nousresearch.com/oauth/device/code")
     response = httpx.Response(
@@ -70,6 +115,280 @@ def _invoke_scope_refusal():
         request=request,
     )
     return httpx.HTTPStatusError("invalid scope", request=request, response=response)
+
+
+@pytest.fixture
+def oauth_portal_pair():
+    """Two real OAuth endpoints: the dashboard launch profile and a named profile."""
+    hits = []
+    servers = []
+    threads = []
+    release_status = threading.Event()
+    release_status.set()
+
+    def start(label):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                raw_body = self.rfile.read(length)
+                form = parse_qs(raw_body.decode("utf-8"))
+                hits.append((label, self.path))
+                if self.path == "/api/oauth/device/code":
+                    payload = {
+                        "device_code": f"{label}-device",
+                        "user_code": f"{label.upper()}-NOUS",
+                        "verification_uri": f"https://{label}.example/verify",
+                        "verification_uri_complete": f"https://{label}.example/verify?code=1",
+                        "expires_in": 600,
+                        "interval": 5,
+                    }
+                elif self.path == "/oauth/code":
+                    payload = {
+                        "user_code": f"{label.upper()}-MINIMAX",
+                        "verification_uri": f"https://{label}.example/verify",
+                        "expired_in": 600,
+                        "interval": 2000,
+                        "state": form["state"][0],
+                    }
+                elif self.path == "/api/anonymous/promotion-intent":
+                    body = json.loads(raw_body)
+                    if body.get("device_code") != f"{label}-device":
+                        self.send_response(400)
+                        self.end_headers()
+                        return
+                    payload = {
+                        "claim_code": f"{label.upper()}-CLAIM",
+                        "claim_url": (
+                            f"http://127.0.0.1:{getattr(self.server, 'server_port')}/claim/{label}"
+                        ),
+                        "expires_in": 600,
+                        "interval": 0,
+                    }
+                elif self.path == "/api/anonymous/promotion-status":
+                    if not release_status.wait(timeout=5):
+                        self.send_response(503)
+                        self.end_headers()
+                        return
+                    payload = {
+                        "status": "completed",
+                        "user_id": f"nas_user:{label}",
+                        "account_email": f"{label}@example.test",
+                    }
+                elif self.path == "/api/oauth/token":
+                    if form.get("device_code") != [f"{label}-device"]:
+                        self.send_response(400)
+                        self.end_headers()
+                        return
+                    payload = {
+                        "access_token": _oauth_test_jwt(label=label),
+                        "refresh_token": f"{label}-refresh",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "scope": "inference:invoke",
+                        "inference_base_url": "https://inference-api.nousresearch.com/v1",
+                    }
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        servers.append(server)
+        threads.append(thread)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    try:
+        yield {
+            "launch": start("launch"),
+            "profile": start("profile"),
+            "hits": hits,
+            "release_status": release_status,
+        }
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
+
+
+def _configure_profile_portals(tmp_path, monkeypatch, portals):
+    """Launch profile A and named profile B, each with conflicting HERMES/NOUS overrides."""
+    from hermes_cli import anon_auth
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    monkeypatch.setenv("HERMES_ANON_API_SECRET", "dashboard-test-secret")
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-auth"))
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", portals["launch"])
+    monkeypatch.setenv("NOUS_PORTAL_BASE_URL", portals["profile"])
+    monkeypatch.setattr(anon_auth, "DEFAULT_NOUS_PORTAL_URL", portals["launch"])
+
+    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    profile_home = tmp_path / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (profile_home / ".env").write_text(
+        "\n".join((
+            f"HERMES_PORTAL_BASE_URL={portals['profile']}",
+            f"NOUS_PORTAL_BASE_URL={portals['launch']}",
+            "",
+        )),
+        encoding="utf-8",
+    )
+    return profile_home
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "override_name", "poller_name", "request_path"),
+    [
+        ("nous", "HERMES_PORTAL_BASE_URL", "_nous_plain_poller", "/api/oauth/device/code"),
+        ("minimax-oauth", "MINIMAX_PORTAL_BASE_URL", "_minimax_poller", "/oauth/code"),
+    ],
+)
+def test_named_profile_oauth_start_uses_its_own_endpoint(
+    tmp_path, monkeypatch, oauth_portal_pair,
+    provider_id, override_name, poller_name, request_path,
+):
+    """A->B->A dashboard starts must contact each profile's own OAuth endpoint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv(override_name, oauth_portal_pair["launch"])
+    if override_name == "HERMES_PORTAL_BASE_URL":
+        monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
+    profile_home = tmp_path / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (profile_home / ".env").write_text(
+        f"{override_name}={oauth_portal_pair['profile']}\n", encoding="utf-8")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch(
+            f"hermes_cli.web_server_oauth.{poller_name}", return_value=None))
+        if provider_id == "nous":
+            stack.enter_context(patch("hermes_cli.anon_auth.guest_enabled", return_value=False))
+        for profile in (None, "coder", None):
+            suffix = f"?profile={profile}" if profile else ""
+            response = client.post(
+                f"/api/providers/oauth/{provider_id}/start{suffix}", headers=HEADERS)
+            assert response.status_code == 200, response.text
+            _web_server_oauth._oauth_sessions.pop(response.json()["session_id"], None)
+
+    assert [label for label, path in oauth_portal_pair["hits"] if path == request_path] == [
+        "launch", "profile", "launch"]
+
+
+@pytest.mark.parametrize("stored_portal", [None, "stale"])
+def test_named_profile_free_tier_promotion_uses_selected_endpoint_not_guest_state(
+    tmp_path, monkeypatch, oauth_portal_pair, stored_portal,
+):
+    """A named-profile promotion ignores a missing/stale endpoint saved on its guest identity."""
+    profile_home = _configure_profile_portals(tmp_path, monkeypatch, oauth_portal_pair)
+    _seed_guest(
+        profile_home,
+        portal_base_url=(oauth_portal_pair["launch"] if stored_portal == "stale" else None),
+    )
+
+    response = client.post(
+        "/api/providers/oauth/nous/start?profile=coder",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    session_id = response.json()["session_id"]
+    try:
+        session = _wait_for_oauth_session(session_id)
+        assert session["status"] == "approved", session
+        assert response.json()["user_code"] == "PROFILE-CLAIM"
+        for path in (
+            "/api/oauth/device/code",
+            "/api/anonymous/promotion-intent",
+            "/api/anonymous/promotion-status",
+            "/api/oauth/token",
+        ):
+            assert [label for label, hit_path in oauth_portal_pair["hits"] if hit_path == path] == [
+                "profile"
+            ]
+        saved = json.loads((profile_home / "auth.json").read_text(encoding="utf-8"))
+        assert saved["providers"]["nous"]["portal_base_url"] == oauth_portal_pair["profile"]
+    finally:
+        _web_server_oauth._oauth_sessions.pop(session_id, None)
+
+
+def test_free_tier_background_flow_captures_scoped_endpoint_across_a_b_a(
+    tmp_path, monkeypatch, oauth_portal_pair,
+):
+    """Device, intent, background status, and token calls stay on A->B->A's selected endpoints.
+
+    Each profile deliberately stores the other profile's stale portal. Both also define the legacy
+    ``NOUS_PORTAL_BASE_URL`` as the other endpoint, proving ``HERMES_PORTAL_BASE_URL`` precedence.
+    The status calls are held until all three start routes return, so the token leg runs only after
+    the ambient dashboard profile has changed twice.
+    """
+    profile_home = _configure_profile_portals(tmp_path, monkeypatch, oauth_portal_pair)
+    _seed_guest(tmp_path, portal_base_url=oauth_portal_pair["profile"])
+    _seed_guest(profile_home, portal_base_url=oauth_portal_pair["launch"])
+    oauth_portal_pair["release_status"].clear()
+
+    responses = []
+    session_ids = []
+    try:
+        for profile in (None, "coder", None):
+            suffix = f"?profile={profile}" if profile else ""
+            response = client.post(
+                f"/api/providers/oauth/nous/start{suffix}",
+                headers=HEADERS,
+            )
+            assert response.status_code == 200, response.text
+            responses.append(response.json())
+            session_ids.append(response.json()["session_id"])
+
+        deadline = time.monotonic() + 5
+        status_calls = []
+        while time.monotonic() < deadline:
+            status_calls = [
+                label for label, path in oauth_portal_pair["hits"]
+                if path == "/api/anonymous/promotion-status"
+            ]
+            if len(status_calls) == 3:
+                break
+            time.sleep(0.01)
+        assert len(status_calls) == 3
+    finally:
+        oauth_portal_pair["release_status"].set()
+
+    try:
+        sessions = [_wait_for_oauth_session(session_id) for session_id in session_ids]
+        assert [session["status"] for session in sessions] == ["approved"] * 3
+        assert [body["user_code"] for body in responses] == [
+            "LAUNCH-CLAIM", "PROFILE-CLAIM", "LAUNCH-CLAIM"
+        ]
+        for path in ("/api/oauth/device/code", "/api/anonymous/promotion-intent"):
+            assert [label for label, hit_path in oauth_portal_pair["hits"] if hit_path == path] == [
+                "launch", "profile", "launch"
+            ]
+        for path in ("/api/anonymous/promotion-status", "/api/oauth/token"):
+            labels = [label for label, hit_path in oauth_portal_pair["hits"] if hit_path == path]
+            assert labels.count("launch") == 2
+            assert labels.count("profile") == 1
+
+        default_saved = json.loads((tmp_path / "auth.json").read_text(encoding="utf-8"))
+        profile_saved = json.loads((profile_home / "auth.json").read_text(encoding="utf-8"))
+        assert default_saved["providers"]["nous"]["portal_base_url"] == oauth_portal_pair["launch"]
+        assert profile_saved["providers"]["nous"]["portal_base_url"] == oauth_portal_pair["profile"]
+    finally:
+        for session_id in session_ids:
+            _web_server_oauth._oauth_sessions.pop(session_id, None)
 
 
 def test_minimax_login_does_not_launch_anthropic_flow():

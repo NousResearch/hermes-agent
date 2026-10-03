@@ -57,7 +57,7 @@ export function SystemActionsProvider({
               ? shared
                 ? sharedGatewayRestartedMessage(shared.length)
                 : t.status.actionFinished
-              : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
+              : `${resp.receipt?.outcome ?? t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
           });
           return;
         }

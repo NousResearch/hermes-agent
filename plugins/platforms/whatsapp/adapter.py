@@ -541,7 +541,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                            "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
             bridge_kwargs = dict(stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
             try:
-                self._bridge_process = subprocess.Popen(bridge_args, **bridge_kwargs)
+                self._bridge_process = subprocess.Popen(bridge_args, stdin=subprocess.DEVNULL, **bridge_kwargs)
             except PermissionError as exc:
                 breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
                 flags = bridge_kwargs.get("creationflags", 0)
@@ -551,7 +551,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 # this Gateway, retaining its hidden console and process group.
                 logger.warning("[%s] Retrying bridge without Windows job breakaway after access denial", self.name)
                 bridge_kwargs["creationflags"] = flags & ~breakaway
-                self._bridge_process = subprocess.Popen(bridge_args, **bridge_kwargs)
+                self._bridge_process = subprocess.Popen(bridge_args, stdin=subprocess.DEVNULL, **bridge_kwargs)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

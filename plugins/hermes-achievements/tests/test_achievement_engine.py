@@ -174,6 +174,26 @@ class AchievementEngineTests(unittest.TestCase):
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
 
+    def test_analyze_messages_handles_serialized_tool_calls_json_and_dict(self):
+        # Stringified JSON tool_calls (from raw DB rows or legacy formats)
+        messages_json = [
+            {"role": "assistant", "tool_calls": '[{"function": {"name": "memory"}}]'},
+            {"role": "tool", "tool_name": "memory", "content": "ok"},
+        ]
+        stats = plugin_api.analyze_messages("s1", "Memory test", messages_json)
+        self.assertEqual(stats["tool_call_count"], 1)
+        self.assertIn("memory", stats["tool_names"])
+        self.assertEqual(stats["memory_events"], 1)
+
+        # Single-dict tool_calls
+        messages_dict = [
+            {"role": "assistant", "tool_calls": {"function": {"name": "terminal"}}},
+            {"role": "tool", "tool_name": "terminal", "content": "ok"},
+        ]
+        stats2 = plugin_api.analyze_messages("s2", "Dict test", messages_dict)
+        self.assertEqual(stats2["tool_call_count"], 1)
+        self.assertIn("terminal", stats2["tool_names"])
+
     def test_dashboard_card_hover_does_not_move_click_target(self):
         style_css = (
             Path(__file__).resolve().parents[1]
@@ -219,3 +239,31 @@ class CompactionScanTests(unittest.TestCase):
 
         self.assertEqual(scan["aggregate"]["max_distinct_tools_in_session"], 20)
         self.assertEqual(scan["scan_meta"]["sessions_reused"], 0)
+
+    def test_scan_stats_include_inactive_messages_history(self):
+        """#127626: scan_sessions must include inactive rows (active=0) in SessionDB
+        so historical tool calls (e.g. memory_events) are not undercounted."""
+        import hermes_state
+        from hermes_state import SessionDB
+
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
+            db = SessionDB(Path(tmp) / "state.db")
+            try:
+                db.create_session("s1", "cli", model="m")
+                # Deactivated turn with memory tool
+                db.append_message("s1", "assistant", tool_calls=[{"function": {"name": "memory", "arguments": "{}"}}])
+                db.append_message("s1", "tool", content="ok", tool_name="memory")
+                db._write_sql("UPDATE messages SET active = 0 WHERE session_id = 's1'")
+
+                # Active turn with terminal tool
+                db.append_message("s1", "assistant", tool_calls=[{"function": {"name": "terminal", "arguments": "{}"}}])
+                db.append_message("s1", "tool", content="ok", tool_name="terminal")
+            finally:
+                db.close()
+
+            with patch.object(hermes_state, "SessionDB", lambda read_only=True: SessionDB(Path(tmp) / "state.db", read_only=read_only)):
+                scan = plugin_api.scan_sessions()
+
+        self.assertEqual(scan["aggregate"]["total_tool_calls"], 2)
+        self.assertGreaterEqual(scan["aggregate"]["memory_events"], 1)
+        self.assertGreaterEqual(scan["aggregate"]["total_terminal_calls"], 1)

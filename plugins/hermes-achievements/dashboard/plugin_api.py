@@ -305,7 +305,17 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             # keep it for distinct-tool detection but don't double-count it as a new call.
             if msg.get("role") != "tool":
                 tool_sequence.append(name)
-        for call in msg.get("tool_calls") or []:
+        raw_calls = msg.get("tool_calls") or []
+        if isinstance(raw_calls, str):
+            try:
+                raw_calls = json.loads(raw_calls)
+            except Exception:
+                raw_calls = []
+        if isinstance(raw_calls, dict):
+            raw_calls = [raw_calls]
+        elif not isinstance(raw_calls, list):
+            raw_calls = []
+        for call in raw_calls:
             name = _tool_name_from_call(call)
             if name:
                 tool_names.add(name)
@@ -313,8 +323,8 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
-        if msg.get("tool_calls"):
-            blob += " " + json.dumps(msg.get("tool_calls"), default=str)
+        if raw_calls:
+            blob += " " + json.dumps(raw_calls, default=str)
         files_touched.update(FILE_RE.findall(blob))
 
     full_text = "\n".join(full_text_parts)
@@ -586,10 +596,11 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                 stats = dict(cached["stats"])
                 reused += 1
             else:
-                # Compaction-archived display history too (deduped, no Undo/Rewind rows): the active
-                # window shrinks after compaction, and stats read from it were never monotonic
-                # (#112273). Rewound rows stay out — that work was undone.
-                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid, include_compacted=True))
+                # Inactive and compaction-archived history: lifetime metrics and tool totals
+                # require the entire session history (#112273, #127626). include_compacted=True
+                # alone used the display-page projection which dropped inactive rows and grouped
+                # away intermediate tool calls.
+                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid, include_inactive=True))
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):

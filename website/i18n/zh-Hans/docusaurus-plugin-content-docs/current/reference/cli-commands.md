@@ -1001,6 +1001,8 @@ hermes mcp <subcommand>
 | `configure <name>`（别名：`config`） | 切换服务器的工具选择。 |
 | `login <name>` | 强制重新认证基于 OAuth 的 MCP 服务器。 |
 
+退出码即结果，便于脚本判断：操作完成时为 `0`；未完成时为 `1`（连接或登录失败、未保存任何内容，或提示被拒绝；由包管理器管理的安装会直接拒绝 `add`、`remove`、`configure` 和 `install`）；指定的服务器不在配置中时为 `3`。
+
 参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#将-hermes-作为-mcp-服务器运行)。
 
 ## `hermes plugins`

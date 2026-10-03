@@ -3,6 +3,7 @@ import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl } from '../lib/externalLink.js'
+import { displayMathToUnicode } from '../lib/mathDisplay.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -859,7 +860,15 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           start('code')
           nodes.push(
             <Box flexDirection="column" key={key} paddingLeft={2}>
-              {inner ? <Text color={t.color.accent}>{renderMath(texToUnicode(inner))}</Text> : null}
+              {inner
+                ? displayMathToUnicode(inner)
+                    .split('\n')
+                    .map((l, j) => (
+                      <Text color={t.color.accent} key={j}>
+                        {renderMath(l)}
+                      </Text>
+                    ))
+                : null}
             </Box>
           )
           i++
@@ -905,11 +914,13 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         start('code')
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            {block.map((l, j) => (
-              <Text color={t.color.accent} key={j}>
-                {renderMath(texToUnicode(l))}
-              </Text>
-            ))}
+            {displayMathToUnicode(block.join('\n'))
+              .split('\n')
+              .map((l, j) => (
+                <Text color={t.color.accent} key={j}>
+                  {renderMath(l)}
+                </Text>
+              ))}
           </Box>
         )
         i = closeIdx + 1

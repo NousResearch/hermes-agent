@@ -67,6 +67,19 @@ const SYMBOLS: Record<string, string> = {
   '\\Psi': 'Ψ',
   '\\Omega': 'Ω',
 
+  // Physics and standalone mathematical symbols
+  '\\hbar': 'ℏ',
+  '\\hslash': 'ℏ',
+  '\\ell': 'ℓ',
+  '\\imath': 'ı',
+  '\\jmath': 'ȷ',
+  '\\Re': 'ℜ',
+  '\\Im': 'ℑ',
+  '\\aleph': 'ℵ',
+  '\\wp': '℘',
+  '\\mho': '℧',
+  '\\prime': '′',
+
   // Big operators
   '\\sum': '∑',
   '\\prod': '∏',
@@ -769,6 +782,11 @@ export function texToUnicode(input: string): string {
   // would wrongly block them.
   s = s.replace(SYMBOL_PUNCT_RE, m => SYMBOLS[m] ?? m)
   s = s.replace(SYMBOL_LETTER_RE, m => SYMBOLS[m] ?? m)
+
+  // Prime glyphs already sit at derivative height; don't retain a second
+  // superscript marker. Mixed script bodies keep the normal fallback below.
+  s = s.replace(/\^\s*\{\s*(′+)\s*\}/g, '$1')
+  s = s.replace(/\^′/g, '′')
 
   // Bare `^c` / `_c` handles ONLY alphanumerics and `+`/`-`/`=`. Parens
   // are intentionally excluded because the braced-fallback above can

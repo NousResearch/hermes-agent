@@ -86,6 +86,10 @@ id within a ledger, so ids stay stable across many search/extract rounds.
 
 ## Procedure
 
+Before changing citation instructions or ledger mechanics, read
+[the grounding rationale](references/grounding-rationale.md) with `read_file`
+to preserve retrieval-time ids, cite-while-drafting, and mechanically rendered URLs.
+
 ① **Reset the ledger** at the start of a task that will produce a grounded
 answer or document. Skip the reset when continuing work whose ids are already
 in a draft — reusing the ledger keeps the numbering stable.

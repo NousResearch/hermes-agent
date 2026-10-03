@@ -1163,6 +1163,21 @@ skills:
   # external_dirs:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
+  #   - path: /srv/fleet-skills          # a mapping narrows what one dir contributes
+  #     include: ["devops/*"]            # (globs; "/" matches the skill's dir under the path)
+  #     exclude: ["devops/legacy/*"]     # exclude wins; no include = everything
+
+  # Allowlists: only these skills are offered or loadable (the prompt index,
+  # skill_view, slash commands, gateway menus). Absent = every installed skill.
+  # Names, or globs where "category/*" matches a skill folder. disabled /
+  # platform_disabled still win; hermes-agent is always available. Skills added
+  # later (updates, hub installs) stay hidden until listed. Takes effect from
+  # the next session.
+  # enabled:
+  #   - "github/*"
+  #   - arxiv
+  # platform_enabled:
+  #   telegram: [arxiv]                  # a skill must pass every list that is set
 
 # =============================================================================
 # Agent Behavior

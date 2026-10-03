@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import fnmatch
 import logging
 import os
 import re
@@ -228,7 +229,7 @@ def skill_matches_apps(frontmatter: Dict[str, Any]) -> bool:
     return True
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[tuple, Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -236,34 +237,37 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
-    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> tuple:
+    """Identity of config.yaml (None while absent) plus the managed config.yaml overlaid on it,
+    so a user or an administrator edit each invalidates what is cached on it."""
+    from hermes_cli.managed_scope import managed_config_signature
+    from utils import file_signature
     try:
-        from utils import file_signature
-        return (str(config_path), *file_signature(config_path.stat()))
+        user_sig = tuple(file_signature(config_path.stat()))
     except OSError:
-        return None
+        user_sig = None
+    return (str(config_path), user_sig, managed_config_signature())
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with an mtime+size keyed cache (no hermes_cli.config import)."""
+    """config.yaml with the administrator's managed scope on top — the overlay ``load_config()``
+    applies, so a pinned ``skills.*`` value holds here too — cached on both files' signatures."""
+    from hermes_cli.managed_scope import apply_managed_overlay
     config_path = get_config_path()
-    if not config_path.exists():
-        return {}
     cache_key = _config_cache_key(config_path)
-    cached = _RAW_CONFIG_CACHE.get(cache_key) if cache_key is not None else None
+    cached = _RAW_CONFIG_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    if cache_key is not None:
-        _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
+    parsed: Any = {}
+    if config_path.exists():
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
+        except Exception as e:
+            logger.debug("Could not read skill config %s: %s", config_path, e)
+            return apply_managed_overlay({})
+    parsed = apply_managed_overlay(parsed if isinstance(parsed, dict) else {})
+    _RAW_CONFIG_CACHE.clear()
+    _RAW_CONFIG_CACHE[cache_key] = parsed
     return parsed
 
 
@@ -295,19 +299,175 @@ def _home_relative(p: Path) -> Path:
 ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
 
 
+def _resolve_skill_platform(platform: str | None) -> str | None:
+    """*platform*, else ``HERMES_PLATFORM`` / the session's ``HERMES_SESSION_PLATFORM``."""
+    if platform:
+        return platform
+    from gateway.session_context import get_session_env
+    return os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM") or None
+
+
+def _platform_entry(skills_cfg: Dict[str, Any], key: str, platform: str | None) -> Any:
+    """``skills.<key>.<platform>`` (``platform_disabled`` / ``platform_enabled``); None when absent."""
+    per_platform = skills_cfg.get(key) if platform else None
+    return per_platform.get(platform) if isinstance(per_platform, dict) else None
+
+
+def disabled_skill_names_from(skills_cfg: Any, platform: str | None = None) -> Set[str]:
+    """``skills.disabled`` ∪ ``skills.platform_disabled[platform]`` from a ``skills:`` mapping, in every
+    shape config.yaml holds (a list, a bare name, the JSON-list string ``hermes config set`` writes),
+    minus ESSENTIAL_SKILLS. The one parser — config UIs holding a loaded config call it too."""
+    if not isinstance(skills_cfg, dict):
+        return set()
+    disabled = _normalize_string_set(skills_cfg.get("disabled"))
+    disabled |= _normalize_string_set(_platform_entry(skills_cfg, "platform_disabled", platform))
+    return disabled - ESSENTIAL_SKILLS
+
+
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Disabled skill names from config.yaml: global list ∪ platform list
-    (*platform* defaults to ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM``)."""
+    (*platform* defaults to ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM``).
+    The denylist only: whether a skill is offered or loadable is :func:`skill_visibility`'s answer."""
     skills_cfg = _skills_cfg()
     if skills_cfg is None:
         return set()
-    from gateway.session_context import get_session_env
-    resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
-    disabled = _normalize_string_set(skills_cfg.get("disabled"))
-    platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
-    if platform_disabled is not None:
-        disabled |= _normalize_string_set(platform_disabled)
-    return disabled - ESSENTIAL_SKILLS
+    return disabled_skill_names_from(skills_cfg, _resolve_skill_platform(platform))
+
+
+def _allowlist(value: Any) -> Optional[Tuple[str, ...]]:
+    """``skills.enabled``-style patterns; None when the allowlist is off (absent, null, blank, or not
+    a list/name). An explicit empty list is an allowlist that admits nothing."""
+    if value is None or not isinstance(value, (str, list, tuple)) or (isinstance(value, str) and not value.strip()):
+        return None
+    return tuple(sorted({p.replace("\\", "/") for p in _normalize_string_set(value)}))
+
+
+def _skill_pattern_hit(pattern: str, names: Tuple[str, ...], rel_dir: Optional[str]) -> bool:
+    """A pattern with ``/`` matches the skill's directory relative to its skills root (``github/*`` —
+    ``*`` crosses ``/``, so nested categories match too); one without matches the skill's name."""
+    if "/" in pattern:
+        return rel_dir is not None and fnmatch.fnmatchcase(rel_dir, pattern)
+    return any(n and fnmatch.fnmatchcase(n, pattern) for n in names)
+
+
+class SkillVisibility:
+    """Whether config lets a skill be offered or loaded — the ONE check behind the prompt index,
+    ``skills_list``, ``skill_view``, slash commands, gateway menus and the ``hermes skills`` UI, so
+    they can never disagree. In order: ESSENTIAL_SKILLS are always visible; ``skills.disabled`` /
+    ``platform_disabled`` hide; an ``external_dirs`` entry's ``include``/``exclude`` narrows what that
+    directory contributes; ``skills.enabled`` and ``platform_enabled[platform]`` are allowlists, and a
+    skill must pass each one that is set. Built from config per call — nothing here outlives the
+    call, so an edit takes effect at the next prompt build (a new session), never mid-conversation."""
+
+    def __init__(self, disabled=(), allowlists=(), dir_filters=None, roots=()):
+        self.disabled = frozenset(disabled)
+        self.allowlists: Tuple[Tuple[str, ...], ...] = tuple(allowlists)
+        self.dir_filters: Dict[Path, Tuple[Tuple[str, ...], Tuple[str, ...]]] = dict(dir_filters or {})
+        # (as configured, resolved) skill roots, most specific first.
+        self._roots = sorted({(Path(r), _resolve_for_skill_ownership(r)) for r in roots},
+                             key=lambda pair: -len(pair[1].parts))
+        self._by_name: Optional[Dict[str, List[Path]]] = None
+
+    @property
+    def cache_key(self) -> tuple:
+        return (tuple(sorted(self.disabled)), self.allowlists,
+                tuple(sorted((str(root), flt) for root, flt in self.dir_filters.items())))
+
+    def hides(self, name: str, skill_md: Optional[Path] = None) -> bool:
+        return self.hidden_reason(name, skill_md) is not None
+
+    def hidden_reason(self, name: str, skill_md: Optional[Path] = None) -> Optional[str]:
+        """None when visible, else ``"disabled"`` / ``"filtered"`` (external_dirs include/exclude) /
+        ``"not_enabled"`` (outside an allowlist). *skill_md* locates the skill; without it the name is
+        looked up across the skill roots, and the skill is visible when any copy of it is."""
+        alias = skill_md.parent.name if skill_md is not None else ""
+        if name in ESSENTIAL_SKILLS or alias in ESSENTIAL_SKILLS:
+            return None
+        if name in self.disabled or alias in self.disabled:
+            return "disabled"
+        if not self.allowlists and not self.dir_filters:
+            return None
+        if skill_md is not None:
+            return self._path_reason(name, skill_md)
+        reasons = [self._path_reason(name, copy) for copy in self._locate(name)] or [self._path_reason(name, None)]
+        return None if None in reasons else reasons[0]
+
+    def dir_filtered(self, skill_md: Path, name: str = "") -> bool:
+        """Whether its ``external_dirs`` entry's include/exclude drops this copy — it is then not in
+        that directory as far as Hermes is concerned (no index entry, no name collision)."""
+        if not self.dir_filters:
+            return False
+        root, rel_dir = self._owner(skill_md)
+        include, exclude = self.dir_filters.get(root, ((), ()))
+        names = (name, Path(skill_md).parent.name)
+        return any(_skill_pattern_hit(p, names, rel_dir) for p in exclude) or bool(
+            include and not any(_skill_pattern_hit(p, names, rel_dir) for p in include))
+
+    def _path_reason(self, name: str, skill_md: Optional[Path]) -> Optional[str]:
+        if skill_md is not None and self.dir_filtered(skill_md, name):
+            return "filtered"
+        rel_dir = self._owner(skill_md)[1] if skill_md is not None else None
+        names = (name, skill_md.parent.name if skill_md is not None else "")
+        for allowed in self.allowlists:
+            if not any(_skill_pattern_hit(p, names, rel_dir) for p in allowed):
+                return "not_enabled"
+        return None
+
+    def _owner(self, skill_md: Path) -> Tuple[Optional[Path], Optional[str]]:
+        """(resolved root, skill dir relative to it) for the most specific root holding *skill_md*.
+        Lexical first so a symlinked skill dir still belongs to the root it is linked into."""
+        skill_dir = Path(skill_md).parent
+        for candidate in (skill_dir, _resolve_for_skill_ownership(skill_dir)):
+            for raw, resolved in self._roots:
+                for root in (raw, resolved):
+                    if candidate.is_relative_to(root):
+                        return resolved, candidate.relative_to(root).as_posix()
+        return None, None
+
+    def _locate(self, name: str) -> List[Path]:
+        """Every SKILL.md whose frontmatter or directory name is *name* (one lazy scan per instance)."""
+        if self._by_name is None:
+            self._by_name = {}
+            for _raw, root in self._roots:
+                for skill_md in iter_skill_index_files(root, "SKILL.md"):
+                    try:
+                        fm_name = str(parse_frontmatter(skill_md.read_text(encoding="utf-8-sig")[:4000])[0]
+                                      .get("name") or "")
+                    except (OSError, UnicodeDecodeError):
+                        fm_name = ""
+                    for key in {fm_name, skill_md.parent.name} - {""}:
+                        self._by_name.setdefault(key, []).append(skill_md)
+        return self._by_name.get(name, [])
+
+
+def _visibility_roots() -> List[Path]:
+    roots = get_all_skills_dirs()
+    try:
+        roots.extend(get_project_skills_dirs())
+    except Exception as e:  # cwd/trust resolution is best-effort for visibility
+        logger.debug("Could not resolve project skill dirs for visibility: %s", e)
+    return roots
+
+
+def _visibility(skills_cfg: Any, platform: str | None, disabled: Set[str]) -> SkillVisibility:
+    skills_cfg = skills_cfg if isinstance(skills_cfg, dict) else {}
+    allowlists = [a for a in (_allowlist(skills_cfg.get("enabled")),
+                              _allowlist(_platform_entry(skills_cfg, "platform_enabled", platform))) if a is not None]
+    dir_filters = get_external_skill_filters()
+    # Roots resolve NOW, in the caller's profile scope; only rules that match paths need them.
+    return SkillVisibility(disabled=disabled, allowlists=allowlists, dir_filters=dir_filters,
+                           roots=_visibility_roots() if allowlists or dir_filters else ())
+
+
+def skill_visibility(platform: str | None = None) -> SkillVisibility:
+    """The shared visibility check for *platform* (defaults like :func:`get_disabled_skill_names`)."""
+    return _visibility(_skills_cfg(), _resolve_skill_platform(platform), get_disabled_skill_names(platform))
+
+
+def skill_visibility_from(skills_cfg: Any, platform: str | None = None) -> SkillVisibility:
+    """The same check for a ``skills:`` mapping a config UI already holds, scoped to exactly *platform*
+    (None = the global rules only, never the environment's platform)."""
+    return _visibility(skills_cfg, platform, disabled_skill_names_from(skills_cfg, platform))
 
 
 def parse_config_string_list(value) -> List[str]:
@@ -334,9 +494,10 @@ def _normalize_string_set(values) -> Set[str]:
     return {name.strip() for name in parse_config_string_list(values) if name.strip()}
 
 
-# config identity -> resolved external dirs. Called once per skill during
-# banner / tool-registry scans; re-resolving each time dominated cold-start.
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], List[Path]] = {}
+# config identity -> (resolved external dirs, their include/exclude filters). Called once per skill
+# during banner / tool-registry scans; re-resolving each time dominated cold-start.
+_ExternalFilters = Dict[Path, Tuple[Tuple[str, ...], Tuple[str, ...]]]
+_EXTERNAL_DIRS_CACHE: Dict[tuple, Tuple[List[Path], _ExternalFilters]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -354,33 +515,72 @@ def _config_str_list(raw) -> List[str]:
     return [e for e in (str(entry).strip() for entry in raw) if e]
 
 
-def get_external_skills_dirs() -> List[Path]:
-    """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
-    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
-    config_path = get_config_path()
-    if not config_path.exists():
+def _external_dir_entries(raw) -> List[Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
+    """``skills.external_dirs`` entries as ``(path, include, exclude)``: each entry is a path string or
+    a mapping ``{path, include, exclude}`` (glob patterns, see :class:`SkillVisibility`)."""
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    if not isinstance(raw, list):
         return []
-    full_key = _config_cache_key(config_path)
-    cache_key = full_key
-    cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
+    entries = []
+    for item in raw:
+        if isinstance(item, dict):
+            path = str(item.get("path") or "").strip()
+            include, exclude = (tuple(sorted(p.replace("\\", "/") for p in _normalize_string_set(item.get(key))))
+                                for key in ("include", "exclude"))
+        else:
+            path, include, exclude = str(item).strip(), (), ()
+        if path:
+            entries.append((path, include, exclude))
+    return entries
+
+
+def _resolve_external_dirs() -> Tuple[List[Path], _ExternalFilters]:
+    cache_key = _config_cache_key(get_config_path())
+    cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
     if cached is not None:
-        return list(cached)  # copy so callers can't mutate the cache
+        return cached
     skills_cfg = _skills_cfg()
     if skills_cfg is None:
-        return []
+        return [], {}
     local_skills = get_skills_dir().resolve()
     result: List[Path] = []
-    for entry in _config_str_list(skills_cfg.get("external_dirs")):
+    filters: _ExternalFilters = {}
+    for entry, include, exclude in _external_dir_entries(skills_cfg.get("external_dirs")):
         p = _home_relative(_expand_path(entry)).resolve()
         if p == local_skills or p in result:
             continue
         if p.is_dir():
             result.append(p)
+            if include or exclude:
+                filters[p] = (include, exclude)
+            # A skill's path under its root never starts or ends with "/", so such a pattern can never
+            # match — and a dead exclude silently stops excluding: say so.
+            for pattern in include + exclude:
+                if pattern.startswith("/") or pattern.endswith("/"):
+                    logger.warning("skills.external_dirs pattern %r for %s never matches: a leading or "
+                                   "trailing '/' is not allowed (a category is 'name/*')", pattern, entry)
+        elif any(ch in entry for ch in "*?["):
+            # A glob here is silently dead (only literal directories are scanned) and the index just
+            # stays over-broad: say so. A plain missing path stays quiet — optional shared dirs
+            # absent on some machines are a documented use.
+            logger.warning("skills.external_dirs entry %r is a glob, which is not expanded — skipping it; "
+                           "narrow a directory with its include/exclude patterns instead", entry)
         else:
             logger.debug("External skills dir does not exist, skipping: %s", p)
-    if cache_key is not None:
-        _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-    return result
+    _EXTERNAL_DIRS_CACHE[cache_key] = (result, filters)
+    return result, filters
+
+
+def get_external_skills_dirs() -> List[Path]:
+    """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
+    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
+    return list(_resolve_external_dirs()[0])  # copy so callers can't mutate the cache
+
+
+def get_external_skill_filters() -> _ExternalFilters:
+    """``{resolved external dir: (include, exclude)}`` for the ``external_dirs`` entries that set one."""
+    return dict(_resolve_external_dirs()[1])
 
 
 def get_skill_create_dir() -> Optional[Path]:
@@ -690,7 +890,7 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
     """Config var declarations across all enabled, platform-compatible skills,
     deduplicated by key; each dict carries a ``skill`` attribution key."""
     all_vars: Dict[str, Dict[str, Any]] = {}
-    disabled = get_disabled_skill_names()
+    visibility = skill_visibility()
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.is_dir():
             continue
@@ -700,7 +900,7 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             except Exception:
                 continue
             skill_name = str(frontmatter.get("name") or skill_file.parent.name)
-            if skill_name in disabled or not skill_matches_platform(frontmatter):
+            if visibility.hides(skill_name, skill_file) or not skill_matches_platform(frontmatter):
                 continue
             for var in extract_skill_config_vars(frontmatter):
                 if var["key"] not in all_vars:

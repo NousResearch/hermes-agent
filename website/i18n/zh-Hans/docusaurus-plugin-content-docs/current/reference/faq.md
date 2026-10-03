@@ -707,6 +707,16 @@ skills:
     telegram: [skill-a, skill-b]  # 仅在 telegram 上禁用
 ```
 
+禁用列表会随新 skills 的到来而重新变长：之后安装的每个 skill 也会进入菜单。要把 Telegram 固定为一个集合，请改用允许列表，不在列表上的 skill（包括之后新增的）都保持隐藏：
+
+```yaml
+skills:
+  platform_enabled:
+    telegram: [skill-c, "github/*"]   # telegram 上只有这些（名称，或 category/* 通配）
+```
+
+`disabled` / `platform_disabled` 仍然优先于它。参见[选择 profile 可见的 skills](../user-guide/features/skills.md#choosing-which-skills-a-profile-sees)。
+
 更改后，**重启网关**（`hermes gateway restart` 或终止并重新启动）。Telegram bot 命令菜单在启动时重建。
 
 :::tip

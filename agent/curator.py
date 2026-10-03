@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import get_disabled_skill_names
+from agent.skill_utils import skill_visibility
 from tools import skill_usage
 from utils import atomic_json_write
 
@@ -839,15 +839,15 @@ def _render_candidate_list() -> str:
     writes that ``_background_review_write_guard`` unconditionally
     refuses, burning tool calls until the loop guard aborts the run.
 
-    Skills in ``skills.disabled`` (global or platform list) are excluded for
-    the same reason on the read side: ``skill_view`` — the pass's only read
-    path — refuses them, so the fork retries the same refused read until
+    Skills config hides (``skills.disabled``, the ``skills.enabled`` allowlist)
+    are excluded for the same reason on the read side: ``skill_view`` — the
+    pass's only read path — refuses them, so the fork retries the same refused read until
     the same-tool-failure halt ends the run with zero findings.
     """
-    disabled = get_disabled_skill_names()
+    visibility = skill_visibility()
     rows = [
         r for r in skill_usage.curated_report()
-        if not skill_usage.is_bundled(r["name"]) and r["name"] not in disabled
+        if not skill_usage.is_bundled(r["name"]) and not visibility.hides(r["name"])
     ]
     if not rows:
         return "No agent-created skills to review."

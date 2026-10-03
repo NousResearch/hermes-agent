@@ -821,14 +821,14 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
-    from agent.skill_utils import get_disabled_skill_names
+    from agent.skill_utils import skill_visibility
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
     all_skills = _find_all_skills(skip_disabled=True)  # include disabled ones to annotate status
-    disabled_names = get_disabled_skill_names()
+    visibility = skill_visibility()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
                    title="Installed Skills" + (" (enabled only)" if enabled_only else ""))
@@ -843,7 +843,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
             trust = hub_entry.get("trust_level", "community")
         else:
             source_type = source_display = trust = "builtin" if name in builtin_names else "local"
-        is_enabled = name not in disabled_names
+        is_enabled = not visibility.hides(name)
         if source_filter not in ("all", source_type) or (enabled_only and not is_enabled):
             continue
         counts[source_type] += 1

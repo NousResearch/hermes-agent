@@ -393,6 +393,33 @@ skills:
 The dashboard's Browse-hub scan button returns the same advisory data in
 its response (`tier1` field) alongside the built-in scanner's verdict.
 
+## Choosing Which Skills a Profile Sees (`skills.enabled`) {#choosing-which-skills-a-profile-sees}
+
+Every installed skill is available unless you turn it off. `hermes skills` writes those choices as denylists (`skills.disabled`, and `skills.platform_disabled.<platform>` for one platform). A denylist cannot keep a curated profile small, though: every skill that arrives later — a new bundled skill after `hermes update`, a hub install, a skill added to a shared external directory — shows up until you deny it too. An allowlist turns that around:
+
+```yaml
+skills:
+  enabled:                  # only these skills are offered or loadable
+    - github/*              # a whole category: the skill's folder under its skills directory
+    - arxiv                 # one skill, by name
+    - "research-*"          # a name glob
+  platform_enabled:         # optional: narrows one platform further
+    telegram: [arxiv]
+  disabled: [github-auth]   # still wins over enabled
+```
+
+- **Absent means off.** Without `enabled` (or with `enabled: null`) nothing changes. An empty list admits nothing but `hermes-agent`.
+- **Patterns.** An entry with `/` matches the skill's directory relative to the skills directory it lives in (`github/*`, `mlops/training/*`). `*` also crosses `/`, so a category pattern covers nested skills. An entry without `/` matches the skill's name (its frontmatter `name` or its folder name). Matching is case-sensitive on every OS.
+- **Precedence.** `disabled` and `platform_disabled` win over the allowlists. When `enabled` and `platform_enabled.<platform>` are both set, a skill must be in both. `hermes-agent`, Hermes's own manual, is always available.
+- **Every surface agrees.** One check decides for the system-prompt skill index, `skills_list`, `skill_view`, `/skill` commands and bundles, the Telegram and Discord command menus, `hermes skills` / `hermes skills list`, the dashboard and the desktop profile editor. A skill outside the allowlist is not just unlisted: `skill_view` refuses it, and its error names `skills.enabled`.
+- **Skills created later need adding too.** A skill the agent writes with `skill_manage` is saved, but stays hidden until its name or category is in `enabled`.
+- **Toggles don't pollute the denylist.** `hermes skills`, the dashboard and the desktop editor show allowlist-hidden skills as off and never write them into `skills.disabled`. Turning one on there tells you to edit `skills.enabled` instead.
+- **Next session, not mid-conversation.** The skill index is part of the cached system prompt, so a running conversation keeps its index; the change applies from the next session. Bot Chats, which never end, refresh once, as they do after a `skills.disabled` edit. Restart the gateway to rebuild the Telegram/Discord command menus.
+- **API server sessions** run as the `api_server` platform, so `platform_enabled.api_server` scopes every API conversation to a fixed set.
+- **Administrators can pin these lists.** Any of `skills.enabled`, `disabled`, `platform_enabled` or `platform_disabled` set in the [managed scope](../managed-scope.md) (`/etc/hermes/config.yaml`) wins over the user's value on every surface above. `hermes skills`, the dashboard and the desktop editor show the skills it decides as locked and never write them.
+
+`hermes config set skills.enabled '["github/*", "arxiv"]'` stores the list form.
+
 ## External Skill Directories
 
 If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
@@ -415,7 +442,26 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
-- **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
+- **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine. Globs such as `~/.agents/skills/*` are not expanded; Hermes skips them with a warning that names the entry. Narrow a directory with `include`/`exclude` instead (below).
+
+### Narrowing what a directory contributes
+
+When several profiles share one large skills directory, give its entry a mapping instead of a plain path:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills              # everything in it
+    - path: /srv/fleet-skills       # only part of it
+      include: ["devops/*", "research/arxiv"]
+      exclude: ["devops/legacy/*"]
+```
+
+- Patterns work like `skills.enabled` (above): with `/` they match the skill's directory relative to this entry's `path`, and without `/` they match the skill's name.
+- A path pattern is anchored at the entry's `path` and matches whole directories: a bare category name such as `github` matches no skill (write `github/*`), `workflow/deep` does not cover `workflow/deep/tool`, and `vendor/*` does not match `workflow/vendor/tool`. A pattern with a leading or trailing `/` never matches, and Hermes logs a warning for one.
+- `exclude` wins. Without `include`, everything not excluded stays.
+- A filtered skill is hidden everywhere, as if it were not in that directory. A same-named skill in another directory is unaffected.
+- These patterns never touch the profile's own `skills/` directory; use `skills.enabled` for that.
 
 ### Example
 

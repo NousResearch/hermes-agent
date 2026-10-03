@@ -256,6 +256,8 @@ hermes skills
 
 这会打开一个交互式 TUI，你可以按平台（CLI、Telegram、Discord 等）启用或禁用 skills。当你希望某些 skills 仅在特定场景下可用时非常有用——例如，在 Telegram 上禁用开发类 skills。
 
+对于精简的 profile，列出它*应该*拥有的 skills，而不是所有不该有的。`skills.enabled`（以及 `skills.platform_enabled.<platform>`）是允许列表：之后新增的 skills——来自 `hermes update`、hub 安装或共享目录——在你加入之前都保持隐藏。参见[选择 profile 可见的 skills](../user-guide/features/skills.md#choosing-which-skills-a-profile-sees)。
+
 ---
 
 ## Skills 与 Memory 的区别

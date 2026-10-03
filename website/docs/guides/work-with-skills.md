@@ -256,6 +256,8 @@ hermes skills
 
 This opens an interactive TUI where you can enable or disable skills per platform (CLI, Telegram, Discord, etc.). Useful when you want certain skills only available in specific contexts — for example, keeping development skills off Telegram.
 
+For a curated profile, list what it *should* have instead of everything it shouldn't. `skills.enabled` (and `skills.platform_enabled.<platform>`) is an allowlist: skills added later — by `hermes update`, a hub install or a shared directory — stay hidden until you add them. See [Choosing which skills a profile sees](../user-guide/features/skills.md#choosing-which-skills-a-profile-sees).
+
 ---
 
 ## Skills vs Memory

@@ -44,23 +44,20 @@ class TestSaveDisabledSkills:
 class TestIsSkillDisabled:
 
 
-    @patch("hermes_cli.config.load_config")
-    def test_platform_disabled(self, mock_load):
-        mock_load.return_value = {"skills": {
-            "disabled": [],
-            "platform_disabled": {"telegram": ["tg-skill"]}
-        }}
+    def test_platform_disabled(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: []\n  platform_disabled:\n    telegram: [tg-skill]\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
 
 
-    @patch("hermes_cli.config.load_config")
     @patch.dict("os.environ", {"HERMES_PLATFORM": "discord"})
-    def test_env_var_platform(self, mock_load):
-        mock_load.return_value = {"skills": {
-            "platform_disabled": {"discord": ["discord-skill"]}
-        }}
+    def test_env_var_platform(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  platform_disabled:\n    discord: [discord-skill]\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("discord-skill") is True
 
@@ -135,7 +132,7 @@ class TestGetDisabledSkillNames:
 # ---------------------------------------------------------------------------
 
 class TestFindAllSkillsFiltering:
-    @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
+    @patch("agent.skill_utils.get_disabled_skill_names", return_value={"my-skill"})
     @patch("tools.skills_tool.skill_matches_platform", return_value=True)
     def test_disabled_skill_excluded(self, mock_platform, mock_disabled, tmp_path, monkeypatch):
         skill_dir = tmp_path / "my-skill"

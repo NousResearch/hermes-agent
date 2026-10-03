@@ -384,6 +384,13 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
+        # The allowlists and external_dirs include/exclude hide skills just like `disabled` does. Keyed
+        # only when set, so a profile using none of them keeps its epoch across this upgrade.
+        rules = {k: skills_cfg[k] for k in ("enabled", "platform_enabled") if skills_cfg.get(k) is not None}
+        if skills_cfg.get("external_dirs"):
+            rules["external_dirs"] = skills_cfg["external_dirs"]
+        if rules:  # an empty `enabled: []` is a rule (it admits nothing), so presence, not truthiness
+            surface["skill_visibility"] = json.dumps(rules, sort_keys=True, default=str)
         # The live selection is platform_toolsets.<platform> minus agent.disabled_toolsets;
         # tools.enabled_toolsets is written by no surface, so watching it left Bot Chats
         # blind to `hermes tools enable/disable` (#124211). Raw slices: an edit that leaves

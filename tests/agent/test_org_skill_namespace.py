@@ -109,7 +109,7 @@ class TestListingCollisionsAndLabels:
         monkeypatch.setattr(
             pb, "get_all_skills_dirs", lambda: [skills], raising=True
         )
-        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: set())
+        monkeypatch.setattr("agent.skill_utils.get_disabled_skill_names", lambda *a, **k: set())
         monkeypatch.setattr(
             pb, "_skills_prompt_snapshot_path", lambda: tmp_path / "snap.json"
         )

@@ -23,9 +23,9 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
-    extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    extract_skill_conditions, extract_skill_description, get_all_skills_dirs, iter_skill_index_files,
+    parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment, skill_matches_platform,
+    skill_matches_platform_list, skill_visibility,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_signature
@@ -1206,8 +1206,9 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v2 added org provenance fields (org_id/org_author); v4 the skill dir (rel_dir) that path-pattern
+# visibility rules match; older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1287,6 +1288,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     platforms = [platforms] if isinstance(platforms, str) else platforms
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
+        "rel_dir": skill_file.parent.relative_to(skills_dir).as_posix(),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
@@ -1415,7 +1417,7 @@ def _collect_extra_skills(
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             entry = _build_snapshot_entry(skill_file, root, frontmatter, desc) if is_compatible else None
             fm_name = entry["frontmatter_name"] if entry else ""
-            if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
+            if not entry or fm_name in claimed or hides(fm_name, skill_file, extract_skill_conditions(frontmatter)):
                 continue
             claimed.add(fm_name)
             skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
@@ -1510,15 +1512,17 @@ def _build_skills_system_prompt_inner(
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
     project_dirs: "list[Path] | None" = None,
 ) -> str:
-    # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
+    # The resolved platform is part of the key: per-platform skill lists need distinct cache entries, and the
+    # visibility key carries every config rule (deny/allow lists, external_dirs filters) — profiles sharing one
+    # skills root may differ only there.
     _platform_hint = _current_session_platform_hint()
-    disabled = get_disabled_skill_names(_platform_hint or None)
+    visibility = skill_visibility(_platform_hint or None)
     project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _platform_hint, visibility.cache_key, tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)
@@ -1531,9 +1535,9 @@ def _build_skills_system_prompt_inner(
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
-    def hides(frontmatter_name: str, skill_name: str, conditions: dict) -> bool:
+    def hides(frontmatter_name: str, skill_md: Path, conditions: dict) -> bool:
         """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
-        return (frontmatter_name in disabled or skill_name in disabled
+        return (visibility.hides(frontmatter_name, skill_md)
                 or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
@@ -1552,7 +1556,8 @@ def _build_skills_system_prompt_inner(
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
     visible_entries: list[dict] = [
         entry for entry, is_compatible in candidates
-        if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
+        if is_compatible and not hides(_entry_name(entry), skills_dir / entry.get("rel_dir", "") / "SKILL.md",
+                                       entry.get("conditions") or {})
     ]
 
     # Project-local skills (highest precedence) shadow same-named profile-local skills; tagged [project].

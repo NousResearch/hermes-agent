@@ -2500,6 +2500,8 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  /** Pinned by the administrator's managed scope: shown, never toggled. */
+  locked?: boolean;
 }
 
 export interface SkillContent {

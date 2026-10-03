@@ -10,7 +10,7 @@ def test_application_gate_rechecks_snapshot_without_losing_description(tmp_path,
 
     monkeypatch.setattr(declaration, "_REGISTRY", {})
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *_: set())
+    monkeypatch.setattr("agent.skill_utils.get_disabled_skill_names", lambda *_: set())
     skills = tmp_path / "skills"
     skill = skills / "app-guide" / "SKILL.md"
     skill.parent.mkdir(parents=True)

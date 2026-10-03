@@ -197,13 +197,13 @@ def _iter_gateway_skills(platform: str):
 
     from agent.skill_commands import get_skill_commands
     from agent.skill_utils import (
-        get_disabled_skill_names, get_external_skills_dirs, get_project_skills_dirs)
+        SkillVisibility, get_external_skills_dirs, get_project_skills_dirs, skill_visibility)
     from tools.skills_tool import SKILLS_DIR
 
     try:
-        disabled = get_disabled_skill_names(platform=platform)
+        visibility = skill_visibility(platform)
     except Exception:
-        disabled = set()
+        visibility = SkillVisibility()
     hub_dir = (SKILLS_DIR / ".hub").resolve()
     roots = [SKILLS_DIR.resolve()]
     for getter in (get_external_skills_dirs, get_project_skills_dirs):
@@ -225,7 +225,7 @@ def _iter_gateway_skills(platform: str):
         if sp.is_relative_to(hub_dir):
             continue
         root = next((r for r in roots if sp.is_relative_to(r)), None)
-        if root is None or info.get("name", "") in disabled:
+        if root is None or visibility.hides(info.get("name", ""), sp):
             continue
         yield cmd_key, info, sp.parent.relative_to(root).parts
 

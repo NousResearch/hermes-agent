@@ -58,6 +58,8 @@ export interface CapabilityEntry {
   enabled?: boolean
   fromCatalog?: boolean
   installed?: boolean
+  /** Pinned by the administrator's managed scope: shown, never toggled. */
+  locked?: boolean
   name: string
   requires?: string[]
   tool_count?: number
@@ -83,7 +85,11 @@ export function CheckList({ items, onToggle, columns = 2 }: CheckListProps) {
           key={item.name}
           title={item.description || item.name}
         >
-          <Checkbox checked={item.enabled} onCheckedChange={value => onToggle(item.name, Boolean(value))} />
+          <Checkbox
+            checked={item.enabled}
+            disabled={item.locked}
+            onCheckedChange={value => onToggle(item.name, Boolean(value))}
+          />
           <span className="truncate">{item.name}</span>
           {item.tool_count ? (
             <span className="shrink-0 text-[0.6rem] text-(--ui-text-quaternary)">{`${item.tool_count}`}</span>

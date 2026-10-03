@@ -3261,6 +3261,12 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     # (test harnesses/tooling); only the first segment is exempt so ``agent._max_turns`` is caught.
     if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS:
         return True, None
+    # Slots left out of DEFAULT_CONFIG on purpose (an empty default would clobber an allowlist) are
+    # declared in _KNOWN_CONTAINER_TYPES: they, and keys under a declared mapping, are real.
+    dotted = ".".join(segments)
+    if any(dotted == slot or (kind == "mapping" and dotted.startswith(slot + "."))
+           for slot, kind in _KNOWN_CONTAINER_TYPES.items()):
+        return True, None
 
     known = _known_top_level_keys()
     if top not in known:
@@ -3420,10 +3426,12 @@ _KNOWN_CONTAINER_TYPES = {
     # so without these rows `config set plugins.enabled foo` stored a string every reader ignored.
     "plugins.enabled": "list",
     "plugins.disabled": "list",
+    "skills.enabled": "list",
+    "skills.platform_enabled": "mapping",
     "model_catalog.excluded_providers": "list",
 }
 # List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.
-_SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled"})
+_SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled", "skills.enabled"})
 
 
 def _expected_container_type(key: str, user_config: Dict[str, Any]) -> Optional[str]:

@@ -774,6 +774,16 @@ skills:
     telegram: [skill-a, skill-b]  # disabled only on telegram
 ```
 
+A denylist grows back as new skills arrive: every skill installed after you wrote it lands in the menu too. To pin Telegram to a fixed set, use an allowlist instead. Every skill not on it stays hidden, including ones added later:
+
+```yaml
+skills:
+  platform_enabled:
+    telegram: [skill-c, "github/*"]   # only these on telegram (names, or a category/* glob)
+```
+
+`disabled` / `platform_disabled` still win over it. See [Choosing which skills a profile sees](../user-guide/features/skills.md#choosing-which-skills-a-profile-sees).
+
 After changing this, **restart the gateway** (`hermes gateway restart` or kill and relaunch). The Telegram bot command menu rebuilds on startup.
 
 :::tip

@@ -969,6 +969,15 @@ class CLICommandsMixin:
                     idle = child.get("seconds_since_activity")
                     if idle is not None:
                         part += _t("agents.last_activity", seconds=f"{idle:.0f}")
+                    # Model + tokens the live child is spending (#6779; /tasks is an alias of
+                    # /agents). Reuses the /usage labels, already localized in every catalog, and
+                    # omits an unknown value rather than showing a zero spend.
+                    model = child.get("model")
+                    if isinstance(model, str) and model.strip():
+                        part += f" · {t('cli.usage.label_model')} {model.strip()}"
+                    tokens = child.get("tokens")
+                    if isinstance(tokens, (int, float)):
+                        part += f" · {t('cli.usage.label_total_tokens')} {int(tokens):,}"
                     _cp(part)
         agent_running = getattr(self, "_agent_running", False)
         _cp(f"  {_t('agents.agent_running') if agent_running else _t('agents.agent_idle')}")

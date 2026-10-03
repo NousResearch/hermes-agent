@@ -34,6 +34,13 @@ _OWNER_REPLY_PREFIX = "[owner reply] "
 
 _RUN_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
 
+# Gateway-config load probes WhatsApp's requirements once per platform row (messaging dashboard,
+# CLI config reads, connect preflight), and each probe spawns a `node --version` process. On
+# Windows with endpoint antivirus a single spawn can take 1-2 seconds, which multiplies into
+# dashboard timeouts — so an executable that already answered successfully is remembered for
+# the life of the process. Failures are never cached: a broken or missing runtime is re-probed.
+_NODE_VERIFIED: set[str] = set()
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs *listening* on ``port`` (POSIX), never clients — a bare ``lsof -i :PORT`` once killed the user's browser."""
@@ -235,10 +242,17 @@ def check_whatsapp_requirements() -> bool:
 
         # Let connect prepare a missing runtime, but never install during discovery.
         return lazy_installs_allowed()
+    if str(_node) in _NODE_VERIFIED:
+        return True
     try:
-        return subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT).returncode == 0
+        ok = (
+            subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT).returncode == 0
+        )
     except Exception:
         return False
+    if ok:
+        _NODE_VERIFIED.add(str(_node))
+    return ok
 
 
 # Env vars bridge.js consumes; injected because a multiplexed subprocess's os.environ lacks the secondary profile's .env.

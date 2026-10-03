@@ -42,3 +42,10 @@ def test_api_max_retries_honors_config_override():
 
 
 
+def test_api_max_retries_default_covers_provider_overload_schedule():
+    """The default retry budget must reach the long provider overload backoff tier."""
+    from agent.retry_utils import zai_coding_overload_retry_ceiling
+
+    agent = _make_agent()
+
+    assert agent._api_max_retries >= zai_coding_overload_retry_ceiling()

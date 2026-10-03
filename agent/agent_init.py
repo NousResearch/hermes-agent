@@ -1458,11 +1458,12 @@ def _apply_agent_section(agent, _agent_cfg):
     # platform_hints: <platform>: {append|replace}, stored verbatim (agent/system_prompt.py).
     agent._platform_hint_overrides = _cfg_dict(_agent_cfg, "platform_hints")
 
-    # App-level API retry count (wraps each model API call). Default 3; 1 = single attempt.
+    # App-level API retry count (wraps each model API call). The default covers the complete provider overload backoff schedule; explicit config values still win.
+    from agent.retry_utils import zai_coding_overload_retry_ceiling
     try:
-        _api_retries = max(int(_agent_section.get("api_max_retries", 3)), 1)
+        _api_retries = max(int(_agent_section.get("api_max_retries", zai_coding_overload_retry_ceiling())), 1)
     except (TypeError, ValueError):
-        _api_retries = 3
+        _api_retries = zai_coding_overload_retry_ceiling()
     agent._api_max_retries = _api_retries
     # Bounded post-exhaustion auto-recovery cycles once retries AND the fallback chain are spent
     # on a transient outage (agent/turn_recovery_autorecover.py). 0 disables the ladder.

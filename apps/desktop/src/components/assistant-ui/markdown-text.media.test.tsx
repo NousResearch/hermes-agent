@@ -58,6 +58,19 @@ describe('MarkdownTextContent remote images', () => {
 describe('MarkdownImage media routing', () => {
   afterEach(cleanup)
 
+  it.each([
+    ['image', 'https://evil.example/beacon.png'],
+    ['video', 'https://evil.example/beacon.mp4'],
+    ['audio', 'https://evil.example/beacon.mp3']
+  ] as const)('does not mount a %s element for a remote source', (_label: string, src: string) => {
+    const { container } = render(<MarkdownImage alt="remote media" src={src} />)
+
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('video')).toBeNull()
+    expect(container.querySelector('audio')).toBeNull()
+    expect(container.querySelector(`a[href="${src}"]`)).not.toBeNull()
+  })
+
   it('renders a <video> (not a broken <img>) for a video source', async () => {
     const { container } = render(<MarkdownImage alt="clip" src="file:///tmp/clip.mp4" />)
 

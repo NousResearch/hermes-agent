@@ -32,6 +32,7 @@ import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
+import { useNewSessionWorkspaceMenuItems } from './new-session-workspace-menu'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
@@ -243,6 +244,10 @@ export function SidebarSessionsSection({
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
   const showAllSessions = useStore($sidebarShowAllSessions)
+  // Right-click menu for the date-divider "+": same detached-click plus
+  // project-folder choice as the section header "+" (#122436). The noop keeps
+  // the hook unconditional when this section has no session target.
+  const newSessionWorkspaceMenuItems = useNewSessionWorkspaceMenuItems(onNewSessionInWorkspace ?? (() => undefined))
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
@@ -341,6 +346,7 @@ export function SidebarSessionsSection({
               }
             : undefined
         }
+        workspaceMenu={{ ariaLabel: t.sidebar.nav['new-session'], items: newSessionWorkspaceMenuItems }}
       />
     ) : null
 

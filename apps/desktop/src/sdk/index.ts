@@ -24,7 +24,7 @@ import type { ReactNode } from 'react'
 import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
-import { syncWorkspaceRoute } from '@/app/routes'
+import { contributedRoutes, syncWorkspaceRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
@@ -78,6 +78,7 @@ import {
   setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
+import { openRouteTile } from '@/store/route-tiles'
 import {
   $activeSessionId,
   $connection,
@@ -750,18 +751,27 @@ export const host = {
     return completeMcpDesktopOAuth({ ...options, profile })
   },
 
-  /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
+  /** Navigate the app router (hash routes, e.g. '/command-center?section=system').
+   *  Contributed plugin pages open as route tiles so they don't replace the
+   *  live Bot Chat (#101593). */
   navigate: (path: string) => {
-    const to = path.startsWith('#') ? path.slice(1) : path
+    const raw = path.startsWith('#') ? path.slice(1) : path
+    const pathname = raw.split(/[?#]/)[0] || raw
 
-    window.location.hash = `#${to}`
+    if (contributedRoutes().some(route => route.path === pathname)) {
+      openRouteTile(pathname)
+
+      return
+    }
+
+    window.location.hash = `#${raw}`
     // The router follows the hash and fronts the workspace pane on a route
     // CHANGE (wiring's `syncWorkspaceRoute` effect). Re-issuing the current
     // route — palette/statusbar/hotkey while already on the page with a tile
     // focused — changes nothing, so no event fires and the page stays behind
     // the tile. Reveal imperatively, the same way `navigateToWorkspacePage`
     // does for the sidebar and keybinds.
-    syncWorkspaceRoute(to)
+    syncWorkspaceRoute(raw)
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no

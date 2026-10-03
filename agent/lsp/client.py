@@ -89,14 +89,27 @@ def _folder(root: str) -> Dict[str, str]:
     return {"name": os.path.basename(root.rstrip(os.sep)) or root, "uri": file_uri(root)}
 
 
+def _windows_drive_path(raw: str) -> str:
+    """``/c:/foo`` → ``C:/foo`` for a DECODED ``file://`` URI body; anything else unchanged.
+
+    Servers that normalize URIs through vscode-uri percent-encode the drive colon
+    (``/c%3A/...``), so decoding must happen before the drive-letter check, and they
+    lowercase the drive — upper-cased here because document keys come from
+    ``os.path.abspath``, which keeps the case the client opened with.
+    """
+    if raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
+        return raw[1:2].upper() + raw[2:]
+    return raw
+
+
 def uri_to_path(uri: str) -> str:
     """Inverse of :func:`file_uri`."""
     if not uri.startswith("file://"):
         return uri
-    raw = uri[len("file://"):]
-    if os.name == "nt" and raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
-        raw = raw[1:]  # strip leading slash before drive letter
-    return os.path.normpath(unquote(raw))
+    raw = unquote(uri[len("file://"):])
+    if os.name == "nt":
+        raw = _windows_drive_path(raw)
+    return os.path.normpath(raw)
 
 
 def _end_position(text: str) -> Dict[str, int]:

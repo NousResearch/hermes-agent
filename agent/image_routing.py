@@ -337,8 +337,13 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe → registered
-    ``ProviderProfile.supports_vision`` declaration).
+    (managed local runtime → models.dev catalog → Ollama probe).
+
+    Note: ``ProviderProfile.supports_vision`` (``providers/base.py``) is NOT
+    consulted here — it declares the tool-result wire capability (image content
+    inside tool-result messages), consumed by
+    ``tools/vision_tools.py::_supports_media_in_tool_results()``, not per-model
+    user-image routing. See #127980.
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the
     # original name lives in the context-local main runtime. Borrow it only on an

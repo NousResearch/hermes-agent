@@ -23,7 +23,12 @@ _DEFAULT_MAX_KEEPALIVE = 10
 
 
 def _positive_env(name: str, default, cast):
-    """``cast(env)`` when set, parseable and > 0; else *default*."""
+    """``cast(env)`` when set and parseable; ``0`` is accepted for ``int`` casts
+    (meaning "off"/no keepalive). Negative values fall back to *default*.
+
+    For ``int`` casts specifically, ``0`` is a valid explicit setting
+    (e.g. ``HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE=0`` means disable keepalive).
+    """
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -31,6 +36,8 @@ def _positive_env(name: str, default, cast):
         val = cast(raw)
     except (TypeError, ValueError):
         return default
+    if cast is int and val == 0:
+        return 0
     return val if val > 0 else default
 
 

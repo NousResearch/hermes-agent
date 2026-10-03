@@ -18,6 +18,7 @@ import mimetypes
 import os
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -35,6 +36,16 @@ _REQUEST_TIMEOUT_S = 30.0
 # Discord's CDN (and other public hosts) 403 urllib's default UA, which
 # silently killed every CDN pass-through download. Always send a descriptive UA.
 _MEDIA_USER_AGENT = "HermesAgent-Relay/1.0 (+https://github.com/NousResearch/hermes-agent)"
+
+
+def _effective_port(parsed: urllib.parse.SplitResult) -> Optional[int]:
+    """return effective port for http/https urls, resolving default ports."""
+    try:
+        if parsed.port is not None:
+            return parsed.port
+    except ValueError:
+        return None
+    return {"https": 443, "http": 80}.get(parsed.scheme)
 
 
 def media_base_url(relay_dial_url: str) -> str:
@@ -66,8 +77,25 @@ class RelayMediaClient:
         return make_upgrade_token(self._gateway_id, self._secret)
 
     def is_relay_media_url(self, url: str) -> bool:
-        """Is ``url`` a connector re-host reference (needs our bearer to GET)?"""
-        return "/relay/media/" in (url or "")
+        """is ``url`` a connector re-host reference (needs our bearer to get)?"""
+        if not url or not isinstance(url, str):
+            return False
+        if not self._base_url:
+            return False
+        try:
+            cand = urllib.parse.urlsplit(url)
+            base = urllib.parse.urlsplit(self._base_url)
+            if cand.scheme not in ("http", "https") or base.scheme not in ("http", "https"):
+                return False
+            if not cand.hostname or not base.hostname:
+                return False
+            if cand.hostname.lower() != base.hostname.lower():
+                return False
+            if _effective_port(cand) != _effective_port(base):
+                return False
+            return cand.path.startswith("/relay/media/")
+        except Exception:
+            return False
 
     async def upload(
         self, file_path: str, *, mime: Optional[str] = None, filename: Optional[str] = None
@@ -115,8 +143,17 @@ class RelayMediaClient:
         The bearer is presented only for connector re-host URLs; public URLs
         (e.g. a Discord CDN pass-through) are fetched without it.
         """
-        if not url:
+        if not url or not isinstance(url, str):
             return None
+        try:
+            cand = urllib.parse.urlsplit(url)
+            if cand.scheme not in ("http", "https") or not cand.netloc:
+                logger.warning("relay media download: invalid scheme %r for %s", cand.scheme, url)
+                return None
+        except Exception as exc:
+            logger.warning("relay media download: invalid url %s: %s", url, exc)
+            return None
+
         needs_auth = self.is_relay_media_url(url)
         if needs_auth and not self.enabled:
             return None

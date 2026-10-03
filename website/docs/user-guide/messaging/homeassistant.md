@@ -52,18 +52,21 @@ Hermes Agent registers four tools for smart home control:
 
 ### `ha_list_entities`
 
-List Home Assistant entities, optionally filtered by domain or area.
+List Home Assistant entities. On a large install a bare call can return thousands of entities, so the filters below exist to keep responses small and targeted. Each entity includes its area and device when known.
 
 **Parameters:**
 - `domain` *(optional)* — Filter by entity domain: `light`, `switch`, `climate`, `sensor`, `binary_sensor`, `cover`, `fan`, `media_player`, etc.
-- `area` *(optional)* — Filter by area/room name (matches against friendly names): `living room`, `kitchen`, `bedroom`, etc.
+- `area` *(optional)* — Filter by area/room name: `living room`, `kitchen`, `bedroom`, etc. Resolved against the Home Assistant area registry, so entities are matched even when their names do not mention the room; falls back to matching friendly names if the registry is unreachable.
+- `name` *(optional)* — Substring to match against friendly names and entity IDs (e.g. `thermostat`); useful when the domain is unknown.
+- `entity_ids` *(optional)* — Exact list of entity IDs to fetch; supersedes the domain/area/name filters.
+- `max` *(optional)* — Per-call cap on the number of entities returned; overrides the operator-configured `HASS_MAX_ENTITIES`.
 
 **Example:**
 ```
 List all lights in the living room
 ```
 
-Returns entity IDs, states, and friendly names.
+When a cap (operator or per-call) cuts the result, the response is marked `truncated` with a note on how to narrow the query or get more.
 
 ### `ha_get_state`
 
@@ -119,6 +122,18 @@ Set living room lights to blue at 50% brightness
 → ha_call_service(domain="light", service="turn_on",
     entity_id="light.living_room", data={"brightness": 128, "color_name": "blue"})
 ```
+
+## Operator Entity Filters (Optional)
+
+Three environment variables let the operator constrain the tools without a code change. All are opt-in: unset means the tools behave exactly as before.
+
+| Variable | Effect |
+| --- | --- |
+| `HASS_ENTITY_DENYLIST` | Comma-separated entity ID prefixes or globs (e.g. `office_thermostat_*,sensor.ghost_*`) that `ha_list_entities` always excludes. Acts as a final veto — it wins even against the allowlist — and `ha_get_state` refuses a matching entity before any network call. |
+| `HASS_ENTITY_ALLOWLIST` | Same format; when non-empty, results are restricted to matching entities (a whitelist). |
+| `HASS_MAX_ENTITIES` | Optional cap on how many entities `ha_list_entities` returns. Unset means no cap. A per-call `max` parameter always overrides it; a result cut by the cap is marked `truncated` with a note on how to get the rest. |
+
+Patterns match on exact IDs, family prefixes (`.` and `_` interchangeable at the boundary, so `office_thermostat_*` covers `office_thermostat.0_valve_position`), and shell-style globs (`climate.*`, `*.valve*`).
 
 ## Gateway Platform: Real-Time Events
 

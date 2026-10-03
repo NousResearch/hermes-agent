@@ -162,7 +162,7 @@ def _custom_hermes_home() -> Optional[str]:
     except OSError:
         return None
     return None if home == default else str(home)
- 
+
 
 def _desktop_argv_tail(project_root: Optional[Path]) -> list[str]:
     """The ``desktop`` subcommand arguments a persisted launcher should carry.

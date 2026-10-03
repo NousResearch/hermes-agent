@@ -123,6 +123,16 @@ it('re-homes a fresh draft when leaving All profiles on the already active sourc
   expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'homelab', profile: 'default' })
 })
 
+it('keeps a draft the user pinned while the silent boot restore was in flight', async () => {
+  // No active source yet: selectConnection runs as the boot-time restore.
+  setConnection(null)
+  expect($activeConnectionId.get()).toBeNull()
+  const route = $newChatRoute.get()
+  await selectConnection('local')
+  expect($newChatRoute.get()).toEqual(route)
+  expect(resolveNewChatOwnerRoute()).toEqual(route)
+})
+
 it('preserves the explicit draft when the target dial fails', async () => {
   const route = $newChatRoute.get()
   getConnectionFor.mockRejectedValueOnce(new Error('offline'))

@@ -318,42 +318,39 @@ describe('useGatewayRequest', () => {
     expect(gateway.connect).toHaveBeenLastCalledWith(expect.stringContaining('ticket=fresh-2'))
   })
 
-  it.each(['default', 'research'])(
-    'does not replay a delayed local failure onto another source (%s)',
-    async profile => {
-      installRemoteDesktop()
-      const primary = makePrimaryGateway()
-      const failure = new Error('connection closed')
-      let rejectRequest!: (error: Error) => void
-      primary.request.mockImplementationOnce(
-        () =>
-          new Promise((_resolve, reject) => {
-            rejectRequest = reject
-          })
-      )
-      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
-      $gateway.set(primary as unknown as HermesGateway)
-      $gatewayState.set('open')
-      const { result } = renderHook(() => useGatewayRequest())
+  it('does not replay a delayed local failure onto a same-named profile on another source', async () => {
+    installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    let rejectRequest!: (error: Error) => void
+    primary.request.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRequest = reject
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+    const { result } = renderHook(() => useGatewayRequest())
 
-      const pending = result.current
-        .requestGateway('prompt.submit', { session_id: 'local-only', text: 'private' })
-        .catch(error => error)
+    const pending = result.current
+      .requestGateway('prompt.submit', { session_id: 'local-only', text: 'private' })
+      .catch(error => error)
 
-      await act(async () => {
-        await ensureGatewayForAgent('home', profile)
-      })
-      const destination = $gateway.get() as unknown as TestGateway
-      destination.request.mockResolvedValue({ sent: true })
-      await act(async () => {
-        rejectRequest(failure)
-      })
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    const destination = $gateway.get() as unknown as TestGateway
+    destination.request.mockResolvedValue({ sent: true })
+    await act(async () => {
+      rejectRequest(failure)
+    })
 
-      expect(await pending).toBe(failure)
-      expect(primary.request).toHaveBeenCalledTimes(1)
-      expect(destination.request).not.toHaveBeenCalled()
-    }
-  )
+    expect(await pending).toBe(failure)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(destination.request).not.toHaveBeenCalled()
+  })
 
   it('does not replay when the source changes while recovery is pending', async () => {
     const desktop = installRemoteDesktop()

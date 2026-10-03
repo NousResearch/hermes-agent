@@ -209,6 +209,34 @@ async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_embed_only_bot_message_is_dispatched_with_serialized_embed(adapter, monkeypatch):
+    """An explicitly allowed bot webhook reaches the agent with its embed text."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._ready_event.set()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="",
+    )
+    message.author.bot = True
+    message.embeds = [SimpleNamespace(
+        title="Deployment",
+        description="Build failed",
+        fields=[SimpleNamespace(name="Status", value="CRASHED")],
+    )]
+
+    assert await adapter._dispatch_discord_message(message) is True
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "**Deployment**\nBuild failed\n**Status**: CRASHED"
+    assert event.source.is_bot is True
+
+
+@pytest.mark.asyncio
 async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
@@ -1057,5 +1085,3 @@ class TestNonConversationalTrackerOffload:
             await _asyncio.gather(first, second)
 
         assert sorted(writes[-1]) == ["1", "2"]
-
-

@@ -586,6 +586,31 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _serialize_embeds(embeds: list) -> str | None:
+    """Convert Discord embed titles, descriptions, and fields to readable text."""
+    if not embeds:
+        return None
+
+    parts: list[str] = []
+    for embed in embeds:
+        embed_parts: list[str] = []
+        title = getattr(embed, "title", None)
+        if title:
+            embed_parts.append(f"**{title}**")
+        description = getattr(embed, "description", None)
+        if description:
+            embed_parts.append(description)
+        for field in getattr(embed, "fields", []) or []:
+            field_name = getattr(field, "name", "") or ""
+            field_value = getattr(field, "value", "") or ""
+            if field_name or field_value:
+                embed_parts.append(f"**{field_name}**: {field_value}")
+        if embed_parts:
+            parts.append("\n".join(embed_parts))
+
+    return "\n\n".join(parts) or None
+
+
 # Under gateway.multiplex_profiles os.environ is process-global and first-writer-wins, so raw
 # os.getenv() can return ANOTHER profile's value; _scoped_gate_env reads the active profile's
 # secret scope (contextvar propagates into connect()) and falls back to os.getenv outside multiplex.
@@ -6163,6 +6188,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+        embed_text = _serialize_embeds(getattr(message, "embeds", None))
+        if embed_text:
+            event_text = f"{event_text}\n\n{embed_text}" if event_text else embed_text
         # ── History backfill ─────────────────────────────────────────
         # With require_mention, messages between bot turns never reach the transcript; fetch
         # history after the bot's last message (cold start: last N, stop at first self-message)

@@ -309,6 +309,127 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     )["run_id"] == "run-recovered"
 
 
+def test_ambiguous_admission_cannot_be_downgraded_by_replay_refusal(tmp_path):
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+    )
+    requests = []
+
+    def accepted_then_replay_refused(path, **kwargs):
+        requests.append((path, kwargs))
+        if len(requests) == 1:
+            raise PeerRunsHTTPError(
+                "peer response was lost",
+                retryable=True,
+                ambiguous=True,
+            )
+        raise PeerRunsHTTPError(
+            "peer endpoint refused the replay",
+            retryable=True,
+            not_admitted=True,
+        )
+
+    client._request = accepted_then_replay_refused
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    assert requests[0][1]["headers"] == requests[1][1]["headers"]
+    assert requests[0][1]["body"] == requests[1][1]["body"]
+
+
+def test_ambiguous_admission_malformed_replay_keeps_recovery_backoff(tmp_path):
+    now = [0.0]
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+        clock=lambda: now[0],
+    )
+    requests = []
+
+    def response_lost_then_missing_run_id(path, **kwargs):
+        requests.append((path, kwargs))
+        if len(requests) == 1:
+            raise PeerRunsHTTPError(
+                "peer response was lost",
+                retryable=True,
+                ambiguous=True,
+            )
+        return {}
+
+    client._request = response_lost_then_missing_run_id
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    with pytest.raises(PeerRunsHTTPError, match="backing off"):
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert len(requests) == 2
+
+
+def test_initial_missing_run_id_replays_once_then_backs_off(tmp_path):
+    now = [0.0]
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+        clock=lambda: now[0],
+    )
+    requests = []
+
+    def missing_run_id(path, **kwargs):
+        requests.append((path, kwargs))
+        return {}
+
+    client._request = missing_run_id
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    assert requests[0][1]["headers"] == requests[1][1]["headers"]
+    assert requests[0][1]["body"] == requests[1][1]["body"]
+
+    with pytest.raises(PeerRunsHTTPError, match="backing off"):
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("body", [b"not-json", b"[]"])
+def test_malformed_post_success_is_ambiguous(monkeypatch, body):
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url",
+        lambda *_args, **_kwargs: io.BytesIO(body),
+    )
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+    )
+
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._request(
+            "/v1/runs",
+            method="POST",
+            body={},
+            room_grant="signed.room.grant",
+        )
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+
+
 def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):
     now = [0.0]
     client = PeerRunsHTTPClient(
@@ -463,6 +584,53 @@ def test_invalid_room_dispatch_http_403_is_definitively_not_admitted(monkeypatch
     assert caught.value.error_code == "room_capability_catalog_changed"
     assert caught.value.not_admitted is True
     assert caught.value.ambiguous is False
+
+
+@pytest.mark.parametrize("status,definite", [
+    (400, True), (401, True), (403, True), (404, True), (422, True),
+    (408, False), (409, False), (425, False), (429, False),
+])
+def test_uncertain_admission_http_status_does_not_prove_nonadmission(monkeypatch, status, definite):
+    def rejected(*args, **kwargs):
+        raise urllib.error.HTTPError("https://peer.example.test/v1/runs", status, "refused", {},
+                                     io.BytesIO(b'{"error":{"code":"fixture_refusal"}}'))
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._request("/v1/runs", method="POST", body={"input": "frozen"}, room_grant="signed.room.grant")
+    assert (caught.value.not_admitted, caught.value.ambiguous) == (definite, not definite)
+    assert caught.value.status_code == status
+
+
+@pytest.mark.parametrize("status", [408, 409, 425, 429])
+def test_first_uncertain_http_reply_replays_only_the_same_frozen_request(tmp_path, status):
+    requests = []
+
+    class RefuseFirst(FakePeer):
+        def do_POST(self):
+            data = self.rfile.read(int(self.headers["Content-Length"]))
+            requests.append((self.path, data, self.headers["Idempotency-Key"], self.headers["Authorization"]))
+            if len(requests) == 1:
+                return self._json({"error": {"code": "idempotency_conflict"}}, status)
+            return self._json({"run_id": "retained-run", "status": "started", "replayed": True}, 202)
+
+    server = HTTPServer(("127.0.0.1", 0), RefuseFirst)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = PeerRunsHTTPClient(base_url=f"http://127.0.0.1:{server.server_port}", api_key="",
+                                    receipt_db_path=tmp_path / "state.db")
+        result = client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+        assert result["run_id"] == "retained-run" and result["replayed"]
+        assert len(requests) == 2 and requests[0] == requests[1]
+        assert requests[0][2] == "room:task-1:1"
+        assert requests[0][3] == "HermesRoom signed.room.grant"
+        saved = client._receipt("task-1", 1)
+        assert saved["run_id"] == "retained-run" and saved["execution_generation"] == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_capability_mismatch_requires_reauthorization_without_retry(tmp_path):

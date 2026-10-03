@@ -87,3 +87,36 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_virtual_member_without_a_version_gains_one_uv_can_parse(tmp_path):
+    """A plugin may ship a pyproject that only pins tooling — LCM's declares ruff
+    settings and no [project] at all, others may omit just `version`. Staging
+    renames such metadata-only members, and uv rejects a workspace member whose
+    [project] table lacks `version` (PEP 621), failing every later `uv lock`."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    variants = {
+        "tooling-only": '[tool.ruff]\ntarget-version = "py311"\n',
+        "versionless": '[project]\nname = "hermes-lcm"\n',
+        "dynamic-multi": '[project]\nname = "hermes-dyn"\ndynamic = ["version", "dependencies"]\n',
+        "dynamic-solo": '[project]\nname = "hermes-scm"\ndynamic = ["version"]\n',
+    }
+    staged = {}
+    for kind, pyproject in variants.items():
+        plugin = tmp_path / "home" / "plugins" / kind
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        root = tmp_path / f"gen-{kind}"
+        root.mkdir()
+        member = _workspace_member(plugin, root, identity=plugin)
+        document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+        staged[kind] = document
+        assert document["project"]["name"].startswith(f"hermes-plugin-{kind}-")
+        assert document["project"]["version"] == "0.0.0", kind
+        assert "version" not in document["project"].get("dynamic", []), kind
+    # A member whose version marker is the sole dynamic entry drops the key
+    # entirely instead of staging an empty list; other markers survive.
+    assert staged["dynamic-multi"]["project"]["dynamic"] == ["dependencies"]
+    assert "dynamic" not in staged["dynamic-solo"]["project"]

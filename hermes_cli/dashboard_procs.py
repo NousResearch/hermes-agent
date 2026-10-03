@@ -829,6 +829,7 @@ def _process_ppid(pid: int) -> int | None:
 _LOCKFILE_SCHEMA_VERSION = 2
 _PROTOCOL_VERSION = 1
 _REMOTE_LOCK_SUBDIR = "desktop-ssh"
+BACKEND_LOCK_NAME = "backend.lock.json"
 _HEX32 = set("0123456789abcdef")
 
 
@@ -894,7 +895,7 @@ def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
         except OSError:
             continue
     for entry in entries:
-        lock = read_valid_backend_lock(entry / "backend.lock.json")
+        lock = read_valid_backend_lock(entry / BACKEND_LOCK_NAME)
         if lock is not None:
             owned.add(lock["pid"])  # validated as int
     return owned

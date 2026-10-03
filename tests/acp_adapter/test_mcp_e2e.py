@@ -95,12 +95,15 @@ class TestMcpRegistrationE2E:
         assert fs_cfg["command"] == "/usr/bin/mcp-fs"
         assert fs_cfg["args"] == ["--root", "/tmp"]
         assert fs_cfg["env"] == {"DEBUG": "1"}
+        assert "skip_preflight" not in fs_cfg
 
         # Verify HTTP server was converted correctly
         assert "test-api" in registered_configs
         api_cfg = registered_configs["test-api"]
         assert api_cfg["url"] == "https://api.example.com/mcp"
         assert api_cfg["headers"] == {"Authorization": "Bearer tok123"}
+        assert api_cfg["skip_preflight"] is True
+        assert "transport" not in api_cfg
 
         # Verify agent tool surface was refreshed
         assert state.agent.tools == fake_tools

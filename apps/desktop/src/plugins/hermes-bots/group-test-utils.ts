@@ -37,7 +37,11 @@ export const GROUP_METHODS = {
   'groups.succession.status': 'session:read', 'groups.succession.prepare': 'session:control',
   'groups.succession.promote': 'session:control', 'groups.succession.keep': 'session:control',
   'groups.succession.branch_log': 'session:read', 'groups.custody.designate': 'session:control',
-  'groups.custody.allow': 'session:control', 'groups.custody.remove': 'session:control'
+  'groups.custody.allow': 'session:operator', 'groups.custody.remove': 'session:control', 'groups.custody.status': 'session:read',
+  // Moving by itself: the owner's setting, a planned move, the override and ending a split.
+  'groups.custody.automatic': 'session:control', 'groups.succession.move': 'session:control',
+  'groups.succession.continue_anyway': 'session:control', 'groups.succession.learn': 'session:control',
+  'groups.succession.move_now': 'session:control'
 }
 export const _FIELDS: Record<string, readonly string[]> = {
   'groups.capabilities': [],
@@ -63,6 +67,12 @@ export const _FIELDS: Record<string, readonly string[]> = {
   'groups.custody.designate': ['room_id', 'install_id', 'successor'],
   'groups.custody.allow': ['room_id', 'successor'],
   'groups.custody.remove': ['room_id', 'install_id'],
+  'groups.custody.status': ['room_id'],
+  'groups.custody.automatic': ['room_id', 'enabled'],
+  'groups.succession.move': ['room_id', 'target_install_id'],
+  'groups.succession.continue_anyway': ['room_id'],
+  'groups.succession.learn': ['room_id', 'events'],
+  'groups.succession.move_now': ['room_id'],
   'profiles.list': ['include_sessions']
 }
 export const CANONICAL_GROUP_CAPABILITIES = {

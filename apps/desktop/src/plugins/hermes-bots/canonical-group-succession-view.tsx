@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { offeredTargets, readSeparateEvents, successionFailure } from './canonical-group-succession'
+import { offeredTargets, offers, readSeparateEvents, successionFailure } from './canonical-group-succession'
 import type { DesktopComputer, SuccessionBackup, SuccessionComputer, SuccessionPreview, SuccessionStatus } from './canonical-group-succession'
 import type { SuccessionController, SuccessionMoveFailure } from './canonical-group-succession-state'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoomMember } from './canonical-groups'
@@ -92,6 +92,7 @@ function ContinueDialog({ controller, preparation, members, onClose, onPrepared 
   const operator = preview?.target.operator_name ?? null
   const cautions = preview?.cautions ?? []
   const fencing = cautions.find(caution => caution.code === 'participant_not_fenced')
+  const unreachable = cautions.find(caution => caution.code === 'voters_unreachable')
   const inFlight = useRef(false)
 
   // One promote at a time: the dialog stays open and busy until it answers, and a second click does nothing.
@@ -116,11 +117,14 @@ function ContinueDialog({ controller, preparation, members, onClose, onPrepared 
     <div className="grid gap-2 text-sm text-(--ui-text-secondary)" data-slot="continue-summary">
       {!!bots.length && <p>{words.botsUnavailable(bots.length, host, list(bots))}</p>}
       {work && (work.completed || work.elsewhere || work.unknown) > 0 && <p>{words.workInProgress(work.completed, work.elsewhere, work.unknown)}</p>}
-      {!!preview?.behind_by && <p>{words.targetBehind(target, preview.behind_by, host)}</p>}
+      {!!preview?.at_risk && <p>{words.targetBehind(target, preview.at_risk, host)}</p>}
+      {!!preview?.behind_by && <p>{words.targetCatchingUp(target, preview.behind_by)}</p>}
       <p>{words.rejoinsAsMember(host)}</p>
       {operator && owner && operator !== owner && <p>{words.managedBy(operator, target)}</p>}
       {fencing && <p>{fencing.count > fencing.names.length ? words.notFencedCount(fencing.count, host)
         : words.notFenced(list(fencing.names), fencing.names.length, host)}</p>}
+      {unreachable && <p data-slot="continue-voters-unreachable">{unreachable.count > unreachable.names.length
+        ? words.votersUnreachableCount(unreachable.count, host) : words.votersUnreachable(list(unreachable.names), unreachable.names.length, host)}</p>}
       {(!preview || !cautions.length || cautions.some(caution => caution.code === 'host_may_be_running')) &&
         <p className="flex items-start gap-2 rounded-md bg-(--ui-bg-tertiary) px-3 py-2 text-(--ui-text-primary)" data-slot="continue-caution">
           <Codicon aria-hidden className="mt-0.5 shrink-0 text-primary" name="warning" />
@@ -170,21 +174,73 @@ function Separate({ binding, branchId, members }: { binding: CanonicalGroupBindi
   </section>
 }
 
-/** The banner for a host that is offline or restarting, a move, a group continued on two computers, and the old host after
- * a move. Nothing shows while the group is normal. */
-export function CanonicalGroupSuccessionBanner({ controller, binding, members }: {
-  controller: SuccessionController; binding: CanonicalGroupBinding; members: CanonicalRoomMember[]
-}) {
+interface BannerProps { controller: SuccessionController; status: SuccessionStatus; host: string | null }
+
+function MovingBanner({ controller, status, host }: BannerProps) {
+  const words = useBots().succession
+  const labels = useCanonicalGroupLabels()
+  const [confirming, setConfirming] = useState(false)
+  const target = computerName(controller, controller.moving ?? status.moving?.to)
+  const step = status.moving?.step
+
+  const steps: Record<string, string> = { fencing: words.stepFencing(host), catching_up: words.stepCatchingUp,
+    reconciling: words.stepReconciling, finishing: words.stepFinishing }
+
+  // A planned move first lets running turns finish; only the owner can cut that short.
+  if (step === 'waiting_for_turns') {
+    return <Strip icon="sync" title={words.movingAfterTurns(target, status.moving?.running ?? 0)} tone="info">
+      {offers(status, 'move_now') && <div className="pt-0.5"><Button onClick={() => setConfirming(true)} size="sm" variant="secondary">{words.moveNow}</Button></div>}
+      <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={words.moveNow} description={words.moveNowBody(target)} onClose={() => setConfirming(false)}
+        onConfirm={async () => {try {await controller.moveNow()} catch {throw new Error(words.changeFailed)}}} open={confirming} title={words.moveNowTitle} />
+    </Strip>
+  }
+
+  // A move the group makes by itself says why; there is nothing to choose while it happens.
+  return <Strip icon="sync" title={status.moving?.reason === 'automatic' ? words.movingAutomatically(host, target) : words.continuingOn(target)} tone="info">
+    {step && steps[step] && <p className="flex items-center gap-1.5" data-step={step}><GlyphSpinner />{steps[step]}</p>}
+  </Strip>
+}
+
+/** The host can't reach a majority, so it stopped itself; only the owner may override, after confirming. */
+function PausedBanner({ controller, status, host }: BannerProps) {
+  const words = useBots().succession
+  const labels = useCanonicalGroupLabels()
+  const { locale } = useI18n()
+  const [overriding, setOverriding] = useState(false)
+  const waiting = (status.paused?.waiting_for ?? []).map((computer, index) => computerName(controller, computer) ?? words.computerNumber(index + 1))
+  const names = new Intl.ListFormat(locale, { type: 'conjunction' }).format(waiting)
+  // Each reason the host gives has its own words; one Desktop doesn't know yet gets the generic line.
+  const cutOff = waiting.length ? words.pausedSafeBody(host, names) : null
+  const body = { lost_majority: cutOff, isolated: cutOff, no_lease_layer: words.pausedNoLeaseLayer(host) }[status.paused?.reason ?? '']
+  const automaticOff = status.actions.some(entry => entry.action === 'continue_anyway' && entry.turns_off_automatic)
+
+  return <Strip icon="debug-pause" title={words.pausedSafeTitle} tone="warning">
+    <p>{body ?? words.pausedSafeGeneric(host)}</p>
+    {offers(status, 'continue_anyway') && <div className="pt-0.5">
+      <Button onClick={() => setOverriding(true)} size="sm" variant="secondary">{words.continueAnyway(host)}</Button>
+    </div>}
+    {/* Continuing on a host that can't take part in automatic moves turns them off for the group: the confirm says so. */}
+    <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={words.continueAnywayConfirm}
+      description={automaticOff ? words.continueWithoutAutomaticBody(host) : waiting.length ? words.continueAnywayBody(names, waiting.length) : words.continueAnywayGeneric}
+      onClose={() => setOverriding(false)} onConfirm={async () => {
+        try {await controller.continueAnyway()} catch {throw new Error(words.changeFailed)}
+      }} open={overriding} title={automaticOff ? words.continueWithoutAutomaticTitle(host) : words.continueAnyway(host)} />
+  </Strip>
+}
+
+/** Host offline: the primary action is the best target this Desktop can route to; the rest wait under "Other computers…". */
+function OfflineBanner({ controller, status, host, members }: BannerProps & { members: CanonicalRoomMember[] }) {
   const words = useBots().succession
   const [preparation, setPreparation] = useState<Preparation | null>(null)
   const [preparing, setPreparing] = useState<string | null>(null)
-  const [keeping, setKeeping] = useState<SuccessionComputer | null>(null)
-  const [showSeparate, setShowSeparate] = useState(false)
-  const status = controller.status
-
-  if (!status) {return null}
-  const host = computerName(controller, status.host)
-  const owner = status.owner.name
+  const targets = offeredTargets(status, 'continue')
+  const computer = (id: string) => status.backups.find(entry => entry.install_id === id) ?? { install_id: id, name: null }
+  const best = targets.find(id => controller.computerFor(id))
+  const others = targets.filter(id => id !== (best ?? targets[0]))
+  const reasons: Record<string, string> = { not_owner: words.onlyOwnerCanContinue(status.owner.name), successor_behind_offline: words.successorsOffline(host) }
+  // The other computers are choosing which one takes over: nothing to do yet but wait.
+  const deciding = !targets.length && status.unavailable_reason === 'takeover_waiting'
+  const failure = controller.failure ?? (status.last_attempt && { target: status.last_attempt.to, reason: status.last_attempt.error, other: null })
 
   const choose = async (target: SuccessionComputer) => {
     if (preparing) {return}
@@ -198,108 +254,121 @@ export function CanonicalGroupSuccessionBanner({ controller, binding, members }:
     } finally {setPreparing(null)}
   }
 
-  const failure = controller.failure ?? (status.last_attempt && { target: status.last_attempt.to, reason: status.last_attempt.error, other: null })
+  const item = (id: string) => {
+    const name = computerName(controller, computer(id))
+    const label = readinessItem(words, status.backups.find(entry => entry.install_id === id), name)
 
-  const failed = failure && <div className="flex flex-wrap items-center gap-2 text-destructive" role="alert">
-    <span>{words.continueFailed(computerName(controller, failure.target), failureText(words, failure, status, controller))}</span>
-    {controller.computerFor(failure.target.install_id) && failure.reason !== 'not_owner' &&
-      <Button disabled={!!preparing} onClick={() => void choose(failure.target)} size="inline" variant="textStrong">{words.tryAgain}</Button>}
-  </div>
+    return controller.computerFor(id)
+      ? <DropdownMenuItem key={id} onSelect={() => void choose(computer(id))}>{label}</DropdownMenuItem>
+      : <DropdownMenuItem disabled key={id}><span className="grid gap-0.5">
+        <span>{label}</span><span className="text-xs text-(--ui-text-tertiary)">{words.connectToContinue(name)}</span>
+      </span></DropdownMenuItem>
+  }
 
-  const dialog = <ContinueDialog controller={controller} members={members} onClose={() => setPreparation(null)}
-    onPrepared={setPreparation} preparation={preparation} />
-
-  if (controller.moving || status.state === 'moving') {
-    const target = controller.moving?.label ?? computerName(controller, status.moving?.to)
-    const step = status.moving?.step
-
-    const label = step === 'fencing' ? words.stepFencing(host) : step === 'catching_up' ? words.stepCatchingUp
-      : step === 'reconciling' ? words.stepReconciling : step === 'finishing' ? words.stepFinishing : null
-
-    return <Strip icon="sync" title={words.continuingOn(target)} tone="info">
-      {label && <p className="flex items-center gap-1.5" data-step={step}><GlyphSpinner />{label}</p>}
+  return <>
+    <Strip icon="warning" title={words.hostOffline(host)} tone="warning">
+      <p>{deciding ? words.takeoverWaiting(host) : words.paused(host)}</p>
+      {deciding ? null : targets.length ? <div className="flex flex-wrap items-center gap-2 pt-0.5">
+        {best ? <Button disabled={!!preparing} loading={preparing === best} onClick={() => void choose(computer(best))} size="sm">
+          {words.confirmContinue(computerName(controller, computer(best)))}</Button>
+          : <span>{words.connectToContinue(computerName(controller, computer(targets[0])))}</span>}
+        {!!others.length && <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button disabled={!!preparing} size="sm" variant="secondary">{words.otherComputers}</Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="start">{others.map(item)}</DropdownMenuContent>
+        </DropdownMenu>}
+      </div> : <p>{reasons[status.unavailable_reason ?? ''] ?? words.noFullCopy(host)}</p>}
+      {failure && <div className="flex flex-wrap items-center gap-2 text-destructive" role="alert">
+        <span>{words.continueFailed(computerName(controller, failure.target), failureText(words, failure, status, controller))}</span>
+        {controller.computerFor(failure.target.install_id) && failure.reason !== 'not_owner' &&
+          <Button disabled={!!preparing} onClick={() => void choose(failure.target)} size="inline" variant="textStrong">{words.tryAgain}</Button>}
+      </div>}
     </Strip>
-  }
+    <ContinueDialog controller={controller} members={members} onClose={() => setPreparation(null)} onPrepared={setPreparation} preparation={preparation} />
+  </>
+}
 
-  if (status.state === 'host_restarting') {return <Strip icon="debug-restart" title={words.hostRestarting(host)} tone="info" />}
+/** Continued on two computers: the owner keeps one after confirming; everyone else sees who decides. */
+function ConflictBanner({ controller, status, group }: BannerProps & { group: string }) {
+  const words = useBots().succession
+  const { locale } = useI18n()
+  const [keeping, setKeeping] = useState<SuccessionComputer | null>(null)
+  const keep = offeredTargets(status, 'keep')
+  const named = status.conflict.map((computer, index) => ({ computer, name: computerName(controller, computer) ?? words.computerNumber(index + 1) }))
+  const [first, second] = [named[0]?.name ?? words.computerNumber(1), named[1]?.name ?? words.computerNumber(2)]
+  const kept = named.find(entry => entry.computer.install_id === keeping?.install_id)
+  const other = named.find(entry => entry.computer.install_id !== keeping?.install_id)
+  const window = status.conflict_window
+  // The side that keeps serving comes first: keeping it is "keep going".
+  const running = named.find(entry => entry.computer.install_id === status.conflict_running_on?.install_id)
+  const stopped = running && named.find(entry => entry !== running)
+  const choices = [...running ? [running] : [], ...named.filter(entry => entry !== running)].filter(entry => keep.includes(entry.computer.install_id))
 
-  if (status.state === 'host_unreachable') {
-    // The gateway lists targets best first; the first one this Desktop can route to is the primary action.
-    const targets = offeredTargets(status, 'continue')
-    const computer = (id: string) => status.backups.find(entry => entry.install_id === id) ?? { install_id: id, name: null }
-    const best = targets.find(id => controller.computerFor(id))
-    const others = targets.filter(id => id !== (best ?? targets[0]))
+  const moment = (seconds: number) => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    .format(new Date(seconds * 1000))
 
-    const reason = status.unavailable_reason === 'not_owner' ? words.onlyOwnerCanContinue(owner)
-      : status.unavailable_reason === 'successor_behind_offline' ? words.successorsOffline(host) : words.noFullCopy(host)
+  return <Strip icon="error" title={words.continuedOnTwoTitle} tone="error">
+    {/* After a careful move the gateways know when both ran; otherwise the plain explanation. */}
+    <p>{window ? words.ranOnBoth(group, first, second, moment(window.start), moment(window.end)) : words.continuedOnTwoBody(first, second)}</p>
+    {running && stopped && <p data-slot="conflict-running-on">{words.runningOn(running.name, stopped.name)}</p>}
+    {choices.length ? <div className="flex flex-wrap items-center gap-2 pt-0.5">
+      {choices.map(entry => <Button key={entry.computer.install_id} onClick={() => setKeeping(entry.computer)} size="sm"
+        variant={entry === running ? 'default' : 'secondary'}>{entry === running ? words.keepGoing(entry.name) : words.keep(entry.name)}</Button>)}
+    </div> : <p>{words.waitingForOwnerChoice(status.owner.name)}</p>}
+    <ConfirmDialog confirmLabel={kept ? words.keep(kept.name) : ''} description={other ? words.keepBody(other.name) : undefined}
+      onClose={() => setKeeping(null)} onConfirm={async () => {if (keeping) {await controller.keep(keeping.install_id)}}} open={!!keeping}
+      title={kept ? words.keepTitle(kept.name) : ''} />
+  </Strip>
+}
 
-    return <>
-      <Strip icon="warning" title={words.hostOffline(host)} tone="warning">
-        <p>{words.paused(host)}</p>
-        {targets.length ? <div className="flex flex-wrap items-center gap-2 pt-0.5">
-          {best ? <Button disabled={!!preparing} loading={preparing === best} onClick={() => void choose(computer(best))} size="sm">
-            {words.confirmContinue(computerName(controller, computer(best)))}</Button>
-            : <span>{words.connectToContinue(computerName(controller, computer(targets[0])))}</span>}
-          {!!others.length && <DropdownMenu>
-            <DropdownMenuTrigger asChild><Button disabled={!!preparing} size="sm" variant="secondary">{words.otherComputers}</Button></DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {others.map(id => {
-                const backup = status.backups.find(entry => entry.install_id === id)
-                const name = computerName(controller, computer(id))
-                const item = readinessItem(words, backup, name)
+/** On the old host after a move: what happened there while it was away stays readable on request. */
+function MovedAwayBanner({ controller, status, binding, members }: BannerProps & { binding: CanonicalGroupBinding; members: CanonicalRoomMember[] }) {
+  const words = useBots().succession
+  const [showSeparate, setShowSeparate] = useState(false)
+  const moved = status.moved
+  const branch = moved?.branch_id
 
-                return controller.computerFor(id)
-                  ? <DropdownMenuItem key={id} onSelect={() => void choose(computer(id))}>{item}</DropdownMenuItem>
-                  : <DropdownMenuItem disabled key={id}><span className="grid gap-0.5">
-                    <span>{item}</span><span className="text-xs text-(--ui-text-tertiary)">{words.connectToContinue(name)}</span>
-                  </span></DropdownMenuItem>
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>}
-        </div> : <p>{reason}</p>}
-        {failed}
-      </Strip>
-      {dialog}
-    </>
-  }
-
-  if (status.state === 'continued_on_two') {
-    const keep = offeredTargets(status, 'keep')
-    const named = status.conflict.map((computer, index) => ({ computer, name: computerName(controller, computer) ?? words.computerNumber(index + 1) }))
-    const other = named.find(entry => entry.computer.install_id !== keeping?.install_id)
-
-    return <Strip icon="error" title={words.continuedOnTwoTitle} tone="error">
-      <p>{words.continuedOnTwoBody(named[0]?.name ?? words.computerNumber(1), named[1]?.name ?? words.computerNumber(2))}</p>
-      {keep.length ? <div className="flex flex-wrap items-center gap-2 pt-0.5">
-        {named.filter(entry => keep.includes(entry.computer.install_id)).map(entry =>
-          <Button key={entry.computer.install_id} onClick={() => setKeeping(entry.computer)} size="sm" variant="secondary">{words.keep(entry.name)}</Button>)}
-      </div> : <p>{words.waitingForOwnerChoice(owner)}</p>}
-      <ConfirmDialog confirmLabel={keeping ? words.keep(named.find(entry => entry.computer.install_id === keeping.install_id)?.name ?? '') : ''}
-        description={other ? words.keepBody(other.name) : undefined} onClose={() => setKeeping(null)}
-        onConfirm={async () => {if (keeping) {await controller.keep(keeping.install_id)}}} open={!!keeping}
-        title={keeping ? words.keepTitle(named.find(entry => entry.computer.install_id === keeping.install_id)?.name ?? '') : ''} />
+  return <>
+    <Strip icon="info" title={words.movedTo(computerName(controller, moved?.to))} tone="info">
+      <p>{words.movedWhileOffline(computerName(controller, status.this_install), moved?.separate_events ?? 0)}</p>
+      {!!moved?.separate_events && branch && <div><Button aria-expanded={showSeparate} onClick={() => setShowSeparate(value => !value)}
+        size="inline" variant="textStrong">{showSeparate ? words.hideThem : words.showThem}</Button></div>}
     </Strip>
+    {showSeparate && branch && <Separate binding={binding} branchId={branch} members={members} />}
+  </>
+}
+
+/** The banner for a host that is offline, restarting or paused to stay safe, a move, a group continued on two computers, and
+ * the old host after a move. Nothing shows while the group is normal. */
+export function CanonicalGroupSuccessionBanner({ controller, binding, members, group }: {
+  controller: SuccessionController; binding: CanonicalGroupBinding; members: CanonicalRoomMember[]; group: string
+}) {
+  const words = useBots().succession
+  const status = controller.status
+
+  if (!status) {return null}
+  const props = { controller, status, host: computerName(controller, status.host) }
+
+  if (controller.moving || status.state === 'moving') {return <MovingBanner {...props} />}
+
+  switch (status.state) {
+    case 'host_restarting': return <Strip icon="debug-restart" title={words.hostRestarting(props.host)} tone="info" />
+
+    case 'paused': return <PausedBanner {...props} />
+
+    case 'host_unreachable': return <OfflineBanner {...props} members={members} />
+
+    case 'continued_on_two': return <ConflictBanner {...props} group={group} />
+
+    case 'moved_away': return status.moved ? <MovedAwayBanner {...props} binding={binding} members={members} /> : null
+
+    // A copy or a backup answered. While it still sees the host this room is connected to, Desktop is only waiting to hear
+    // from it; otherwise another computer hosts the room, and Desktop has no connection to it to follow.
+    case 'ok': return controller.answeredByHost ? null : status.host.install_id === controller.hostInstall
+      ? <Strip icon="sync" title={words.checkingHost(props.host)} tone="info" />
+      : <Strip icon="info" title={words.hostedOn(props.host)} tone="info"><p>{words.connectToContinue(props.host)}</p></Strip>
+
+    default: return null
   }
-
-  if (status.state === 'moved_away' && status.moved) {
-    const branch = status.moved.branch_id
-
-    return <>
-      <Strip icon="info" title={words.movedTo(computerName(controller, status.moved.to))} tone="info">
-        <p>{words.movedWhileOffline(computerName(controller, status.this_install), status.moved.separate_events)}</p>
-        {!!status.moved.separate_events && branch && <div><Button aria-expanded={showSeparate} onClick={() => setShowSeparate(value => !value)}
-          size="inline" variant="textStrong">{showSeparate ? words.hideThem : words.showThem}</Button></div>}
-      </Strip>
-      {showSeparate && branch && <Separate binding={binding} branchId={branch} members={members} />}
-    </>
-  }
-
-  // A copy or a backup answered: another computer hosts the room, and Desktop has no connection to it to follow.
-  if (status.state === 'ok' && !controller.answeredByHost) {
-    return <Strip icon="info" title={words.hostedOn(host)} tone="info"><p>{words.connectToContinue(host)}</p></Strip>
-  }
-
-  return null
 }
 
 /** Moved away: the old host keeps a copy; chatting continues on the new host. */

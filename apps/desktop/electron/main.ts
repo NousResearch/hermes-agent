@@ -278,6 +278,7 @@ import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
+import { handOverGroupsBeforeSleep } from './group-sleep-handover'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -6500,6 +6501,16 @@ function registerPowerResumeListeners() {
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
+    // Groups this computer hosts move to their standby before it sleeps, when the gateway can do that. Never
+    // starts a backend, never prompts; a failed handover leaves the normal offline paths.
+    powerMonitor.on('suspend', () => {
+      const local = readDesktopConnectionsRegistry().connections.find(connection => connection.kind === 'local')
+
+      if (local) {
+        void handOverGroupsBeforeSleep(async () =>
+          nativeRoomClient(await ensureRegistryBackend(local.id, 'default', '', { passive: true }), 'default'))
+      }
+    })
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
     onBatteryPower = powerMonitor.isOnBatteryPower()

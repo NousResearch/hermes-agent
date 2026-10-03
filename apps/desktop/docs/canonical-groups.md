@@ -28,6 +28,41 @@ Bookkeeping events with nothing to show stay out of the history: `turn.settled`,
 
 Errors stay visible, and no failed gateway-room action falls back to Desktop-run execution. Membership editing is not offered. Room discovery is durable on the gateway rather than replicated through Desktop `ui_meta`.
 
+## When a group's host goes offline
+
+These controls appear only when the host advertises `groups.succession.*` in `groups.capabilities`. Owner-only controls come only from the status `actions`. Desktop reads `groups.succession.status` again:
+- when the log records `succession.state`, `authority.transition` or `custody.configured`;
+- every 30 seconds while the room's own host answers, because a host that pauses to stay safe appends nothing;
+- every 15 seconds while the host is unreachable, the group isn't settled, or a message waits to be saved;
+- every 2 seconds during a move, slowing to 30 seconds while the computer watching the move doesn't answer.
+
+- **Group info** shows the backup copies, how up to date each is (or that one needs to be reconnected because its permission expired, `needs_reauthorization`), and whether the group moves by itself.
+  - The owner gets a **Can continue this group** switch on every computer the status offers. It's disabled, with a hint, while someone else's computer hasn't allowed it; on your own computer, turning it on records both steps.
+  - The owner can also turn automatic moves on or off. While the other computers store that change, the switch shows the requested value with "Turning off… (waiting for the other computers)".
+  - The owner can also add or remove a backup computer, and move the group on purpose.
+  - A row whose operator and the group's owner are both named, and differ, says that person's computer keeps the group's whole history. **Add a backup computer…** says the same before adding another person's computer, and needs a second **Add**. A name missing on either side means ownership isn't known, and nothing is claimed.
+- **Host offline:** status comes only from the room's last known backups that Desktop already has connections to.
+  - While a backup still sees the host, the banner says "Checking {host}…".
+  - While the other computers decide which one takes over (`takeover_waiting`), it says so and offers nothing.
+  - Otherwise **Continue on {best}** opens a confirmation built from `groups.succession.prepare`, and **Other computers…** lists the rest. `prepare` and `promote` run on the target computer's own connection.
+  - The confirmation shows which recent messages only the old host has (`at_risk`), what the target is still catching up (`behind_by`), and who can't be reached (`voters_unreachable`). It sends one `promote`, and stays busy until it answers.
+  - Refusals are worded: another computer is already continuing, the preview changed, or the caller isn't the owner.
+- **Moving** shows its steps. An automatic move has no buttons. A planned move first waits for replies in progress, and the owner can **Move now**, after which those replies show as unknown.
+- **A host paused to stay safe** says why. It can't reach the other computers (`lost_majority`, `isolated`), or its connection to them isn't ready (`no_lease_layer`); a reason Desktop doesn't know yet gets a generic line. The owner can **Continue anyway**. When that also turns automatic moves off (`turns_off_automatic`), the confirmation says so.
+- **While a host can't take messages** (offline, restarting, moving, paused, or the side of a conflict that stopped), the composer takes one message. Send keeps it in the journal and delivers it once the group resumes, on the new host after a move. A first attempt refused with `room_host_paused`, or with `room_authority_promised` while a move waits, is held the same way, and offered again at most once per status reading. Stop still works while the host answers.
+- **After a move** the room follows its new host under the same room id, including when a backup answers as the new host after an automatic move. Unsent messages move with their event ids.
+  - Your messages the old host showed that the new host's log doesn't have stay in place, marked "Didn't reach {to} before {from} went offline.", with **Send again**. Nothing is sent again automatically: the old host may already have started work for them. Desktop remembers these only while it runs: after a reload, or a move while Desktop was closed, they aren't shown; if the old host comes back, they're among its set-aside messages.
+  - Unknown work keeps its controls and never runs again by itself. Work waiting for another computer, and Bots that stay behind until the group moves back to their computer, say so. When a computer with such Bots answers again and the owner may move the group there, Desktop offers **Move back**.
+- **Not yet saved on another computer:** an acceptance with `protected: false` keeps the message in the journal, marked under the message, until the group runs normally and its host's `groups.custody.status` reports `protected_seq` at or past it. If the group moves first, Desktop offers it to the new host once, with the same event id. A refusal that proves nothing was stored puts it back in the composer as an editable draft, with the reason. Hosts that leave the field out behave as before.
+- **The history** words each move and never claims that no messages were lost: Bot replies written after the host's last push aren't protected. The count of messages only the host holds stays in Group info.
+- **Two hosts:**
+  - After a careful automatic move, the owner can keep going, go back or be asked first next time, with one OS notification. Everyone else sees an info line while the host reports the move.
+  - When the gateways report a conflict, the banner names the side that keeps running and offers **Keep going on {it}** first.
+  - When two of Desktop's connections both serve the room unaware of each other, Desktop hands the older one the newer chain (`groups.succession.learn`), and shows "running in two places" only if that doesn't end it.
+  - The computer the group moved away from shows **Open on {target}** instead of the composer.
+- **Creating a group** with Bots on your other computers offers to let them continue it, which records their consent and designation in one step. It also offers where the group runs: one of your always-on computers (`room_identity.always_on`) is preselected. Ownership comes from `room_identity.operator_name` on both sides, and a name missing on either side means it isn't known. Such a computer is only suggested ("Tip: host on {name}…"), and its notice names the computer rather than a person. Another person's computer is named in the notice and never chosen for you.
+- **Before the computer sleeps,** Desktop asks a local host that advertises `groups.succession.handover_all` to hand its groups over, for up to 3 seconds.
+
 ## Cross-gateway setup over native connections
 
 Select the always-on gateway as Desktop's current connection before creating the group. Select a local member and a Bot from another supported SSH gateway. Peer members currently use their gateway's default profile and receive text only. Each participating peer gateway must have its API server enabled and advertise a `gateway.room_link_url` that the room home can reach independently of Desktop; a Desktop-owned SSH tunnel is not a durable RoomLink endpoint. HTTPS is required outside loopback. URL/Cloud and Windows SSH do not gain canonical setup through this change.

@@ -8,7 +8,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ app: {}, ipcMain: {} }))
 const nativeModule = '../../../electron/prepared-submissions'
 const { preparedJournal } = await import(/* @vite-ignore */ nativeModule)
-import { attemptCanonicalGroupSend, claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend, settleCanonicalGroupSend } from './canonical-group-send'
+import { attemptCanonicalGroupSend, claimCanonicalGroupSend, clearUnsavedCanonicalGroupSends, listCanonicalGroupSends, listUnsavedCanonicalGroupSends,
+  prepareCanonicalGroupSend, readCanonicalGroupSend, rehomeCanonicalGroupSends, reofferedCanonicalGroupSend, retireCanonicalGroupSend,
+  settleCanonicalGroupSend } from './canonical-group-send'
 
 const binding = { connectionId: 'local', profile: 'default', roomId: 'window-room' }
 const directories: string[] = []
@@ -199,4 +201,57 @@ it('keeps an intent fresh and unsent when publishing uncertainty fails', async (
   expect(dispatch).not.toHaveBeenCalled()
   expect(entry.attempted).toBe(false)
   expect(Object.values(store.read())).toEqual([entry])
+})
+
+it('keeps an accepted message no other computer holds yet, moves it with the group, and lets it go once saved', async () => {
+  const { store, bind } = fixture()
+  bind('window-a')
+  const entry = await prepareCanonicalGroupSend(binding, { text: 'Only on the host so far' })
+  await attemptCanonicalGroupSend(binding, entry)
+  await settleCanonicalGroupSend(binding, entry, { protected: false, event: { event_id: 'user:only', seq: 4 } })
+
+  // Accepted: nothing blocks the composer, and the message stays in the journal in case the host is lost.
+  expect(await readCanonicalGroupSend(binding)).toBeUndefined()
+  expect(await listCanonicalGroupSends(binding)).toEqual([])
+  expect((await listUnsavedCanonicalGroupSends(binding)).map(record => record.entry.unsaved)).toEqual([{ seq: 4, event_id: 'user:only' }])
+  const next = await prepareCanonicalGroupSend(binding, { text: 'The next message' })
+  await retireCanonicalGroupSend(binding, next.params.event_id, next)
+  await clearUnsavedCanonicalGroupSends(binding, 3)
+  expect(await listUnsavedCanonicalGroupSends(binding)).toHaveLength(1)
+
+  // The group moves first: the message follows with its identity, to be offered again, and an older seq never clears it.
+  const moved = { ...binding, connectionId: 'vps' }
+  await rehomeCanonicalGroupSends(binding, moved)
+  expect(await listUnsavedCanonicalGroupSends(binding)).toEqual([])
+  const [record] = await listUnsavedCanonicalGroupSends(moved)
+  expect(record.entry.params).toEqual(entry.params)
+  expect(record.entry.unsaved).toEqual({ seq: 4, event_id: 'user:only', reoffer: true })
+  await clearUnsavedCanonicalGroupSends(moved, 99)
+  expect(await listUnsavedCanonicalGroupSends(moved)).toHaveLength(1)
+
+  // Offered again: still held alone on the new host keeps it with its new seq; a status covering that seq ends it.
+  await reofferedCanonicalGroupSend(record, { protected: false, event: { event_id: 'user:only', seq: 9 } })
+  expect((await listUnsavedCanonicalGroupSends(moved)).map(record => record.entry.unsaved)).toEqual([{ seq: 9, event_id: 'user:only' }])
+  await clearUnsavedCanonicalGroupSends(moved, 9)
+  expect(Object.values(store.read())).toEqual([])
+
+  // Saved on the new host at once: done.
+  const again = await prepareCanonicalGroupSend(moved, { text: 'Second' })
+  await attemptCanonicalGroupSend(moved, again)
+  await settleCanonicalGroupSend(moved, again, { protected: false, event: { event_id: 'user:second', seq: 10 } })
+  await rehomeCanonicalGroupSends(moved, binding)
+  await reofferedCanonicalGroupSend((await listUnsavedCanonicalGroupSends(binding))[0], { protected: true, event: { event_id: 'user:second', seq: 11 } })
+  expect(Object.values(store.read())).toEqual([])
+})
+
+it('settles an acceptance as before when the host saved it, or doesn’t say', async () => {
+  const { store, bind } = fixture()
+  bind('window-a')
+
+  for (const accepted of [undefined, {}, { protected: true, event: { event_id: 'user:saved', seq: 2 } }, { protected: false }]) {
+    const entry = await prepareCanonicalGroupSend(binding, { text: 'Saved' })
+    await attemptCanonicalGroupSend(binding, entry)
+    await settleCanonicalGroupSend(binding, entry, accepted)
+    expect(Object.values(store.read())).toEqual([])
+  }
 })

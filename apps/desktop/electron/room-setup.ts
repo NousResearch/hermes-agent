@@ -39,11 +39,43 @@ export function roomSetupCoordinator(options: {
       return { client, capability }
     } catch (error) {client.close(); throw error}
   }
+  /** A backup enrolment that didn't finish is withdrawn on the host, then its grant is revoked. Returns what remains. */
+  const settleCustody = async (records: SetupRecord[], live: Map<string, Client>) => {
+    let pending = 0
+    for (const record of records.filter(record => record.kind === 'custody')) {
+      if (record.committed) {
+        try {await options.store.remove(record.id)} catch {pending++}
+        continue
+      }
+      let client = live.get(record.id), host: Client | undefined
+      const retained = Boolean(client)
+      try {
+        let grant = record.grant
+        if (!grant) {
+          client ||= (await open(record.route, record.installationId)).client
+          try {grant = (await client.request('groups.peer.invite', record.invitation)).grant}
+          catch (error) {if (!(error instanceof RoomSetupError) || error.reason !== 'invitation_request_expired') {throw error}}
+        }
+        if (grant) {
+          // An add whose reply was lost may have reached the host: withdraw it there before the grant.
+          host = (await open(record.home!, record.homeInstallationId)).client
+          try {await host.request('groups.custody.remove', { room_id: record.roomId, install_id: record.installationId })}
+          catch (error) {if (!(error instanceof RoomSetupError) || !['room_custody_invalid', 'room_not_found'].includes(error.reason)) {throw error}}
+          client ||= (await open(record.route, record.installationId)).client
+          const receipt = await client.request('groups.peer.revoke', { grant })
+          if (receipt?.revoked !== true) {throw new RoomSetupError('cleanup_pending')}
+        }
+        await options.store.remove(record.id)
+      } catch {pending++}
+      finally {if (!retained) {client?.close()}; host?.close()}
+    }
+    return pending
+  }
   const recover = async (live = new Map<string, Client>(), memory = new Map<string, SetupRecord>()) => {
     const journal = await options.store.list().catch(() => ({ records: [] as SetupRecord[], unreadable: ['journal'] }))
     const unreadable = journal.unreadable
     const records = [...new Map([...journal.records, ...memory.values()].map(record => [record.id, record])).values()]
-    let pending = unreadable.length
+    let pending = unreadable.length + await settleCustody(records, live)
     for (const home of records.filter(record => record.kind === 'home')) {
       const peers = records.filter(record => record.kind === 'peer' && record.setupId === home.setupId)
       if (home.committed) {
@@ -99,33 +131,6 @@ export function roomSetupCoordinator(options: {
       if (allSettled) {
         try {await options.store.remove(home.id)} catch {pending++}
       }
-    }
-    for (const record of records.filter(record => record.kind === 'custody')) {
-      if (record.committed) {
-        try {await options.store.remove(record.id)} catch {pending++}
-        continue
-      }
-      let client = live.get(record.id), host: Client | undefined
-      const retained = Boolean(client)
-      try {
-        let grant = record.grant
-        if (!grant) {
-          client ||= (await open(record.route, record.installationId)).client
-          try {grant = (await client.request('groups.peer.invite', record.invitation)).grant}
-          catch (error) {if (!(error instanceof RoomSetupError) || error.reason !== 'invitation_request_expired') {throw error}}
-        }
-        if (grant) {
-          // An add whose reply was lost may have reached the host: withdraw it there before the grant.
-          host = (await open(record.home!, record.homeInstallationId)).client
-          try {await host.request('groups.custody.remove', { room_id: record.roomId, install_id: record.installationId })}
-          catch (error) {if (!(error instanceof RoomSetupError) || !['room_custody_invalid', 'room_not_found'].includes(error.reason)) {throw error}}
-          client ||= (await open(record.route, record.installationId)).client
-          const receipt = await client.request('groups.peer.revoke', { grant })
-          if (receipt?.revoked !== true) {throw new RoomSetupError('cleanup_pending')}
-        }
-        await options.store.remove(record.id)
-      } catch {pending++}
-      finally {if (!retained) {client?.close()}; host?.close()}
     }
     // Orphans are unknown obligations, never dropped as an empty journal.
     pending += records.filter(record => record.kind === 'peer' && !records.some(home => home.kind === 'home' && home.setupId === record.setupId)).length

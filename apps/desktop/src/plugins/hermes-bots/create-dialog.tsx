@@ -20,7 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
-  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -33,7 +32,6 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Switch,
   Textarea,
   useI18n,
   useValue
@@ -47,7 +45,7 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { desktopComputers, successionAdvertised } from './canonical-group-succession'
+import { SuccessorOffer, useSuccessorOffer } from './canonical-group-successor-offer'
 import { canonicalGroupCreateErrorMessage, canonicalGroupEligibility, canonicalPeerGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, createCanonicalPeerGroup, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
@@ -1183,9 +1181,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [name, setName] = useState('')
   const [createError, setCreateError] = useState('')
   const [createPending, setCreatePending] = useState(false)
-  // Your other computers keep a full copy; with this on they may also continue the group (consent + designation).
-  const [successors, setSuccessors] = useState(true)
-  const [continuation, setContinuation] = useState<{ source: string; host: string | null } | null>(null)
   const creating = useRef<null | number>(null)
   const interaction = useRef(0)
 
@@ -1213,13 +1208,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setCreateError('')
       setSetupCleanup(false)
       setSetupStorageBlocked(false)
-      setSuccessors(true)
       void recoverSetup()
     }
 
     return () => {retireInteraction(); setupRecoveryEpoch.current++}
   }, [open, connectionId, profile, retireInteraction])
-
 
   // An outage placeholder preserves one selected owner's identity in the
   // sidebar, but it is not a routable room member. Never offer it here.
@@ -1235,23 +1228,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && selected.length <= GROUP_CHAT_MAX_MEMBERS && !setupCleanup && !recoveringSetup && !createPending
-  const peerSelection = peerEligible && !eligibility.eligible
-
-  // Offered for Bots on your other computers, and only when this host can designate computers that continue its groups.
-  const source = JSON.stringify([connectionId, profile])
-  useEffect(() => {
-    let current = true
-
-    if (!open || !connectionId || !peerSelection) {return}
-    void Promise.all([readGroupExecutionMode({ connectionId, profile }, gatewayActivationEpoch()), desktopComputers()]).then(([surface, computers]) => {
-      if (current && surface.methods?.includes('groups.custody.designate') && successionAdvertised(surface.methods)) {
-        setContinuation({ source, host: computers.find(computer => computer.connectionId === connectionId)?.label ?? null })
-      }
-    })
-
-    return () => {current = false}
-  }, [open, connectionId, profile, source, peerSelection])
-  const continuationOffered = peerSelection && continuation?.source === source
+  const successors = useSuccessorOffer({ open, connectionId, profile, peerEligible, eligible: eligibility.eligible, selected })
 
   const create = async () => {
     if (!open || creating.current !== null || !canCreate) {return}
@@ -1271,7 +1248,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         return
       }
 
-
       const roomMembers = durableGroupChatMembers(selected).map((member, index) => ({
         ...member,
         display_name: displayName(selected[index], botRosterMeta(selected[index], allMeta))
@@ -1287,19 +1263,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         throw new Error(b.canonical.driverUnavailable)
       }
 
-      if (mode === 'canonical' && (rosterEligibility.eligible || (window.hermesDesktop?.roomSetup && canonicalPeerGroupEligibility(route, roomMembers)))) {
+      if (mode === 'canonical' && (rosterEligibility.eligible || (window.hermesDesktop?.roomSetup && canonicalPeerGroupEligibility(successors.home(route), roomMembers)))) {
         const created = rosterEligibility.eligible ? await createCanonicalGroup(route, base, roomMembers)
-          : await createCanonicalPeerGroup(route, base, roomMembers, continuationOffered && successors)
+          : await createCanonicalPeerGroup(successors.home(route), base, roomMembers, successors.requested)
 
         // Creation already succeeded; leave it on its owner without adopting a stale result.
         if (!ownsInteraction()) {return}
         const key = registerCanonicalGroup(route, created.room)
-
-        // The group exists either way; a designation that didn't land is said once, never rolled back.
-        if ('successors' in created && created.successors === 'failed') {
-          host.notify({ kind: 'info', message: b.succession.createdWithoutSuccessors(created.room.name) })
-        }
-
+        successors.report(created, route)
         onClose()
         onCreated?.(key)
 
@@ -1481,20 +1452,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             )}
           </div>
         </div>
-        {continuationOffered && <div className="grid gap-2 text-sm text-(--ui-text-secondary)" data-slot="group-successors">
-          <p>{b.succession.successorInfo(continuation?.host ?? null)}</p>
-          <label className="flex items-center gap-2 text-(--ui-text-primary)">
-            <Switch aria-label={b.succession.successorToggle} checked={successors} disabled={createPending} onCheckedChange={setSuccessors} size="xs" />
-            {b.succession.successorToggle}
-          </label>
-        </div>}
+        <SuccessorOffer disabled={createPending} offer={successors} />
         <div className="grid gap-2">
-          <form
-            onSubmit={event => {
-              event.preventDefault()
-              void create()
-            }}
-          >
+          <form onSubmit={event => {event.preventDefault(); void create()}}>
             <label className="grid gap-2 text-sm text-(--ui-text-secondary)">
               {b.canonical.nameOptional}
             <Input

@@ -22,58 +22,13 @@ vi.mock('@hermes/plugin-sdk', async () => {
     host: { ...gateway.host, requestProfile: captureGroupRequests(request).request, connections, notify } }
 })
 
+import { backup, binding, computer, GUEST, type Handler, hex, LAPTOP, MINI, offlineStatus, refusal, registry, roomState, status,
+  unreachable, VPS } from './canonical-group-succession-fixtures'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { CANONICAL_GROUP_CAPABILITIES } from './group-test-utils'
 import { translateBots } from './i18n-test-helper'
 
-const hex = (character: string) => character.repeat(32)
-const MINI = `install:${hex('a')}`, VPS = `install:${hex('b')}`, LAPTOP = `install:${hex('c')}`, GUEST = `install:${hex('e')}`
-const binding = { connectionId: 'mac-mini', profile: 'default', roomId: 'room-harbor' }
-
-const registry = [
-  { id: 'mac-mini', label: 'Mac mini', installId: hex('a') }, { id: 'vps', label: 'Home VPS', installId: hex('b') },
-  { id: 'laptop', label: 'Laptop', installId: hex('c') }, { id: 'unrelated', label: 'Work box', installId: hex('d') }
-]
-
-const LAYER7 = ['groups.succession.status', 'groups.succession.prepare', 'groups.succession.promote', 'groups.succession.keep',
-  'groups.succession.branch_log', 'groups.custody.designate', 'groups.custody.allow', 'groups.custody.add', 'groups.custody.remove']
-
-const members = [{ member_id: 'atlas', profile: 'default', handle: 'atlas', display_name: 'Atlas Bot' },
-  { member_id: 'mira', profile: 'default', handle: 'mira', display_name: 'Mira Bot' }]
-
-type Handler = (method: string, params: Record<string, unknown>) => unknown
 let handlers: Record<string, Handler> = {}
 
-const capabilities = (install: string, layer7 = true) => ({ ...CANONICAL_GROUP_CAPABILITIES, authority_gateway_id: install,
-  methods: [...CANONICAL_GROUP_CAPABILITIES.methods, ...layer7 ? LAYER7 : []] })
-
-const roomState = (extra: Record<string, unknown> = {}) => ({ room: { name: 'Harbor launch', authority_epoch: 1, members },
-  driver_status: { running: true, working: false, counts: {}, pending_actions: [], ...extra } })
-
-const backup = (install: string, name: string | null, extra: Record<string, unknown> = {}) => ({ install_id: install, name,
-  successor: true, allowed: true, designated: true, kind: 'member', operator_name: 'Dana', readiness: 'caught_up', behind_by: 0, last_seen: null, ...extra })
-
-const status = (extra: Record<string, unknown> = {}) => ({
-  state: 'ok', host: { install_id: MINI, name: 'Mac mini', reachable: true, since: null },
-  this_install: { install_id: MINI, name: 'Mac mini', role: 'host' }, owner: { name: 'Dana' },
-  backups: [backup(VPS, 'Home VPS'), backup(LAPTOP, 'Laptop', { readiness: 'behind', behind_by: 3 })],
-  at_risk: { count: 0 }, moving: null, conflict: null, moved: null, work: null, actions: [], unavailable_reason: null,
-  previous_host: null, unavailable_bots: [], last_attempt: null, ...extra
-})
-
-const refusal = (reason: string, data: Record<string, unknown> = {}) => Object.assign(new Error(reason), { code: 4001, data: { reason, ...data } })
-
-/** One computer: its own installation, a room it hosts or keeps, and anything else refused like the gateway does. */
-function computer(install: string, methods: Record<string, Handler>, layer7 = true): Handler {
-  return (method, params) => {
-    if (method === 'groups.capabilities') {return capabilities(install, layer7)}
-
-    if (Object.hasOwn(methods, method)) {return methods[method](method, params)}
-    throw refusal('room_not_found')
-  }
-}
-
-const unreachable: Handler = () => {throw new Error('connection lost')}
 const calls = (method: string) => request.mock.calls.filter(call => call[1] === method)
 const routesOf = (method: string) => calls(method).map(call => call[0].connectionId)
 
@@ -109,11 +64,6 @@ async function hostThatGoesOffline(initial: Record<string, unknown> = {}) {
   return () => {online = false}
 }
 
-const offlineStatus = (extra: Record<string, unknown> = {}) => status({
-  state: 'host_unreachable', host: { install_id: MINI, name: 'Mac mini', reachable: false, since: 1_700_000_000 },
-  this_install: { install_id: VPS, name: 'Home VPS', role: 'backup' },
-  actions: [{ action: 'continue', targets: [VPS, LAPTOP] }], ...extra
-})
 
 it('shows nothing about other computers when the host does not advertise continuation, even after it fails', async () => {
   let online = true
@@ -168,7 +118,7 @@ it('asks only the room’s remembered backups when the host fails, and keeps the
   expect(screen.getByText('The group is paused. Nothing new will run until Mac mini is back or you continue the group on another computer.')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Continue on Home VPS' })).toBeTruthy()
   fireEvent.pointerDown(screen.getByRole('button', { name: 'Other computers…' }), { button: 0, ctrlKey: false })
-  expect(await screen.findByRole('menuitem', { name: 'Laptop · missing 3 recent messages' })).toBeTruthy()
+  expect(await screen.findByRole('menuitem', { name: 'Laptop · catching up 3 messages' })).toBeTruthy()
   fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
   // Only the remembered backup's own connection, confirmed first; never an unrelated one.
   expect(request.mock.calls.some(call => call[0].connectionId === 'unrelated')).toBe(false)
@@ -197,7 +147,7 @@ it('continues on the chosen computer through its own connection, follows the gro
       this_install: { install_id: VPS, name: 'Home VPS', role: 'host' }, previous_host: { install_id: MINI, name: 'Mac mini', offline_since: 1_700_000_000 },
       unavailable_bots: [{ member_id: 'mira', name: 'Mira Bot' }], backups: [backup(LAPTOP, 'Laptop')] }) : offlineStatus(),
     'groups.succession.prepare': (_method, params) => ({ preview_id: 'preview-1', target: { install_id: params.target_install_id, name: 'Home VPS', operator_name: 'Dana' },
-      owner: { name: 'Dana' }, behind_by: 2, at_risk: { count: 0 }, work: { completed: 2, elsewhere: 1, unknown: 1, waiting_for_host: 1 },
+      owner: { name: 'Dana' }, behind_by: 2, at_risk: { count: 2 }, work: { completed: 2, elsewhere: 1, unknown: 1, waiting_for_host: 1 },
       unavailable_bots: [{ member_id: 'mira', name: 'Mira Bot' }], cautions: [{ code: 'host_may_be_running' }] }),
     'groups.succession.promote': () => {
       hosting = true
@@ -224,6 +174,7 @@ it('continues on the chosen computer through its own connection, follows the gro
   expect(dialog.getByText('1 Bot runs on Mac mini and stays unavailable until the group moves back to Mac mini: Mira Bot.')).toBeTruthy()
   expect(dialog.getByText('Work in progress: 2 finished, 1 still running on other computers, 1 unknown. Unknown work won’t run again automatically.')).toBeTruthy()
   expect(dialog.getByText('Home VPS is missing 2 recent messages. They’ll appear if Mac mini comes back.')).toBeTruthy()
+  expect(dialog.getByText('Home VPS is catching up 2 messages from another computer.')).toBeTruthy()
   expect(dialog.getByText(/^Only continue if Mac mini is really offline\./)).toBeTruthy()
   expect(dialog.queryByText(/will manage this group/)).toBeNull()
   expect(dialog.queryByRole('button', { name: 'Cancel' })).toBeTruthy()
@@ -438,7 +389,8 @@ it('switches your own computer on in both places, and leaves someone else’s co
   await act(async () => {fireEvent.click(add.getByRole('button', { name: 'Add: Work box' }))})
   expect(addBackup).toHaveBeenCalledWith({ home: { connectionId: 'mac-mini', profile: 'default' }, roomId: binding.roomId,
     backup: { connectionId: 'unrelated', profile: 'default' }, successor: true })
-  expect(request.mock.calls.some(call => call[0].connectionId === 'unrelated')).toBe(false)
+  // Only the computer being added is asked who runs it, and only that.
+  expect(request.mock.calls.filter(call => call[0].connectionId === 'unrelated').map(call => call[1])).toEqual(['groups.capabilities'])
 })
 
 it('offers the gentle prompt to the owner when nothing can continue the group', async () => {

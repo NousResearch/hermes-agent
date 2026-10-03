@@ -73,6 +73,9 @@ _TOOL_CALL = SimpleNamespace(
     type="function_call", status="completed", call_id="call_1", name="inspect", arguments='{"path":"x"}',
 )
 _LEAK_LIKE_ANSWER = 'Summary of work.\nRunning the tests next.\n{"cmd": "pytest -q"}'
+_PARTIAL_TOOL_CALL = SimpleNamespace(
+    type="function_call", status="in_progress", call_id="call_2", name="inspect", arguments='{"pa',
+)
 _CODEX_REASONING_ONLY = SimpleNamespace(
     type="reasoning", id="rs_test", encrypted_content=None, summary=[SimpleNamespace(text="still thinking")],
 )
@@ -87,7 +90,7 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
         pytest.param("", "completed", [_TOOL_CALL], None, None, "tool_calls", id="tool-call"),
         pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None)], None, _LEAK_LIKE_ANSWER, "stop",
                      id="tool-call-like-answer"),
-        pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None, status="incomplete")], None, None,
+        pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None), _PARTIAL_TOOL_CALL], None, None,
                      "length", id="tool-call-like-partial-item"),
         # A str ``output`` is delivered only via output_text (empty output list), as streamed Codex answers can be.
         pytest.param("", "completed", _LEAK_LIKE_ANSWER, None, _LEAK_LIKE_ANSWER, "stop", id="tool-call-like-output-text"),

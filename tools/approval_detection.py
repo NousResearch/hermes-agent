@@ -18,15 +18,30 @@ logger = logging.getLogger("tools.approval")
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
 # import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+# .env.example / .env.sample / .env.template are the documented-shape substitutes a blocked
+# read is TOLD to use instead ("read .env.example"); blocking them closed the loop the
+# remediation message prescribes. Every other .env spelling stays blocked.
+_ENV_TEMPLATE_TAIL = r'\b(?!\.(?:example|sample|template)\b)'
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'\.env\b'
+    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'\.env'
+    + _ENV_TEMPLATE_TAIL
 )
 # ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
 # so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
-_HERMES_CONFIG_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
+# BOTH root spellings, because neither covers the other: ~ / $HOME / $hermes_home forms reach the rules through
+# _rewrite_resolved_hermes_home (the ACTIVE profile dir folds to ~/.hermes/), while the Windows ROOT is
+# deliberately NOT folded — folding it would erase the `appdata/.../hermes` shape rule 266 keys on — and so
+# arrives as ~/AppData/Local/hermes/ after the user-home fold. The optional `profiles/<name>/` segment makes a
+# SIBLING profile's config.yaml as gated as the active one's: config.yaml holds the approval policy, so it is
+# write-gated everywhere under the root, not only at ~/.hermes/config.yaml.
+_HERMES_ROOT_SPELLING = (
+    r'(?:~\/\.hermes/|~/AppData/(?:Local|Roaming)/hermes/'
+    r'|(?:\$home|\$\{home\})/\.hermes/|(?:\$home|\$\{home\})/AppData/(?:Local|Roaming)/hermes/'
+    r'|(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:profiles\/[^\/\s"\'\)]*\/)?'
 )
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+_HERMES_CONFIG_PATH = _HERMES_ROOT_SPELLING + r'config\.yaml\b'
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env' + _ENV_TEMPLATE_TAIL + r'(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
@@ -271,7 +286,7 @@ DANGEROUS_PATTERNS = [
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
     # Windows-form credential paths; the POSIX ~/.ssh patterns never match drive-letter or backslash spellings.
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
-    (r'\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env\b', "access to Hermes secrets (Windows path)"),
+    (r'\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env' + _ENV_TEMPLATE_TAIL, "access to Hermes secrets (Windows path)"),
     # ── end of Windows tier
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
@@ -503,6 +518,10 @@ def _normalize_command_for_detection(command: str) -> str:
     # precede the generic escape strip below, whose [^\n] class skips newlines and would leave the
     # backslash wedged between tokens, defeating the structured rm/mkfs/dd patterns incl. the HARDLINE floor.
     command = re.sub(r'\\\r?\n', '', command)
+    # Fold path-shaped environment variables ($LOCALAPPDATA / %LOCALAPPDATA% / $HOME / ...) to their
+    # resolved values FIRST, so the absolute path below can find it and the rules finally see the
+    # canonical ~/... spelling instead of an opaque $VAR token (R1).
+    command = _rewrite_resolved_env_vars(command)
     # Fold absolute user/Hermes home prefixes to ~/ and ~/.hermes/ so the static patterns catch /home/alice/.bashrc
     # and C:\Users\alice\.bashrc. Resolved at detection time (not import time) so it tracks HOME/HERMES_HOME set
     # later. MUST run before the backslash strip (which would dissolve C:\Users\alice to C:Usersalice). Hermes home
@@ -515,6 +534,62 @@ def _normalize_command_for_detection(command: str) -> str:
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
     return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+
+
+# Path-shaped environment variables whose VALUES must be substituted before the static rules
+# run: `$LOCALAPPDATA/hermes/...` is otherwise an opaque token no path rule can match.
+# Deliberately NOT PATH/IFS (arbitrary content, not a directory prefix) and not a set a caller
+# can widen to steer detection — this is a fixed list, read fresh at detection time.
+_FOLDABLE_ENV_VARS = ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "HOME", "HERMES_HOME")
+
+
+def _rewrite_resolved_env_vars(command: str) -> str:
+    """Substitute ``$VAR`` / ``${VAR}`` / ``%VAR%`` for the path-shaped variables below (R1).
+
+    The static rules key on the RESOLVED path, so ``$LOCALAPPDATA/hermes/profiles/x/.env``
+    and ``C:\\Users\\..\\AppData\\Local\\hermes\\profiles\\x\\.env`` must reach them as the same
+    string — before this fold every ``$VAR``-spelled variant was an opaque token no path rule
+    could match. Runs FIRST in ``_normalize_command_for_detection`` so the substituted absolute
+    path then flows through the Hermes-home and user-home folds and lands on the canonical
+    ``~/…`` spelling the patterns are written against. Resolved at detection time (not import
+    time) so a HOME/HERMES_HOME exported later still lands.
+
+    Two values are canonicalized rather than pasted raw:
+
+    * a value that IS the user home becomes ``~``. ``_home_prefix_fold_regex`` never folds a
+      BARE home (it needs a tail to anchor on), so pasting ``C:\\Users\\me`` for ``$HOME`` would
+      survive normalization as a mangled token and ``rm -rf $HOME`` would stop matching the
+      hardline home rule — which spells the operand ``~`` or ``$HOME``.
+    * ``$HERMES_HOME`` folds to ``~/.hermes`` only when the value IS the active Hermes home
+      (otherwise ``_rewrite_resolved_hermes_home`` would not have folded the literal path
+      either, and the ``\\$hermes_home`` pattern alternation still needs the token).
+    """
+    try:
+        raw_homes = {os.path.expanduser("~"), os.environ.get("HOME", ""), os.environ.get("USERPROFILE", "")}
+        home_candidates = {os.path.normpath(h) for h in raw_homes if h}
+        home_candidates |= {os.path.realpath(h) for h in raw_homes if h}
+    except Exception:
+        home_candidates = set()
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = os.path.normpath(str(get_hermes_home()))
+    except Exception:
+        hermes_home = ""
+    for name in _FOLDABLE_ENV_VARS:
+        value = os.environ.get(name)
+        if not value:
+            continue
+        if name == "HERMES_HOME":
+            if not hermes_home or os.path.normpath(value) != hermes_home:
+                continue
+            value = "~/.hermes"
+        elif os.path.normpath(value) in home_candidates or os.path.realpath(value) in home_candidates:
+            value = "~"
+        # A function replacement: the value is a literal Windows path whose backslashes
+        # would otherwise be read as re escape sequences.
+        command = re.sub(rf'\$(?:\{{{name}\}}|{name}\b)|%{name}%',
+                         lambda _m, v=value: v, command)
+    return command
 
 
 def _lower_preserving_flags(command: str) -> str:
@@ -1501,6 +1576,66 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     )
 
 
+# ---- R1b: non-literal operands that resolve to a protected file --------------------------
+# A shell word BUILT from an expansion ($VAR / ${VAR} / %VAR% / $(...) / `...`) whose trailing
+# basename is a protected store cannot be matched by any path rule: the directory part only
+# exists at run time, and by the time it resolves the read/write has already happened. Fail
+# closed on the SHAPE instead. Basenames mirror the file-tools denylist (the read side too):
+# auth.json / config.yaml / SOUL.md are read-denied there, and a terminal-side write to them is
+# exactly the vector this closes. Literal operands stay with the path rules — which is why
+# `cat ~/.hermes/config.yaml` (a permitted read, test_reads_and_unrelated_writes_are_safe) keeps
+# its current answer. Checked LAST in detect_dangerous_command so a more specific pattern keeps
+# its own description.
+_NON_LITERAL_PROTECTED_DESCRIPTION = "non-literal path to a protected file"
+_NON_LITERAL_EXPANSION_RE = re.compile(
+    r'\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|\()|%[A-Za-z_][A-Za-z0-9_]*%|`'
+)
+# `.env.example` / `.env.sample` / `.env.template` are NOT protected (see _ENV_TEMPLATE_TAIL).
+#
+# A SUFFIX match on the expansion-built word, not a fullmatch of its last path segment: an
+# expansion may be glued straight onto the protected name with no separator at all
+# (`${P}config.yaml`, `` `d/`config.yaml ``, `%P%.env`), so the last segment is `${P}config.yaml`
+# and segment matching returns None — while `$(dirname /a/b).env` puts the name after a `)` the
+# segment split also loses. The left boundary keeps a LONGER name on the left unflagged
+# (`$HOME/myconfig.yaml`, `my.env` name a different file, exactly as the file-tool denylist
+# does — it matches whole basenames), and `\Z` keeps a LONGER name on the right unflagged
+# (`$HOME/config.yaml.bak`).
+_PROTECTED_OPERAND_SUFFIX_RE = re.compile(
+    r'(?<![A-Za-z0-9_.-])'
+    r'(?:\.env(?!\.(?:example|sample|template)\b)[^\s/\\]*'
+    r'|auth\.json'
+    r'|config\.yaml'
+    r'|soul\.md'
+    r'|id_rsa|id_ed25519'
+    r'|[^\s/\\]+\.pem)'
+    r'\Z',
+    re.IGNORECASE,
+)
+# One shell WORD: quoted spans, $( ) / ${ } substitutions and backticks are atomic, so their
+# inner spaces never split the word, and the surrounding glue stays attached.
+_SHELL_WORD_RE = re.compile(
+    r'(?:\"(?:[^\"\\]|\\.)*\"|\'[^\']*\'|\$\([^()]*\)|\$\{[^}]*\}|`[^`]*`|[^\s])+'
+)
+# ... INCLUDING the command/pipeline/redirect separator that follows an operand: an operand
+# ends at one of these, so the word is split back into operands before the suffix test —
+# otherwise a trailing `; echo done` glued onto `"$P/config.yaml"` hides the protected name.
+_OPERAND_SEPARATOR_RE = re.compile(r'[;|&<>,]+')
+
+
+def _non_literal_protected_operand(command: str) -> str | None:
+    """The first word in *command* that is BOTH non-literal and a protected file, else ``None`` (R1b)."""
+    for token in _SHELL_WORD_RE.findall(command):
+        for operand in _OPERAND_SEPARATOR_RE.split(token):
+            # Non-literal is judged per operand: `$P;config.yaml` runs a COMMAND called
+            # config.yaml after `$P`, it does not write the protected file.
+            if not _NON_LITERAL_EXPANSION_RE.search(operand):
+                continue
+            # Trailing quote/paren is matcher glue from an atomic span, not part of the name.
+            if _PROTECTED_OPERAND_SUFFIX_RE.search(operand.rstrip('"\')')):
+                return token
+    return None
+
+
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     """Catch gateway-lifecycle verbs spelled with quote splicing.
     Backslash splicing (``kick\\start``) is undone by normalization, but quote splicing is not:
@@ -1545,4 +1680,7 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, description, description)
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
+    # R1b, deliberately last so an existing, more specific pattern keeps its own description.
+    if _non_literal_protected_operand(command):
+        return (True, _NON_LITERAL_PROTECTED_DESCRIPTION, _NON_LITERAL_PROTECTED_DESCRIPTION)
     return (False, None, None)

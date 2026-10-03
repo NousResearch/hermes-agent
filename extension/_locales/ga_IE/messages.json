@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "Tá 1-cliceáil leanúint, is fearr leat, borradh, agus leabharmharc le haghaidh Mastoson, aon ábhar cad a tharlaíonn tú ar theach.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Ainm do Mhóir MaodowName",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Cabhair Is Gá?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Cuir Cuntas Leis",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Ar Ais Go Cuntais",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Ní go fóill ar Mastodo?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Ní féidir an cás seo a aimsiú, seiceáil a sheiceáil an seoladh agus iarracht arís.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Cuntais"
+  },
+  "add_account": {
+    "message": "cur san áireamh",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Taispeáin fógraí",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "NeingintName",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Bain Cuntas",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "de réir"
+  },
+  "or": {
+    "message": "nó"
+  },
+  "send_feedback": {
+    "message": "Seol Aiseolas",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Tuairscigh fabht",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Faigh Tacaíocht",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Síntiúis",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze le haghaidh Mastodo réidh le húsáid!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Beidh an cluaisín seo gar i",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "soicind",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "m.sh.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Lean",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Do leanúint",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Gan leanúint",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Ionchuir",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Teachtaireacht dhíreach",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Comhroinn",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Tost",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Bloc",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Tuairisc",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Blocáil fearann",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Oscail an leathanach bunaidh",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Cóipeáil nasc leis an bpost",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Leabaigh",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Gné ar phróifíl",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Athraigh teangacha shuibscríofa",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Folaigh treisiú ó",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Cuir nó Bain as liostaí",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "uair an chloig",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "faoi",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Vótáil tú ar an bhfreagra seo",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Socruithe",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "Téama"
+  },
+  "graze_theme_p": {
+    "message": "Gráid go huathoibríoch ar do théama, is féidir leat override é má tá tú cosúil.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "MastodonDark",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Solas na Mastodon",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Override Mastodon Téama Téama",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "teanga"
+  },
+  "Afrikaans": {
+    "message": "AfraiceName"
+  },
+  "Arabic": {
+    "message": "Araibis"
+  },
+  "Bengali": {
+    "message": "Bengali"
+  },
+  "Bulgarian": {
+    "message": "BulgáirisName"
+  },
+  "Chinese_Simplified": {
+    "message": "Sínis Simplithe"
+  },
+  "Chinese_Traditional": {
+    "message": "Sínis traidisiúnta"
+  },
+  "Czech": {
+    "message": "Na Seice"
+  },
+  "Danish": {
+    "message": "An Danmhairg"
+  },
+  "Dutch": {
+    "message": "Ollainnis"
+  },
+  "English": {
+    "message": "Béarla"
+  },
+  "Finnish": {
+    "message": "Fionlainnis"
+  },
+  "French": {
+    "message": "Fraincis"
+  },
+  "German": {
+    "message": "Gearmáinis"
+  },
+  "Greek": {
+    "message": "Gréagach"
+  },
+  "Hawaiian": {
+    "message": "Hawaiian"
+  },
+  "Hebrew": {
+    "message": "Eabhrais"
+  },
+  "Hindi": {
+    "message": "Bac"
+  },
+  "Hungarian": {
+    "message": "Ungáiris"
+  },
+  "Icelandic": {
+    "message": "Íoslainnis"
+  },
+  "Indonesian": {
+    "message": "An IndinéisName"
+  },
+  "Italian": {
+    "message": "Na hIodáile"
+  },
+  "Japanese": {
+    "message": "Seapáinis"
+  },
+  "Korean": {
+    "message": "Cóiréis"
+  },
+  "Malay": {
+    "message": "MalayName"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norwegian"
+  },
+  "Polish": {
+    "message": "Polainn"
+  },
+  "Portuguese": {
+    "message": "Portaingéil"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portaingéilis"
+  },
+  "Romanian": {
+    "message": "Rómáinis"
+  },
+  "Russian": {
+    "message": "Rúisis"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Serbian (cirilleach)"
+  },
+  "Spanish_Modern": {
+    "message": "Spáinnis (Modern)"
+  },
+  "Swedish": {
+    "message": "Sualainnis"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Thai"
+  },
+  "Turkish": {
+    "message": "Tuircis"
+  },
+  "Ukrainian": {
+    "message": "Úcráinis"
+  },
+  "Urdu_India": {
+    "message": "Urdu (An India)"
+  },
+  "Vietnamese": {
+    "message": "Vítis"
+  },
+  "Welsh": {
+    "message": "Fáilte"
+  },
+  "convenience": {
+    "message": "áise"
+  },
+  "graze_convenience_p": {
+    "message": "Is féidir le grais ainm úsáideora a dhéanamh i naisc ar fud an ghréasáin.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkify Mastoson ainmneacha úsáideora",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Is féidir le grais ainm úsáideora a dhéanamh i naisc ar fud an ghréasáin.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Taispeáin Cártaí HoverName",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Is féidir le hovercártaí a thaispeáint eolas go tapa faoi úsáideoir nuair a hog tú thar a n-ainm.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Taispeáin preabfhuinneog le haghaidh cásanna nach bhfuil tú fothachta ar",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Molann sé seo cásanna a bhaineann le fothaire nuair a bhíonn cuairt á dhéanamh",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Taispeáin an phreabfhuinneog nuair a logáil isteach sa chuntas gan cur síos le hObhar",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Taispeáin cuntas tapa logála isteach sa phreabfhuinneog",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Override teanga uathoibríoch i nGraonName",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Nuair is féidir leat freagra a fháil ar fhreastalaí cianda nó \"toot an leathanach seo\" Is féidir le Graze oscailte freagra a fháil nó tú a ghlacadh chuig do shampla baile.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Freagrair ó Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Freagra ón gcásc baile",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Ar shampla an t-am iargúlta, tá an líne ama áitiúil níos dlúithe na n-úsáideoirí agus ábhar an mhóra sin.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redíreach <strong>Explore</strong> go <strong>Áitiúil</strong> teorainn ama",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "ábhar",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Déan an t-ábhar iargúlta taispeána a mheaitseáil do féin, nó meascán sé suas.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Taispeáin ábhar taobh thiar de Warnings Ábhar (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Seinn go huathoibríoch GIFs",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Taispeáin Íomhánna NSFW/SSFW",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "Cuntas gníomhach:",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Tarraing chun athordú",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Teachtaireachtaí le haghaidh {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Fógraí do {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "Bearta a ghlacadh mar {username}",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Gníomhaíochtaí a ghlacadh mar {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Taispeáin íomhánna bhabhta",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Taispeáin nasc, íomhá, agus téacs snippet a roinnt ó roghchlár comhthéacs ar fud an ngréasán",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Taispeáin an roghchlár comhthéacs Graíosach",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Athordú folamh (unfoderated) próifílí chun cásanna a bhaineann le cásanna a fháil sábháilte leat a chliceáil",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Athordaigh go huathoibríoch",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Leathaigh naisc le Maoddo poist i do dhátaí ama",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Taispeáin comhghleacaithe i bpatáin líne",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Úsáid íomhánna sa phost agus réamhamhairc nasc",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Ionadaigh réamhamhairc na nasc réamhshocraithe le híomhánna níos mó agus téacs snippet níos mó",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Taispeáin réamhamharc ar an nasc saibhir",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Is féidir le grais a thaispeáint descrippteacha íomhá \"Alt Téacs\" faoi bhun íomhánna ratrír ná ach amháin i dtéacs le haghaidh léamh níos éasca",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Taispeáin tuairiscí íomhá faoi íomhánna",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Tá graze ag luí ach amháin le cásanna a reáchtáil Mastodon leagan 4.0.0 nó thuas",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Ní féidir an cás seo a aimsiú, seiceáil a sheiceáil an seoladh agus iarracht arís.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Tharla earráid. Déan iarracht arís eile níos déanaí.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Postálacha",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Leantóirí",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Ag leanúint",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Gan Buíochas",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Téigh go Próifílí",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Téigh go dtí Timeline Áitiúil",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Lean cuntas ón beatha áitiúil chun tús a chur le hábhar i do Feed Baile.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Níl tú fothain go $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Beidh tú in ann gníomhaíochtaí a ghlacadh ón gcuntas sin ar aon chéime.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Cuir $display_name$ le Caiseadh?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Cuir le Graona",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

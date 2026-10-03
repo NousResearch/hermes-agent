@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ {head} は{span}を超過したため停止しました。自動的に再試行されます。"
       blocked: "⏸ {head} がブロックされました{reason}"
       crashed: "✖ {head} — ワーカーが予期せず停止しました。自動的に再試行されます。"
+      worker_note: "📎 ワーカーの最終メモ: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

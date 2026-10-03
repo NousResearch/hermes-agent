@@ -253,6 +253,7 @@ gateway:
       timed_out: "⏱ {head} túllépte {span}, ezért leállítottuk; automatikusan újrapróbáljuk."
       blocked: "⏸ {head} blokkolva{reason}"
       crashed: "✖ {head} — a feldolgozója váratlanul leállt; automatikusan újrapróbáljuk."
+      worker_note: "📐 a worker utolsó jegyzete: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

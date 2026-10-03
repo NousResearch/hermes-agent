@@ -250,6 +250,7 @@ gateway:
       timed_out: "⏱ {head} het {span} oorskry en is gestop; dit sal outomaties herprobeer word."
       blocked: "⏸ {head} geblokkeer{reason}"
       crashed: "✖ {head} — sy werker het onverwags gestop; dit sal outomaties herprobeer word."
+      worker_note: "📐 worker se laaste nota: {note}"
       status: "🔄 {head} → {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "

@@ -42,6 +42,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    parallel_exclusion_groups: Any = None
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -115,6 +116,10 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Mutual-exclusion groups (#111188): list of profile-name lists whose
+        # workers must never run at once (e.g. models sharing one GPU).
+        # None/empty = no exclusions. Restart the gateway to apply.
+        parallel_exclusion_groups=kanban_cfg.get("parallel_exclusion_groups"),
     )
 
 

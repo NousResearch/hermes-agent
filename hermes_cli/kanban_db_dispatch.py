@@ -129,6 +129,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_excluded: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, assignee, conflicting_assignee)`` deferred because the
+    assignee shares a ``kanban.parallel_exclusion_groups`` entry with a worker
+    already running (#111188). Picked up on a later tick once the conflicting
+    worker finishes; separate bucket so dashboards show "waiting on GPU
+    sibling" vs "stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -173,6 +179,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_excluded:
+            counts["excluded"] = counts.get("excluded", 0) + len(res.skipped_excluded)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -181,6 +189,57 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     if pressure:
         parts.append(f"memory_pressure={pressure}")
     return ", ".join(parts)
+
+
+def normalize_exclusion_groups(value: Any) -> list[frozenset]:
+    """Normalize ``kanban.parallel_exclusion_groups`` to a list of frozensets.
+
+    Config shape is a list of profile-name lists, one entry per mutually
+    exclusive set (e.g. ``[["gpu0fast", "gpu0dense"]]``: two profiles whose
+    models share one GPU must never run at once). A bare comma-separated
+    string counts as one group. Names are lowercased to match the dispatcher's
+    canonical assignees; singletons, blanks and non-string entries carry no
+    exclusion information and are dropped, so ``None``/``[]`` (or a scalar)
+    means "no exclusions" (backward-compatible with existing installs).
+    """
+    if value is None:
+        return []
+    try:
+        groups = [value.split(",")] if isinstance(value, str) else list(value)
+    except TypeError:
+        return []
+    out: list[frozenset] = []
+    seen: set[frozenset] = set()
+    for group in groups:
+        members = group.split(",") if isinstance(group, str) else group
+        try:
+            names = frozenset(
+                m.strip().lower() for m in members
+                if isinstance(m, str) and m.strip()
+            )
+        except TypeError:
+            continue
+        if len(names) > 1 and names not in seen:
+            seen.add(names)
+            out.append(names)
+    return out
+
+
+def _exclusion_conflict(
+    assignee: str, busy: set[str], groups: list[frozenset],
+) -> Optional[str]:
+    """Name of a busy assignee sharing an exclusion group with ``assignee``.
+
+    ``None`` when no group forbids spawning ``assignee`` right now. ``busy``
+    covers DB ``running`` workers plus tasks already spawned earlier this tick,
+    so same-tick fan-out to one GPU is also refused.
+    """
+    for group in groups:
+        if assignee in group:
+            for other in group:
+                if other != assignee and other in busy:
+                    return other
+    return None
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1963,6 +2022,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    parallel_exclusion_groups: Any = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1986,6 +2046,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            parallel_exclusion_groups=parallel_exclusion_groups,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2036,6 +2097,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    exclusion_groups: list[frozenset],
+    exclusion_busy: set[str],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2070,6 +2133,14 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # Mutual-exclusion groups (#111188): profiles sharing one GPU (or any
+    # other non-sharable resource) must never run at once. Deferred, not
+    # dropped — retried on a later tick once the sibling finishes.
+    if exclusion_groups:
+        conflict = _exclusion_conflict(assignee, exclusion_busy, exclusion_groups)
+        if conflict is not None:
+            result.skipped_excluded.append((task_id, assignee, conflict))
+            return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2086,10 +2157,12 @@ def _dispatch_lane_task(
         return False
 
     def _count_spawn(name: str) -> None:
-        # Later rows in this tick respect the per-profile cap; subsequent
-        # ticks re-query from the DB.
+        # Later rows in this tick respect the per-profile cap AND the
+        # exclusion groups; subsequent ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        if name:
+            exclusion_busy.add(name)
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -2281,19 +2354,24 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    exclusion_groups: Optional[list[frozenset]] = None,
+    exclusion_busy: Optional[set[str]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at the per-profile cap, exclusion-blocked by a running
+    sibling, or respawn-guarded — cannot consume the reservation, so it must
+    not withhold capacity from an otherwise ready task (one such row would
+    pin ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    groups = exclusion_groups or []
+    busy = exclusion_busy or set()
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2301,6 +2379,8 @@ def _any_spawnable_review(
         if profile_exists is not None and not profile_exists(assignee):
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+            continue
+        if groups and _exclusion_conflict(assignee, busy, groups) is not None:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
@@ -2338,6 +2418,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    parallel_exclusion_groups: Any = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2380,6 +2461,16 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    # ponytail: one shared busy-set for the whole tick (no per-group indexes);
+    # fine at dispatcher scale (tens of rows), index by group if ever hot.
+    exclusion_groups = normalize_exclusion_groups(parallel_exclusion_groups)
+    exclusion_busy: set[str] = set()
+    if exclusion_groups:
+        for rrow in conn.execute(
+            "SELECT DISTINCT assignee FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL"
+        ):
+            exclusion_busy.add(rrow["assignee"])
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
@@ -2388,12 +2479,14 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        exclusion_groups=exclusion_groups, exclusion_busy=exclusion_busy,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        exclusion_groups=exclusion_groups, exclusion_busy=exclusion_busy,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

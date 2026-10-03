@@ -1927,6 +1927,10 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Mutual-exclusion groups (#111188): list of profile-name lists whose
+        # workers must never run at once (e.g. two profiles whose models share
+        # one GPU: [["gpu0fast", "gpu0dense"]]). None/empty = no exclusions.
+        "parallel_exclusion_groups": None,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

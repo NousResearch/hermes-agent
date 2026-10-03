@@ -2565,6 +2565,67 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_archived_only_excludes_unarchived_pins(self):
+        """Archived-only is an exact filter: active pins must not be back-filled into it."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid, archived, pinned in (
+                ("archived-plain", True, False),
+                ("archived-pinned", True, True),
+                ("active-pinned", False, True),
+            ):
+                db.create_session(session_id=sid, source="cli")
+                db.append_message(session_id=sid, role="user", content="hi")
+                if archived:
+                    db.set_session_archived(sid, True)
+                if pinned:
+                    db.set_session_pinned(sid, True)
+        finally:
+            db.close()
+
+        for endpoint in ("/api/sessions", "/api/profiles/sessions"):
+            resp = self.client.get(
+                f"{endpoint}?limit=20&offset=0&archived=only"
+            )
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["total"] == 2
+            assert {row["id"] for row in payload["sessions"]} == {
+                "archived-plain",
+                "archived-pinned",
+            }
+            assert all(row["archived"] for row in payload["sessions"])
+
+    def test_profiles_sessions_archived_only_honors_page_limit_with_pins(self):
+        """Pinned rows do not get appended past an archived-only page boundary."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid, pinned in (
+                ("archived-page-old-pin", True),
+                ("archived-page-new", False),
+            ):
+                db.create_session(session_id=sid, source="cli")
+                db.append_message(session_id=sid, role="user", content="hi")
+                db.set_session_archived(sid, True)
+                if pinned:
+                    db.set_session_pinned(sid, True)
+        finally:
+            db.close()
+
+        for endpoint in ("/api/sessions", "/api/profiles/sessions"):
+            resp = self.client.get(
+                f"{endpoint}?limit=1&offset=0&archived=only"
+            )
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["total"] == 2
+            assert len(payload["sessions"]) == 1
+            assert payload["sessions"][0]["archived"] is True
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

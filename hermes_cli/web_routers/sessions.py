@@ -217,9 +217,10 @@ def get_sessions(
                 offset=offset,
                 order_by_last_active=order == "recent",
                 # Skip the system_prompt blob inside SQLite too (pairs with
-                # _strip_session_list_rows below).
+                # _strip_session_list_rows below). Pins are a keep-visible
+                # affordance, not an archived-only filter exception.
                 compact_rows=not full,
-                include_pinned=True,
+                include_pinned=not archived_only,
                 **scope)
             total = db.session_count(exclude_children=True, **scope)
             now = time.time()

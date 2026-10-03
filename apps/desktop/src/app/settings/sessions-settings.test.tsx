@@ -45,6 +45,19 @@ afterEach(() => {
   cleanup()
 })
 
+describe('SessionsSettings archived count', () => {
+  it('uses the backend archived total instead of the loaded page length', async () => {
+    vi.mocked(listAllProfileSessions).mockResolvedValue({
+      sessions: [archivedMatrixSession],
+      total: 7
+    } as never)
+
+    render(<SessionsSettings />)
+
+    expect(await screen.findByText('7')).toBeTruthy()
+  })
+})
+
 describe('SessionsSettings unarchive', () => {
   it('restores a messaging-source session into $messagingSessions, not $sessions', async () => {
     render(<SessionsSettings />)

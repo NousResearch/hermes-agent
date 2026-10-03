@@ -57,6 +57,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
+  const [archivedTotal, setArchivedTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -66,6 +67,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     try {
       const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
+      setArchivedTotal(result.total)
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
@@ -84,6 +86,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
       try {
         await setSessionArchived(session.id, false, session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setArchivedTotal(prev => Math.max(0, prev - 1))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
         untombstoneSessions([session.id, session._lineage_root_id])
@@ -125,6 +128,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         // stored id and the row may carry either.
         purgeInFlightTurnJournals([session.id, session._lineage_root_id])
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setArchivedTotal(prev => Math.max(0, prev - 1))
         triggerHaptic('warning')
       } catch (err) {
         notifyError(err, s.deleteFailed)
@@ -153,7 +157,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
       <SectionHeading
         icon={Archive}
-        meta={sessions.length ? String(sessions.length) : undefined}
+        meta={archivedTotal ? String(archivedTotal) : undefined}
         title={s.archivedTitle}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">

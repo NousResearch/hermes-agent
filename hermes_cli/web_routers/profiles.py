@@ -491,15 +491,17 @@ def get_profiles_sessions(
             scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
             rows = db.list_sessions_rich(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
-                # Same SQL-level blob skip as /api/sessions.
-                compact_rows=not full, include_pinned=True, **scoped)
+                # Pins are a keep-visible affordance for normal lists. An archived-only
+                # query is an exact recovery view, so never back-fill unarchived pins.
+                compact_rows=not full, include_pinned=archived != "only", **scoped)
             totals[name] = db.session_count(exclude_children=True, **scoped)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    window = (merged[offset:offset + limit] if archived == "only"
+              else _pinned_window(merged, offset, limit))
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,

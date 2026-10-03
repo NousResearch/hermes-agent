@@ -1279,9 +1279,9 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
 
 
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
-    """Persist ``last_delivery_unverified``: list of ``platform:chat_id[:thread_id]`` targets acked with no
-    evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
-    delivery)."""
+    """Persist ``last_delivery_unverified``: list of ``platform:chat_id[:thread_id]`` targets not confirmed
+    (acked with no message_id/raw_response, or a started send that outlasted the confirmation wait), or
+    None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a delivery)."""
     new_value = list(unverified_targets) or None
     queued = {target: receipt for target, receipt in
               job.get("_bot_chat_delivery_receipts", {}).items()
@@ -2030,8 +2030,9 @@ def _deliver_result(
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
-    # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
-    # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
+    # Targets not confirmed: acked with no message_id/raw_response (bare SendResult(success=True) —
+    # Slack/Matrix/Mattermost) or a started send that outlasted the confirmation wait; persisted as
+    # ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])

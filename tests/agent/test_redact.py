@@ -496,6 +496,28 @@ class TestAuthHeaders:
         assert result.count('"') == 2, result  # both quotes survive
         assert result.endswith('"'), result
 
+    @pytest.mark.parametrize("placeholder", [
+        "${MCP_SKILLS_API_KEY}",   # shell / docker-compose / yaml template
+        "\\${MCP_SKILLS_API_KEY}",  # escaped in a heredoc or Makefile
+        "$MCP_SKILLS_API_KEY",     # bare shell variable
+        "${mcp.api-key}",          # dotted / hyphenated property reference
+    ])
+    def test_template_placeholder_after_bearer_is_not_a_secret(self, placeholder):
+        # Regression for #96529: ``Authorization: Bearer ${VAR}`` in a config or
+        # template file read back through read_file/grep used to come out as
+        # ``${MCP_...KEY}``, so the agent "repaired" corruption that only existed
+        # in the redacted view. A template reference is not a credential.
+        text = f"  headers:\n    Authorization: Bearer {placeholder}\n"
+        assert redact_sensitive_text(text, file_read=True) == text
+        assert redact_sensitive_text(text) == text
+
+    def test_real_bearer_token_next_to_placeholder_is_still_masked(self):
+        text = "Authorization: Bearer ${KEY}\nAuthorization: Bearer sk-abcdef1234567890xyz\nAuthorization: Basic dXNlcjpwYXNzd29yZA=="
+        result = redact_sensitive_text(text, file_read=True)
+        assert "Bearer ${KEY}" in result
+        assert "sk-abcdef1234567890xyz" not in result
+        assert "dXNlcjpwYXNzd29yZA==" not in result
+
 
 
 class TestApiKeyHeaders:

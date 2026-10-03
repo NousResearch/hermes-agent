@@ -94,7 +94,7 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
         )
     if cfg_api_mode == "anthropic_messages":
         base_url = re.sub(r"/v1/?$", "", base_url)
-    if cfg_auth_mode == "entra_id":
+    if cfg_auth_mode == "entra_id" or forwarded_token_provider:
         # --api-key on the CLI while config says entra_id: honour the explicit string (escape hatch
         # for one-off testing).
         if explicit_api_key:

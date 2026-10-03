@@ -518,6 +518,7 @@ class MattermostAdapter(BasePlatformAdapter):
         """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
         import aiohttp
         from gateway.platforms.base import (
+            _read_httpx_body_with_limit,
             cache_audio_from_bytes_async,
             cache_document_from_bytes_async,
             cache_image_from_bytes_async,
@@ -535,7 +536,8 @@ class MattermostAdapter(BasePlatformAdapter):
                     if resp.status >= 400:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
                         continue
-                    file_data = await resp.read()
+                    file_data = await _read_httpx_body_with_limit(
+                        resp, media_type="attachment", body=resp.content.iter_chunked(65536))
                     prefix = next((p for p in cache_fns if mime.startswith(p)), None)
                     if prefix:
                         media_urls.append(
@@ -571,7 +573,14 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id = post_id
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()
-        media_urls, media_types = await self._download_attachments(post.get("file_ids") or [])
+        chat_type = _CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel")
+        # The fetch spends the bot's token and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The post still dispatches so the runner applies denial/pairing.
+        file_ids = post.get("file_ids") or []
+        if file_ids and self._is_sender_authorized(sender_id, chat_type, channel_id, thread_id=thread_id) is True:
+            media_urls, media_types = await self._download_attachments(file_ids)
+        else:
+            media_urls, media_types = [], []
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
         elif media_types:
@@ -580,7 +589,7 @@ class MattermostAdapter(BasePlatformAdapter):
         else:
             msg_type = MessageType.TEXT
         source = self.build_source(
-            chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
+            chat_id=channel_id, chat_type=chat_type,
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt

@@ -22,6 +22,19 @@ def sign(payload: str, secret: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def is_usable_secret(secret: object) -> bool:
+    """True when ``secret`` is a string carrying at least one non-space char.
+
+    A whitespace-only value is what an unset key looks like in practice
+    (``RELAY_SECRET="   "`` in an .env, a YAML key with a trailing space, a
+    rotation slot left blank). It is falsy to a human and truthy to Python, so
+    a bare ``if not secret`` check lets it through and the relay then accepts
+    requests signed with a secret an attacker can guess. Non-strings are
+    rejected for the same reason: a ``None`` slot in a rotation list must not
+    reach the HMAC.
+    """
+    return isinstance(secret, str) and bool(secret.strip())
+
 def make_token(payload: str, secret: str, ttl_seconds: int = 0) -> str:
     """``base64url(f"{payload}:{exp}:{sig}")``; ``exp`` unix seconds (0 = never).
 

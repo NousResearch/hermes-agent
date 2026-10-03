@@ -1,0 +1,54 @@
+name: messenger-platform
+label: Facebook Messenger
+kind: platform
+version: 1.0.0
+description: >
+  Native Meta Facebook Messenger Page adapter with webhook verification,
+  Page feed comment triggers, and bounded PSID context retrieval.
+author: NousResearch
+requires_env:
+  - name: MESSENGER_PAGE_ID
+    description: "Facebook Page ID"
+    prompt: "Page ID"
+    password: false
+  - name: MESSENGER_PAGE_ACCESS_TOKEN
+    description: "Facebook Page access token"
+    prompt: "Page access token"
+    password: true
+  - name: MESSENGER_APP_SECRET
+    description: "Meta App secret used for webhook signatures"
+    prompt: "App secret"
+    password: true
+  - name: MESSENGER_VERIFY_TOKEN
+    description: "Webhook verification token"
+    prompt: "Verify token"
+    password: true
+optional_env:
+  - name: MESSENGER_HOST
+    description: "Webhook bind host"
+    prompt: "Webhook host"
+    password: false
+  - name: MESSENGER_PORT
+    description: "Webhook bind port"
+    prompt: "Webhook port"
+    password: false
+  - name: MESSENGER_WEBHOOK_PATH
+    description: "Webhook request path"
+    prompt: "Webhook path"
+    password: false
+  - name: MESSENGER_API_VERSION
+    description: "Meta Graph API version"
+    prompt: "Graph API version"
+    password: false
+  - name: MESSENGER_COMMENT_TRIGGER
+    description: "Whole-word feed comment trigger"
+    prompt: "Comment trigger"
+    password: false
+  - name: MESSENGER_LOOKBACK_DAYS
+    description: "Retrospective comment lookback in days (capped at 7)"
+    prompt: "Lookback days"
+    password: false
+  - name: MESSENGER_MAX_COMMENTS
+    description: "Maximum retrospective comments (bounded)"
+    prompt: "Maximum comments"
+    password: false

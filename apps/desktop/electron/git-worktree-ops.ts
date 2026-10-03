@@ -340,6 +340,12 @@ async function addWorktree(repoPath, options, gitBin) {
     // latest remote commit. Local branches are used as-is.
     const base = String(opts.base)
 
+    // `base` comes straight from IPC; a leading '-' would be parsed by git as an
+    // option (e.g. --force) instead of a ref. Reject it before it reaches argv.
+    if (base.startsWith('-')) {
+      throw new Error(`invalid worktree base ref: ${base}`)
+    }
+
     if (base.startsWith('origin/')) {
       const remoteBranch = base.slice('origin/'.length)
 

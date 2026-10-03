@@ -202,8 +202,22 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
 
     try:
         st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+    except OSError:
+        # One dangling symlink/junction in a listed directory must not 500 the whole
+        # listing (#131659): keep the row via the link's own lstat metadata and flag it.
+        try:
+            st = target.lstat()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+        return {
+            "name": target.name or str(resolved),
+            "path": str(resolved),
+            "is_directory": False,
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "mime_type": mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            "broken": True,
+        }
 
     is_dir = resolved.is_dir()
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")

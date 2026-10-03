@@ -1586,7 +1586,8 @@ DEFAULT_CONFIG = {
         # discord / discord_admin tools: allowed actions (comma string or YAML list; empty = all,
         # subject to bot intents; unknown names dropped with a warning): list_guilds, server_info,
         # list_channels, channel_info, list_roles, member_info, search_members, fetch_messages,
-        # list_pins, pin_message, unpin_message, create_thread, add_role, remove_role.
+        # list_pins, pin_message, unpin_message, delete_message, edit_message, create_thread,
+        # add_role, remove_role.
         "server_actions": "",
         # DEPRECATED no-op (uploads are always cached; messaging auth is the gate). Kept so existing
         # configs don't error. Env: DISCORD_ALLOW_ANY_ATTACHMENT.

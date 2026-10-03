@@ -381,6 +381,32 @@ _pin_message = _mutation("PUT", "/channels/{channel_id}/pins/{message_id}", "Mes
 _unpin_message = _mutation("DELETE", "/channels/{channel_id}/pins/{message_id}", "Message {message_id} unpinned.")
 _delete_message = _mutation(
     "DELETE", "/channels/{channel_id}/messages/{message_id}", "Message {message_id} deleted.")
+
+
+def _edit_message(
+    token: str,
+    channel_id: str,
+    message_id: str,
+    content: str,
+    **_kwargs: Any,
+) -> str:
+    """Edit the bot-authored content of a message in a channel or thread."""
+    message = _discord_request(
+        "PATCH",
+        f"/channels/{channel_id}/messages/{message_id}",
+        token,
+        body={"content": content},
+    )
+    result: Dict[str, Any] = {
+        "success": True,
+        "message_id": message_id,
+        "content": message.get("content", content) if isinstance(message, dict) else content,
+    }
+    if isinstance(message, dict) and message.get("edited_timestamp") is not None:
+        result["edited_timestamp"] = message["edited_timestamp"]
+    return json.dumps(result)
+
+
 _add_role = _mutation(
     "PUT", "/guilds/{guild_id}/members/{user_id}/roles/{role_id}", "Role {role_id} added to user {user_id}.")
 _remove_role = _mutation(
@@ -404,6 +430,7 @@ _ACTION_MANIFEST = [
     ("pin_message", _pin_message, "(channel_id, message_id)", "pin a message"),
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
+    ("edit_message", _edit_message, "(channel_id, message_id, content)", "edit a bot-authored message's content"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
@@ -478,6 +505,7 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "user_id": {"type": "string", "description": "Discord user ID."},
     "role_id": {"type": "string", "description": "Discord role ID."},
     "message_id": {"type": "string", "description": "Discord message ID."},
+    "content": {"type": "string", "description": "Replacement message content (edit_message)."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
     "limit": {
@@ -553,6 +581,10 @@ _ACTION_403_HINT = {
         "Ask the server admin to grant the bot a role that has MANAGE_MESSAGES, or a per-channel overwrite."),
     "unpin_message": f"{_NO_MANAGE_MESSAGES}.",
     "delete_message": f"{_NO_MANAGE_MESSAGES}, or cannot view the channel/message.",
+    "edit_message": (
+        "Bot can only edit messages it authored, and must be able to view and send "
+        "messages in this channel."
+    ),
     "create_thread": "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it.",
     "add_role": (
         f"{_ROLE_HIERARCHY} Roles can only be assigned below the bot's own position in the role hierarchy."),
@@ -580,7 +612,7 @@ def check_discord_tool_requirements() -> bool:
 
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
-    "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
+    "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "content": "", "query": "",
     "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 

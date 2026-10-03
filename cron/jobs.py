@@ -1754,11 +1754,13 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "enabled_toolsets": lambda v: _normalize_str_list(v) if v else None,
     "workdir": _normalize_workdir,
     "no_agent": bool,
+    "skip_cron_hint": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
     "interpreter": _normalize_job_optional_text,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
+    "skip_cron_hint": bool,
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
@@ -1835,6 +1837,7 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    skip_cron_hint: bool = False,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1844,6 +1847,7 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    skip_cron_hint: omit the scheduled-run instructions prepended to the task prompt.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
@@ -1900,6 +1904,7 @@ def create_job(
         "base_url": f["base_url"],
         "script": f["script"],
         "no_agent": f["no_agent"],
+        "skip_cron_hint": f["skip_cron_hint"],
         "monitor_script": f["monitor_script"],
         "monitor_url": f["monitor_url"],
         "monitor_state": None,

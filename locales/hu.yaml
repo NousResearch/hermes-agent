@@ -2874,7 +2874,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) A --repeat értéke egész szám kell legyen"
       unknown_command: "(._.) Ismeretlen cron parancs: {subcommand}"
-      available: "Elérhető: list, add, edit, pause, resume, run, remove"
+      available: "Elérhető: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Használat: /cron hint <job_id vagy \"feladatnév\"> [on|off] — az off kihagyja az útmutatót, az on visszaállítja; opció nélkül az állapotot mutatja."
+      hint_on: "Cron-útmutató ehhez: „{name}”: on (az alapértelmezett utasítások szerepelnek)."
+      hint_off: "Cron-útmutató ehhez: „{name}”: off (az alapértelmezett utasítások kihagyva)."
       overview_title: "(^_^) Ütemezett feladatok"
       overview_commands: "Parancsok:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Szerverállapot ellenőrzése\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Új feladat\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

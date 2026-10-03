@@ -90,6 +90,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
+    _flag(cron_create, "--skip-cron-hint", default=False,
+        help="Omit the scheduled-run instructions prepended to this job's prompt.")
     cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
@@ -97,6 +99,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--schedule", help="New schedule")
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
+    hint = cron_edit.add_mutually_exclusive_group()
+    hint.add_argument("--skip-cron-hint", dest="skip_cron_hint",
+        action="store_const", const=True, default=None,
+        help="Omit the scheduled-run instructions prepended to this job's prompt.")
+    hint.add_argument("--cron-hint", dest="skip_cron_hint", action="store_const", const=False,
+        help="Restore the scheduled-run instructions prepended to this job's prompt.")
     cron_edit.add_argument("--deliver", help="New delivery target")
     cron_edit.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for failure notices (same grammar as --deliver; "

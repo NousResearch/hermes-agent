@@ -5,7 +5,9 @@ toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``cont
 occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
 renders exactly as before), ``served_model`` (opt-in, ``alias → served``: the deployment a routing
 proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Hermes' own fallback
-route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
+route; skipped when the served model is the requested one), ``cwd`` (home-relative), ``cost`` (session
+cumulative estimated USD, opt-in — rendered ``≈$N.NN`` with per-magnitude precision; skipped when
+unmeasured or ≤0, never ``$?``). ``gateway/run.py`` appends the footer to the
 final response only (never to tool-progress or streaming partials); when streaming already
 delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
 
@@ -77,6 +79,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                          session_cost_usd: Optional[float] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -98,6 +101,15 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         "context_pct": context_pct,
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
+        # Session cumulative estimated cost: opt-in like latency — None/≤0 skips the whole
+        # column so no ``$?`` artifact ever renders; precision bands by magnitude (4 / 3 / 2
+        # decimals).
+        "cost": lambda: (
+            "" if session_cost_usd is None or session_cost_usd <= 0
+            else f"≈${session_cost_usd:.4f}" if session_cost_usd < 0.01
+            else f"≈${session_cost_usd:.3f}" if session_cost_usd < 1
+            else f"≈${session_cost_usd:.2f}"
+        ),
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
     }
     return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
@@ -106,15 +118,18 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
-                      requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
+                      requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      session_cost_usd: Optional[float] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
-    ``latency`` field."""
+    ``latency`` field. ``session_cost_usd`` feeds the opt-in ``cost`` field; ``None`` (or ≤0) skips it
+    entirely."""
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  requested_model=requested_model, served_model=served_model,
+                                 session_cost_usd=session_cost_usd,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

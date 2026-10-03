@@ -479,7 +479,27 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
-  const resolvedMode = resolveMode(mode, systemDark)
+
+  // #128622: Chromium does not reliably re-fire prefers-color-scheme for a
+  // live page on a system light/dark switch, so main forwards the resolved
+  // mode (hermes:native-theme-updated). Re-read the query live on notify —
+  // the MQL state above may still hold the stale value.
+  const [systemThemeTick, setSystemThemeTick] = useState(0)
+
+  useEffect(
+    () =>
+      window.hermesDesktop?.onNativeThemeUpdated?.(() => {
+        setSystemThemeTick(tick => tick + 1)
+      }),
+    []
+  )
+
+  const effectiveSystemDark = useMemo(
+    () => matchesQuery('(prefers-color-scheme: dark)'),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [systemDark, systemThemeTick]
+  )
+  const resolvedMode = resolveMode(mode, effectiveSystemDark)
 
   // Transient highlight preview (palette theme picker). It is never
   // persisted. A commit or an explicit clear returns the paint to the

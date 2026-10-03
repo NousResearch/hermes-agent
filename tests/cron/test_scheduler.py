@@ -1797,8 +1797,11 @@ class TestDeliverResultTimeoutCancelsFuture:
             result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         return result, standalone_send
 
-    def test_in_flight_send_outlasting_the_wait_keeps_running_and_is_not_duplicated(self, monkeypatch):
+    @pytest.mark.parametrize("late_error", [None, RuntimeError("late boom")])
+    def test_in_flight_send_outlasting_the_wait_keeps_running_and_is_not_duplicated(
+            self, monkeypatch, caplog, late_error):
         import asyncio
+        import logging
         import threading
         import time
 
@@ -1810,6 +1813,8 @@ class TestDeliverResultTimeoutCancelsFuture:
             events.append("started")
             await asyncio.sleep(0.6)  # outlasts the 0.3s confirmation wait
             events.append("finished")
+            if late_error:
+                raise late_error
             return MagicMock(success=True, message_id="m1", raw_response=None)
 
         adapter = MagicMock()
@@ -1817,11 +1822,14 @@ class TestDeliverResultTimeoutCancelsFuture:
         update_job = MagicMock()
         monkeypatch.setattr("cron.jobs.update_job", update_job)
         try:
-            result, standalone_send = self._deliver(monkeypatch, adapter, loop)
-            time.sleep(0.6)
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                result, standalone_send = self._deliver(monkeypatch, adapter, loop)
+                time.sleep(0.6)
         finally:
             loop.call_soon_threadsafe(loop.stop)
         assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
+        # The late outcome is still observed: a send that fails after the wait is logged.
+        assert ("failed after confirmation timeout" in caplog.text) == bool(late_error)
         standalone_send.assert_not_awaited()
         assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
         update_job.assert_called_once_with("timeout-job", {"last_delivery_unverified": ["telegram:123"]})

@@ -355,3 +355,64 @@ def test_update_debris_cleanup_folds_and_reports_a_fold_that_runs_out_of_time(
 
     clear_git_debris(partial_clone)
     assert len(_packs(partial_clone)) < before
+
+
+def test_a_failed_fold_keeps_the_packs_and_returns_a_failure_not_zero(partial_clone: Path) -> None:
+    """A git failure (here: an invalid ``pack.threads`` value) must not come back as the same 0 as
+    "nothing to fold" (#131444); the packs stay put and the failure carries git's own diagnostics."""
+    from hermes_cli.gitlock import FoldFailure
+
+    _run_git("config", "pack.threads", "rca-invalid", cwd=partial_clone)
+    before = _packs(partial_clone)
+    assert len(before) > 2
+
+    result = consolidate_lazy_fetch_packs(partial_clone)
+
+    assert isinstance(result, FoldFailure)
+    assert "pack.threads" in result.detail
+    assert {pack.name for pack in _packs(partial_clone)} == {pack.name for pack in before}
+
+
+def test_the_reporter_ends_a_failed_fold_with_a_failure_message(
+        partial_clone: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    from hermes_cli.update_cmd_check import fold_lazy_fetch_packs
+
+    _run_git("config", "pack.threads", "rca-invalid", cwd=partial_clone)
+
+    fold_lazy_fetch_packs(partial_clone)
+
+    out = capfd.readouterr().out
+    assert "Folding lazy-fetch packs failed" in out
+    assert "pack.threads" in out, "the bounded git diagnostic should reach the user"
+
+
+def test_a_fold_that_never_starts_is_a_failure_not_a_timeout(
+        partial_clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``bounded_probe_run`` returns None for a spawn failure and a timeout alike; the fold must
+    keep those apart (#131444)."""
+    from hermes_cli.gitlock import FoldFailure
+    from hermes_cli.local_runtime import processes
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("git is not on PATH")
+
+    monkeypatch.setattr(processes, "spawn_server", refuse)
+
+    result = consolidate_lazy_fetch_packs(partial_clone)
+
+    assert isinstance(result, FoldFailure)
+    assert "could not start" in result.detail
+
+
+def test_a_partial_clone_with_nothing_to_fold_stays_silent(
+        partial_clone: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    """A repository under its fold limit must not be labelled as failing."""
+    from hermes_cli.update_cmd_check import fold_lazy_fetch_packs
+
+    _run_git("config", "gc.autoPackLimit", "50", cwd=partial_clone)  # back to the wild default
+    before = _packs(partial_clone)
+
+    fold_lazy_fetch_packs(partial_clone)
+
+    assert {pack.name for pack in _packs(partial_clone)} == {pack.name for pack in before}
+    assert capfd.readouterr().out == ""

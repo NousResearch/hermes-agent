@@ -9,8 +9,9 @@ import logging
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional, Union
 
 from hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,
@@ -615,8 +616,39 @@ def _gc_auto_pack_limit(repo_root: Path) -> int:
     return int(lines[0]) if lines else _GC_AUTO_PACK_LIMIT_DEFAULT
 
 
+@dataclass(frozen=True)
+class FoldFailure:
+    """A fold that failed: git exited nonzero, or git never started. ``detail`` is one bounded line.
+
+    Distinct from the fold's ``0`` (nothing to fold) and ``None`` (timed out), so the update
+    reporter can say a recovery failed instead of printing the same silence as "nothing needed".
+    """
+
+    detail: str
+
+
+_FOLD_FAILURE_DETAIL_CHARS = 300
+
+
+def _bounded_fold_detail(text: str) -> str:
+    """Whitespace-collapsed, length-capped one line for a fold-failure warning."""
+    text = " ".join(text.split())
+    return text if len(text) <= _FOLD_FAILURE_DETAIL_CHARS else f"{text[:_FOLD_FAILURE_DETAIL_CHARS]}..."
+
+
+def _fold_failure_detail(returncode: int, stderr: str, stdout: str) -> str:
+    """One bounded line of git's own diagnostics for a failed fold, error lines before noise."""
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    errors = [line for line in lines if line.startswith(("fatal:", "error:"))]
+    text = "; ".join(errors or lines) or (stdout or "").strip()
+    if not text:
+        return f"git gc --auto exited {returncode} with no diagnostic output"
+    return _bounded_fold_detail(f"git gc --auto exited {returncode}: {text}")
+
+
 def consolidate_lazy_fetch_packs(repo_root: Path, *,
-                                 on_fold_start: Optional[Callable[[int], None]] = None) -> Optional[int]:
+                                 on_fold_start: Optional[Callable[[int], None]] = None
+                                 ) -> Optional[Union[int, FoldFailure]]:
     """Fold a partial clone's lazy-fetch packfiles back into one; returns how many packs went away.
 
     Every on-demand fetch a promisor remote serves writes its own small packfile, and nothing in
@@ -631,7 +663,9 @@ def consolidate_lazy_fetch_packs(repo_root: Path, *,
     and leaves its ``pack-objects`` child running. ``on_fold_start(pack_count)`` fires just before
     a fold gc will actually do (pack count past the limit), so the caller can say why the update
     went quiet. Best-effort like every helper here: never raises, returns 0 for a non-partial
-    checkout or when nothing folded, and ``None`` when the fold hit its time limit.
+    checkout or when nothing folded, ``None`` when the fold hit its time limit, and a
+    ``FoldFailure`` when the fold itself failed — git exited nonzero, or git never started (which
+    ``bounded_probe_run``'s ``None`` alone would merge with a timeout).
     """
     try:
         if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is None:
@@ -641,14 +675,24 @@ def consolidate_lazy_fetch_packs(repo_root: Path, *,
         limit = _gc_auto_pack_limit(repo_root)
         if on_fold_start is not None and 0 < limit < before:
             on_fold_start(before)
-        if bounded_probe_run(
-            ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
-            timeout=LAZY_FETCH_GC_TIMEOUT_SECONDS, cwd=str(repo_root),
-            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
-        ) is None:
+        try:
+            result = bounded_probe_run(
+                ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
+                timeout=LAZY_FETCH_GC_TIMEOUT_SECONDS, cwd=str(repo_root),
+                env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
+                raise_on_spawn_failure=True,
+            )
+        except Exception as exc:  # git never started — a failure, not a timeout of a running fold
+            logger.warning("Could not start the lazy-fetch pack fold in %s: %s", repo_root, exc)
+            return FoldFailure(_bounded_fold_detail(f"git gc --auto could not start: {exc}"))
+        if result is None:
             logger.warning("Folding %d lazy-fetch pack(s) in %s timed out after %ds",
                            before, repo_root, LAZY_FETCH_GC_TIMEOUT_SECONDS)
             return None
+        if result.returncode != 0:
+            detail = _fold_failure_detail(result.returncode, result.stderr, result.stdout)
+            logger.warning("Folding %d lazy-fetch pack(s) in %s failed: %s", before, repo_root, detail)
+            return FoldFailure(detail)
         folded = before - len(list(_pack_dir(repo_root).glob("pack-*.pack")))
         if folded > 0:
             logger.info("Folded %d lazy-fetch pack(s) in %s", folded, repo_root)

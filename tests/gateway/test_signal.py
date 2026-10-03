@@ -213,6 +213,21 @@ class TestSignalHelpers:
         assert "\uFFFC" not in result
 
 
+    def test_render_mentions_emoji_before_mention(self):
+        # signal-cli reports mention offsets in UTF-16 code units: 👋 is 2 units but 1 code point,
+        # so the placeholder at code point 2 is reported at start=3.
+        from gateway.platforms.signal import _render_mentions
+        text = "\U0001F44B \uFFFC hi"
+        mentions = [{"start": 3, "length": 1, "number": "+15551230000"}]
+        assert _render_mentions(text, mentions) == "\U0001F44B @+15551230000 hi"
+
+    def test_render_mentions_multiple_with_emoji(self):
+        from gateway.platforms.signal import _render_mentions
+        text = "\U0001F44B \uFFFC and \uFFFC"  # UTF-16: first placeholder at 3, second at 9
+        mentions = [{"start": 3, "length": 1, "number": "+15550000001"},
+                    {"start": 9, "length": 1, "number": "+15550000002"}]
+        assert _render_mentions(text, mentions) == "\U0001F44B @+15550000001 and @+15550000002"
+
     def test_validate_signal_config_accepts_platform_values(self, monkeypatch):
         monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)
         monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)

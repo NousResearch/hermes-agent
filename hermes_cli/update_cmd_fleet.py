@@ -1251,7 +1251,10 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     """A unit whose restart policy predates ``RestartPreventExitStatus=78`` crash-loops on the PERMANENT
     exit: a ``Restart=on-failure`` system unit restarted ~180x on a host-attach refusal while the
     regenerated user units parked (#118282). The gateway rewrites its USER unit at boot; a SYSTEM unit
-    lives in /etc, so rewrite it here when we are root, else name the repair."""
+    lives in /etc, so rewrite it here when we are root, else name the repair. ``hermes gateway install``
+    only ever writes the INVOKING profile's gateway unit, so for a supervised dashboard/serve unit — or
+    another profile's gateway — the repair names that unit's own file instead.
+    """
     from hermes_cli.gateway import (
         _SYSTEM_UNIT_DIR, GATEWAY_FATAL_CONFIG_EXIT_CODE, get_service_name,
         refresh_systemd_unit_if_needed, user_systemd_unit_dir,
@@ -1276,10 +1279,16 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
             else:
                 os.environ["HERMES_HOME"] = launch_home
         return
+    repair = (
+        f"{'sudo ' if system else ''}hermes gateway install{' --system' if system else ''}"
+        if svc_name == get_service_name()
+        else f"add RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE} to {unit_path} "
+             f"(or a {unit_path.name}.d/*.conf drop-in)"
+    )
     print(
         f"  ⚠ {svc_name} lacks RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}: a permanent refusal "
         f"(exit {GATEWAY_FATAL_CONFIG_EXIT_CODE}) would crash-loop it instead of parking.\n"
-        f"    Repair: {'sudo ' if system else ''}hermes gateway install{' --system' if system else ''}"
+        f"    Repair: {repair}"
     )
 
 

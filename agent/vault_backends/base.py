@@ -37,6 +37,10 @@ class LoginBackend(ABC):
     def is_unlocked(self) -> bool:
         return True
 
+    def unlock_unattended(self) -> bool:
+        """Only explicitly configured backends may open without a masked surface prompt."""
+        return False
+
     @abstractmethod
     def list_items(self) -> List[VaultItemMeta]:
         """Metadata only. Locked external backends return [] (the agent sees a lock hint instead)."""

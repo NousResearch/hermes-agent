@@ -276,3 +276,65 @@ def test_fork_sync_round_trip_is_not_misclassified_as_noop(tmp_path, monkeypatch
     assert git(root, "rev-parse", "HEAD") == upstream_tip
     assert git(root, "rev-parse", "main") == upstream_tip
     assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_missing_commit_diagnostic_fetches_and_retries_ff_merge(checkout, monkeypatch):
+    root, old, tip = checkout
+    git(root, "branch", "-f", "main", old)
+    git(root, "checkout", "-q", "main")
+    plan = prepare(root)
+    real_git_run = update_cmd._git_run
+    merge_calls = []
+
+    def merge_with_missing_object(git_cmd, args, *a, **k):
+        if args[:2] == ["merge", "--ff-only"]:
+            merge_calls.append(1)
+            if len(merge_calls) == 1:
+                return subprocess.CompletedProcess(
+                    args, 0, "", "error: Could not read <" + "a" * 40 + ">\n")
+        if args[:2] == ["fetch", "origin"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return real_git_run(git_cmd, args, *a, **k)
+
+    monkeypatch.setattr(update_cmd, "_git_run", merge_with_missing_object)
+    pull(plan)
+
+    assert len(merge_calls) == 2
+    assert git(root, "rev-parse", "HEAD") == tip
+
+
+def test_missing_commit_fetch_failure_is_preserved_with_retry_diagnostic(checkout, monkeypatch, capsys):
+    root, old, tip = checkout
+    git(root, "branch", "-f", "main", old)
+    git(root, "checkout", "-q", "main")
+    plan = prepare(root)
+    real_git_run = update_cmd._git_run
+    merge_calls = []
+    missing_sha = "b" * 40
+
+    def failed_recovery_fetch(git_cmd, args, *a, **k):
+        if args[:2] == ["merge", "--ff-only"]:
+            merge_calls.append(1)
+            if len(merge_calls) == 1:
+                return subprocess.CompletedProcess(
+                    args, 0, "", f"error: Could not read <{missing_sha}>\n")
+            return subprocess.CompletedProcess(
+                args, 1, "", "fatal: retry still cannot traverse parents\n")
+        if args[:2] == ["fetch", "origin"]:
+            return subprocess.CompletedProcess(
+                args, 1, "", "fatal: server does not allow fetching this object\n")
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return real_git_run(git_cmd, args, *a, **k)
+
+    monkeypatch.setattr(update_cmd, "_git_run", failed_recovery_fetch)
+    with pytest.raises(SystemExit) as exc:
+        pull(plan)
+
+    assert exc.value.code == 1
+    assert len(merge_calls) == 2
+    output = capsys.readouterr().out
+    assert f"Fetch origin {missing_sha} failed: fatal: server does not allow fetching this object" in output
+    assert "fatal: retry still cannot traverse parents" in output
+    assert git(root, "rev-parse", "HEAD") == old
+    assert git(root, "rev-parse", "main") == old

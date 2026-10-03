@@ -349,6 +349,14 @@ def check_slack_requirements() -> bool:
     return ensure_and_bind("slack", _import, globals())
 
 
+#: Depth budget shared by every Block Kit walker. ``blocks`` is sender-authored JSON that
+#: ``json.loads`` nests ~10k levels deep, and the walkers recurse shape-blind — without a cap a
+#: remote sender crashes inbound normalization with ``RecursionError`` at ~500-1000 levels
+#: (#132023). Client-authored payloads stay under ~10 levels, so 100 leaves them untouched while
+#: keeping the stack far from exhaustion.
+_SLACK_BLOCKS_MAX_DEPTH = 100
+
+
 def _collect_slack_block_mentions(blocks: list) -> list:
     """``<@UID>`` mentions authored in non-quoted Block Kit text (flat ``text`` omits block-only
     mentions); ``rich_text_quote`` is ignored so quoted/forwarded text can't summon the bot.
@@ -359,10 +367,12 @@ def _collect_slack_block_mentions(blocks: list) -> list:
     """
     mentions: list = []
 
-    def _walk(node, in_quote: bool) -> None:
+    def _walk(node, in_quote: bool, depth: int = 0) -> None:
+        if depth > _SLACK_BLOCKS_MAX_DEPTH:
+            return
         if isinstance(node, list):
             for item in node:
-                _walk(item, in_quote)
+                _walk(item, in_quote, depth + 1)
             return
         if not isinstance(node, dict):
             return
@@ -373,7 +383,7 @@ def _collect_slack_block_mentions(blocks: list) -> list:
         for key in ("elements", "element"):
             child = node.get(key)
             if child is not None:
-                _walk(child, quoted)
+                _walk(child, quoted, depth + 1)
 
     try:
         _walk(blocks, False)
@@ -508,18 +518,20 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
         prefix = ((">" * quote_depth) + " ") if quote_depth else ""
         parts.append(f"{prefix}{bullet}{text}".rstrip())
 
-    def _walk_elements(elements: list, quote_depth: int = 0, bullet: str = "") -> None:
+    def _walk_elements(elements: list, quote_depth: int = 0, bullet: str = "", depth: int = 0) -> None:
+        if depth > _SLACK_BLOCKS_MAX_DEPTH:
+            return
         for elem in elements:
             elem_type = elem.get("type", "")
             if elem_type == "rich_text_section":
                 _append_line(_render_inline_elements(elem.get("elements", [])), quote_depth, bullet)
             elif elem_type == "rich_text_quote":
-                _walk_elements(elem.get("elements", []), quote_depth=quote_depth + 1)
+                _walk_elements(elem.get("elements", []), quote_depth=quote_depth + 1, depth=depth + 1)
             elif elem_type == "rich_text_list":
                 list_style = elem.get("style")
                 for idx, item in enumerate(elem.get("elements", [])):
                     item_bullet = "• " if list_style == "bullet" else f"{idx + 1}. "
-                    _walk_elements([item], quote_depth=quote_depth, bullet=item_bullet)
+                    _walk_elements([item], quote_depth=quote_depth, bullet=item_bullet, depth=depth + 1)
             elif elem_type == "rich_text_preformatted":
                 code_lines = [
                     _render_inline_elements(
@@ -567,10 +579,12 @@ def _collect_slack_table_cell_text(value: Any) -> str:
     """
     parts: list[str] = []
 
-    def _visit(node: Any) -> None:
+    def _visit(node: Any, depth: int = 0) -> None:
+        if depth > _SLACK_BLOCKS_MAX_DEPTH:
+            return
         if isinstance(node, list):
             for item in node:
-                _visit(item)
+                _visit(item, depth + 1)
             return
         if not isinstance(node, dict):
             return
@@ -578,7 +592,7 @@ def _collect_slack_table_cell_text(value: Any) -> str:
         if isinstance(text, str):
             parts.append(text)
         for child in node.values():
-            _visit(child)
+            _visit(child, depth + 1)
 
     _visit(value)
     return " ".join(p for p in parts if p).strip()
@@ -783,7 +797,9 @@ def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
 
-    def _walk(node: Any) -> None:
+    def _walk(node: Any, depth: int = 0) -> None:
+        if depth > _SLACK_BLOCKS_MAX_DEPTH:
+            return
         if isinstance(node, dict):
             for key in ("url", "image_url", "external_url"):
                 value = node.get(key)
@@ -792,10 +808,10 @@ def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
                     seen.add(value)
                     found.append(value)
             for value in node.values():
-                _walk(value)
+                _walk(value, depth + 1)
         elif isinstance(node, list):
             for item in node:
-                _walk(item)
+                _walk(item, depth + 1)
 
     _walk(blocks)
     return found

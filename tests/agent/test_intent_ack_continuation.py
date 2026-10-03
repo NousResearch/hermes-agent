@@ -1,9 +1,8 @@
 """Intent-ack continuation gate + detector behavior.
 
 Covers the config-driven generalization of the codex intent-ack continuation
-(issue #27881): the historical ``codex_responses``-only path is byte-stable
-under the default ``"auto"`` mode, while an explicit ``true``/model-list opt-in
-extends the "you announced an action but called no tool — keep going" nudge to
+(issue #27881): the default ``"auto"`` mode remains Codex-only, while an
+explicit ``true``/model-list opt-in extends acknowledgment recovery to
 every api_mode and relaxes the codebase/workspace requirement so general
 autonomous workflows ("I'll run a health check on the server") are caught.
 
@@ -16,8 +15,8 @@ from typing import Union
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
-    looks_like_codex_intermediate_ack,
 )
+from agent.intent_ack import looks_like_codex_intermediate_ack
 
 
 def _agent(
@@ -105,6 +104,16 @@ def test_all_path_drops_workspace_requirement():
     msgs = [{"role": "user", "content": REPRO_USER}]
     assert looks_like_codex_intermediate_ack(
         a, REPRO_USER, REPRO_ACK, msgs, require_workspace=False
+    )
+    # #69778 / ClaySecAI #69779: old tool work must not disable a new turn.
+    history = [{"role": "tool", "content": "old result"},
+               {"role": "assistant", "content": "Earlier task finished."}, *msgs]
+    assert looks_like_codex_intermediate_ack(
+        a, REPRO_USER, REPRO_ACK, history, require_workspace=False
+    )
+    assert not looks_like_codex_intermediate_ack(
+        a, REPRO_USER, "Let me know if you want me to run it again.",
+        history, require_workspace=False,
     )
 
 

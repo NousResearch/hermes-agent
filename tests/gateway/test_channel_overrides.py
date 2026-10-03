@@ -153,4 +153,48 @@ class TestResolveSessionAgentRuntimePriority:
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
 
+    def test_channel_override_provider_that_cannot_resolve_falls_back_to_global_route(self):
+        """A static `channel_overrides` provider whose credentials fail to resolve must not abort the
+        turn pre-agent: this turn runs on the whole default route (which still walks the configured
+        fallback chain) and the switch is announced — the session /model block's contract (#123509)."""
+        from hermes_cli.auth import AuthError
 
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "chan_1": ChannelOverride(
+                            model="gpt-6-luna-900k",
+                            provider="openai-codex",
+                        ),
+                    },
+                ),
+            },
+        )
+        source = SessionSource(platform=Platform.DISCORD, chat_id="chan_1", user_id="u1")
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "anthropic",
+                 "api_key": "k",
+                 "base_url": "https://api.anthropic.com",
+                 "api_mode": "chat_completions",
+             }), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                 side_effect=AuthError("codex_rate_limited: credentials are still valid"),
+             ):
+            model, runtime = runner._resolve_session_agent_runtime(
+                source=source,
+                user_config={"model": {"default": "global/model"}},
+            )
+        # The turn runs on the default route instead of raising out of the resolver.
+        assert runtime["provider"] == "anthropic"
+        # The override model must not ride the default provider's endpoint (wrong-model 400).
+        assert model == "global/model"
+        # Private notice metadata never leaks into the AIAgent(**runtime_kwargs) spread.
+        assert "_fallback_notice" not in runtime
+        notice = runner._pre_agent_fallback_notice
+        assert notice and "openai-codex/gpt-6-luna-900k" in notice and "anthropic/global/model" in notice

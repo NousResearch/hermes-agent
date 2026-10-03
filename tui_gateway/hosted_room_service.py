@@ -310,6 +310,23 @@ class HostedRoomService:
             else:
                 self._pending_actions[(room_id, member_id)] = {**action, "member_id": member_id}
 
+    def _prune_pending_actions(self, room_id: str, tasks: list[dict[str, Any]]) -> None:
+        """Reconcile observations with durable attempts while holding ``_policy_lock``.
+
+        Terminal callbacks and history receipts can end polling before it clears an
+        approval. Late info responses can also reinsert it, so both readers and
+        responders must validate the cache. Uncertain attempts may still need approval.
+        """
+        attempts = {
+            (task["identity"].task_id, int(task["execution_generation"]),
+             str(task["payload"].get("target_member_id") or task["payload"].get("target_profile") or ""))
+            for task in tasks if task["status"] not in driver.TERMINAL_STATUSES}
+        for key, action in list(self._pending_actions.items()):
+            if key[0] == room_id and (
+                action.get("task_id"), int(action.get("execution_generation") or 0), key[1]
+            ) not in attempts:
+                self._pending_actions.pop(key, None)
+
     def _rotate_route_grant(
         self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None = None
     ) -> None:
@@ -502,6 +519,7 @@ class HostedRoomService:
         key = (room_id, member_id)
         route, client = self.peer_routes.get(key), self.peer_clients.get(key)
         with self._policy_lock:
+            self._prune_pending_actions(room_id, driver.list_tasks(self.db_path, room_id=room_id))
             action = self._pending_actions.get(key)
         requested_approval_id = str(request_id or "")
 
@@ -539,15 +557,16 @@ class HostedRoomService:
             runtime["link_load_error"] = self._link_load_error
         if room_id is None:
             return runtime
-        tasks = driver.list_tasks(self.db_path, room_id=room_id)
-        counts = Counter(str(task["status"]) for task in tasks)
-        pending_actions = [
-            {"kind": "retry", "task_id": task["identity"].task_id}
-            for task in tasks if task["status"] in _RETRYABLE_STATUSES]
         with self._policy_lock:
+            tasks = driver.list_tasks(self.db_path, room_id=room_id)
+            self._prune_pending_actions(room_id, tasks)
+            pending_actions = [
+                {"kind": "retry", "task_id": task["identity"].task_id}
+                for task in tasks if task["status"] in _RETRYABLE_STATUSES]
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
                 in self._pending_actions.items() if action_room_id == room_id)
+        counts = Counter(str(task["status"]) for task in tasks)
         return {
             "running": runtime["running"], "working": any(counts.get(s) for s in _LIVE_STATUSES),
             "blocked": room_id in runtime["blocked_rooms"]

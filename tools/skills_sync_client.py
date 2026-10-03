@@ -21,7 +21,7 @@ from tools.skills_sync_client_wire import (
     DEFAULT_MAX_OBJECT_BYTES, KIND_BLOB, ObjectSet, SyncClient, SyncConflict, SyncError,
     assemble_root_from_skill_trees, build_commit, build_root_tree, build_sync_manifest_bytes, build_tree,
     checked_capabilities, materialize_tree, merge_skill, nest_skill_tree, read_manifest_of_root,
-    read_ref_hash, root_tree_of_commit, skill_trees_of_root)
+    read_ref_hash, root_tree_of_commit, skill_trees_of_root, strip_runtime_caches)
 from tools.skills_sync_client_org import (
     ORG_DIR_NAME, list_locally_modified_org_skills, list_org_skill_names, resolve_org_identity)
 
@@ -376,11 +376,27 @@ def _resolve_push_conflict(client: SyncClient, identity: Dict[str, Any], actual_
     ours_trees = skill_trees_of_root(client, our_root)
     theirs_trees = skill_trees_of_root(client, root_tree_of_commit(client, actual_head))
     base_trees = skill_trees_of_root(client, root_tree_of_commit(client, base_head)) if base_head else {}
+    content: Dict[str, str] = {}
+    scratch = ObjectSet()
+
+    def cache_free(tree: Optional[str]) -> Optional[str]:
+        """Decide on content: an old client hashed generated caches into base/theirs trees.
+        A tree that cannot be read keeps its own address (a conservative overlap)."""
+        if tree is None:
+            return None
+        if tree not in content:
+            try:
+                content[tree] = strip_runtime_caches(client, tree, scratch)
+            except SyncError as e:
+                logger.debug("skills_sync_client: cache strip failed for %s: %s", tree, e)
+                content[tree] = tree
+        return content[tree]
+
     merged: Dict[str, str] = {}
     overlaps: List[str] = []
     for path in set(ours_trees) | set(theirs_trees) | set(base_trees):
         o, t = ours_trees.get(path), theirs_trees.get(path)
-        decision = merge_skill(base_trees.get(path), o, t)
+        decision = merge_skill(cache_free(base_trees.get(path)), cache_free(o), cache_free(t))
         if decision == "overlap":
             overlaps.append(path)
         # overlap keeps OURS on the surfaced conflict head (theirs stays server-side);

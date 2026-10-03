@@ -15,6 +15,7 @@ in-memory object store + ref table. No live server, no network.
 
 import hashlib
 import json
+import shutil
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -416,6 +417,29 @@ class TestObjectBuilding:
         with pytest.raises(ValueError):
             ssc.build_tree(d, objects, max_object_bytes=10)
 
+    def test_build_tree_ignores_generated_python_caches(self, tmp_path):
+        # Regression for #94127: running a skill leaves __pycache__ and sibling
+        # bytecode behind; the synced tree identity must not change with them.
+        d = tmp_path / "skill"
+        (d / "scripts").mkdir(parents=True)
+        (d / "SKILL.md").write_text("hello", encoding="utf-8")
+        (d / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+        (d / "shipped.pyc").write_bytes(b"deliberately shipped, no .py beside it")
+        pristine = ssc.build_tree(d, ssc.ObjectSet(), max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+
+        (d / "scripts" / "__pycache__").mkdir()
+        (d / "scripts" / "__pycache__" / "run.cpython-311.pyc").write_bytes(b"\x00bytecode")
+        (d / "scripts" / "run.pyc").write_bytes(b"\x00legacy sibling bytecode")
+        objects = ssc.ObjectSet()
+        with_caches = ssc.build_tree(d, objects, max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+        assert with_caches == pristine
+        names = {json.loads(data)["entries"][0]["name"] for kind, data in objects.objects.values()
+                 if kind == wire.KIND_TREE}
+        assert "__pycache__" not in names
+        # Source-less bytecode is content someone chose to ship and stays.
+        root = json.loads(objects.objects[with_caches][1])
+        assert "shipped.pyc" in {e["name"] for e in root["entries"]}
+
     def test_build_commit_shape(self):
         objects = ssc.ObjectSet()
         c = ssc.build_commit(
@@ -601,6 +625,42 @@ class TestEndToEnd:
         assert "alpha" in result["overlapping_skills"]
         # a conflict ref head was written server-side
         assert result["conflict_ref"] in state.refs
+
+    def test_cache_strip_plus_remote_edit_merges_without_overlap(self, mock_server, synced_env):
+        # An old client hashed __pycache__ into the base and into their edit; this client
+        # rebuilds the same content without caches. Only the remote side changed content.
+        base, state = mock_server
+        home, skills, identity = synced_env
+        client = ssc.SyncClient(base, identity["api_key"])
+        alpha, beta = skills / "alpha", skills / "devops" / "beta"
+        (alpha / "lib" / "__pycache__").mkdir(parents=True)
+        (alpha / "lib" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (alpha / "lib" / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00bytecode")
+        (alpha / "lib" / "helper.pyc").write_bytes(b"\x00legacy sibling bytecode")
+
+        def legacy_commit(alpha_dir, parents):
+            objects = ssc.ObjectSet()
+            trees = {name: _legacy_build_tree(path, objects, max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+                     for name, path in (("alpha", alpha_dir), ("devops/beta", beta))}
+            root = ssc.assemble_root_from_skill_trees(trees, objects)
+            commit = ssc.build_commit(root, parents, owner="owner1", device="old", message="legacy", objects=objects)
+            client.put_objects(objects.objects)
+            return commit, root, trees["alpha"]
+
+        base_commit, base_root, _ = legacy_commit(alpha, [])
+        state.refs["refs/user/owner1/HEAD"] = base_commit
+        ssc.write_sync_state({"head": base_commit, "root": base_root})
+        remote = home / "remote-alpha"
+        shutil.copytree(alpha, remote)
+        (remote / "SKILL.md").write_text("---\nname: alpha\ndescription: test\n---\nremote edit\n", encoding="utf-8")
+        their_commit, _, their_alpha = legacy_commit(remote, [base_commit])
+        state.refs["refs/user/owner1/HEAD"] = their_commit
+
+        result = ssc.push_skills(client, identity=identity)
+
+        assert result.get("ok") is True and result.get("merged") is True, result
+        merged_root = ssc.root_tree_of_commit(client, state.refs["refs/user/owner1/HEAD"])
+        assert ssc.skill_trees_of_root(client, merged_root)["alpha"] == their_alpha
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +871,166 @@ class TestEnvConfig:
             lambda: {"alpha": {"sync": True}, "beta": {}, "gamma": {"sync": False}},
         )
         assert ssc.list_synced_skill_names() == ["alpha"]
+
+
+def _hash_skill_files(path: Path, *, include_runtime_cache: bool) -> str:
+    """Independent copy of the org hash, so the rewrite assertion is not the helper under test."""
+    import tools.skills_sync_optional as opt
+    h = hashlib.sha256()
+    for f in sorted(p for p in path.rglob("*") if p.is_file()):
+        if not include_runtime_cache and opt._is_runtime_cache(f, path):
+            continue
+        h.update(str(f.relative_to(path)).replace("\\", "/").encode("utf-8"))
+        h.update(b"\0")
+        h.update(f.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _write_cached_skill(dest: Path, body: str) -> None:
+    (dest / "lib").mkdir(parents=True)
+    (dest / "SKILL.md").write_text(body, encoding="utf-8")
+    (dest / "lib" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (dest / "lib" / "__pycache__").mkdir()
+    (dest / "lib" / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00bytecode")
+    (dest / "lib" / "helper.pyc").write_bytes(b"\x00legacy sibling bytecode")
+
+
+def _legacy_build_tree(dir_path: Path, objects, *, max_object_bytes: int) -> str:
+    """Pre-#94127 build_tree: every directory and file, including generated caches."""
+    entries = []
+    for child in sorted(dir_path.iterdir(), key=lambda p: p.name):
+        if child.is_symlink():
+            continue
+        if child.is_dir():
+            entries.append(wire._entry(
+                child.name, wire.KIND_TREE,
+                _legacy_build_tree(child, objects, max_object_bytes=max_object_bytes),
+                wire.MODE_DIR))
+        elif child.is_file():
+            data = child.read_bytes()
+            if len(data) > max_object_bytes:
+                raise ValueError(f"file {child} is {len(data)} bytes > max_object_bytes {max_object_bytes}")
+            entries.append(wire._entry(
+                child.name, wire.KIND_BLOB, objects.add(wire.KIND_BLOB, data), wire._file_mode(child)))
+    return wire._add_tree(entries, objects)
+
+
+class TestOrgLocalModification:
+    def test_generated_caches_never_make_a_mirrored_skill_locally_modified(self, tmp_path, monkeypatch):
+        # Regression for #94127: importing a pulled org skill writes __pycache__
+        # into the mirror; the baseline fingerprint taken at pull time must still
+        # match, while a real content edit is still detected.
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        dest = org._mirror_root("org1") / "team" / "alpha"
+        (dest / "lib").mkdir(parents=True)
+        (dest / "SKILL.md").write_text("alpha", encoding="utf-8")
+        (dest / "lib" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        org._write_org_baseline("org1", {"team/alpha": {"fingerprint": org._skill_dir_fingerprint(dest),
+                                                        "tree": "sha256:" + "0" * 64}})
+        assert not org.org_skill_is_locally_modified("team/alpha", "org1")
+
+        (dest / "lib" / "__pycache__").mkdir()
+        (dest / "lib" / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00bytecode")
+        (dest / "lib" / "helper.pyc").write_bytes(b"\x00legacy sibling bytecode")
+        assert not org.org_skill_is_locally_modified("team/alpha", "org1")
+        assert org.list_locally_modified_org_skills("org1") == []
+
+        (dest / "lib" / "helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+        assert org.org_skill_is_locally_modified("team/alpha", "org1")
+        assert org.list_locally_modified_org_skills("org1") == ["team/alpha"]
+
+    def test_old_cache_bearing_baseline_rewrites_to_cache_free_fingerprint(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        dest = org._mirror_root("org1") / "team" / "alpha"
+        _write_cached_skill(dest, "alpha")
+        legacy = _hash_skill_files(dest, include_runtime_cache=True)
+        cache_free = _hash_skill_files(dest, include_runtime_cache=False)
+        assert legacy != cache_free
+        tree = "sha256:" + "ab" * 32
+        org._write_org_baseline("org1", {"team/alpha": {"fingerprint": legacy, "tree": tree}})
+
+        extra = dest / "lib" / "__pycache__" / "extra.pyc"
+        extra.write_bytes(b"\x00extra")
+        assert org.org_skill_is_locally_modified("team/alpha", "org1")
+        extra.unlink()
+
+        sidecar = org._sidecar_path("org1", "ORG_BASELINE_FILE")
+        before = sidecar.read_bytes()
+        assert not org.org_skill_is_locally_modified("team/alpha", "org1")
+        assert org.list_locally_modified_org_skills("org1") == []
+        assert sidecar.read_bytes() == before, "the read-only check never rewrites the baseline"
+        assert org._read_org_baseline("org1")["team/alpha"] == {"fingerprint": legacy, "tree": tree}
+
+        (dest / "SKILL.md").write_text("alpha edited", encoding="utf-8")
+        assert org.org_skill_is_locally_modified("team/alpha", "org1")
+
+    def test_pull_accepts_old_cache_bearing_remote_baseline(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.SyncClient(base, identity["api_key"])
+        dest = org._mirror_root("org-1") / "alpha"
+        _write_cached_skill(dest, "alpha v1\n")
+        objects = ssc.ObjectSet()
+        skill_tree = _legacy_build_tree(dest, objects, max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+        root = ssc.assemble_root_from_skill_trees({"alpha": skill_tree}, objects)
+        commit = ssc.build_commit(
+            root, [], owner="owner1", device="old", message="legacy", objects=objects)
+        client.put_objects(objects.objects, org_scope=True)
+        client.cas_ref(org.org_head_ref("org-1"), None, commit)
+        legacy = _hash_skill_files(dest, include_runtime_cache=True)
+        org._write_org_baseline("org-1", {"alpha": {"fingerprint": legacy, "tree": skill_tree}})
+
+        result = org.pull_org_skills(client, identity=admin)
+        assert result["conflicted"] == []
+        assert "alpha" in result["updated"]
+        stored = org._read_org_baseline("org-1")["alpha"]["fingerprint"]
+        assert stored == _hash_skill_files(dest, include_runtime_cache=False)
+        assert (dest / "SKILL.md").read_text() == "alpha v1\n"
+        assert not org.org_skill_is_locally_modified("alpha", "org-1")
+
+        (dest / "SKILL.md").write_text("local edit\n", encoding="utf-8")
+        again = org.pull_org_skills(client, identity=admin)
+        assert "alpha" not in again["updated"]
+        assert again["conflicted"] == []
+        assert (dest / "SKILL.md").read_text() == "local edit\n"
+
+    def test_pull_settles_a_legacy_mirror_whose_caches_changed_after_the_baseline(
+            self, mock_server, synced_env):
+        # Regression for #94127: the old client hashed caches into the pull-time baseline, and
+        # running the skill later rewrote them, so neither fingerprint matches any more; the
+        # recorded upstream tree shows the content itself is untouched.
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.SyncClient(base, identity["api_key"])
+        dest = org._mirror_root("org-1") / "alpha"
+        _write_cached_skill(dest, "alpha v1\n")
+        objects = ssc.ObjectSet()
+        skill_tree = _legacy_build_tree(dest, objects, max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+        root = ssc.assemble_root_from_skill_trees({"alpha": skill_tree}, objects)
+        commit = ssc.build_commit(root, [], owner="owner1", device="old", message="legacy", objects=objects)
+        client.put_objects(objects.objects, org_scope=True)
+        client.cas_ref(org.org_head_ref("org-1"), None, commit)
+        legacy = _hash_skill_files(dest, include_runtime_cache=True)
+        org._write_org_baseline("org-1", {"alpha": {"fingerprint": legacy, "tree": skill_tree}})
+        (dest / "lib" / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00recompiled")
+
+        result = org.pull_org_skills(client, identity=admin)
+
+        assert "alpha" in result["updated"] and result["conflicted"] == []
+        assert org._read_org_baseline("org-1")["alpha"]["fingerprint"] == _hash_skill_files(
+            dest, include_runtime_cache=False)
+        assert not org.org_skill_is_locally_modified("alpha", "org-1")
+
+        # A real edit plus rewritten caches is still a local edit and is never overwritten.
+        (dest / "lib" / "__pycache__").mkdir(exist_ok=True)
+        (dest / "lib" / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00again")
+        (dest / "SKILL.md").write_text("local edit\n", encoding="utf-8")
+        again = org.pull_org_skills(client, identity=admin)
+        assert "alpha" not in again["updated"]
+        assert (dest / "SKILL.md").read_text() == "local edit\n"
 
 
 class TestDeviceName:

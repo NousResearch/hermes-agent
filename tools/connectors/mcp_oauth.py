@@ -48,7 +48,7 @@ def probe_with_rollback(
         # the same server owns the token files; an older one must not write over it.
         if flow is not None and _ACTIVE.get((hermes_home, server_name)) not in (None, flow):
             return
-        storage.restore(backup)
+        storage.restore(backup, only_if_absent=True)
         manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
 
     try:

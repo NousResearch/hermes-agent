@@ -104,6 +104,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if dialog_policy not in _VALID_POLICIES:
             raise ValueError(f"Invalid dialog_policy {dialog_policy!r}; must be one of {sorted(_VALID_POLICIES)}")
         self.task_id = task_id
+        self.session_key = task_id
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
@@ -506,15 +507,19 @@ class _SupervisorRegistry:
             return self._by_task.pop(task_id, None)
 
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
-                     dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
+                     dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0,
+                     session_key: Optional[str] = None) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
-        different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced.
+        ``session_key`` identifies the browser lifetime independently of the task lookup key."""
+        session_key = session_key or task_id
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
                 thread, loop = existing._thread, existing._loop
                 healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
                 if existing.cdp_url == cdp_url and healthy:
+                    existing.session_key = session_key
                     return existing
                 self._by_task.pop(task_id, None)
         if existing is not None:
@@ -522,11 +527,13 @@ class _SupervisorRegistry:
 
         supervisor = CDPSupervisor(task_id=task_id, cdp_url=cdp_url,
                                    dialog_policy=dialog_policy, dialog_timeout_s=dialog_timeout_s)
+        supervisor.session_key = session_key
         supervisor.start(timeout=start_timeout)
         with self._lock:
             # Guard against a concurrent get_or_start from another thread.
             already = self._by_task.get(task_id)
             if already is not None and already.cdp_url == cdp_url:
+                already.session_key = session_key
                 supervisor.stop()
                 return already
             self._by_task[task_id] = supervisor
@@ -535,6 +542,15 @@ class _SupervisorRegistry:
     def stop(self, task_id: str) -> None:
         supervisor = self._pop(task_id)
         if supervisor is not None:
+            supervisor.stop()
+
+    def stop_session(self, session_key: str) -> None:
+        """Stop every task's connection to this session, leaving rebound tasks alone."""
+        with self._lock:
+            task_ids = [task_id for task_id, supervisor in self._by_task.items()
+                        if supervisor.session_key == session_key]
+            supervisors = [self._by_task.pop(task_id) for task_id in task_ids]
+        for supervisor in supervisors:
             supervisor.stop()
 
     def stop_all(self) -> None:

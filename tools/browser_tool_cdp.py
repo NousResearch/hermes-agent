@@ -125,10 +125,10 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         _bt.logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
 
 
-def _stop_cdp_supervisor(task_id: str) -> None:
-    """Stop the CDP supervisor for ``task_id`` if one exists. No-op otherwise."""
+def _stop_cdp_supervisor(session_key: str) -> None:
+    """Stop all task connections owned by this browser session. No-op otherwise."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        SUPERVISOR_REGISTRY.stop(task_id)
+        SUPERVISOR_REGISTRY.stop_session(session_key)
     except Exception as exc:
-        _origin().logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
+        _origin().logger.debug("CDP supervisor stop for session=%s failed (non-fatal): %s", session_key, exc)

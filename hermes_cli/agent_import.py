@@ -25,8 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Entry delimiter of the Hermes memory store (memories/MEMORY.md) and the openclaw script.
 ENTRY_DELIMITER = "\n§\n"
-# Character budget for merged memory files (openclaw script default).
-MEMORY_CHAR_LIMIT = 20_000
+# Character budget for merged memory files. The merge must stop at the target profile's
+# ``memory.memory_char_limit`` (the same key the memory tool enforces on load and on every
+# ``memory add``); this constant is only the config default used when the profile config is
+# absent or unusable. Merging past it poisons the store: every later add is refused.
+MEMORY_CHAR_LIMIT = 2_200
 SUPPORTED_AGENTS = ("claude-code", "codex")
 _AGENT_DEFAULT_DIRS = {"claude-code": ".claude", "codex": ".codex"}
 _SKILL_CATEGORY = {"claude-code": "claude-code-imports", "codex": "codex-imports"}
@@ -176,6 +179,29 @@ def merge_entries(existing: Sequence[str], incoming: Sequence[str],
         current_len = candidate_len
         stats["added"] += 1
     return merged, stats
+
+
+def read_memory_char_limit(target_root: Path) -> int:
+    """Best-effort read of the target profile's ``memory.memory_char_limit``.
+
+    ``hermes import-agent`` must merge against the same budget the memory tool enforces
+    (``tools/memory_tool_store.py`` reads this key, defaulting to :data:`MEMORY_CHAR_LIMIT`):
+    a store written past it makes every later ``memory add`` refuse and floods the system
+    prompt. An absent, unreadable, or malformed profile config falls back to the default
+    rather than blocking the import."""
+    try:
+        config = load_yaml_file(Path(target_root) / "config.yaml")
+    except ConfigReadError:
+        return MEMORY_CHAR_LIMIT
+    memory = config.get("memory")
+    if isinstance(memory, Mapping):
+        try:
+            limit = int(memory.get("memory_char_limit", MEMORY_CHAR_LIMIT))
+        except (TypeError, ValueError):
+            return MEMORY_CHAR_LIMIT
+        if limit > 0:
+            return limit
+    return MEMORY_CHAR_LIMIT
 
 
 _BASH_RULE_RE = re.compile(r"^Bash\((?P<inner>.*)\)$")
@@ -381,13 +407,21 @@ class AgentImporter:
                 self.record(kind, source, destination, "skipped", "No importable entries found")
             return
         existing = parse_existing_memory_entries(destination)
-        merged, stats = merge_entries(existing, incoming, MEMORY_CHAR_LIMIT)
-        details = {"existing_entries": stats["existing"], "added_entries": stats["added"],
-                   "duplicate_entries": stats["duplicates"],
-                   "overflowed_entries": stats["overflowed"]}
+        limit = read_memory_char_limit(self.target_root)
+        merged, stats = merge_entries(existing, incoming, limit)
+        details: Dict[str, Any] = {
+            "existing_entries": stats["existing"], "added_entries": stats["added"],
+            "duplicate_entries": stats["duplicates"],
+            "overflowed_entries": stats["overflowed"],
+            "memory_char_limit": limit}
+        overflow_note = (f"{stats['overflowed']} entries left out over "
+                         f"memory.memory_char_limit={limit}") if stats["overflowed"] else ""
         if stats["added"] == 0:
-            self.record(kind, source, destination, "skipped", "No new entries to import", **details)
+            self.record(kind, source, destination, "skipped",
+                        overflow_note or "No new entries to import", **details)
             return
+        if overflow_note:
+            details["note"] = overflow_note
 
         def write() -> Optional[str]:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -651,7 +685,9 @@ def print_import_report(report: Dict[str, Any], dry_run: bool) -> None:
         for item in group_items:
             tail = ("→ " + str(item.get("destination") or "").replace(str(Path.home()), "~")
                     if status == "imported" else f" {item.get('reason', '')}")
-            print(f"      {item.get('kind', 'unknown'):<22s} {tail}")
+            note = item.get("note")
+            print(f"      {item.get('kind', 'unknown'):<22s} {tail}"
+                  + (f"  [{note}]" if note else ""))
         print()
     if stripped := report.get("stripped_secrets"):
         print(color("  ⚷ Secrets stripped (never imported):", Colors.YELLOW))

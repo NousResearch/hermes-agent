@@ -23,6 +23,7 @@
     "@docusaurus/plugin-client-redirects": "3.10.2",
     "@docusaurus/preset-classic": "3.10.2",
     "@docusaurus/theme-mermaid": "3.10.2",
+    "@leuria/docusaurus": "0.1.4",
     "@mdx-js/react": "3.1.1",
     "@mermaid-js/layout-elk": "0.1.9",
     "clsx": "2.1.1",

@@ -8,12 +8,13 @@ import { getProfiles, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { activeGatewayConnectionId } from '@/store/gateway'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, profileLabel } from '@/store/profile'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 interface ScopeOption {
   key: string
+  /** Presentation identity only. Routing stays in `value`. */
   label: string
   value: string
 }
@@ -107,26 +108,21 @@ export function useCapabilityScope({
   // selection would be surprising.
   useOnProfileSwitch(() => setScopeOverride(null))
 
-  // Scope-selector rows. Multi-connection desktops list every reachable
-  // (connection, profile) agent from the union roster — the selected profile
-  // is configured ON ITS OWN GATEWAY. Otherwise the legacy per-profile list.
+  // Keep presentation identity separate from routing identity. The pill shows
+  // the same profile label users see elsewhere; connection ids, host labels,
+  // addresses, ports and "current" markers remain internal to `value`.
   const options: ScopeOption[] = useMemo(() => {
     if (multiConnection && rosterData?.agents?.length) {
-      const activeId = activeGatewayConnectionId() ?? 'local'
-
       return rosterData.agents.map((agent: DesktopRosterAgent) => ({
         key: `${agent.connectionId}::${agent.profile}`,
-        label:
-          agent.connectionId === activeId
-            ? `${agent.profile} — ${agent.connectionLabel} (current)`
-            : `${agent.profile} — ${agent.connectionLabel}`,
+        label: agent.profile,
         value: `${agent.connectionId}::${agent.profile}`
       }))
     }
 
     return (profilesData?.profiles ?? []).map(p => ({
       key: p.name,
-      label: p.is_default ? 'Hermes (default)' : p.name,
+      label: profileLabel(p),
       value: p.name
     }))
   }, [multiConnection, profilesData, rosterData])
@@ -177,10 +173,8 @@ export function useCapabilityScope({
 }
 
 /**
- * Scope selector, shown above EVERY Capabilities tab (Skills, Tools, MCP,
- * Plugins). Lets the user configure ANY profile's capabilities — on any
- * registered gateway — without switching the whole app. Only meaningful with
- * >1 option; hidden otherwise to avoid clutter.
+ * Legacy select presentation kept for embedded consumers. The main
+ * Capabilities page uses the shared Settings-style scope chips.
  */
 export function CapabilityScopeSelector({
   compact = false,

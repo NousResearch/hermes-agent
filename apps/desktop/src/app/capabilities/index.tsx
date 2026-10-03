@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -16,9 +17,12 @@ import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { CapabilitiesHeader } from './capabilities-header'
 import { ConnectorsTab } from './connectors/connectors-tab'
+import { useConnectorSummary } from './connectors/use-connector-summary'
 import { PluginsTab } from './plugins/plugins-tab'
-import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
+import { usePluginSummary } from './plugins/use-plugin-summary'
+import { useCapabilityScope } from './scope-selector'
 import { EmbeddedHubPicker } from './skills/embedded-hub-picker'
 import { SKILLS_QUERY_KEY, skillSearchTerms, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
@@ -50,11 +54,8 @@ interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   fixedConnection?: string
 }
 
-/** The Capabilities page SHELL: tab selection, the search header, the profile /
- *  connection scope, the refresh hotkey, and the dispatch to one tab component
- *  per tab. Each tab owns its list, detail pane and writes; the two installed
- *  lists are fetched here because the tab pills count them for the tab the user
- *  is NOT on. */
+/** The Capabilities page shell: consistent submenu navigation, search, profile
+ *  targeting, refresh, and dispatch to one content surface per capability. */
 export function CapabilitiesView({
   embedded = false,
   fixedConnection,
@@ -81,11 +82,18 @@ export function CapabilitiesView({
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
 
-  // The two installed lists the tab pills count. They are fetched here, as a
-  // pair, because the counts stay live for the tab the user is NOT on.
+  // All four submenu badges use one contract: active/effective for the selected
+  // profile / total available. Connector and plugin summaries intentionally
+  // avoid runtime-health probes; their numbers describe configuration state.
   const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
+  const connectorSummary = useConnectorSummary(scope.profile)
+  const pluginSummary = usePluginSummary(scope.profile)
   const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
+  const activeSkillCount = skills?.filter(skill => skill.enabled).length ?? null
+  const activeToolsetCount =
+    toolsets?.filter(toolset => isDesktopToolsetVisible(toolset.name) && toolset.enabled).length ?? null
+  const totalToolsetCount = toolsets ? visibleToolsetCount(toolsets) : null
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
@@ -115,7 +123,7 @@ export function CapabilitiesView({
     return undefined
   }, [mode, skills, t, toolsets])
 
-  // MCP and Plugins load independently of the installed Skills/Tools lists.
+  // Connectors and Plugins load independently of the installed Skills/Tools lists.
   const gated = mode === 'toolsets' || mode === 'skills'
   const pending = gated && !(skills && toolsets)
 
@@ -137,23 +145,17 @@ export function CapabilitiesView({
   const tabContent = {
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
     // ACTIVE gateway's socket — for a scope pinned to a different backend that
-    // (config edits still apply on that backend's next session).
+    // config edits still apply on that backend's next session.
     connectors: () => (
       <ConnectorsTab
         gateway={scope.crossBackend ? null : gateway}
         key={`connectors-${scope.key}`}
         profile={scope.profile}
+        query={query}
       />
     ),
-    // Agent plugins for the scoped profile (selector in the section header),
-    // app-level desktop plugins, and the docs catalog picker underneath.
     plugins: () => (
-      <PluginsTab
-        key={`plugins-${scope.key}`}
-        profile={scope.profile}
-        scopeLabel={scope.label}
-        scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-      />
+      <PluginsTab key={`plugins-${scope.key}`} profile={scope.profile} query={query} scopeLabel={scope.label} />
     ),
     skills: () => (
       <SkillsTab
@@ -169,26 +171,63 @@ export function CapabilitiesView({
     )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
+  const searchPlaceholder =
+    mode === 'skills'
+      ? t.skills.searchSkills
+      : mode === 'toolsets'
+        ? t.skills.searchToolsets
+        : mode === 'connectors'
+          ? t.connectors.search
+          : t.skills.tabPlugins
+
+  const searchHidden =
+    mode === 'skills'
+      ? skills !== undefined && skills.length === 0
+      : mode === 'toolsets'
+        ? totalToolsetCount === 0
+        : mode === 'connectors'
+          ? !connectorSummary.loading && connectorSummary.total === 0
+          : !pluginSummary.loading && pluginSummary.total === 0
+
   return (
     <PageSearchShell
       {...props}
       activeTab={mode}
       onSearchChange={setQuery}
-      onTabChange={id => setMode(id as CapabilityMode)}
-      // The Connectors directory owns its search field; plugins has its own list.
-      searchHidden={mode === 'connectors' || mode === 'plugins'}
+      onTabChange={id => {
+        setQuery('')
+        setMode(id as CapabilityMode)
+      }}
+      searchHidden={searchHidden}
       searchHints={searchHints}
-      searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
+      searchPlaceholder={searchPlaceholder}
       searchValue={query}
       tabs={[
-        { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
-        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
-        { id: 'connectors', label: t.connectorsPage.title },
-        { id: 'plugins', label: t.skills.tabPlugins }
+        {
+          id: 'skills',
+          label: t.skills.tabSkills,
+          meta: skills && activeSkillCount !== null ? `${activeSkillCount} / ${skills.length}` : null
+        },
+        {
+          id: 'toolsets',
+          label: t.skills.tabToolsets,
+          meta:
+            activeToolsetCount !== null && totalToolsetCount !== null ? `${activeToolsetCount} / ${totalToolsetCount}` : null
+        },
+        {
+          id: 'connectors',
+          label: t.connectorsPage.title,
+          meta: connectorSummary.loading ? null : `${connectorSummary.active} / ${connectorSummary.total}`
+        },
+        {
+          id: 'plugins',
+          label: t.skills.tabPlugins,
+          meta: pluginSummary.loading ? null : `${pluginSummary.active} / ${pluginSummary.total}`
+        }
       ]}
     >
       <div className="flex h-full flex-col">
-        {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+        <CapabilitiesHeader mode={mode} scope={scope} />
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
             {loadGate ?? tabContent[mode]()}

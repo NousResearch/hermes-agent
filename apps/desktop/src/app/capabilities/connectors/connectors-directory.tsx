@@ -28,6 +28,9 @@ export interface ConnectorsDirectoryProps {
   onServerToggle?: (card: ConnectorCardModel, next: boolean) => void
   onVerb?: (card: ConnectorCardModel) => void
   selectedKey?: null | string
+  /** The Capabilities page owns the one shared SearchField. Embedded callers
+   *  can leave this true and keep the directory-local search. */
+  showSearch?: boolean
 }
 
 export function ConnectorsDirectory({
@@ -44,7 +47,8 @@ export function ConnectorsDirectory({
   onRetryHosted,
   onServerToggle,
   onVerb,
-  selectedKey = null
+  selectedKey = null,
+  showSearch = true
 }: ConnectorsDirectoryProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage
@@ -66,15 +70,17 @@ export function ConnectorsDirectory({
 
       {cards.length === 0 ? null : (
         <>
-          <div className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) pb-1.5">
-            <SearchField
-              containerClassName="min-w-0 flex-1"
-              inputClassName="flex-1"
-              onChange={query => set({ query })}
-              placeholder={copy.searchPlaceholder(cards.length)}
-              value={filter.query}
-            />
-          </div>
+          {showSearch ? (
+            <div className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) pb-1.5">
+              <SearchField
+                containerClassName="min-w-0 flex-1"
+                inputClassName="flex-1"
+                onChange={query => set({ query })}
+                placeholder={copy.searchPlaceholder(cards.length)}
+                value={filter.query}
+              />
+            </div>
+          ) : null}
 
           {showSegments || segmentFellBack || hiddenMatches > 0 ? (
             <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -148,9 +154,11 @@ export function ConnectorsDirectory({
         <PanelEmpty
           action={
             <div className="flex items-center gap-2">
-              <Button onClick={() => set(EMPTY_CONNECTORS_FILTER)} size="xs" variant="secondary">
-                {copy.page.clearSearch}
-              </Button>
+              {showSearch ? (
+                <Button onClick={() => set(EMPTY_CONNECTORS_FILTER)} size="xs" variant="secondary">
+                  {copy.page.clearSearch}
+                </Button>
+              ) : null}
               {addYourOwn}
             </div>
           }

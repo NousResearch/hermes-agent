@@ -12,6 +12,8 @@ VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # model-authored items and caller-replayed API history.
 MAX_TODO_CONTENT_CHARS = 4000
 MAX_TODO_ITEMS = 256
+_AUTO_ID_SENTINEL = "__needs_auto__"
+_AUTO_ID_PREFIX = "auto_"
 # Max single todo tool-result payload accepted during history hydration, so a forged
 # oversized result is dropped before parsing (AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
@@ -33,7 +35,15 @@ class TodoStore:
 
     def _fresh_items(self, todos: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Validate, dedupe and order a whole new list (replace / restore)."""
-        return self._normalize_order([self._validate(t) for t in self._dedupe_by_id(todos)])
+        # Resolve auto-ids BEFORE dedupe: two no-id items would otherwise share the
+        # ``__needs_auto__`` sentinel and collapse to one position in ``_dedupe_by_id``.
+        # Seed ``used`` with the existing store so a follow-up ``write`` doesn't
+        # re-mint ``auto_1`` over a still-live id.
+        existing_ids = {item["id"] for item in self._items}
+        validated = [self._validate(t) for t in todos]
+        with_ids = self._resolve_auto_ids(validated, existing_ids)
+        deduped = self._dedupe_by_id(with_ids)
+        return self._normalize_order(deduped)
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """Replace the list (default) or merge by id; returns the full list after writing."""
@@ -49,24 +59,41 @@ class TodoStore:
         return self.read()
 
     def _merge(self, todos: List[Dict[str, Any]]) -> None:
-        """Update existing items only in the fields provided; append new ones (validated)."""
+        """Update existing items only in the fields provided; append new ones (validated).
+
+        No-id dict items get assigned unique ``auto_N`` ids (see ``_fresh_items`` for
+        the same contract in replace mode) so a merge that introduces new items from a
+        model that forgot to emit ids still works end-to-end. Non-dict placeholders
+        ("?" non-dict fallback) are dropped — they're unmergeable garbage.
+        """
         existing = {item["id"]: item for item in self._items}
-        for t in self._dedupe_by_id(todos):
-            item_id = str(t.get("id", "")).strip()
-            if not item_id:
-                continue  # can't merge without an id
+        # First pass: validate + resolve auto-ids so a batch of no-id dict items gets
+        # distinct ``auto_N`` ids (seeded above any existing store entries).
+        raw = [self._validate(t) for t in todos]
+        resolved = self._resolve_auto_ids(raw, set(existing.keys()))
+        # Second pass: explicit-id loop (preserves the original "only overwrite fields
+        # the caller actually provided" semantic), plus auto-id appends.
+        for src, validated in zip(todos, resolved):
+            item_id = validated["id"]
+            if item_id == "?":
+                continue  # non-dict placeholder; drop
             cur = existing.get(item_id)
             if cur is None:
-                validated = self._validate(t)
-                existing[validated["id"]] = validated
+                # New item (explicit id not in store, OR auto-id assigned above).
+                existing[item_id] = validated
                 self._items.append(validated)
                 continue
-            if t.get("content"):
-                cur["content"] = self._cap_content(str(t["content"]).strip())
-            if t.get("status") and str(t["status"]).strip().lower() in VALID_STATUSES:
-                cur["status"] = str(t["status"]).strip().lower()
-            if "parent" in t:
-                parent = str(t["parent"] or "").strip()
+            # Existing item: only overwrite fields the caller actually sent on ``src``.
+            # ``src`` may be a non-dict (which produced the "?" placeholder and is
+            # already skipped above); only dict sources can carry mergeable fields.
+            if not isinstance(src, dict):
+                continue
+            if src.get("content"):
+                cur["content"] = self._cap_content(str(src["content"]).strip())
+            if src.get("status") and str(src["status"]).strip().lower() in VALID_STATUSES:
+                cur["status"] = str(src["status"]).strip().lower()
+            if "parent" in src:
+                parent = str(src["parent"] or "").strip()
                 if parent:
                     cur["parent"] = parent
                 else:
@@ -137,7 +164,13 @@ class TodoStore:
         """Normalize one item to ``{id, content, status, parent?}`` (placeholders when missing)."""
         if not isinstance(item, dict):
             return {"id": "?", "content": "(invalid item)", "status": "pending"}
-        item_id = str(item.get("id", "")).strip() or "?"
+        raw_id = str(item.get("id", "")).strip()
+        # A dict item with no id is a model emission bug (often: ``todos`` was a
+        # bare dict that ``coerce_tool_args`` wrapped as a one-element list).
+        # Mark it with ``__needs_auto__`` so ``_resolve_auto_ids`` can hand it a
+        # unique ``auto_N`` once the whole batch is in scope. A non-dict item
+        # still falls back to ``"?"`` (existing contract).
+        item_id = raw_id or _AUTO_ID_SENTINEL
         content = str(item.get("content", "")).strip()
         status = str(item.get("status", "pending")).strip().lower()
         result = {"id": item_id,
@@ -147,6 +180,36 @@ class TodoStore:
         if parent and parent != item_id:
             result["parent"] = parent
         return result
+
+    @staticmethod
+    def _resolve_auto_ids(items: List[Dict[str, str]],
+                          existing_ids: Optional[set] = None,
+                          ) -> List[Dict[str, str]]:
+        """Replace ``__needs_auto__`` placeholders with unique ``auto_N`` ids.
+
+        Numbering starts above any existing ``auto_N`` (in the new batch or
+        in ``existing_ids`` from the store) so re-runs of the same batch get
+        stable, non-colliding ids; explicit caller-supplied ids always win.
+        """
+        existing_ids = existing_ids or set()
+        used: set = {item["id"] for item in items
+                     if item["id"] != _AUTO_ID_SENTINEL} | existing_ids
+        next_n = 1
+        for existing in used:
+            if existing.startswith(_AUTO_ID_PREFIX):
+                try:
+                    next_n = max(next_n,
+                                  int(existing[len(_AUTO_ID_PREFIX):]) + 1)
+                except ValueError:
+                    pass
+        for item in items:
+            if item["id"] == _AUTO_ID_SENTINEL:
+                while f"{_AUTO_ID_PREFIX}{next_n}" in used:
+                    next_n += 1
+                item["id"] = f"{_AUTO_ID_PREFIX}{next_n}"
+                used.add(item["id"])
+                next_n += 1
+        return items
 
     @staticmethod
     def _sanitize_parents(items: List[Dict[str, str]]) -> None:
@@ -166,11 +229,30 @@ class TodoStore:
 
     @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Collapse duplicate ids, keeping the last occurrence in its position."""
+        """Collapse duplicate ids, keeping the last occurrence in its position.
+
+        Empty/placeholder ids (the ``"?"`` non-dict fallback or the
+        ``__needs_auto__`` sentinel) get a per-position key so they are
+        NEVER collapsed — each is its own observed problem and should be
+        reported as-is. ``_resolve_auto_ids`` runs BEFORE dedupe in
+        ``_fresh_items``, so a sentinel never reaches this stage in
+        practice; the sentinel guard is defense in depth for direct callers.
+        """
+        # These strings indicate "no real id" and must never collide.
+        _PLACEHOLDER_IDS = frozenset({"?", "_AUTO_ID_SENTINEL"})  # noqa: F841 (sentinel use)
         last_index: Dict[str, int] = {}
-        for i, item in enumerate(todos):  # non-dicts get a synthetic key; _validate handles them
-            key = str(item.get("id", "")).strip() if isinstance(item, dict) else f"__invalid_{i}"
-            last_index[key or "?"] = i
+        for i, item in enumerate(todos):
+            if not isinstance(item, dict):
+                key = f"__invalid_{i}"
+            else:
+                raw_id = str(item.get("id", "")).strip()
+                # Empty OR a known placeholder ("?" non-dict, "__needs_auto__" pre-resolve)
+                # → per-position key so duplicates don't collapse.
+                if not raw_id or raw_id in ("?", "__needs_auto__"):
+                    key = f"__placeholder_{i}"
+                else:
+                    key = raw_id
+            last_index[key] = i
         return [todos[i] for i in sorted(last_index.values())]
 
     @staticmethod

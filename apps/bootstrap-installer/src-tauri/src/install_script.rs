@@ -17,6 +17,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
+use crate::commit_sha::is_full_commit_sha;
 use crate::paths;
 
 /// Identity of the install.ps1 we'll execute. Used by both the manifest
@@ -62,13 +63,6 @@ impl ScriptKind {
     }
 }
 
-/// Validates a string looks like a git SHA (7+ hex chars). Mirrors
-/// `STAMP_COMMIT_RE` from bootstrap-runner.ts.
-fn is_valid_commit(s: &str) -> bool {
-    let len = s.len();
-    (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
 /// Resolves the install script to use for this run.
 ///
 /// `pin` is the commit-or-branch from either Hermes-Setup's build-time
@@ -104,7 +98,7 @@ pub async fn resolve(
     // stale script drives a tree it predates (the repository stage follows
     // the live branch), and a failed download is fatal so Retry refetches.
     let commit_or_ref = match (&pin.commit, &pin.branch) {
-        (Some(c), _) if is_valid_commit(c) => c.clone(),
+        (Some(c), _) if is_full_commit_sha(c) => c.clone(),
         (_, Some(b)) if !b.trim().is_empty() => b.clone(),
         (Some(other), _) => {
             return Err(anyhow!(
@@ -164,7 +158,7 @@ fn sanitize_ref(s: &str) -> String {
 }
 
 fn truncate_ref(s: &str) -> &str {
-    if is_valid_commit(s) && s.len() >= 12 {
+    if is_full_commit_sha(s) {
         &s[..12]
     } else {
         s
@@ -278,12 +272,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_valid_commit_accepts_short_and_full_shas() {
-        assert!(is_valid_commit("02d26981d3d4ad50e142399b8476f59ad5953ff0"));
-        assert!(is_valid_commit("02d2698"));
-        assert!(!is_valid_commit("02d269"));
-        assert!(!is_valid_commit("not-a-sha"));
-        assert!(!is_valid_commit(""));
+    fn network_commit_source_requires_a_full_lowercase_sha() {
+        assert!(is_full_commit_sha(
+            "02d26981d3d4ad50e142399b8476f59ad5953ff0"
+        ));
+        assert!(!is_full_commit_sha("02d2698"));
+        assert!(!is_full_commit_sha(
+            "02D26981D3D4AD50E142399B8476F59AD5953FF0"
+        ));
+        assert!(!is_full_commit_sha("not-a-sha"));
+        assert!(!is_full_commit_sha(""));
     }
 
     #[test]
@@ -318,8 +316,10 @@ mod tests {
 
     #[test]
     fn commit_pins_are_distinguished_from_branch_pins() {
-        assert!(is_valid_commit("02d26981d3d4ad50e142399b8476f59ad5953ff0"));
-        assert!(!is_valid_commit("main"));
-        assert!(!is_valid_commit("release/1.2.3"));
+        assert!(is_full_commit_sha(
+            "02d26981d3d4ad50e142399b8476f59ad5953ff0"
+        ));
+        assert!(!is_full_commit_sha("main"));
+        assert!(!is_full_commit_sha("release/1.2.3"));
     }
 }

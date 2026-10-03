@@ -9,6 +9,7 @@
 //! flags of the executable that consumes it.
 
 mod bootstrap;
+mod commit_sha;
 mod events;
 mod install_script;
 mod powershell;

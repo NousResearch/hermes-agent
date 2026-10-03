@@ -143,9 +143,11 @@ _fake_ip_resolved, _cached_fake_ip_ranges = False, ()
 
 def _global_allow_private_urls() -> bool:
     """True when the user has opted out of private-IP blocking. Priority: ``HERMES_ALLOW_PRIVATE_URLS``
-    env, ``security.allow_private_urls``, legacy ``browser.allow_private_urls``. Profile-scoped turns
-    (``get_hermes_home_override()`` set) bypass the process-global cache — a multiplex gateway serves
-    several profiles in one process; the first profile's opt-out must not disable blocking for later ones."""
+    env, then ``security.allow_private_urls``. ``browser.allow_private_urls`` is a browser-tool
+    setting and does not lift this guard (config v50 moved opt-outs that relied on it to the security
+    key). Profile-scoped turns (``get_hermes_home_override()`` set) bypass the process-global cache —
+    a multiplex gateway serves several profiles in one process; the first profile's opt-out must not
+    disable blocking for later ones."""
     global _allow_private_resolved, _cached_allow_private
     if get_hermes_home_override() is not None:
         return _resolve_allow_private_urls()
@@ -164,10 +166,11 @@ def _resolve_allow_private_urls() -> bool:
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        for section in ("security", "browser"):  # preferred, then legacy
-            block = cfg.get(section, {})
-            if isinstance(block, dict) and is_truthy_value(block.get("allow_private_urls"), default=False):
-                return True
+        # Only the security key is global. ``browser.allow_private_urls`` is read by the browser tool
+        # for its own navigation and must not lift the guard for web, vision and media fetches.
+        security = cfg.get("security", {})
+        if isinstance(security, dict):
+            return is_truthy_value(security.get("allow_private_urls"), default=False)
     except Exception:
         pass  # config unavailable (tests, early import) — keep default
     return False

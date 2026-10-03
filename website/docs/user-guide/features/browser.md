@@ -153,6 +153,9 @@ With auto-routing disabled, private URLs are rejected with
 `"Blocked: URL targets a private or internal address"` unless you also set
 `browser.allow_private_urls: true` (which lets the cloud provider attempt them —
 usually won't work since Browserbase etc. can't reach your LAN).
+This key affects the browser tool only: web, vision and media fetches stay blocked
+unless `security.allow_private_urls` is `true` (see
+[Intentionally allowing private URLs](../security.md#intentionally-allowing-private-urls)).
 
 Requirements: the local sidecar uses the same `agent-browser` CLI as pure local
 mode, so you need it installed (`hermes setup tools → Browser Automation`

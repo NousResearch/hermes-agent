@@ -683,6 +683,31 @@ def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
 
 
+def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
+    # 49 → 50: browser.allow_private_urls stops lifting the global private-address guard. While
+    # security.allow_private_urls was unset it used to, so web, vision and media fetches reached
+    # private addresses too. Carry that effective setting over to the security key, where Settings
+    # → Safety shows it and can turn it off. An explicit security value (false included) is kept.
+    from utils import is_truthy_value
+
+    config = read_raw_config()
+    if not is_truthy_value(_dict_at(config, "browser").get("allow_private_urls"), default=False):
+        return
+    security = config.get("security")
+    if security is None:
+        security = {}
+    elif not isinstance(security, dict) or security.get("allow_private_urls") is not None:
+        return
+    security["allow_private_urls"] = True
+    config["security"] = security
+    _commit(
+        config, results, quiet,
+        "security.allow_private_urls=true (carried over from browser.allow_private_urls)",
+        "  ✓ security.allow_private_urls: true — browser.allow_private_urls no longer turns off "
+        "private-address blocking for web, vision and media fetches, so the setting it implied is now "
+        "explicit. Set security.allow_private_urls: false to block them again.")
+
+
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -814,6 +839,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (48, _migrate_to_48),
     # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
     (49, _migrate_to_49),
+    # 49 → 50: a browser-only private-URL opt-out that lifted the global guard becomes explicit (see _migrate_to_50).
+    (50, _migrate_to_50),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -825,7 +852,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
 
 
 def run_migrations(

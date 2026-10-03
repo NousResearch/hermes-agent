@@ -194,6 +194,14 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # maximum allowed (M, from `StreamReadConstraints.getMaxStringLength()`)"). Only an inline
 # image reaches those sizes, so shrinking is the recovery; the method-scoped Jackson token
 # is used because the bare class name also appears when Jackson caps a *token* length.
+# DeepSeek rejects over-tall images (8192 px/side, 4096 with 15+ images) with a
+# format-looking "you have uploaded an unsupported image" 400 that names no size
+# at all (#122449). The phrase is NOT in this list: ungated it also captured
+# every other provider's codec rejections (azure/Google/Anthropic "unsupported
+# image" wordings — undecodable bytes, strip not shrink) and, running ahead of
+# the 400 tail rules, stole decisive rate-limit / context-overflow wordings that
+# merely append the phrase. It is matched only behind the DeepSeek route check
+# in _classify_400, the same gate _default_shrink_dimension uses.
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
@@ -202,10 +210,16 @@ _IMAGE_TOO_LARGE_PATTERNS = (
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
 # (#69078); the last is the full sentence because shorter fragments also match
-# non-image download failures.
+# non-image download failures. The codec trio: azure "…unsupported image.
+# Supported formats: …", Google "…unsupported image (avif)", Anthropic "…Only
+# PNG, JPEG, GIF and WebP" — bytes other engines cannot decode, so stripping
+# beats both the shrink ladder (a valid 300×300 PNG stays changed=False, no
+# retry fires) and the format_error fallback replay (#122449 review). Disjoint
+# from DeepSeek's dimension wording ("…has one of the following formats: …").
 _IMAGE_CORRUPT_PATTERNS = (
     "invalid png image", "invalid jpeg image", "base64 string of provided image cannot be decoded",
     "downloaded response does not contain a valid jpg, png, webp, or ico image",
+    "unsupported image. supported formats", "unsupported image (", "only png, jpeg, gif and webp",
 )
 
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is
@@ -1131,12 +1145,26 @@ def _oversized_message_content_rejection(body: Any) -> bool:
     return False
 
 
+def _deepseek_route(c: _Ctx) -> bool:
+    """Whether the failed call went to a DeepSeek-family route — the repo's single
+    DeepSeek route identifier (provider / model substring / host), shared with
+    _default_shrink_dimension (#122449)."""
+    from agent.message_sanitization import matches_reasoning_echo_family
+
+    return matches_reasoning_echo_family("deepseek", c.provider_slug, c.model_slug, c.base_url)
+
+
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
     # A size cap reported *through* a message content field must beat the keyword
     # multimodal rule, which would otherwise claim "input should be a valid string".
     if _oversized_message_content_rejection(c.body):
+        return _V_IMAGE_TOO_LARGE
+    # DeepSeek's over-tall-image wording is the only "unsupported image" 400 that
+    # means too large (#122449); see _IMAGE_TOO_LARGE_PATTERNS for why it is gated
+    # here instead of living in that list.
+    if "uploaded an unsupported image" in msg and _deepseek_route(c):
         return _V_IMAGE_TOO_LARGE
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:

@@ -10,6 +10,7 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -95,16 +96,69 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
 _LAUNCHCTL_BOOTSTRAP_EIO = 5
 
 
+# A launchd label carries a persistent "disabled" flag in the per-user override database
+# (`launchctl print-disabled <domain>`). `launchctl disable`, and legacy `launchctl unload`, both
+# write it; it survives logout, reboot and every plist rewrite. Once set, `bootstrap` on that label
+# fails EIO *forever* — the same exit code as a stale registration, so the bootout+retry in
+# `_launchctl_bootstrap` cannot clear it and every caller degrades to a detached, unsupervised
+# gateway. Verified on macOS 26.5.2: `disable` -> `bootstrap` = EIO 5, `enable` -> `bootstrap` = 0.
+def _launchctl_label_is_disabled(domain: str, label: str) -> bool:
+    """True when launchd's override database has ``label`` persistently disabled for ``domain``.
+
+    Reads the documented ``print-disabled`` table rather than inferring from a failed bootstrap:
+    a disabled label and a stale registration are indistinguishable by exit code alone, and only
+    the override table says which. Any read failure answers False, so an unparseable table
+    degrades to the pre-existing bootout+retry path instead of masking a real failure.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print-disabled", domain], timeout=15, **_gw()._CAPTURE_TEXT
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    if result.returncode != 0:
+        return False
+    # Rows are tab-indented `"<label>" => disabled`; the label is a full quoted token, so a
+    # sibling profile label (`ai.hermes.gateway-<profile>`) can never match another label's row.
+    return re.search(
+        rf'"{re.escape(label)}"\s*=>\s*disabled', result.stdout or ""
+    ) is not None
+
+
+def _launchctl_enable_label(domain: str, label: str) -> bool:
+    """Clear a persistent disabled override for ``label``; True when the clear was issued.
+
+    Best-effort: the label may already be enabled (nothing to clear), and `enable` is a no-op
+    then. A failure here leaves the caller's original bootstrap error to surface.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "enable", f"{domain}/{label}"], timeout=30, **_gw()._CAPTURE_TEXT
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
 def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 30) -> None:
-    """Bootstrap a launchd job, recovering from a stale still-registered label (EIO 5). Without the
-    bootout + retry that case is misread as an unmanageable domain and degrades to detached, silently
-    losing auto-start and crash-restart."""
+    """Bootstrap a launchd job, recovering from a stale still-registered label (EIO 5) AND from a
+    persistently disabled label (also EIO 5). Without the bootout + retry that first case is
+    misread as an unmanageable domain and degrades to detached, silently losing auto-start and
+    crash-restart; without the enable, the second case survives both and wedges the gateway on
+    every future start until someone clears the override by hand.
+    """
     bootstrap = ["launchctl", "bootstrap", domain, str(plist_path)]
     try:
         subprocess.run(bootstrap, check=True, timeout=timeout)
     except subprocess.CalledProcessError as exc:
         if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
             raise
+        # EIO is ambiguous. A disabled label is the permanent case: bootout cannot clear it, so
+        # enable FIRST, then boot out any stale registration, then retry. Both are no-ops when the
+        # other was the real cause.
+        if _gw()._launchctl_label_is_disabled(domain, label):
+            if _gw()._launchctl_enable_label(domain, label):
+                print(f"↻ launchd had {label} disabled; cleared the override and retrying bootstrap")
         # Stale registration — bootout the leftover label and bootstrap once more.
         # Captured: the bootout is best-effort (a drained job may already be
         # unloaded), so its expected 3/113/125 stderr must not leak to the terminal.
@@ -172,6 +226,12 @@ def _retry_launchctl_bootstrap_until_registered(
             outcome = f"exited 0 but {domain}/{label} has no supervised process (launchctl list)"
         except subprocess.CalledProcessError as exc:
             outcome = f"failed (rc={exc.returncode}) for {domain}/{label}"
+            # A persistently disabled label fails every attempt identically, so retrying is pure
+            # waste: clear the override once here so a later attempt can actually succeed.
+            if exc.returncode == _LAUNCHCTL_BOOTSTRAP_EIO and _gw()._launchctl_label_is_disabled(domain, label):
+                _gw()._launchctl_enable_label(domain, label)
+                _gw()._append_launchd_reload_log(
+                    f"cleared launchd disabled override for {domain}/{label} — retrying bootstrap")
         except subprocess.TimeoutExpired:
             outcome = f"timed out for {domain}/{label}"
         _gw()._append_launchd_reload_log(f"bootstrap attempt {attempt} {outcome} — retrying")
@@ -489,6 +549,10 @@ def _spawn_deferred_launchd_reload(
     submit_label = f"{label}.reload.{os.getpid()}.{int(time.time())}"
     reload_script = (
         f"sleep 2; "
+        # Clear a persistent disabled override BEFORE the first bootstrap. A disabled label fails
+        # EIO on every attempt, so without this the loop below just re-runs the same doomed call
+        # for the whole budget (observed: 90 attempts / 180s) and the gateway never comes back.
+        f"launchctl enable {q_target} 2>/dev/null; "
         f"launchctl bootout {q_target} 2>/dev/null; "
         # Wait for the OLD gateway to exit: bootout only SIGTERMs and every bootstrap during the drain fails EIO.
         f"_wait_deadline=$(($(date +%s) + {_reload_budget})); "
@@ -499,6 +563,9 @@ def _spawn_deferred_launchd_reload(
         f"sleep 1; _deadline=$(($(date +%s) + {_reload_budget})); while :; do "
         f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
         f"  if {listed}; then break; fi; "
+        # Re-assert the enable each round: `unload`/`disable` can land mid-drain, and a re-disabled
+        # label is otherwise indistinguishable from a slow unregister.
+        f"  launchctl enable {q_target} 2>/dev/null; "
         f"  echo \"[{stamp}] bootstrap not yet registered for {q_target} — retrying\" >> {q_log}; "
         f"  if [ $(date +%s) -ge $_deadline ]; then break; fi;   sleep 2; done; "
         f"if ! {listed}; then "
@@ -816,7 +883,9 @@ def launchd_restart():
             # the ordinary kickstart flow.)
             print("↻ launchd job was not re-registered by the plist refresh; reloading")
             plist_path = str(_gw().get_launchd_plist_path())
-            subprocess.run(["launchctl", "bootstrap", _gw()._launchd_domain(), plist_path], check=True, timeout=30)
+            # Through the helper: a persistently disabled label answers EIO here too, and only
+            # the helper reads the override table and clears it.
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
             _launchd_ok("✓ Service restarted")
             return
@@ -837,7 +906,9 @@ def launchd_restart():
             # so an expected Boot-out failed: 3 must not leak past the ↻ line below.
             subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
             plist_path = str(_gw().get_launchd_plist_path())
-            subprocess.run(["launchctl", "bootstrap", _gw()._launchd_domain(), plist_path], check=True, timeout=30)
+            # Through the helper: a persistently disabled label answers EIO here too, and only
+            # the helper reads the override table and clears it.
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
             _gw()._launchd_degrade_or_raise(e2, "launchctl")
@@ -873,6 +944,9 @@ def wait_for_launchd_gateway_supervision(
     contract :func:`_wait_for_launchd_service_pid` enforces for sibling labels. With ``old_pid=None``
     (no pre-restart pid was observable) any supervised pid counts, as before.
     """
+    # The marker is written only by a degrade and cleared by every successful launchd operation
+    # (`_launchd_ok`, install). It is the fast path for a host that genuinely cannot manage the
+    # domain: short-circuit rather than spend the whole timeout proving supervision is impossible.
     if _gw()._launchd_unsupported_marker_exists():
         return True
 
@@ -909,6 +983,9 @@ def launchd_status(deep: bool = False):
 
     # Marker from a 5/125 bootstrap/kickstart failure explains *why* launchd can't supervise.
     launchd_unsupported = _gw()._launchd_unsupported_marker_exists()
+    # A stale disabled override is the real, fixable cause of a permanent EIO bootstrap — say so
+    # instead of letting the marker (written by that failure) imply macOS 26 can't manage the job.
+    label_disabled = _gw()._launchctl_label_is_disabled(_gw()._launchd_domain(), label)
 
     print(f"Launchd plist: {plist_path}")
     if _gw().launchd_plist_is_current():
@@ -920,6 +997,11 @@ def launchd_status(deep: bool = False):
     if not service_listed:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
+        # Lead with the actual cause: a disabled override makes every `bootstrap` fail EIO
+        # forever, so this reads as "not loaded" no matter how many times you retry.
+        if label_disabled:
+            print(f"  ⚠ launchd has a persistent 'disabled' override for {label} — this is why it will not load.")
+            print(f"  Fix: launchctl enable {_gw()._launchd_domain()}/{label} && hermes gateway start")
         print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
@@ -928,6 +1010,12 @@ def launchd_status(deep: bool = False):
         print("  Auto-start at login and auto-restart on crash are available.")
         if launchd_unsupported:
             print("  (launchd domain was previously unavailable but is now working)")
+    elif label_disabled:
+        print(f"⚠ Gateway service is registered but launchd will not start it: {label} is disabled")
+        print(f"  Fix: launchctl enable {_gw()._launchd_domain()}/{label} && hermes gateway start")
+        if fallback_pid:
+            print(f"  A detached gateway process is running (PID {fallback_pid})")
+        print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
     elif launchd_unsupported:
         print("⚠ Gateway service is registered but launchd is not supervising it")
         print("  launchd cannot manage the gateway on this macOS version.")

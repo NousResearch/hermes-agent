@@ -3993,6 +3993,8 @@ from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-export
     _launchd_error_indicates_unloaded,
     _launchctl_domain_unsupported,
     _LAUNCHCTL_BOOTSTRAP_EIO,
+    _launchctl_label_is_disabled,
+    _launchctl_enable_label,
     _launchctl_bootstrap,
     _launchd_reload_log_path,
     _append_launchd_reload_log,

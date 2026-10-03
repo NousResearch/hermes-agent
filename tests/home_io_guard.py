@@ -47,12 +47,17 @@ def _contains(path: str, prefix: str) -> bool:
 
 
 class HomeIOGuard:
-    def __init__(self, roots, installed_apps=lambda: ()):
+    def __init__(self, roots, installed_apps=lambda: (), is_owned_path=None):
         self.roots = roots
         # The machine's installed desktop app (``packaged_gui_app_paths()`` before any test ran):
         # deleting, replacing or writing into it is refused. Reads stay allowed: several update
         # paths only probe it.
         self.installed_apps = installed_apps
+        # Optional predicate for paths that are the source checkout rather than Hermes state.
+        # A repo legitimately lives at ``~/.hermes/hermes-agent``; without this the guard refuses
+        # the repository's own files and unrelated tests fail on a normally-installed machine
+        # while passing in CI. Fails SAFE: a predicate that raises exempts nothing.
+        self.is_owned_path = is_owned_path or (lambda _value: False)
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
@@ -104,7 +109,7 @@ class HomeIOGuard:
             # tree merely to decide that the original path was forbidden.
             for root in roots:
                 if _within(absolute, root):
-                    self.refuse(value)
+                    self._refuse_unless_owned(value)
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
             if metadata and resolved in roots:
@@ -115,7 +120,7 @@ class HomeIOGuard:
                     return
             for root in roots:
                 if _within(resolved, root):
-                    self.refuse(value)
+                    self._refuse_unless_owned(value)
         finally:
             self.checking.active = False
 
@@ -141,6 +146,21 @@ class HomeIOGuard:
             f"TEST BUG: file I/O against the REAL hermes home: {value}\n"
             "Use the isolated HERMES_HOME or a temporary fixture instead."
         )
+
+    def _refuse_unless_owned(self, value):
+        """Refuse, unless the path is the source checkout rather than Hermes state.
+
+        A repository installed at ``~/.hermes/hermes-agent`` is the documented layout, so the
+        guard must not treat the repo's own files as the operator's live state. A predicate that
+        raises exempts nothing — the refusal stands, so a broken predicate can only ever keep
+        the guard strict.
+        """
+        try:
+            if self.is_owned_path(value):
+                return
+        except Exception:
+            pass
+        self.refuse(value)
 
     @staticmethod
     @lru_cache(maxsize=8)

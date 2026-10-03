@@ -29,6 +29,22 @@ from gateway.restart import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_project_root(tmp_path, monkeypatch):
+    """Keep service-generation tests out of the production ~/.hermes.
+
+    `_prepare_service_launcher` reads `PROJECT_ROOT.parent / "manifest.json"`. In the real
+    checkout that resolves to the production `~/.hermes` and trips tests/home_io_guard.py
+    ("TEST BUG: file I/O against the REAL hermes home"). These tests assert unit/plist CONTENT
+    and never care about the install manifest, so pointing PROJECT_ROOT at tmp_path is the
+    guard's own documented remedy and matches the two tests in this file that already stub it.
+
+    Load-dependent by nature: a checkout living outside `~/.hermes` (CI, a /tmp worktree)
+    never trips the guard, so this only reproduces in a real install.
+    """
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "hermes-agent")
+
+
 def _osascript_exec_argv(program_args: list[str]) -> list[str]:
     """The argv the launchd JXA wrapper's libc ``system()`` hands to ``exec``."""
     assert program_args[:4] == ["/usr/bin/osascript", "-l", "JavaScript", "-e"], program_args
@@ -2527,11 +2543,16 @@ class TestLaunchctlBootstrapEioRetry:
 
         gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
 
+        # EIO is ambiguous between a stale registration and a persistently DISABLED label (both
+        # exit 5), so the override table is read once to tell them apart before recovering. This
+        # label is not disabled, so no `enable` is issued and the bootout+retry shape is unchanged.
         assert calls == [
             ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+            ["launchctl", "print-disabled", self.DOMAIN],
             ["launchctl", "bootout", f"{self.DOMAIN}/{self.LABEL}"],
             ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
         ]
+        assert not any(c[1] == "enable" for c in calls)
 
     def test_persistent_eio_reraises_for_domain_fallback(self, monkeypatch):
         # When the retry also fails, the error must propagate so callers apply

@@ -1416,6 +1416,82 @@ _REAL_INSTALLED_GUI_APPS = sorted({
     for form in (os.path.abspath(app), os.path.realpath(app))})
 
 
+def _checkout_owned_prefixes() -> list[Path]:
+    """Directories inside a guarded root that are SOURCE, not Hermes state.
+
+    A checkout of this repo legitimately lives at ``~/.hermes/hermes-agent`` — that is the
+    documented install location. Without this exemption the guard refuses the repository's own
+    files (``manifest.json`` under the root, sources, the frontend build), so ~121 unrelated
+    tests fail on a developer machine that installed the normal way while passing in CI, where
+    the runner's checkout is outside ``~/.hermes``.
+
+    The guard exists to protect Hermes *state* — a live session DB, cron definitions, memory,
+    the installed app. A git worktree is none of those, and a test that mutates its own
+    source tree is not the accident this guard prevents. Only paths that are the checkout
+    itself, or inside it, are exempt; the rest of the root stays guarded.
+    """
+    roots: list[Path] = []
+    for raw in (
+        os.environ.get("HERMES_REPO_ROOT", ""),
+        str(Path(__file__).resolve().parent.parent),
+    ):
+        if not raw:
+            continue
+        try:
+            resolved = Path(raw).expanduser().resolve()
+        except Exception:
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+_CHECKOUT_PREFIXES = _checkout_owned_prefixes()
+
+# Filenames the installer writes BESIDE the checkout, which `pm.environments.store_root` and
+# `pm.paths.install_stamp_path` read to resolve the runtime. Exact names, never a directory: the
+# same directory also holds live operator state (auth.json, gateway_state.json, caches) that the
+# guard exists to protect, so a prefix or a directory match here would exempt exactly the files
+# that must stay refused.
+_CHECKOUT_SIBLING_METADATA = frozenset({"manifest.json", "install-stamp.json"})
+
+
+def _is_owned_by_checkout(path) -> bool:
+    """True when ``path`` is the source checkout, or install metadata that belongs to it.
+
+    Covers two shapes, because a normal install produces both:
+      * the checkout itself and everything under it (``~/.hermes/hermes-agent/...``), and
+      * the sibling install metadata its own resolver reads — ``~/.hermes/manifest.json`` and
+        the install stamp that ``pm.environments.store_root`` walks up to. Those describe how
+        the checkout was installed; they are not the operator's live session state.
+
+    Compared against the *lexical* form as well as the resolved one: the offending call sites
+    build paths from ``PROJECT_ROOT`` before any symlink is followed, so a resolved-only
+    comparison misses exactly the case that trips.
+    """
+    try:
+        candidates = {os.path.abspath(str(path)), os.path.realpath(str(path))}
+    except Exception:
+        return False
+    for candidate in candidates:
+        for prefix in _CHECKOUT_PREFIXES:
+            try:
+                if os.path.commonpath([candidate, str(prefix)]) == str(prefix):
+                    return True
+            except (ValueError, OSError):
+                continue
+    # Install metadata adjacent to the checkout. Bounded to the checkout's own parent and to
+    # filenames the installer actually writes, so nothing else in the guarded root is exempt.
+    for candidate in candidates:
+        for prefix in _CHECKOUT_PREFIXES:
+            parent = os.path.dirname(str(prefix))
+            if not parent or os.path.dirname(candidate) != parent:
+                continue
+            if os.path.basename(candidate) in _CHECKOUT_SIBLING_METADATA:
+                return True
+    return False
+
+
 @pytest.fixture(autouse=True)
 def _forbid_real_hermes_home_io(monkeypatch, request):
     """Guard Python file/metadata/deletion calls and SQLite against real state.
@@ -1427,7 +1503,11 @@ def _forbid_real_hermes_home_io(monkeypatch, request):
         return
     from tests.home_io_guard import HomeIOGuard
 
-    HomeIOGuard(lambda: _REAL_HERMES_ROOT_CANDIDATES, lambda: _REAL_INSTALLED_GUI_APPS).install(monkeypatch)
+    HomeIOGuard(
+        lambda: _REAL_HERMES_ROOT_CANDIDATES,
+        lambda: _REAL_INSTALLED_GUI_APPS,
+        is_owned_path=_is_owned_by_checkout,
+    ).install(monkeypatch)
 
 
 @pytest.fixture

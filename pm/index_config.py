@@ -25,6 +25,9 @@ FORWARDED_UV_SETTINGS = frozenset({
     "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_NO_INDEX",
     "UV_FIND_LINKS", "UV_INDEX_STRATEGY", "UV_KEYRING_PROVIDER",
     "UV_NATIVE_TLS", "UV_INSECURE_HOST", "UV_HTTP_TIMEOUT",
+    # PRoot/Android reject the hardlink uv defaults to; copy mode is only
+    # reachable through the environment, so it must survive the ambient UV_* strip.
+    "UV_LINK_MODE",
 })
 
 _UV_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")

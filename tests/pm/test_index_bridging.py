@@ -38,6 +38,20 @@ def test_pip_index_reaches_uv_but_ambient_uv_selection_does_not(clean_index_env,
     assert not {"UV_PYTHON", "UV_CACHE_DIR", "UV_PROJECT_ENVIRONMENT"} & env.keys()
 
 
+def test_uv_link_mode_survives_the_ambient_strip(clean_index_env, monkeypatch):
+    """PRoot/Android reject the hardlink uv defaults to, so those installs run
+    with UV_LINK_MODE=copy. Link mode reaches uv only through the environment —
+    strip it and the sync hardlinks, fails mid-install, and leaves a cache entry
+    that every later sync trips over."""
+    monkeypatch.setenv("UV_LINK_MODE", "copy")
+    monkeypatch.setenv("UV_PYTHON", "/poison/python")
+
+    env = _base_environment()
+
+    assert env["UV_LINK_MODE"] == "copy"
+    assert "UV_PYTHON" not in env
+
+
 def test_pip_conf_is_bridged_only_when_uv_has_no_index(clean_index_env, monkeypatch):
     pip_conf = clean_index_env / "pip.conf"
     # Percent-encoded credentials: pip reads its config raw, so must the bridge.

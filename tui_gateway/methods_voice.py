@@ -408,6 +408,13 @@ def _wake_probe(cfg: dict, params: dict, surface: str) -> tuple[str, dict]:
     return capture_mode, check_wake_word_requirements({**cfg, "capture": capture_mode})
 
 
+def _wake_start_disabled_result(rid, surface: str, cfg: dict) -> dict:
+    """Return the config-gated wake.start result without probing requirements."""
+    reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
+    logger.info("wake.start(%s): %s (enabled=%s, surface=%s)", surface, reason, cfg.get("enabled"), cfg.get("surface"))
+    return _ok(rid, {"started": False, "reason": reason})
+
+
 def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
     """On-detect callback: pause, verify ownership, emit ``wake.detected`` on the owner's transport."""
     def _on_detect() -> None:
@@ -475,22 +482,21 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5026, f"wake module unavailable: {e}")
     cfg = load_wake_word_config()
+    enable_gesture = bool(params.get("persist")) and not cfg.get("enabled")
+    if not enable_gesture and not wake_surface_enabled(surface, cfg):
+        # Passive auto-arm must stay cheap while wake is disabled or scoped to another surface.
+        return _wake_start_disabled_result(rid, surface, cfg)
     capture_mode, reqs = _wake_probe(cfg, params, surface)
     # Requirements first: a gesture on an un-armable setup must refuse WITHOUT flipping
     # wake_word.enabled — else config says on while nothing can arm.
     if not reqs["available"]:
         logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
         return refused("unavailable", hint=reqs.get("hint") or "", capture=capture_mode)
-    enabled_persisted = bool(params.get("persist")) and not cfg.get("enabled") and _persist_wake_enabled(True)
+    enabled_persisted = enable_gesture and _persist_wake_enabled(True)
     if enabled_persisted:
         cfg = {**cfg, "enabled": True}
     if not wake_surface_enabled(surface, cfg):
-        # "disabled" (persist:true can turn it on) vs "disabled_for_surface" (explicit
-        # wake_word.surface choice, which persist does NOT override).
-        reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
-        logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
-                    surface, reason, cfg.get("enabled"), cfg.get("surface"))
-        return refused(reason)
+        return _wake_start_disabled_result(rid, surface, cfg)
     existing_owner, existing_surface = _wake_owner_snapshot()
     if existing_owner is not None and (_transport_is_dead(existing_owner) or not owns_listener(existing_owner)):
         _release_wake_for_transport(existing_owner)

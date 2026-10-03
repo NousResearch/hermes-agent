@@ -201,6 +201,10 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
     pending = session.pop("pending_model_switch", None)
     if not pending or session.get("agent") is None:
         return
+    # A pick stashed before the checkout moved would otherwise be applied on stale modules (#99859).
+    if (skew := _model_skew_err(None)) is not None:
+        _emit("error", sid, {"message": skew["error"]["message"]})
+        return
     try:
         result = _apply_model_switch(sid, session, pending["raw"], confirm_expensive_model=bool(pending.get("confirm_expensive_model")))
         # Honour the expensive-model confirm: surface the warning and drop the switch rather than spend

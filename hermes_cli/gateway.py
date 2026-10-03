@@ -178,6 +178,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             # stale-process sweep must not mistake a sibling service's fresh PID for a manual gateway it
             # should kill (#41403).
             labels.update(launchd_gateway_labels_for_install())
+            labels.update(legacy_launchd_labels_for_install())
         for label in sorted(labels):
             try:
                 _domain, pid = _locate_launchd_gateway_service(label)
@@ -185,6 +186,17 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                 continue
             if pid is not None and pid > 0:
                 pids.add(pid)
+                # osascript / stderr_timestamp wrappers own the launchd PID;
+                # their Python gateway descendants must also be protected.
+                try:
+                    import psutil
+                except ImportError:
+                    pass
+                else:
+                    try:
+                        pids.update(child.pid for child in psutil.Process(pid).children(recursive=True))
+                    except psutil.Error:
+                        pass
         if all_profiles:
             # Prefix scan also catches ai.hermes.gateway* agents the label derivation can't map
             # (renamed profiles, other installs). Over-inclusion is safe: PIDs are only protected.
@@ -1506,10 +1518,15 @@ def _launchd_service_registered(label: str, *, timeout: int = 5) -> bool:
 
 
 def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]:
-    """``(domain, pid)`` for ``label``, probing ``gui/<uid>`` then ``user/<uid>``. Never uses the current
-    profile's cached ``_launchd_domain()`` — a fleet can mix domains. ``TimeoutExpired`` propagates."""
+    """``(domain, pid)`` for ``label`` across system, GUI and user launchd domains.
+
+    Prefer system when its definition exists. Never use the current profile's
+    cached domain: a fleet can mix domains. ``TimeoutExpired`` propagates.
+    """
     uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
-    for domain in (f"gui/{uid}", f"user/{uid}"):
+    user_domains = (f"gui/{uid}", f"user/{uid}")
+    domains = ("system", *user_domains) if get_system_launchd_plist_path(label).exists() else (*user_domains, "system")
+    for domain in domains:
         loaded, pid = _launchd_print_service_pid(domain, label)
         if loaded:
             return (domain, pid)
@@ -1518,7 +1535,7 @@ def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]
 
 def _probe_launchd_service_running() -> bool:
     """True when the plist exists AND launchd is running a process for the current label."""
-    return get_launchd_plist_path().exists() and _launchctl_label_supervising_process(get_launchd_label())
+    return get_launchd_service_plist_path().exists() and _launchctl_label_supervising_process(get_launchd_label())
 
 
 def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapshot | None:
@@ -1580,7 +1597,7 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
     if is_macos():
         return GatewayRuntimeSnapshot(
             manager="launchd",
-            service_installed=get_launchd_plist_path().exists(),
+            service_installed=get_launchd_service_plist_path().exists(),
             service_running=_probe_launchd_service_running(),
             gateway_pids=gateway_pids,
             service_scope="launchd",
@@ -2974,11 +2991,12 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
     except Exception:
         return []
     agents_dir = home / "Library" / "LaunchAgents"
-    if not agents_dir.is_dir():
-        return []
+    from hermes_cli.gateway_launchd import SYSTEM_LAUNCHDAEMONS_DIR
     excluded = set(exclude)
     labels: set[str] = set()
-    for plist_path in sorted(agents_dir.glob("ai.hermes.gateway*.plist")):
+    plist_paths = [p for directory in (agents_dir, SYSTEM_LAUNCHDAEMONS_DIR)
+                   for p in directory.glob("ai.hermes.gateway*.plist")]
+    for plist_path in sorted(plist_paths):
         try:
             data = plistlib.loads(plist_path.read_bytes())
             label = data["Label"]
@@ -3996,6 +4014,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-exports; tests patch here
     get_launchd_label,
+    get_system_launchd_plist_path,
+    get_launchd_service_plist_path,
     _probe_launchd_domain_for_label,
     _launchd_domain,
     _LAUNCHD_JOB_UNLOADED_EXIT_CODES,
@@ -4845,8 +4865,10 @@ def _is_service_running() -> bool:
     """Check if the gateway service is currently running."""
     if supports_systemd_services():
         return _systemd_unit_is_active(False) or _systemd_unit_is_active(True)
-    if is_macos() and get_launchd_plist_path().exists():
+    if is_macos() and get_launchd_service_plist_path().exists():
         try:
+            if get_launchd_service_plist_path() == get_system_launchd_plist_path():
+                return _probe_launchd_service_running()
             return _launchd_service_registered(get_launchd_label(), timeout=10)
         except subprocess.TimeoutExpired:
             return False
@@ -5054,7 +5076,7 @@ def _installed_service_kind_for(windows) -> str | None:
     (a thunk so it runs last, like every caller's original ladder), else None."""
     if _systemd_unit_installed():
         return "systemd"
-    if is_macos() and get_launchd_plist_path().exists():
+    if is_macos() and get_launchd_service_plist_path().exists():
         return "launchd"
     return "windows" if windows() else None
 

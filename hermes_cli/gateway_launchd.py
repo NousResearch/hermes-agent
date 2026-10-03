@@ -22,6 +22,46 @@ def _gw():
     return gateway
 
 
+SYSTEM_LAUNCHDAEMONS_DIR = Path("/Library/LaunchDaemons")
+
+
+def get_system_launchd_plist_path(label: str | None = None) -> Path:
+    return SYSTEM_LAUNCHDAEMONS_DIR / f"{label or _gw().get_launchd_label()}.plist"
+
+
+def get_launchd_service_plist_path(label: str | None = None) -> Path:
+    """Installed definition, without changing the user-agent write destination.
+
+    Current-profile operations only adopt a daemon that pins this exact home;
+    fleet callers pass a label and perform their own install-scope ownership check.
+    """
+    import plistlib
+    daemon = get_system_launchd_plist_path(label)
+    if daemon.exists():
+        if label is not None:
+            return daemon
+        try:
+            data = plistlib.loads(daemon.read_bytes())
+            pinned = Path(data["EnvironmentVariables"]["HERMES_HOME"]).expanduser().resolve()
+            if data["Label"] == _gw().get_launchd_label() and pinned == _gw().get_hermes_home().resolve():
+                return daemon
+        except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+            pass  # Unknown ownership is not authority to operate on a system job.
+    user = _gw().get_launchd_plist_path()
+    return user.with_name(f"{label}.plist") if label is not None else user
+
+
+def _current_launchd_is_system() -> bool:
+    return get_launchd_service_plist_path() == get_system_launchd_plist_path()
+
+
+def _require_current_launchd_ownership() -> None:
+    if get_system_launchd_plist_path().exists() and not _current_launchd_is_system():
+        raise RuntimeError(
+            "A system LaunchDaemon already uses this label, but its Hermes home is foreign or unreadable; "
+            "not operating on it or creating a competing user LaunchAgent.")
+
+
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _gw()._profile_suffix()
@@ -36,7 +76,9 @@ def _probe_launchd_domain_for_label(label: str) -> str:
     gui_domain, user_domain = f"gui/{uid}", f"user/{uid}"
 
     launchctl_errors = (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError)
-    for domain in (gui_domain, user_domain):
+    if _current_launchd_is_system() and label == _gw().get_launchd_label():
+        return "system"
+    for domain in (gui_domain, user_domain, "system"):
         try:
             subprocess.run(["launchctl", "print", f"{domain}/{label}"], check=True, timeout=5, capture_output=True)
             return domain
@@ -61,6 +103,8 @@ def _launchd_domain() -> str:
     """
     # The cache lives on the facade: tests and callers reset ``hermes_cli.gateway._resolved_launchd_domain``.
     gw = _gw()
+    if _current_launchd_is_system():
+        return "system"
     if gw._resolved_launchd_domain is None:
         gw._resolved_launchd_domain = _probe_launchd_domain_for_label(gw.get_launchd_label())
     return gw._resolved_launchd_domain
@@ -143,6 +187,12 @@ def _launchctl_supervised_pid(label: str) -> int | None:
     a mere registered definition (``state = not running`` on macOS 26+), so a PID — not the exit code — is
     the answer. Domain-agnostic on purpose: ``launchctl print`` domain probes fail on macOS-26 per-user
     domains, which is why the invoking profile verifies through this and not ``_launchd_print_service_pid``."""
+    if get_system_launchd_plist_path(label).exists():
+        try:
+            _loaded, pid = _gw()._launchd_print_service_pid("system", label)
+            return pid
+        except (subprocess.TimeoutExpired, OSError):
+            return None
     try:
         result = subprocess.run(["launchctl", "list", label], check=False, timeout=10, **_gw()._CAPTURE_TEXT)
     except (subprocess.TimeoutExpired, OSError):
@@ -155,6 +205,24 @@ def _launchctl_supervised_pid(label: str) -> int | None:
 def _launchctl_label_supervising_process(label: str) -> bool:
     """True when launchd knows ``label`` AND runs a process for it."""
     return _gw()._launchctl_supervised_pid(label) is not None
+
+
+def gateway_pid_for_launchd_service(service_pid: int | None) -> int | None:
+    """Resolve the signal recipient separately from launchd's wrapper identity."""
+    if service_pid is None:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        leader = psutil.Process(service_pid)
+        for process in [leader, *leader.children(recursive=True)]:
+            if _gw()._capture_gateway_argv(process.pid) is not None:
+                return process.pid
+    except psutil.Error:
+        return None
+    return None
 
 
 def _retry_launchctl_bootstrap_until_registered(
@@ -336,6 +404,10 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     install/update can tell that nothing ties the gateway to launchd any more. A live supervised PID is
     direct evidence this macOS does manage the job, so surface the failure instead of branding the host.
     """
+    if _current_launchd_is_system():
+        print(f"⚠ {what} failed for the system LaunchDaemon; administrator permission may be required.")
+        print(f"  Recover manually: sudo launchctl kickstart -k system/{_gw().get_launchd_label()}")
+        raise exc
     if not _launchctl_domain_unsupported(exc.returncode):
         raise exc
     label = _gw().get_launchd_label()
@@ -458,6 +530,8 @@ def generate_launchd_plist() -> str:
 
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
+    if _current_launchd_is_system():
+        return True  # Externally managed: Hermes has no system plist generator.
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists():
         return False
@@ -537,6 +611,10 @@ def _spawn_deferred_launchd_reload(
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
+    _require_current_launchd_ownership()
+    # Operator-owned system definitions must never be regenerated as login-time agents.
+    if _current_launchd_is_system():
+        return False
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
@@ -600,6 +678,10 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 
 def launchd_install(force: bool = False, *, start_now: bool = True):
+    if get_system_launchd_plist_path().exists():
+        print(f"Service already installed as a system LaunchDaemon: {get_system_launchd_plist_path()}")
+        print("  Leaving its operator-owned definition unchanged; not installing a user LaunchAgent.")
+        return
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
@@ -665,6 +747,9 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
 
 def launchd_uninstall():
+    _require_current_launchd_ownership()
+    if _current_launchd_is_system():
+        raise RuntimeError(f"The system LaunchDaemon is operator-managed; remove {get_system_launchd_plist_path()} manually with administrator permission.")
     plist_path = _gw().get_launchd_plist_path()
     # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
     subprocess.run(
@@ -677,7 +762,8 @@ def launchd_uninstall():
 
 
 def launchd_start():
-    plist_path = _gw().get_launchd_plist_path()
+    _require_current_launchd_ownership()
+    plist_path = get_launchd_service_plist_path()
     label = _gw().get_launchd_label()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
@@ -728,6 +814,7 @@ def _launchd_ok(message: str) -> None:
 
 
 def launchd_stop():
+    _require_current_launchd_ownership()
     target = f"{_launchd_domain()}/{get_launchd_label()}"
     _gw()._mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
@@ -736,6 +823,8 @@ def launchd_stop():
         # "Boot-out failed: 3" must not print around the ✓ line; e.stderr stays on the raised error.
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90, **_gw()._CAPTURE_TEXT)
     except subprocess.CalledProcessError as e:
+        if _current_launchd_is_system():
+            raise  # A denied bootout is not authority to kill a supervised process.
         # Job already unloaded (3/113/125), or the domain can't be managed at all (5/125, macOS 26+
         # detached-fallback process, issue #23387) — in both cases just fall through to the PID-based kill
         # below.
@@ -766,6 +855,7 @@ def _wait_for_launchd_service_pid(
 
 
 def launchd_restart():
+    _require_current_launchd_ownership()
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -782,6 +872,8 @@ def launchd_restart():
     from gateway.status import get_running_pid
     try:
         pid = get_running_pid()
+        # launchd owns the wrapper's PID, not necessarily the Python gateway PID.
+        old_service_pid = _gw()._launchctl_supervised_pid(label) if domain == "system" else pid
         if pid is not None and _gw()._request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
             return
@@ -801,7 +893,7 @@ def launchd_restart():
             if _gw()._graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
                 # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
                 # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.
-                if _gw()._wait_for_launchd_service_pid(label, pid, timeout=15.0, domain=domain):
+                if _gw()._wait_for_launchd_service_pid(label, old_service_pid, timeout=15.0, domain=domain):
                     _launchd_ok("✓ Service restart requested")
                     return
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
@@ -815,7 +907,7 @@ def launchd_restart():
             # already-current plist also returns False, and both must keep
             # the ordinary kickstart flow.)
             print("↻ launchd job was not re-registered by the plist refresh; reloading")
-            plist_path = str(_gw().get_launchd_plist_path())
+            plist_path = str(get_launchd_service_plist_path())
             subprocess.run(["launchctl", "bootstrap", _gw()._launchd_domain(), plist_path], check=True, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
             _launchd_ok("✓ Service restarted")
@@ -836,7 +928,7 @@ def launchd_restart():
             # Captured: best-effort (the job may already be unloaded after the drain),
             # so an expected Boot-out failed: 3 must not leak past the ↻ line below.
             subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
-            plist_path = str(_gw().get_launchd_plist_path())
+            plist_path = str(get_launchd_service_plist_path())
             subprocess.run(["launchctl", "bootstrap", _gw()._launchd_domain(), plist_path], check=True, timeout=30)
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
@@ -873,7 +965,7 @@ def wait_for_launchd_gateway_supervision(
     contract :func:`_wait_for_launchd_service_pid` enforces for sibling labels. With ``old_pid=None``
     (no pre-restart pid was observable) any supervised pid counts, as before.
     """
-    if _gw()._launchd_unsupported_marker_exists():
+    if not _current_launchd_is_system() and _gw()._launchd_unsupported_marker_exists():
         return True
 
     label = label or _gw().get_launchd_label()
@@ -888,8 +980,19 @@ def wait_for_launchd_gateway_supervision(
 
 
 def launchd_status(deep: bool = False):
-    plist_path = _gw().get_launchd_plist_path()
+    plist_path = get_launchd_service_plist_path()
     label = _gw().get_launchd_label()
+    if _current_launchd_is_system():
+        loaded, pid = _gw()._launchd_print_service_pid("system", label)
+        print(f"Launchd plist: {plist_path}")
+        print(f"Launchd domain: system/{label} (operator-managed LaunchDaemon)")
+        if pid is not None:
+            print(f"✓ Gateway is supervised by launchd (PID {pid})")
+            print("  Starts at boot; not dependent on a GUI login.")
+        else:
+            print("⚠ Gateway service is loaded but not running" if loaded else "✗ Gateway service is not loaded")
+            print(f"  Run: sudo launchctl kickstart -k system/{label}")
+        return
     try:
         result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT)
         service_listed = result.returncode == 0

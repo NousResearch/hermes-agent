@@ -157,7 +157,7 @@ def _(rid, params: dict, transport, identity, session_id, broker, _scope, sessio
 
     controller_id = str(params.get("controller_id") or "").strip()
     browser_profile_id = str(params.get("browser_profile_id") or "").strip()
-    profile_id = str(session.get("profile") or "").strip()
+    profile_id = profile_name_for_home(session.get("profile_home")) or _current_profile_name()
     if not controller_id or not browser_profile_id or not profile_id:
         return _err(
             rid, _ERR_FORBIDDEN,

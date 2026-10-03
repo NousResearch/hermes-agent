@@ -177,6 +177,8 @@ class ThreadParticipationTracker:
         self._lock = threading.Lock()
         self._io_lock = threading.Lock()
         self._threads: dict[str, None] = dict.fromkeys(str(t) for t in self._load())
+        self._generation = 0
+        self._saved_generation = 0
 
     def _state_path(self) -> Path:
         from hermes_constants import get_hermes_home
@@ -193,10 +195,13 @@ class ThreadParticipationTracker:
         with self._io_lock:
             with self._lock:
                 thread_list = list(self._threads)
+                generation = self._generation
                 if len(thread_list) > self._max_tracked:
                     thread_list = thread_list[-self._max_tracked:]
                     self._threads = dict.fromkeys(thread_list)
             atomic_json_write(self._state_path(), thread_list, indent=None)
+            with self._lock:
+                self._saved_generation = generation
 
     def _remember(self, thread_id: str) -> bool:
         """Record *thread_id* in memory; ``True`` when a persist is still owed.
@@ -206,10 +211,12 @@ class ThreadParticipationTracker:
         the mention-gating logic in the adapters depends on that.
         """
         with self._lock:
-            if thread_id in self._threads:
-                return False
-            self._threads[thread_id] = None
-            return True
+            if thread_id not in self._threads:
+                self._threads[thread_id] = None
+                self._generation += 1
+            # A failed publication leaves the snapshot owed, even when the
+            # thread is already visible to the inbound mention gate.
+            return self._generation != self._saved_generation
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist.

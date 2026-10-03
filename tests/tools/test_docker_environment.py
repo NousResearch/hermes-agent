@@ -575,13 +575,11 @@ def test_runtime_reuse_fingerprint_ignores_volatile_temp_mounts(tmp_path, monkey
     monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(temp_root))
     stable_source = str(tmp_path / "data")
     process_a = docker_env._runtime_reuse_fingerprint(
-        "python:3.11",
         ["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
          "-v", f"{stable_source}:/data:ro"],
         {},
     )
     process_b = docker_env._runtime_reuse_fingerprint(
-        "python:3.11",
         ["-v", f"{temp_root}/hermes-skills-safe-d4e5f6:/root/.hermes/skills:ro",
          "-v", f"{stable_source}:/data:ro"],
         {},
@@ -589,7 +587,6 @@ def test_runtime_reuse_fingerprint_ignores_volatile_temp_mounts(tmp_path, monkey
     assert process_a == process_b
     # A real mount change still forces a fresh container.
     assert process_a != docker_env._runtime_reuse_fingerprint(
-        "python:3.11",
         ["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
          "-v", f"{tmp_path}/other-data:/data:ro"],
         {},
@@ -767,30 +764,26 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-profile": "default",
         "hermes-egress": "off",
         "hermes-runtime": docker_env._runtime_reuse_fingerprint(
-            env._image, env._all_run_args, env._run_env_values
+            env._all_run_args, env._run_env_values
         ),
     }
 
 
-def test_runtime_reuse_identity_tracks_image_and_run_args_without_exposing_them():
-    """The label changes with immutable posture but contains no image, mount, env, or arg text."""
+def test_runtime_reuse_identity_tracks_run_args_without_exposing_them():
+    """The label changes with immutable run posture but contains no mount, env, or arg text."""
     private_mount = "/private/operator/workspace:/workspace"
     private_env = {"PRIVATE_TOKEN": "operator-secret-a"}
     baseline = docker_env._runtime_reuse_fingerprint(
-        "python:3.11", ["--network", "none", "-v", private_mount], private_env
+        ["--network", "none", "-v", private_mount], private_env
     )
 
     assert baseline == docker_env._runtime_reuse_fingerprint(
-        "python:3.11", ["--network", "none", "-v", private_mount], private_env
+        ["--network", "none", "-v", private_mount], private_env
     )
     assert baseline != docker_env._runtime_reuse_fingerprint(
-        "python:3.12", ["--network", "none", "-v", private_mount], private_env
+        ["--network", "none"], private_env
     )
     assert baseline != docker_env._runtime_reuse_fingerprint(
-        "python:3.11", ["--network", "none"], private_env
-    )
-    assert baseline != docker_env._runtime_reuse_fingerprint(
-        "python:3.11",
         ["--network", "none", "-v", private_mount],
         {"PRIVATE_TOKEN": "operator-secret-b"},
     )
@@ -804,9 +797,9 @@ def test_runtime_reuse_identity_is_keyed(monkeypatch):
     env = {"PRIVATE_TOKEN": "operator-secret-a"}
 
     monkeypatch.setattr(docker_env, "_runtime_reuse_key", lambda: b"a" * 32)
-    first_installation = docker_env._runtime_reuse_fingerprint("python:3.11", args, env)
+    first_installation = docker_env._runtime_reuse_fingerprint(args, env)
     monkeypatch.setattr(docker_env, "_runtime_reuse_key", lambda: b"b" * 32)
-    second_installation = docker_env._runtime_reuse_fingerprint("python:3.11", args, env)
+    second_installation = docker_env._runtime_reuse_fingerprint(args, env)
 
     assert first_installation != second_installation
 
@@ -814,7 +807,6 @@ def test_runtime_reuse_identity_is_keyed(monkeypatch):
 def test_runtime_reuse_identity_handles_surrogate_escaped_posture():
     """POSIX paths and env values may contain bytes decoded through surrogateescape."""
     label = docker_env._runtime_reuse_fingerprint(
-        "python:3.11",
         ["-v", "/mnt/caf\udce9:/workspace"],
         {"PRIVATE_TOKEN": "a\udcffb"},
     )
@@ -1037,8 +1029,8 @@ def test_runtime_reuse_key_error_uses_safe_ephemeral_identity(monkeypatch, caplo
     assert "cross-process Docker reuse is disabled" in caplog.text
 
 
-def test_runtime_label_changes_with_constructed_image_and_env_posture(monkeypatch):
-    """The DockerEnvironment call site must bind image and env values into its label."""
+def test_runtime_label_excludes_image_but_tracks_env_posture(monkeypatch):
+    """Image policy runs after reuse lookup; secret-bearing env posture stays in the label."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     _mock_subprocess_run(monkeypatch)
@@ -1053,7 +1045,7 @@ def test_runtime_label_changes_with_constructed_image_and_env_posture(monkeypatc
         task_id="runtime-posture", image="python:3.11", env={"PRIVATE_TOKEN": "secret-b"}
     )
 
-    assert baseline._labels["hermes-runtime"] != changed_image._labels["hermes-runtime"]
+    assert baseline._labels["hermes-runtime"] == changed_image._labels["hermes-runtime"]
     assert baseline._labels["hermes-runtime"] != changed_env._labels["hermes-runtime"]
     for other_key in ("hermes-agent", "hermes-task-id", "hermes-profile", "hermes-egress"):
         assert baseline._labels[other_key] == changed_image._labels[other_key]
@@ -1076,9 +1068,8 @@ def test_runtime_label_changes_with_automatic_cwd_mount(monkeypatch, tmp_path):
     assert f"{tmp_path}:/workspace" in host_bound._all_run_args
 
 
-@pytest.mark.parametrize("changed_setting", ["image", "volumes"])
-def test_reuse_probe_filters_on_runtime_fingerprint(monkeypatch, tmp_path, changed_setting):
-    """Reuse and recovery must select the requested configuration, not stale mounts."""
+def test_reuse_probe_filters_on_runtime_fingerprint(monkeypatch, tmp_path):
+    """Reuse and recovery must select the requested mount posture, not stale mounts."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "alpha"))
@@ -1101,10 +1092,7 @@ def test_reuse_probe_filters_on_runtime_fingerprint(monkeypatch, tmp_path, chang
     _make_dummy_env(**config)
     assert reuse_filters() == original_filters
 
-    config[changed_setting] = {
-        "image": "python:3.12",
-        "volumes": ["volume-b:/workspace"],
-    }[changed_setting]
+    config["volumes"] = ["volume-b:/workspace"]
     calls.clear()
     env = _make_dummy_env(**config)
     changed_filters = reuse_filters()
@@ -1262,6 +1250,41 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     start_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "start"]
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
+    )
+
+
+def test_default_image_flip_reaches_existing_reuse_guard(monkeypatch):
+    """An unpinned default change must find the old container before image policy runs."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    existing = _make_dummy_env(
+        task_id="default-image-flip",
+        image="old/image:1",
+        persist_across_processes=False,
+    )
+    existing_runtime_label = existing._labels["hermes-runtime"]
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        expected_runtime_label=existing_runtime_label,
+    )
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_image",
+        lambda self, container_id: "old/image:1",
+    )
+
+    current = _make_dummy_env(
+        task_id="default-image-flip",
+        image="python:3.11",
+    )
+
+    assert current._labels["hermes-runtime"] == existing_runtime_label
+    assert current._container_id == "reused-cid"
+    assert not any(
+        isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run"
+        for cmd, _kwargs in calls
     )
 
 

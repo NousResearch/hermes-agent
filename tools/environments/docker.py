@@ -314,16 +314,16 @@ def _runtime_reuse_key() -> bytes:
 
 
 def _runtime_reuse_fingerprint(
-    image: str, run_args: list[str], run_env_values: dict[str, str],
+    run_args: list[str], run_env_values: dict[str, str],
 ) -> str:
-    """Keyed label value for immutable posture, including private paths and env values."""
+    """Keyed label value for immutable run posture, including private paths and env values."""
     canonical_run_args = [
         (f"<volatile-tempdir-mount>:{arg.split(':', 1)[1]}"
          if _is_volatile_mount_spec(arg) else arg)
         for arg in run_args
     ]
     payload = json.dumps(
-        [image, canonical_run_args, run_env_values],
+        [canonical_run_args, run_env_values],
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
@@ -899,13 +899,15 @@ class DockerEnvironment(BaseEnvironment):
         # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
         # cross-process reuse (task-id/profile) and operators. The reuse identity
         # is captured at start and never changes for the container's lifetime.
-        # Immutable image/run posture gets an opaque label so config changes
-        # cannot attach current policy decisions to an older container.
+        # Immutable run posture gets an opaque label so config changes cannot
+        # attach current policy decisions to an older container. Image stays out
+        # of this pre-filter: _attach_existing_container applies the pinned/default
+        # image policy after locating the prior sandbox.
         profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
         try:
             runtime_label = _runtime_reuse_fingerprint(
-                image, all_run_args, self._run_env_values)
+                all_run_args, self._run_env_values)
         except (OSError, RuntimeError) as exc:
             raise EnvironmentConnectionError(
                 f"Docker runtime reuse identity could not load its private key: {exc}"

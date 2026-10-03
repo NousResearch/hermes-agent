@@ -257,15 +257,28 @@ export async function artifactImageSrc(value: string): Promise<string> {
 }
 
 function artifactLabel(value: string): string {
+  // A drive letter or `\\server\share` is a valid URL scheme, so those values
+  // parse without throwing and keep their directories: split them as paths.
+  const name = (isWindowsPath(value) ? value : urlPathname(value)).split(/[\\/]/).filter(Boolean).pop()
+
+  if (!name) {
+    return value
+  }
+
   try {
-    const url = new URL(value)
-    const item = url.pathname.split('/').filter(Boolean).pop()
-
-    return item || value
+    return decodeURIComponent(name)
   } catch {
-    const parts = value.split(/[\\/]/).filter(Boolean)
+    // A stray `%` or a truncated escape is not an encoding — the raw segment
+    // still names the artifact, so keep it rather than lose the label.
+    return name
+  }
+}
 
-    return parts.pop() || value
+function urlPathname(value: string): string {
+  try {
+    return new URL(value).pathname
+  } catch {
+    return value
   }
 }
 

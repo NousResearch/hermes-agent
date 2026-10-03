@@ -720,3 +720,61 @@ describe('loadArtifactsForSessions', () => {
     expect(String(result.failures[0]?.error)).toContain('transcript page exceeds the Desktop safe-load limit')
   })
 })
+
+describe('artifact labels', () => {
+  function labelFor(value: string): string {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'label-session' }), [
+      {
+        content: `Delivered. MEDIA:${value}`,
+        role: 'assistant',
+        timestamp: 1_781_774_100
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+
+    return artifacts[0]?.label || ''
+  }
+
+  it('shows a readable non-ASCII filename from a file URL', () => {
+    expect(labelFor('file:///C:/example/测试文件.xlsx')).toBe('测试文件.xlsx')
+  })
+
+  it('shows a readable non-ASCII filename from an http URL', () => {
+    expect(labelFor('https://example.com/测试文件.xlsx')).toBe('测试文件.xlsx')
+  })
+
+  it('keeps the directory out of a Windows drive path label', () => {
+    expect(labelFor('C:/example/测试文件.xlsx')).toBe('测试文件.xlsx')
+    expect(labelFor('C:\\example\\测试文件.xlsx')).toBe('测试文件.xlsx')
+    expect(labelFor('\\\\server\\share\\季度报告.docx')).toBe('季度报告.docx')
+  })
+
+  it('decodes encoded spaces without treating plus as a space', () => {
+    expect(labelFor('https://example.com/my%20file.txt')).toBe('my file.txt')
+    expect(labelFor('https://example.com/a+b.txt')).toBe('a+b.txt')
+  })
+
+  it('keeps a malformed escape readable instead of dropping the name', () => {
+    expect(labelFor('https://example.com/bad%ZZname.txt')).toBe('bad%ZZname.txt')
+    expect(labelFor('https://example.com/100%.txt')).toBe('100%.txt')
+  })
+
+  it('falls back to the raw value for a URL with no path', () => {
+    expect(labelFor('https://example.com/')).toBe('https://example.com/')
+  })
+
+  it('leaves the stored value and href untouched for a non-ASCII path', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'label-value-session' }), [
+      {
+        content: 'Delivered. MEDIA:C:\\Users\\Example\\Documents\\测试文件.xlsx',
+        role: 'assistant',
+        timestamp: 1_781_774_101
+      }
+    ])
+
+    expect(artifacts[0]?.value).toBe('C:\\Users\\Example\\Documents\\测试文件.xlsx')
+    expect(artifacts[0]?.label).toBe('测试文件.xlsx')
+    expect(artifacts[0]?.href).toContain('C:\\Users\\Example\\Documents\\测试文件.xlsx')
+  })
+})

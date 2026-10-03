@@ -37,6 +37,7 @@ from tools.approval_floors import (
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
+from tools.approval_preflight import ApprovalPreflight, observe_preflight, seal_preflight
 from tools.approval_smart import _smart_verdict
 
 logger = logging.getLogger(__name__)
@@ -760,8 +761,8 @@ _ACTION_GATE = _GateSpec(
 
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
                 pattern_keys: list[str], session_key: str, *,
-                human_present: bool) -> tuple[dict | None, bool]:
-    """Guardian-LLM step -> ``(result, smart_denied_for_owner)``: a result ends the gate;
+                human_present: bool, smart_context: dict | None = None) -> tuple[dict | None, bool, ApprovalPreflight | None]:
+    """Guardian-LLM step -> ``(result, smart_denied_for_owner, preflight)``: a result ends the gate;
     ``smart_denied_for_owner`` means an interactive owner may still override the DENY for this
     one operation (once/deny only, nothing persists).
 
@@ -770,16 +771,30 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     counts toward the denial breaker even when an owner may override it. ESCALATE follows the
     normal, potentially persistent manual behavior.
     """
-    verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    preflight = None
+    if smart_context is not None:
+        preflight = observe_preflight(
+            command,
+            env_type=str(smart_context.get("env_type") or ""),
+            cwd=str(smart_context.get("cwd") or os.getcwd()),
+        )
+    verdict = _smart_verdict(
+        command, description, pattern_key, pattern_keys, session_key,
+        **({"preflight": preflight} if preflight is not None else {}),
+    )
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
-        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False
+        seal_preflight(preflight)
+        result = {"approved": True, "message": None, "smart_approved": True, "description": description}
+        if preflight is not None:
+            result["preflight_attestation"] = preflight
+        return result, False, preflight
     if verdict != "deny":
-        return None, False
+        return None, False, preflight
     _record_denial(session_key)
     if human_present:
-        return None, True
+        return None, True, preflight
     return {
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
@@ -787,14 +802,15 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
         "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
                     f"dangerous. Do NOT retry.{_denial_breaker_addendum(session_key)}"),
         "smart_denied": True,
-    }, True
+    }, True, preflight
 
 
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], warnings: list[tuple],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False,
-                    permanent_capable: bool = True, pending_body=None) -> dict:
+                    permanent_capable: bool = True, pending_body=None,
+                    smart_context: dict | None = None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``warnings`` are the ``(key, _, is_tirith)`` tuples :func:`_persist_choice` stores on
@@ -806,9 +822,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
+    preflight = None
     if smart:
-        result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
-                                           session_key, human_present=is_cli or is_gateway or is_ask)
+        result, smart_denied, preflight = _smart_gate(
+            spec, command, description, pattern_key, pattern_keys,
+            session_key, human_present=is_cli or is_gateway or is_ask,
+            smart_context=smart_context,
+        )
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
@@ -828,9 +848,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, warnings)
-        if spec.user_approved:
-            return _user_approved(session_key, description)
-        return _approved()
+        result = _user_approved(session_key, description) if spec.user_approved else _approved()
+        if preflight is not None:
+            seal_preflight(preflight)
+            result["preflight_attestation"] = preflight
+        return result
 
     if spec.transport:
         attempt = _present_with_selected_transport(
@@ -1167,7 +1189,8 @@ def _tirith_scan(command: str) -> dict:
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             workdir: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
@@ -1230,6 +1253,7 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
         permanent_capable=any(not is_t for _, _, is_t in warnings),
+        smart_context={"env_type": env_type, "cwd": workdir or os.getcwd()},
     )
 
 

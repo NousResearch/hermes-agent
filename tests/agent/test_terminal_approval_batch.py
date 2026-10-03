@@ -373,3 +373,149 @@ def test_switching_yolo_off_mid_batch_re_gates_later_commands(tmp_path, monkeypa
             worker.join(timeout=5)
             cleanup_vm(key)
             clear_session_vars(tokens)
+
+
+class TestRuntimePreflightBypass:
+    """Regression: batch preparation must NOT precompute guard decisions for
+    commands that need runtime host identity (rm /taskkill).  The slot must
+    leave guard_key and decision as None so that the real execution path
+    re-runs the full guard chain with live cwd/process evidence.
+
+    This test uses isolated mocks — no AIAgent, no tmp_path, no terminal
+    fixture — to stay fast and avoid the real Hermes home path.
+    """
+
+    def test_runtime_preflight_command_skips_guard_preparation(self):
+        """taskkill /F /PID triggers requires_runtime_preflight; prepare must
+        leave guard_key=None, decision=None and must NOT call _check_all_guards."""
+        from agent.terminal_approval_batch import _TerminalSlot
+        from tools import terminal_tool as tt
+        from tools.approval_preflight import requires_runtime_preflight
+
+        mock_agent = SimpleNamespace(
+            session_id="test-session",
+            _current_turn_id="turn-1",
+            _interrupt_requested=False,
+        )
+        mock_batch = SimpleNamespace(
+            cancelled=threading.Event(),
+            agent=mock_agent,
+        )
+        mock_ref = SimpleNamespace(
+            args={"command": "taskkill /F /PID 12345"},
+            call_id="runtime-preflight",
+        )
+
+        slot = _TerminalSlot(mock_batch, None, 0)
+        slot.preparing = True
+        slot.ready = threading.Event()
+        slot.release = threading.Event()
+        slot.release.set()  # skip release wait loop
+
+        # requires_runtime_preflight MUST return True for taskkill
+        assert requires_runtime_preflight("taskkill /F /PID 12345") is True
+
+        with (
+            patch.object(tt, "_get_env_config", return_value={"env_type": "local"}),
+            patch.object(tt, "_docker_has_host_access", return_value=False),
+            patch("tools.approval_preflight.requires_runtime_preflight", return_value=True) as mock_rp,
+            patch("tools.terminal_tool._check_all_guards") as mock_gc,
+            patch("tools.approval_context.set_current_observability_context", return_value="tokens"),
+            patch("tools.approval_context.reset_current_observability_context"),
+        ):
+            slot.prepare(mock_ref)
+
+        assert mock_rp.called, "requires_runtime_preflight must have been called"
+        assert not mock_gc.called, (
+            "_check_all_guards must NOT be called when runtime preflight is required"
+        )
+        assert slot.guard_key is None, "guard_key must be None for runtime-preflight commands"
+        assert slot.decision is None, "decision must be None for runtime-preflight commands"
+
+    @pytest.mark.parametrize("command, env_type", [
+        ("echo hello", "local"),
+        ("taskkill /F /PID 12345", "ssh"),
+    ])
+    def test_non_preflight_or_remote_command_still_precomputes_guard(self, command, env_type):
+        """The existing batch path remains for normal and remote commands."""
+        from agent.terminal_approval_batch import _TerminalSlot
+        from tools import terminal_tool as tt
+
+        mock_agent = SimpleNamespace(
+            session_id="test-session",
+            _current_turn_id="turn-1",
+            _interrupt_requested=False,
+        )
+        mock_batch = SimpleNamespace(
+            cancelled=threading.Event(),
+            agent=mock_agent,
+        )
+        mock_ref = SimpleNamespace(
+            args={"command": command},
+            call_id="normal-command",
+        )
+
+        slot = _TerminalSlot(mock_batch, None, 0)
+        slot.preparing = True
+        slot.ready = threading.Event()
+        slot.release = threading.Event()
+        slot.release.set()  # skip release wait
+
+        with (
+            patch.object(tt, "_get_env_config", return_value={"env_type": env_type}),
+            patch.object(tt, "_docker_has_host_access", return_value=False),
+            patch("tools.approval_preflight.requires_runtime_preflight", return_value=False) as mock_rp,
+            patch("tools.terminal_tool._check_all_guards", return_value={"choice": "allow"}) as mock_gc,
+            patch("tools.approval_context.set_current_observability_context", return_value="tokens"),
+            patch("tools.approval_context.reset_current_observability_context"),
+        ):
+            slot.prepare(mock_ref)
+
+        assert mock_rp.call_count == (1 if env_type == "local" else 0)
+        assert mock_gc.called, (
+            "_check_all_guards must be called for non-preflight commands"
+        )
+        assert slot.guard_key is not None, "guard_key must be set for normal commands"
+        assert slot.guard_key[0] == command
+        assert slot.guard_key[1] == env_type
+        assert slot.guard_key[2] is False
+        assert slot.decision == {"choice": "allow"}, (
+            "decision must be populated from _check_all_guards"
+        )
+
+    def test_consume_prepared_guard_returns_none_when_guard_key_mismatch(self):
+        """consume_prepared_guard must return None when slot.guard_key does not
+        match the (command, env_type, has_host_access) tuple — this is the
+        runtime-preflight bypass path because guard_key was never set to None."""
+        import unittest.mock
+        from agent import terminal_approval_batch as mod
+        from tools import approval_context as ac
+
+        mock_agent = SimpleNamespace(_interrupt_requested=False)
+        mock_batch = SimpleNamespace(cancelled=threading.Event(), agent=mock_agent,
+                                     task_id="task-1", failure_seen=False)
+
+        slot = mod._TerminalSlot(mock_batch, None, 0)
+        # Simulate runtime-preflight bypass: guard_key left as None
+        slot.guard_key = None
+        slot.decision = {"choice": "allow"}  # would-be-stale decision
+
+        # parsed.ref() must return something with call_id so the function
+        # doesn't crash on the _approval_tool_call_id comparison.
+        mock_ref = SimpleNamespace(call_id="tool-123")
+        slot.parsed = SimpleNamespace(ref=unittest.mock.MagicMock(return_value=mock_ref))
+
+        token = mod._slot.set(slot)
+        try:
+            with unittest.mock.patch.object(ac, "_approval_tool_call_id") as mock_call_id:
+                mock_call_id.get.return_value = "tool-123"
+                result = mod.consume_prepared_guard("taskkill /F /PID 999", "local", False)
+        finally:
+            mod._slot.reset(token)
+
+        assert result is None, (
+            "consume_prepared_guard must return None when guard_key != (command, env, access)"
+        )
+        assert slot.decision == {"choice": "allow"}, (
+            "the stale decision must NOT be consumed"
+        )

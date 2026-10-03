@@ -146,11 +146,11 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
+                      has_host_access: bool = False, workdir: Optional[str] = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access, workdir=workdir)
 
 
 from tools.environments.base import EnvironmentConnectionError
@@ -1011,15 +1011,35 @@ class _ApprovalVerdict:
     """
     note: Optional[str] = None
     approved_run: bool = False
+    preflight_attestation: Any = None
 
 
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+def _verify_smart_preflight(command: str, env_type: str, cwd: str, attestation: Any) -> None:
+    """Fail closed when live identity no longer matches the approval; never re-run the readout."""
+    if attestation is None:
+        return
+    from tools.approval_preflight import record_preflight_check, verify_preflight
+
+    check = verify_preflight(attestation, command=command, env_type=env_type, cwd=cwd)
+    record_preflight_check(attestation, check)
+    if not check.allowed:
+        raise _Rejected(_error_json(
+            "DENY_STALE_PREFLIGHT: the runtime identity changed or execution was delayed after approval; "
+            "the command was not run. Submit a new tool call if the operation is still needed.",
+            status="blocked", preflight_cause=check.cause,
+        ))
+
+
+def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
+                         force: bool, workdir: Optional[str] = None) -> _ApprovalVerdict:
     """Run tirith + dangerous-command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
         return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    approval = _check_all_guards(
+        command, env_type, has_host_access=_docker_has_host_access(config), workdir=workdir,
+    )
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -1043,9 +1063,13 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
         return _ApprovalVerdict(
             note=f"Command required approval ({desc}) and was approved by the user.",
             approved_run=True,
+            preflight_attestation=approval.get("preflight_attestation"),
         )
     if approval.get("smart_approved"):
-        return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+        return _ApprovalVerdict(
+            note=f"Command was flagged ({desc}) and auto-approved by smart approval.",
+            preflight_attestation=approval.get("preflight_attestation"),
+        )
     return _ApprovalVerdict()
 
 
@@ -1238,7 +1262,8 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
-    workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    workdir: Optional[str], command_cwd: str, approval_note: Optional[str], clear_interrupt: bool,
+    preflight_attestation: Any = None,
     metered: bool = True,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
@@ -1257,12 +1282,11 @@ def _run_foreground(
         clear_current_thread_interrupt()
 
     for retry_count in range(max_retries + 1):
+        # Recheck for every attempt: a transient backend error and backoff can
+        # outlive the approved PID or file identity. Keep denial outside the
+        # retry handler so it cannot be mistaken for an infrastructure error.
+        _verify_smart_preflight(command, env_type, command_cwd, preflight_attestation)
         try:
-            command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
-                mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
-                env=env,
-            )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
@@ -1448,9 +1472,17 @@ def terminal_tool(
                 "(process-identity probe wedged); the command was not run. Retry the call.",
                 status="error",
             ))
+        # Resolve the actual cwd before approval, so the attestation captures the real path.
+        command_cwd = _resolve_command_cwd(
+            workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+            mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
+            env=env,
+        )
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        verdict = _run_approval_guards(
+            command, env_type, plan.config, force=force, workdir=command_cwd,
+        )
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
@@ -1465,6 +1497,7 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                preflight_attestation=verdict.preflight_attestation,
                 completion_output_chars=_completion_output_chars,
                 heartbeat_seconds=heartbeat,
                 persist_on_release=persist_on_release,
@@ -1475,8 +1508,9 @@ def terminal_tool(
         return _metered(None if _host_local else plan, _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
-            workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-            metered=not _host_local,
+            workdir=workdir, command_cwd=command_cwd, approval_note=verdict.note,
+            clear_interrupt=verdict.approved_run,
+            preflight_attestation=verdict.preflight_attestation,
         ))
     except _Rejected as r:
         return r.result_json

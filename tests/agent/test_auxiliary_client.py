@@ -440,6 +440,27 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert "max_tokens" not in kw3
 
+    def test_approval_task_honors_cap_on_custom_openai_compatible_route(self):
+        """Approval caps are part of the decision contract, even for an unmanaged local URL."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="C:/models/Qwen.gguf",
+            messages=[{"role": "user", "content": "APPROVE, DENY, or ESCALATE"}],
+            max_tokens=16,
+            base_url="http://127.0.0.1:8082/v1",
+            task="approval",
+        )
+        assert kwargs["max_tokens"] == 16
+
+        other_provider = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "APPROVE, DENY, or ESCALATE"}],
+            max_tokens=16, base_url="https://api.z.ai/api/coding/paas/v4", task="approval",
+        )
+        assert "max_tokens" not in other_provider
+
 
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):

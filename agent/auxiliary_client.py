@@ -6653,6 +6653,8 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
         or _is_managed_local_endpoint(effective_base)
+        or (str(task) == "approval" and base_url_hostname(effective_base)
+            in {"127.0.0.1", "localhost", "::1"})
     )
 
 

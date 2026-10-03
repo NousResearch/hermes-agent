@@ -46,6 +46,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     calls = []
+    approval_cwds = []
 
     class FakeEnv:
         env = {}
@@ -62,7 +63,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        lambda command, env_type, **kwargs: approval_cwds.append(kwargs.get("workdir")) or {"approved": True},
     )
 
     result = json.loads(
@@ -76,6 +77,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     assert result["exit_code"] == 0
     assert len(calls) == 1
     assert calls[0] | {"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True} == calls[0]
+    assert approval_cwds == [calls[0]["cwd"]]
 
 
 def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):

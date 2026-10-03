@@ -148,6 +148,7 @@ def spawn_background_process(
     heartbeat_seconds: int = 0,
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
+    preflight_attestation: Any = None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -157,6 +158,7 @@ def spawn_background_process(
     from tools.process_registry import process_registry
     from tools.terminal_tool import (
         _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
+        _verify_smart_preflight,
     )
 
     effective_cwd = _resolve_command_cwd(
@@ -164,6 +166,9 @@ def spawn_background_process(
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
+    # A stale attestation must propagate to terminal_tool's DENY_STALE_PREFLIGHT
+    # handler; the generic spawn-error envelope below is for infrastructure only.
+    _verify_smart_preflight(command, env_type, effective_cwd, preflight_attestation)
     try:
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,

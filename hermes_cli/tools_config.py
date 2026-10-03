@@ -601,13 +601,13 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # YAML may parse bare numeric names (``12306:``) as int; normalise so sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
-    # Expand legacy toolset aliases.  Older Hermes versions used bare
-    # ``"hermes"`` as a composite toolset covering both the CLI and the
+    # Expand legacy toolset aliases.  Older Hermes versions and clients used
+    # bare ``"hermes"`` as a composite toolset covering both the CLI and the
     # API-server surface.  Modern code expects ``"hermes-cli"`` (and
-    # ``"hermes-api-server"`` for the HTTP endpoint).  Without expansion
+    # ``"hermes-api-server"`` for the HTTP endpoint), so configs persisted
+    # by those older versions still carry the legacy name; without expansion
     # ``resolve_toolset("hermes")`` returns ``[]`` — all tools silently
-    # disappear.  The WebUI has its own ``_normalize_cli_toolsets()`` that
-    # does the same thing; this brings the CLI/TUI/Desktop path in line.
+    # disappear.
     _LEGACY_TOOLSET_ALIASES: dict = {
         "hermes": ("hermes-cli", "hermes-api-server"),
     }

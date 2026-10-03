@@ -178,6 +178,8 @@ def which_binary() -> Optional[Path]:
                         [str(p), "--version"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=5,
                     )
                     if out.returncode != 0 or "ast-grep" not in (out.stdout + out.stderr).lower():
@@ -395,6 +397,8 @@ def run_sg(
             cmd,
             capture_output=capture,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

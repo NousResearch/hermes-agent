@@ -25,6 +25,7 @@ from contextvars import copy_context
 import heapq
 import itertools
 import logging
+import math
 import threading
 import time
 from typing import Callable, Optional
@@ -41,6 +42,18 @@ class ScheduledHandle:
     __slots__ = ("_fn", "_interval", "_cancelled", "_scheduler", "_runner", "_context")
 
     def __init__(self, scheduler: "PeriodicScheduler", fn: Callable[[], object], interval: float):
+        # Validate here, at the only place an interval becomes a deadline: a
+        # zero/negative value is already due when queued, so the handle is
+        # re-dispatched the moment its body returns and pins the shared timer
+        # thread to one callback; NaN/+-inf corrupt the heap ordering in
+        # _requeue (``time.monotonic() + handle._interval``).  Refusing at
+        # construction keeps every caller — direct or via ``schedule()`` —
+        # from ever reaching the heap with an unusable delay (#119219).
+        interval = float(interval)
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError(
+                f"interval must be a finite value greater than zero, got {interval!r}"
+            )
         self._scheduler = scheduler
         self._fn = fn
         self._interval = interval
@@ -68,7 +81,12 @@ class PeriodicScheduler:
         self._thread: Optional[threading.Thread] = None
 
     def schedule(self, fn: Callable[[], object], interval: float) -> ScheduledHandle:
-        handle = ScheduledHandle(self, fn, float(interval))
+        """Queue ``fn`` to run every ``interval`` seconds.
+
+        Raises ``ValueError`` — before anything is queued or the timer thread is
+        started — when ``interval`` is not a finite value greater than zero.
+        """
+        handle = ScheduledHandle(self, fn, interval)
         with self._cond:
             self._requeue(handle)
             if self._thread is None or not self._thread.is_alive():
@@ -152,5 +170,8 @@ _DEFAULT = PeriodicScheduler()
 
 
 def schedule(fn: Callable[[], object], interval: float) -> ScheduledHandle:
-    """Run ``fn()`` every ``interval`` seconds via the shared scheduler."""
+    """Run ``fn()`` every ``interval`` seconds via the shared scheduler.
+
+    Raises ``ValueError`` for a non-finite or non-positive ``interval`` (#119219).
+    """
     return _DEFAULT.schedule(fn, interval)

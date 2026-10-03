@@ -1,4 +1,4 @@
-"""Regression tests for #68773 — MEDIA tags without a separator merge paths.
+r"""Regression tests for #68773 — MEDIA tags without a separator merge paths.
 
 Before the fix, ``MEDIA_EXTENSIONLESS_TAG_RE`` used a greedy character class
 ``[^\s\n`\"']+`` that would silently absorb the next ``MEDIA:`` keyword when

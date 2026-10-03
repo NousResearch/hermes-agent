@@ -20,11 +20,15 @@ def github(tmp_path, monkeypatch):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
+                base = None if state.get("no_protection") else {"branchProtectionRule": {"requiredStatusChecks": [
+                    {"context": "required", "app": {"databaseId": 1}}]}}
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": base}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_403"):
+                    self.send_error(403)
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -60,9 +64,15 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
-                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.write_text(f"#!{sys.executable}\nimport sys, http.client\n"
+                  f"conn = http.client.HTTPConnection('127.0.0.1', {server.server_port})\n"
+                  "conn.request('GET', '/' + sys.argv[2])\n"
+                  "response = conn.getresponse()\n"
+                  "body = response.read().decode()\n"
+                  "if response.status != 200:\n"
+                  "    sys.stderr.write('gh: forbidden (HTTP %d)\\n' % response.status)\n"
+                  "    sys.exit(1)\n"
+                  "print(body)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -230,3 +240,42 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+# --- #132473: a rulesets refusal is "no rules", not an identity failure ---
+
+@pytest.mark.platforms("posix")
+def test_branch_rules_refusal_degrades_to_no_required_checks(github):
+    """A private repo on a free plan answers 403 on the branch-rules endpoint even
+    though the login can read the repository (the GraphQL read succeeded, and free
+    plans expose no branchProtectionRule either): that repo is in the plain
+    "no required checks" state — `missing` with actionable guidance, never `auth`
+    whose persisted detail the respawn guard would read as a blocker and park the
+    card forever."""
+    github["rules_403"] = True
+    github["no_protection"] = True
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Free plan", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        assert kb.get_task(conn, tid).status != "done"
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        assert receipt["classification"] == "missing"
+        assert "local-only" in receipt["detail"]
+    github.pop("rules_403")
+    github.pop("no_protection")
+
+
+@pytest.mark.platforms("posix")
+def test_branch_rules_refusal_still_evaluates_graphql_protection(github):
+    """When the GraphQL protection rule is readable but the REST rulesets endpoint
+    refuses, evaluation continues with the GraphQL-required checks alone instead of
+    aborting the whole evidence collection."""
+    github["rules_403"] = True
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Partial evidence", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done",
+                                metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        assert kb.get_task(conn, tid).status == "done"
+    github.pop("rules_403")

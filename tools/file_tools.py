@@ -425,7 +425,8 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                             line_numbers: bool = True) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -496,6 +497,8 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         _mark_full_write_baseline(str(_resolved), task_id)
         _update_read_timestamp(str(_resolved), task_id)
         file_state.record_read(task_id, str(_resolved))
+    if not line_numbers:
+        result_dict["content"] = re.sub(r"(?m)^[0-9]+(?:\||$)", "", result_dict["content"])
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -602,8 +605,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
-    """Read a file with pagination and line numbers.
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT,
+                   task_id: str = "default", line_numbers: bool = True) -> str:
+    """Read a file with pagination and optional display line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
     device-path blocklist (no I/O) → stat-based special-file guard (host only)
@@ -611,6 +615,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
+        if not isinstance(line_numbers, bool):
+            return tool_error("line_numbers must be a boolean (true or false).")
         offset, limit = normalize_read_pagination(offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
@@ -649,7 +655,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, line_numbers)
         if extracted is not None:
             return extracted
 
@@ -665,9 +671,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if cached_not_found is not None:
             return cached_not_found
 
-        # Dedup: identical (path, offset, limit) on an unchanged file returns a
-        # lightweight stub instead of re-sending the content.
-        dedup_key = (resolved_str, offset, limit)
+        # Each display format must be served once before returning an unchanged
+        # stub. Read-loop counting and write baselines still track the region.
+        dedup_key = (resolved_str, offset, limit, line_numbers)
         with _read_tracker_lock:
             task_data = _task_data(task_id)
             cached_version = task_data["dedup"].get(dedup_key)
@@ -750,6 +756,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding.")
+        if not line_numbers:
+            # Strip only our display prefix, after all truncation and safety
+            # checks, including a prefix clamped before its pipe. A literal
+            # leading '1|' in the file must survive.
+            result_dict["content"] = re.sub(r"(?m)^[0-9]+(?:\||$)", "", result_dict.get("content") or "")
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -1159,7 +1170,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000},
+            "line_numbers": {"type": "boolean", "description": "Include LINE_NUM| display prefixes (default: true). Set false when copying or quoting file text; pagination, truncation, and redaction still apply.", "default": True}
         },
         "required": ["path"]
     }
@@ -1303,7 +1315,9 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1),
+                          limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid,
+                          line_numbers=args.get("line_numbers", True))
 
 
 def _handle_write_file(args, **kw):

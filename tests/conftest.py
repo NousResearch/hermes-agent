@@ -366,11 +366,12 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
 
-    # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
-    #    C.UTF-8 locale; local dev often doesn't. Pin everything.
+    # 4. Deterministic locale / timezone / hashseed. macOS does not provide
+    #    C.UTF-8; shell warnings under that locale contaminate tool output.
+    test_locale = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
     monkeypatch.setenv("TZ", "UTC")
-    monkeypatch.setenv("LANG", "C.UTF-8")
-    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    monkeypatch.setenv("LANG", test_locale)
+    monkeypatch.setenv("LC_ALL", test_locale)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
 
     # 4b. Disable AWS IMDS lookups. Without this, any test that ends up

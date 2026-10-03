@@ -1037,11 +1037,33 @@ function Stage-Products {
     if ($desktop) { Confirm-DesktopArtifact }
 }
 
+# Test/ephemeral homes (install smoke harnesses under %TEMP%, pytest tmp
+# roots, hermes_test_home_* scratch dirs) install launchers too, but their
+# bin directories must never reach the persistent User PATH: a harness
+# killed before its finally block leaves the registry write behind forever,
+# and a stale hermes.exe shim then shadows the production launcher in new
+# shells. Production homes are unaffected and keep today's behavior.
+function Test-EphemeralLauncherHome([string]$Path) {
+    foreach ($root in @($env:TEMP, $env:TMP)) {
+        if (-not $root) { continue }
+        $trimmed = $root.TrimEnd('\')
+        if ($Path.TrimEnd('\').StartsWith($trimmed + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $Path.TrimEnd('\').Equals($trimmed, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return ($Path -match 'hermes_test_home')
+}
+
 function Set-LauncherUserPath([string]$binDir) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$binDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
-        Write-Ok "added $binDir to your user PATH (new shells pick it up)"
+        if (Test-EphemeralLauncherHome $binDir) {
+            Write-Warn "skipped the persistent user PATH write for $binDir (test/ephemeral home)"
+        } else {
+            [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
+            Write-Ok "added $binDir to your user PATH (new shells pick it up)"
+        }
     }
     # The registry write only reaches shells started later. $env:Path is
     # process-wide, so prepending it here makes `hermes` resolve in the

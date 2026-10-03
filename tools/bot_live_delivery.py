@@ -203,6 +203,9 @@ def deliver_to_live_owner(
 
     Retry with the same id AND pinned owner/message to inspect the existing
     state. Reusing an id with a different payload is an error, never an overwrite.
+    Only the canonical Bot Chat lease ever polls this mailbox, so admission
+    refuses to pin any other lease while one is live instead of writing a ticket
+    no consumer can claim (#118635).
     """
     pinned = _owner(profile_home, owner)
     if not isinstance(message, str):
@@ -216,6 +219,12 @@ def deliver_to_live_owner(
                     or existing.get("notification_category", "result") != notification_category):
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
+        canonical = find_canonical_live_owner(profile_home)
+        if canonical is not None and any(canonical[field] != pinned[field] for field in _OWNER_KEYS):
+            raise ValueError(
+                "owner is not the canonical live Bot Chat lease (only it polls this mailbox); "
+                "re-run find_canonical_live_owner for the current lease instead of pinning a "
+                "stale or sibling session (#118635)")
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))
@@ -225,19 +234,42 @@ def deliver_to_live_owner(
         return record
 
 
-def _matches(home: Path | str, record: dict, owner: dict) -> bool:
-    pinned = record["owner"]
-    if any(pinned[key] != owner[key] for key in ("profile_home", "lease_id", "live_session_id")):
-        return False
-    if pinned["session_id"] == owner["session_id"]:
+def _lineage(home: Path | str, pinned_session_id: str, owner: dict) -> bool:
+    """Whether the pinned stored session is the owner's own session, along its compression chain."""
+    if pinned_session_id == owner["session_id"]:
         return True
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=Path(home) / "state.db", read_only=True)
     try:
-        return db.get_compression_tip(pinned["session_id"]) == owner["session_id"]
+        return db.get_compression_tip(pinned_session_id) == owner["session_id"]
     finally:
         db.close()
+
+
+def _matches(home: Path | str, record: dict, owner: dict) -> bool:
+    pinned = record["owner"]
+    if any(pinned[key] != owner[key] for key in ("profile_home", "lease_id", "live_session_id")):
+        return False
+    return _lineage(home, pinned["session_id"], owner)
+
+
+def _stale_lineage_of_canonical(home: Path | str, record: dict, current: dict) -> bool:
+    """Whether a queued ticket pinned to a dead lease is still the canonical owner's own session
+    lineage — the owner restarted (fresh lease/live session) while the ticket sat queued (#118635).
+
+    Only the current canonical live owner itself may take such a ticket: a sibling live session
+    presenting a different lease must not inherit the canonical owner's backlog. The registry
+    lookup runs last: a ticket pinned to an unrelated session fails on lineage alone, without
+    taxing the 0.5s poller sweep with a second registry lock per pass.
+    """
+    pinned = record["owner"]
+    if (pinned["profile_home"] != current["profile_home"]
+            or not _lineage(home, pinned["session_id"], current)):
+        return False
+    canonical = find_canonical_live_owner(home)
+    return canonical is not None and all(
+        canonical[field] == current[field] for field in _OWNER_KEYS)
 
 
 def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
@@ -252,7 +284,10 @@ def claim_pending_delivery(
     """Claim oldest matching input exactly once; caller supplies its current lease.
 
     A lease transfer across compression is accepted only along the original
-    stored session's compression chain. A new lease/live session cannot steal it.
+    stored session's compression chain. A new lease/live session cannot steal it,
+    except a queued ticket whose pinned lease died with the canonical owner's own
+    restart: the returning owner re-pins it to its current lease and claims it
+    (never a claimed one — a crashed consumer keeps its inspectable outcome).
     Caller must hold its normal turn-admission guard before invoking this.
     """
     current = _owner(profile_home, owner)
@@ -262,12 +297,19 @@ def claim_pending_delivery(
         pending = []
         for path in root.glob("*.json"):
             record = _scan_read(path)
-            if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
-                pending.append(record)
+            if record is None or record["status"] != "queued":
+                continue
+            if _matches(profile_home, record, current):
+                pending.append((record, False))
+            elif _stale_lineage_of_canonical(profile_home, record, current):
+                pending.append((record, True))
         if not pending:
             return None
-        record = min(pending, key=lambda item: (
-            item.get("sequence", item["created_at"]), item["delivery_id"]))
+        record, repin = min(pending, key=lambda item: (
+            item[0].get("sequence", item[0]["created_at"]), item[0]["delivery_id"]))
+        if repin:
+            record.update(repinned_from=dict(record["owner"]), repinned_at=time.time_ns(),
+                          owner=dict(current), **current)
         record.update(status="claimed", claimed_at=time.time_ns())
         _write(root / f"{record['delivery_id']}.json", record)
         return record

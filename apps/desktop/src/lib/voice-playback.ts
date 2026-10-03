@@ -108,6 +108,10 @@ export function stopVoicePlayback() {
     currentAudio = null
   }
 
+  // The duck was only ever a pending-decision state on playback that no
+  // longer exists — never let it leak onto the next turn's audio.
+  ducked = false
+
   setVoicePlaybackState({
     audioElement: null,
     messageId: null,
@@ -115,6 +119,52 @@ export function stopVoicePlayback() {
     source: null,
     status: 'idle'
   })
+}
+
+// ---------------------------------------------------------------------------
+// Barge-in ducking (#129843). Over speakers the reply's own bleed trips the
+// playback-phase VAD far more often than a real interruption; stopping at trip
+// time cut the reply mid-sentence and an empty/echo transcript left it cut
+// forever. Muting keeps every playback timeline alive, so a capture that
+// yields no real speech unmutes as a user-invisible no-op and only a confirmed
+// interruption stops playback for good.
+// ---------------------------------------------------------------------------
+
+interface DuckTarget {
+  setMuted: (muted: boolean) => void
+}
+
+let ducked = false
+const duckTargets = new Set<DuckTarget>()
+
+/** Track one live playback channel for ducking; the disposer unregisters it
+ *  when that channel settles. A target registered while ducked (sentence 2 of
+ *  a muted reply) starts muted. */
+function registerDuckTarget(target: DuckTarget): () => void {
+  if (ducked) {
+    target.setMuted(true)
+  }
+
+  duckTargets.add(target)
+
+  return () => {
+    duckTargets.delete(target)
+  }
+}
+
+/** Mute (or unmute) everything currently playing without disturbing the
+ *  timelines — HTMLAudio elements keep advancing, the stream keeps
+ *  scheduling. Idempotent and safe with nothing playing. */
+export function duckVoicePlayback(muted: boolean) {
+  ducked = muted
+
+  if (currentAudio) {
+    currentAudio.muted = muted
+  }
+
+  for (const target of duckTargets) {
+    target.setMuted(muted)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +283,14 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   let synthesizing = false
   let playing: HTMLAudioElement | null = null
 
+  const unregisterDuck = registerDuckTarget({
+    setMuted: muted => {
+      if (playing) {
+        playing.muted = muted
+      }
+    }
+  })
+
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
   // stopVoicePlayback() → immediate barge-in: settle this session so its
@@ -256,6 +314,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         playing = null
       }
 
+      unregisterDuck()
       resolve(value)
     }
   })
@@ -300,6 +359,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         try {
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
+            audio.muted = ducked
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
@@ -391,6 +451,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let settled = false
   let finished = false
   const pendingSends: string[] = []
+  // The duck volume for this stream: PCM sources route through it instead of
+  // the raw destination. Created with the AudioContext on the 'start' frame.
+  let duckGain: GainNode | null = null
+  let unregisterDuck: (() => void) | null = null
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -415,8 +479,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
         // already closed
       }
 
+      unregisterDuck?.()
+      unregisterDuck = null
       void context?.close().catch(() => undefined)
       context = null
+      duckGain = null
       resolve(value)
     }
   })
@@ -474,7 +541,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     const source = context.createBufferSource()
     source.buffer = buffer
-    source.connect(context.destination)
+    source.connect(duckGain ?? context.destination)
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)
@@ -508,6 +575,13 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     if (frame.type === 'start') {
       streamRate = frame.sample_rate || 24_000
       context = new AudioContext()
+      duckGain = context.createGain()
+      duckGain.connect(context.destination)
+      unregisterDuck = registerDuckTarget({
+        setMuted: muted => {
+          duckGain?.gain.setValueAtTime(muted ? 0 : 1, context?.currentTime ?? 0)
+        }
+      })
 
       // Autoplay policy can hand back a suspended context when playback wasn't
       // started by a user gesture (e.g. a wake-word-started voice turn). Resume
@@ -639,6 +713,7 @@ async function playSpeechDataUrl(
   }
 
   const audio = new Audio(response.data_url)
+  audio.muted = ducked
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
 

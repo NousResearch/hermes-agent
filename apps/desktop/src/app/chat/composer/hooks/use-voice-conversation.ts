@@ -7,6 +7,7 @@ import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
+  duckVoicePlayback,
   markVoicePlaybackInterrupted,
   playSpeechText,
   type SpeechStreamSession,
@@ -119,6 +120,9 @@ export function useVoiceConversation({
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
+  // A playback-phase barge muted the reply instead of stopping it — the
+  // capture's transcript decides which way it settles (#129843).
+  const bargeDuckedRef = useRef(false)
   // Reply text that was playing when the barge tripped ('' for a
   // generation-phase trip: nothing audible, so nothing to echo).
   const bargeEchoTextRef = useRef('')
@@ -461,6 +465,25 @@ export function useVoiceConversation({
     [consumePendingResponse]
   )
 
+  /** Resolve a ducked playback-phase barge: a confirmed interruption stops the
+   *  (muted) reply and marks it interrupted; a capture that yielded no real
+   *  speech unmutes it so the reply keeps talking. No-op for generation-phase
+   *  barges, which were already stopped at trip time. */
+  const settleDuckedPlayback = useCallback((interrupt: boolean) => {
+    if (!bargeDuckedRef.current) {
+      return
+    }
+
+    bargeDuckedRef.current = false
+
+    if (interrupt) {
+      markVoicePlaybackInterrupted()
+      stopVoicePlayback()
+    } else {
+      duckVoicePlayback(false)
+    }
+  }, [])
+
   /**
    * Submit the utterance the barge monitor captured — the user's interruption
    * from its first syllable, no re-listen round trip. Empty/failed captures
@@ -483,10 +506,14 @@ export function useVoiceConversation({
       }
 
       if (!conversation || !live()) {
+        // Unmute is a safe no-op if playback ended too.
+        settleDuckedPlayback(false)
+
         return // ended while the barge monitor was capturing
       }
 
       if (!audio || !onTranscribeAudio) {
+        settleDuckedPlayback(false)
         resumeListening()
 
         return
@@ -512,6 +539,9 @@ export function useVoiceConversation({
         }
 
         if (!transcript) {
+          // Bleed trip on speakers: nothing real was said — unmute and let the
+          // reply keep talking instead of leaving it cut mid-sentence (#129843).
+          settleDuckedPlayback(false)
           resumeListening()
 
           return
@@ -521,6 +551,7 @@ export function useVoiceConversation({
         // turn/playback was already cut at trip time; now end the conversation
         // instead of submitting "stop" as a new prompt.
         if (isVoiceStopCommand(transcript)) {
+          settleDuckedPlayback(true)
           dropSpeechSession()
           setStatus('idle')
           onStopWordRef.current?.()
@@ -534,11 +565,19 @@ export function useVoiceConversation({
         // Hermes hearing itself — treat it as silence: no submit, and clear
         // the interruption latch so a later real turn isn't annotated.
         if (echoSource && isTtsEcho(transcript, echoSource)) {
+          // Hermes heard itself — same recovery as an empty capture: unmute,
+          // don't submit, and clear the interruption latch so a later real
+          // turn isn't annotated.
           takeVoicePlaybackInterrupted()
+          settleDuckedPlayback(false)
           resumeListening()
 
           return
         }
+
+        // A real interruption: the muted reply stops for good and is marked
+        // interrupted (the latch was deferred to this confirmation).
+        settleDuckedPlayback(true)
 
         // A generation-phase barge interrupted the in-flight turn; the submit
         // path refuses while `busy`, so wait for the interrupt to settle.
@@ -575,12 +614,13 @@ export function useVoiceConversation({
         }
       } catch (error) {
         if (live()) {
+          settleDuckedPlayback(false)
           notifyError(error, voiceCopy.transcriptionFailed)
           resumeListening()
         }
       }
     },
-    [consumePendingResponse, focusInput, onTranscribeAudio, parkText, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, focusInput, onTranscribeAudio, parkText, settleDuckedPlayback, voiceCopy.transcriptionFailed]
   )
 
   /**
@@ -612,19 +652,33 @@ export function useVoiceConversation({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       thresholdMultiplier: $bargeInThresholdMultiplier.get(),
       onSpeech: () => {
-        // Snapshot before playback is cut: the reply may be consumed by the
-        // time the capture is transcribed.
-        bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
+        // Snapshot before playback is affected: the reply may be consumed by
+        // the time the capture is transcribed.
+        const speaking = $voicePlayback.get().status === 'speaking'
+        bargeEchoTextRef.current = speaking ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
         bargedRef.current = true
-        markVoicePlaybackInterrupted()
-        stopVoicePlayback()
 
-        if (busyRef.current) {
-          // Mid-generation: stop the in-flight turn so the captured utterance
-          // becomes the next one instead of queueing behind a stale reply.
-          void onInterruptRef.current?.()
+        if (busyRef.current || !speaking) {
+          markVoicePlaybackInterrupted()
+          stopVoicePlayback()
+
+          if (busyRef.current) {
+            // Mid-generation: stop the in-flight turn so the captured utterance
+            // becomes the next one instead of queueing behind a stale reply.
+            void onInterruptRef.current?.()
+          }
+
+          return
         }
+
+        // Playback-phase trip: mute, don't destroy. Over speakers the reply's
+        // own bleed trips the VAD far more often than a real interruption —
+        // cut late and let the capture decide: an empty/echo transcript
+        // unmutes (the reply keeps talking from where it is), a real one
+        // stops playback for good (#129843).
+        bargeDuckedRef.current = true
+        duckVoicePlayback(true)
       },
       onUtterance: audio => {
         bargeCapturePendingRef.current = false

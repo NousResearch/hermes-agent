@@ -10,6 +10,8 @@ shows a real midstream turn instead of sitting silent until persistence.
 
 from __future__ import annotations
 
+import json
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -239,3 +241,94 @@ def test_text_mirrors_as_message_delta(server, emits):
     ]
 
 
+
+
+@pytest.mark.parametrize("results", [
+    ('{"output":"actual stdout","exit_code":0}', '{"output":"failed stderr","exit_code":2}'),
+    ("", "null"),
+])
+def test_real_child_relay_mirrors_parallel_results_with_durable_ids(server, emits, results):
+    from tools.delegate_tool_progress import _build_child_progress_callback
+
+    parent = MagicMock()
+    parent._delegate_spinner = None
+    parent.tool_progress_callback = lambda *args, **kw: server._on_tool_progress("parent-sid", *args, **kw)
+    server._sessions["parent-sid"] = {"session_key": "parent"}
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    relay = _build_child_progress_callback(0, "inspect", parent, session_ref={"session_id": "child-1"})
+
+    relay("tool.started", "terminal", "echo a", {"command": "echo a"}, tool_call_id="call-a")
+    relay("tool.started", "terminal", "echo b", {"command": "echo b"}, tool_call_id="call-b")
+    # Completing B first must never close A or attach B's output to A.
+    relay("tool.completed", "terminal", result=results[1], tool_call_id="call-b", duration=2)
+    relay("tool.completed", "terminal", result=results[0], tool_call_id="call-a", duration=3)
+    relay("subagent.complete", status="completed", summary="done")
+
+    child_tools = [(event, payload) for event, sid, payload in emits if sid == "live-1" and event.startswith("tool.")]
+    assert [event for event, _ in child_tools] == ["tool.start", "tool.start", "tool.complete", "tool.complete"]
+    assert [payload["tool_id"] for _, payload in child_tools] == ["call-a", "call-b", "call-b", "call-a"]
+    from tui_gateway.contracts.events import ToolCompletePayload
+
+    for event, payload in child_tools:
+        if event == "tool.complete":
+            ToolCompletePayload.model_validate(payload)
+
+    def decode(value):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    assert child_tools[2][1]["result"] == decode(results[1])
+    assert child_tools[3][1]["result"] == decode(results[0])
+    assert child_tools[3][1]["args"] == {"command": "echo a"}
+    assert child_tools[3][1]["duration_s"] == 3
+    # The parent receives activity only, never this private child output.
+    assert all("result" not in (payload or {}) for _, sid, payload in emits if sid == "parent-sid")
+
+
+def test_child_mirror_does_not_fabricate_success_for_lost_completion(server, emits):
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1", tool_call_id="missing")
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="done")
+    completions = [payload for event, sid, payload in emits if event == "tool.complete" and sid == "live-1"]
+    assert len(completions) == 1
+    assert "result" not in completions[0]
+
+
+def test_connector_child_output_is_redacted_without_parent_owner_mismatch(server, emits):
+    parent = {"session_key": "parent"}
+    server._sessions["parent-sid"] = parent
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    token = server._current_runtime_session_record.set(parent)
+    try:
+        _relay(server, "subagent.tool", tool_name="manage_connections", child_session_id="child-1", tool_call_id="connector")
+        _relay(server, "subagent.tool_complete", tool_name="manage_connections", child_session_id="child-1",
+               tool_call_id="connector", result={"api_key": "private-key", "status": "connected"})
+    finally:
+        server._current_runtime_session_record.reset(token)
+    completion = next(payload for event, sid, payload in emits if event == "tool.complete" and sid == "live-1")
+    assert completion["result"] == {"api_key": "[REDACTED]", "status": "connected"}
+
+
+def test_native_child_failure_signal_survives_actual_bridge_and_mirror(server, emits):
+    from types import SimpleNamespace
+    from agent.codex_runtime import make_codex_app_server_event_bridge
+    from tools.delegate_tool_progress import _build_child_progress_callback
+    from tui_gateway.contracts.events import ToolCompletePayload
+
+    parent = SimpleNamespace(_delegate_spinner=None,
+        tool_progress_callback=lambda *args, **kw: server._on_tool_progress("parent-sid", *args, **kw))
+    server._sessions["parent-sid"] = {"session_key": "parent"}
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    relay = _build_child_progress_callback(0, "inspect", parent, session_ref={"session_id": "child-1"})
+    agent = SimpleNamespace(tool_progress_callback=relay)
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {"type": "dynamicToolCall", "id": "rejected", "tool": "custom_tool", "arguments": {}}
+    bridge({"method": "item/started", "params": {"item": item}})
+    content = [{"type": "text", "text": "Operation was declined"}]
+    bridge({"method": "item/completed", "params": {"item": {**item, "success": False, "contentItems": content}}})
+
+    completion = next(payload for event, sid, payload in emits if event == "tool.complete" and sid == "live-1")
+    ToolCompletePayload.model_validate(completion)
+    assert completion["result"] == content
+    assert completion["error"] is True

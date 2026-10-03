@@ -126,7 +126,7 @@ _EVENT_HANDLERS: Dict[Any, Optional[str]] = {
     "subagent.text": "_on_text",
     DelegateEvent.TASK_THINKING: "_on_thinking",
     DelegateEvent.TASK_PROGRESS: "_on_progress",
-    DelegateEvent.TASK_TOOL_COMPLETED: None,
+    DelegateEvent.TASK_TOOL_COMPLETED: "_on_tool_completed",
 }
 
 def _normalize_event(event_type: Any) -> Any:
@@ -404,10 +404,14 @@ class _ChildProgressRelay:
             short = _short(preview, 35) if preview else ""
             self._tree_line(f'{line}  "{short}"' if short else line)
         if self.parent_cb:
-            self._relay("subagent.tool", tool_name, preview, args)
+            self._relay("subagent.tool", tool_name, preview, args, **kwargs)
             self.batch.append(tool_name or "")
             if len(self.batch) >= self._BATCH_SIZE:
                 self._flush()
+
+    def _on_tool_completed(self, tool_name, preview, args, kwargs):
+        # Private watch projection: keep actual output off the parent's progress feed.
+        self._relay("subagent.tool_complete", tool_name, preview, args, **kwargs)
 
     def __call__(self, event_type, tool_name: str = None, preview: str = None, args=None, **kwargs):
         key = _normalize_event(event_type)

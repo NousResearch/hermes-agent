@@ -35,6 +35,17 @@ def _child_run_active(child_key: str, profile_home) -> bool:
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
+def _emit_child_tool_lifecycle(event_type: str, sid: str, tool: dict, payload: dict) -> None:
+    # The callback owner is the parent; the child is a read-only watch session.
+    # Apply the same connector redaction without treating that owner mismatch as stale.
+    if event_type == "tool.complete":
+        payload = {key: value for key, value in payload.items() if key != "preview"}
+    if _connector_tool_lifecycle(tool["name"], tool["args"]):
+        from tui_gateway.connector_payload import connector_ui_payload
+        payload = connector_ui_payload(payload)
+    _emit(event_type, sid, payload)
+
+
 def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
@@ -56,7 +67,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
     csid = live[0]
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "tools": {}, "started": False})
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
@@ -68,25 +79,59 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
                     return
                 _emit(mapped, csid, {"text": f"{text}\n" if event_type == "subagent.start" else text})
             return
+        if event_type == "subagent.tool_complete":
+            tool_id = str(payload.get("tool_call_id") or "")
+            tool = st["tools"].pop(tool_id, None)
+            if tool is None:
+                # Older emitters have no stable identity; only a sole legacy row can own the result.
+                tool = st["open_tool"] if not tool_id else None
+                if tool is not None:
+                    st["open_tool"] = None
+            if tool is None and tool_id:
+                tool = {"tool_id": tool_id, "name": str(payload.get("tool_name") or "tool"), "args": {}}
+            if tool is None:
+                return
+            completion = dict(tool)
+            if "result" in payload:
+                result = payload["result"]
+                if isinstance(result, str):
+                    with contextlib.suppress(ValueError):
+                        result = json.loads(result)
+                completion["result"] = result
+            if payload.get("duration") is not None:
+                completion["duration_s"] = payload["duration"]
+            if "is_error" in payload:
+                completion["error"] = bool(payload["is_error"])
+            if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(tool["name"]):
+                _emit_child_tool_lifecycle("tool.complete", csid, tool, completion)
+            return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
         if st["open_tool"]:
             open_tool = st["open_tool"]
             st["open_tool"] = None
             if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
-                _emit("tool.complete", csid, open_tool)
+                _emit_child_tool_lifecycle("tool.complete", csid, open_tool, open_tool)
         if event_type == "subagent.tool":
             st["seq"] += 1
             tool_name = str(payload.get("tool_name") or "tool")
             tool = {"name": tool_name,
-                    "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
+                    "tool_id": str(payload.get("tool_call_id") or f"submirror:{child_key}:{st['seq']}"),
+                    "args": payload.get("args") or {}}
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
             if not _tool_progress_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
                 return
-            st["open_tool"] = tool
-            _emit("tool.start", csid, tool)
+            if payload.get("tool_call_id"):
+                st["tools"][tool["tool_id"]] = tool
+            else:
+                st["open_tool"] = tool
+            _emit_child_tool_lifecycle("tool.start", csid, tool, tool)
         else:
+            # Unfinished calls remain visibly unavailable; never invent an empty success.
+            for tool in st["tools"].values():
+                if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(tool["name"]):
+                    _emit_child_tool_lifecycle("tool.complete", csid, tool, tool)
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
             _child_mirrors.pop(key, None)

@@ -281,6 +281,7 @@ class ToolCompletePayload(Payload):
     args: dict[str, JsonValue] | None = None  # mirrored child rows / room relays omit it
     duration_s: float | None = None
     result: JsonValue = None
+    error: str | bool | None = None  # native child completion's explicit failure signal
     summary: str | None = None
     result_text: str | None = None
     inline_diff: str | None = None

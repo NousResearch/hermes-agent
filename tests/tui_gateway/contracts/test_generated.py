@@ -65,7 +65,8 @@ def emitted_event_names() -> set[str]:
     names.update(_CHILD_DELTA_EVENTS.values())
     for src in (REPO / "tools").glob("delegate_tool*.py"):
         names.update(_SUBAGENT_RELAY.findall(_read(src)))
-    names.discard("subagent.text")  # mirrored into the watch window as message.delta, never emitted
+    # Internal watch projections become native child events, never parent wire frames.
+    names.difference_update({"subagent.text", "subagent.tool_complete"})
     from tools.registry import _tool_module_candidates
 
     for src in _tool_module_candidates(REPO / "tools"):

@@ -35826,6 +35826,21 @@
             "default": null,
             "title": "Result"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
           "summary": {
             "anyOf": [
               {

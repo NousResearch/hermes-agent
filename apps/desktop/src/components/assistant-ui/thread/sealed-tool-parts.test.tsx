@@ -1,7 +1,10 @@
 import { type ThreadMessage } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
+import { upsertToolPart } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $activeSessionId } from '@/store/session'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
@@ -90,4 +93,58 @@ describe('tool parts sealed without a result', () => {
     expect(await screen.findByText('Interrupted')).toBeTruthy()
     expect(screen.queryByText('Result unavailable')).toBeNull()
   })
+})
+
+it.each(['main-session', 'child-watch-session'])('renders recovered actual output in %s', async sessionId => {
+  $activeSessionId.set(sessionId)
+
+  let parts = upsertToolPart(
+    [],
+    { name: 'terminal', tool_id: `durable-call-${sessionId}`, args: { command: 'echo proof' } },
+    'running',
+    1
+  )
+
+  parts = upsertToolPart(parts, { name: 'terminal', tool_id: `durable-call-${sessionId}` }, 'complete', 2)
+  parts = upsertToolPart(
+    parts,
+    {
+      name: 'terminal',
+      tool_id: `durable-call-${sessionId}`,
+      result: { output: 'actual durable proof', exit_code: 0 }
+    },
+    'complete',
+    3
+  )
+  expect(buildToolView(parts[0] as never, '').detail).toContain('actual durable proof')
+  const message = toRuntimeMessage({ id: `recovered-${sessionId}`, role: 'assistant', parts, pending: false })
+  const { container } = render(<Harness message={message} />)
+
+  const row = await screen.findByText('Ran echo proof')
+  expect(screen.queryByText('Result unavailable')).toBeNull()
+  fireEvent.click(row)
+  await waitFor(() => expect(container.textContent).toContain('actual durable proof'), { timeout: 1000 })
+})
+
+it('renders an explicitly failed native child result without losing its plain-text evidence', async () => {
+  const parts = upsertToolPart(
+    [],
+    {
+      name: 'custom_tool',
+      tool_id: 'native-failed',
+      result: [{ type: 'text', text: 'Operation was declined' }],
+      error: true
+    },
+    'complete',
+    3
+  )
+
+  const view = buildToolView(parts[0] as never, '')
+  expect(view.status).toBe('error')
+  const message = toRuntimeMessage({ id: 'native-failed', role: 'assistant', parts, pending: false })
+  const { container } = render(<Harness message={message} />)
+  const row = await screen.findByText(view.title)
+  fireEvent.click(row)
+  expect(container.textContent).toContain('Operation was declined')
+  expect(screen.queryByText('Result unavailable')).toBeNull()
 })

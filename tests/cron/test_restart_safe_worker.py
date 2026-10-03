@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
@@ -22,6 +23,12 @@ def execution_ledger(tmp_path, monkeypatch):
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     return executions
+
+
+@pytest.fixture
+def preloaded_agent(monkeypatch):
+    """These handoff tests stub run_one_job; keep agent bootstrap out of their unit boundary."""
+    monkeypatch.setitem(sys.modules, "run_agent", ModuleType("run_agent"))
 
 
 def test_execution_owner_moves_to_external_worker_before_running(
@@ -131,7 +138,7 @@ def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeyp
 
 
 def test_external_worker_adopts_execution_and_runs_payload_once(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, preloaded_agent
 ):
     import cron.scheduler as scheduler
 
@@ -177,7 +184,117 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
-def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
+@pytest.mark.parametrize("restart_during_import", [False, True])
+def test_worker_imports_agent_before_adopting_or_consuming_payload(
+    tmp_path, monkeypatch, preloaded_agent, restart_during_import
+):
+    """Bootstrap may restart; the handoff must remain available until agent import finishes."""
+    import builtins
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(json.dumps({
+        "job": {"id": "job-1", "execution_id": "exec-1"},
+        "profile_home": str(tmp_path / "profile"),
+    }), encoding="utf-8")
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    adopted = Mock(return_value={"id": "exec-1", "status": "running"})
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", adopted)
+
+    original_import = builtins.__import__
+    observed_imports = []
+    def importing(name, *args, **kwargs):
+        if name == "run_agent":
+            observed_imports.append((
+                payload.exists(), ack.exists(), adopted.call_count,
+                os.environ.get("HERMES_DISABLE_LAZY_INSTALLS"),
+            ))
+            if restart_during_import:
+                raise SystemExit("bootstrap relaunch")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
+    ran = []
+    def run(_job, **_kwargs):
+        assert ack.exists() and not payload.exists()
+        ran.append(os.environ.get("HERMES_DISABLE_LAZY_INSTALLS"))
+        return True
+
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+    if restart_during_import:
+        with pytest.raises(SystemExit, match="bootstrap relaunch"):
+            scheduler._run_external_worker_payload(payload, ack)
+        assert payload.exists() and not ack.exists()
+        adopted.assert_not_called()
+        assert ran == []
+    else:
+        assert scheduler._run_external_worker_payload(payload, ack) is True
+        adopted.assert_called_once_with("exec-1")
+        assert ran == [None]
+    assert observed_imports == [(True, False, 0, None)]
+    assert os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") is None
+
+
+def test_worker_survives_real_reexec_before_adoption(tmp_path):
+    """A launch-time exec must restart with the payload still present, then ack once."""
+    repo_root = Path(__file__).resolve().parents[2]
+    payload = tmp_path / "handoff.json"
+    ack = tmp_path / "handoff.ready"
+    marker = tmp_path / "reexec-once"
+    completed = tmp_path / "completed"
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    payload.write_text(json.dumps({
+        "job": {"id": "job-1", "execution_id": "exec-1"},
+        "profile_home": str(profile),
+    }), encoding="utf-8")
+    (tmp_path / "run_agent.py").write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "marker = Path(os.environ['REEXEC_MARKER'])\n"
+        "if not marker.exists():\n"
+        "    marker.write_text('restarted', encoding='utf-8')\n"
+        "    os.execv(sys.executable, [sys.executable, *sys.argv])\n",
+        encoding="utf-8",
+    )
+    driver = tmp_path / "drive.py"
+    driver.write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "import cron.scheduler as scheduler\n"
+        "import cron.executions as executions\n"
+        "sys.path.insert(0, str(Path(__file__).parent))\n"
+        "executions.adopt_claimed_execution = lambda _id: {'status': 'running'}\n"
+        "def run(_job, **_kwargs):\n"
+        "    Path(os.environ['COMPLETED']).write_text(\n"
+        "        'ran:' + str(os.environ.get('HERMES_DISABLE_LAZY_INSTALLS')), encoding='utf-8')\n"
+        "    return True\n"
+        "scheduler.run_one_job = run\n"
+        "ok = scheduler._run_external_worker_payload(Path(sys.argv[1]), Path(sys.argv[2]))\n"
+        "sys.exit(0 if ok else 1)\n",
+        encoding="utf-8",
+    )
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "HERMES_HOME": str(profile),
+        "PYTHONPATH": str(repo_root),
+        "REEXEC_MARKER": str(marker),
+        "COMPLETED": str(completed),
+    }
+    result = subprocess.run(
+        [sys.executable, str(driver), str(payload), str(ack)],
+        cwd=repo_root, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text(encoding="utf-8") == "restarted"
+    assert completed.read_text(encoding="utf-8") == "ran:None"
+    assert not payload.exists()
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+
+
+def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch, preloaded_agent):
     """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
     must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
     and loses the worker pid for a handoff that actually succeeded."""
@@ -215,7 +332,7 @@ def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypa
 
 
 def test_external_worker_refuses_to_run_without_durable_ownership(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, preloaded_agent
 ):
     import cron.scheduler as scheduler
 

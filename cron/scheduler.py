@@ -3895,12 +3895,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         execution_id = str(job["execution_id"])
     except Exception:
         logger.exception("Cron external worker could not load payload %s", payload_path)
-        return False
-    finally:
-        try:
+        with contextlib.suppress(OSError):
             payload_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        return False
 
     from agent.secret_scope import (
         build_profile_secret_scope,
@@ -3932,6 +3929,13 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         hydrate_profile_secret_sources(profile_home)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
         with use_cron_store(profile_home):
+            # run_agent imports hermes_bootstrap and interrupted-update recovery.
+            # Keep the one-shot handoff until that import completes (or relaunches),
+            # before adoption. The worker launcher must bootstrap dependencies
+            # before importing cron.scheduler (see #122222).
+            import run_agent  # noqa: F401
+            with contextlib.suppress(OSError):
+                payload_path.unlink(missing_ok=True)
             if adopt_claimed_execution(execution_id) is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "

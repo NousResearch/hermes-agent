@@ -142,4 +142,3 @@ class TestInitRegistryWiring:
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
 
         assert "init" in GATEWAY_KNOWN_COMMANDS
-

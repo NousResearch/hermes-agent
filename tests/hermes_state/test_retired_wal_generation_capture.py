@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+from hermes_constants import mark_named_profile_deleted
 from hermes_state import DeletedWalGenerationError, SessionDB
 from hermes_state_dbfile import (
     RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
@@ -255,6 +256,7 @@ def test_capture_refuses_to_guess_by_pathname(tmp_path, force_wal):
         db.close()
 
 
+@not_windows
 def test_capture_does_not_recreate_missing_database_parent(tmp_path, force_wal):
     home = tmp_path / "profile"
     home.mkdir()
@@ -272,6 +274,28 @@ def test_capture_does_not_recreate_missing_database_parent(tmp_path, force_wal):
             assert not home.exists()
         finally:
             moved.rename(home)
+    finally:
+        db.close()
+
+
+@not_windows
+def test_capture_does_not_write_into_tombstoned_profile_home(tmp_path, force_wal):
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    home = root / "profiles" / "profile"
+    home.mkdir(parents=True)
+    path = home / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    try:
+        require_wal(db)
+        identity = db._db_sidecar_identity["-wal"]
+        mark_named_profile_deleted(home)
+        with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+            capture_retired_wal_generation(
+                path, sidecar_identity={"-wal": identity}, trigger="unserve")
+        assert home.exists()
+        assert not list(home.glob("state.db.retired-wal-*"))
     finally:
         db.close()
 

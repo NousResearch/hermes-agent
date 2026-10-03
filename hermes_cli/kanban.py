@@ -678,6 +678,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
     # What this home believes it may claim on a shared board (#113620).
     allowlist = kbd.dispatch_profile_allowlist_summary()
+    # Live per-provider budget usage (#123654), mirroring the allowlist line.
+    try:
+        _kanban_cfg = (load_config().get("kanban", {}) or {})
+        _budgets = kbd.normalize_provider_budgets(_kanban_cfg.get("provider_concurrency"))
+    except Exception:
+        _budgets = None
+    with kbc.connect_closing() as _conn:
+        provider_summary = kbd.provider_budget_summary(_conn, _budgets)
 
     if getattr(args, "json", False):
         # Per-task rows unchanged; the home-scope allowlist rides as a trailing row
@@ -688,6 +696,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         return 0
 
     print(f"kanban.dispatch_profiles: {allowlist}")
+    print(f"kanban.provider_concurrency: {provider_summary}")
     if not diags_by_task:
         print("No active diagnostics on this board.")
         return 0

@@ -129,6 +129,11 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_provider_capped: list[tuple[str, str, int, int]] = field(default_factory=list)
+    """``(task_id, provider_key, running_count, budget)`` deferred because the
+    run's resolved provider is at its ``kanban.provider_concurrency`` budget.
+    Picked up on a later tick; separate bucket so dashboards show "provider
+    busy" vs "stuck" (#123654)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -166,6 +171,7 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
+    provider_holds: dict[str, tuple[int, int]] = {}
     for res in results:
         if res is None:
             continue
@@ -173,11 +179,21 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        for _task_id, provider_key, used, budget in res.skipped_provider_capped:
+            # One entry per provider: the tick-level hold reads
+            # ``held back: provider_budget[anthropic]=12/12`` (#123654).
+            prev = provider_holds.get(provider_key)
+            if prev is None or used > prev[0]:
+                provider_holds[provider_key] = (used, budget)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
+    parts.extend(
+        f"provider_budget[{key}]={used}/{budget}"
+        for key, (used, budget) in sorted(provider_holds.items())
+    )
     if pressure:
         parts.append(f"memory_pressure={pressure}")
     return ", ".join(parts)
@@ -1877,6 +1893,224 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+# Per-provider concurrency budget (#123654): ``kanban.provider_concurrency``
+# maps a resolved provider key to how many workers may run against it at once.
+# A profile never identifies the backend — cards pin ``provider_override`` per
+# run and profiles can share one endpoint — so the budget is keyed on the
+# run's RESOLVED provider, exactly as the worker will resolve it: the task
+# override first, then the assignee profile's configured model/provider (with
+# the base URL disambiguating a bare ``custom`` endpoint). Unlisted providers
+# have no budget unless a ``default`` entry covers them. Over budget defers to
+# the next tick, never a kill — same as the existing caps.
+
+#: Fallback budget key inside ``kanban.provider_concurrency`` for providers
+#: with no explicit entry (``default: null`` = no budget, the default).
+PROVIDER_BUDGET_DEFAULT_KEY = "default"
+
+#: Key used when no provider resolves at all (the worker inherits default
+#: routing); still covered by a ``default`` budget entry when one is set.
+PROVIDER_KEY_UNRESOLVED = "auto"
+
+
+def normalize_provider_budgets(raw: Any) -> Optional[dict[str, int]]:
+    """Parse ``kanban.provider_concurrency`` into ``{provider_key: budget}``.
+
+    Non-mapping values, blank keys and non-positive budgets are dropped
+    (fail open = no budget); ``None`` when nothing budgetable remains so
+    callers can skip the per-tick accounting entirely.
+    """
+    if not isinstance(raw, dict):
+        return None
+    budgets: dict[str, int] = {}
+    for key, value in raw.items():
+        name = str(key).strip() if key is not None else ""
+        if not name:
+            continue
+        # ponytail: exact match on the stripped key; case variants of one
+        # provider need separate entries until normalisation proves necessary.
+        amount = _positive_int(value, None)
+        if amount is not None:
+            budgets[name] = amount
+    return budgets or None
+
+
+def configured_provider_concurrency() -> Optional[dict]:
+    """Raw ``kanban.provider_concurrency`` mapping, or None when unset.
+
+    Returns the mapping un-normalized (normalization happens per tick in
+    :func:`_dispatch_once_locked`); every dispatch entry point routes through
+    this so all lanes agree on the configured budgets.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("provider_concurrency")
+    except Exception:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _assignee_provider_config(assignee: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(provider, base_url)`` from the assignee profile's ``model:`` config.
+
+    ``(None, None)`` when the profile or its model section can't be read —
+    the run then counts under the unresolved key (fail open, never block
+    dispatch on config introspection). Module-level indirection is the test
+    seam, mirroring :func:`_system_memory_sample`.
+    """
+    if not assignee:
+        return None, None
+    try:
+        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.profiles import resolve_profile_env
+        home = resolve_profile_env(assignee)
+        model_cfg = read_user_config_raw(Path(home) / "config.yaml").get("model", {})
+    except Exception:
+        return None, None
+    if isinstance(model_cfg, str):
+        return None, None
+    if isinstance(model_cfg, dict):
+        provider = (model_cfg.get("provider") or "").strip() or None
+        base_url = (model_cfg.get("base_url") or "").strip() or None
+        return provider, base_url
+    return None, None
+
+
+def resolve_run_provider_key(
+    *, provider_override: Optional[str] = None, assignee: Optional[str] = None,
+) -> str:
+    """Provider key a run counts against: task override first, then the
+    assignee profile's configured provider — exactly as the worker resolves it
+    (``task.provider_override`` becomes ``--provider`` on the worker command).
+    A bare ``custom`` endpoint is disambiguated by its base URL so two custom
+    endpoints don't share one budget. Never keyed on profile identity.
+    """
+    override = (provider_override or "").strip()
+    if override:
+        return override
+    provider, base_url = _assignee_provider_config(assignee)
+    provider = (provider or "").strip()
+    if not provider:
+        return PROVIDER_KEY_UNRESOLVED
+    if provider == "custom" and base_url:
+        return f"custom:{base_url}"
+    return provider
+
+
+def provider_budget_for(budgets: Optional[dict[str, int]], provider_key: str) -> Optional[int]:
+    """Budget for one resolved provider: exact entry wins, else ``default``.
+    ``None`` = no budget (fail open)."""
+    if not budgets:
+        return None
+    if provider_key in budgets:
+        return budgets[provider_key]
+    return budgets.get(PROVIDER_BUDGET_DEFAULT_KEY)
+
+
+def _count_running_tasks_per_provider_local(
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    """``{resolved_provider_key: running_count}`` for ONE board's DB.
+
+    Every row pays one profile-config read at most (cached per profile file),
+    and a row whose provider can't be resolved counts under the unresolved
+    key rather than bricking the tick.
+    """
+    counts: dict[str, int] = {}
+    try:
+        rows = conn.execute(
+            "SELECT assignee, provider_override FROM tasks WHERE status = 'running'"
+        ).fetchall()
+    except Exception:
+        return counts
+    for row in rows:
+        try:
+            key = resolve_run_provider_key(
+                provider_override=row["provider_override"], assignee=row["assignee"],
+            )
+        except Exception:
+            key = PROVIDER_KEY_UNRESOLVED
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def count_running_tasks_per_provider(
+    conn: sqlite3.Connection, board: Optional[str] = None
+) -> dict[str, int]:
+    """``{resolved_provider_key: running_count}`` fleet-wide, for ``board``'s tick.
+
+    This board's DB plus every OTHER board's. The budget bounds the provider
+    endpoint, not the board, and each board's tick only sees its own DB — so
+    without the fold a budget of N is effectively N x active boards, exactly
+    the multiplication :func:`count_running_tasks_other_boards` guards against
+    for the host cap. Fails open per board.
+    """
+    counts = _count_running_tasks_per_provider_local(conn)
+    for key, other in count_running_tasks_other_boards_by_provider(board).items():
+        counts[key] = counts.get(key, 0) + other
+    return counts
+
+
+def count_running_tasks_other_boards_by_provider(
+    board: Optional[str] = None,
+) -> dict[str, int]:
+    """Per-provider ``running`` counts across every board EXCEPT ``board``.
+
+    Sibling of :func:`count_running_tasks_other_boards` for the per-provider
+    budget (#123654): same path matching (so ``HERMES_KANBAN_DB``, which pins
+    every board to one file, yields no extra boards) and same fail-open
+    semantics.
+    """
+    counts: dict[str, int] = {}
+    try:
+        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+    except Exception:
+        current_path = None
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return counts
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            resolved = str(path.resolve())
+            if current_path is not None and resolved == current_path:
+                continue
+            if not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            try:
+                for key, n in _count_running_tasks_per_provider_local(other).items():
+                    counts[key] = counts.get(key, 0) + n
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return counts
+
+
+def provider_budget_summary(
+    conn: sqlite3.Connection, budgets: Optional[dict[str, int]],
+) -> str:
+    """One-line ``kanban.provider_concurrency`` usage for diagnostics output:
+    ``"anthropic 3/12, openai 1/5"``, ``"no per-provider budget configured"``
+    when unset, or ``"no running workers"`` when idle."""
+    if not budgets:
+        return "no per-provider budget configured"
+    running = count_running_tasks_per_provider(conn)
+    parts = []
+    for key in sorted(budgets):
+        if key == PROVIDER_BUDGET_DEFAULT_KEY:
+            continue
+        parts.append(f"{key} {running.get(key, 0)}/{budgets[key]}")
+    if PROVIDER_BUDGET_DEFAULT_KEY in budgets:
+        parts.append(f"default {budgets[PROVIDER_BUDGET_DEFAULT_KEY]}")
+    if running and not parts:
+        return "no per-provider budget configured"
+    return ", ".join(parts) if parts else "no running workers"
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1964,6 +2198,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    provider_concurrency: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1987,6 +2222,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            provider_concurrency=provider_concurrency,
         )
 
     try:
@@ -2036,12 +2272,26 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    provider_budgets: Optional[dict[str, int]] = None,
+    provider_running: Optional[dict[str, int]] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    # The run's resolved provider (task override first, then the assignee
+    # profile) — the ONLY key the provider budget is charged to (#123654).
+    # Read once per row; the row carries provider_override so no extra query.
+    provider_key: Optional[str] = None
+    if provider_budgets is not None:
+        try:
+            row_override = row["provider_override"]
+        except (KeyError, IndexError, TypeError):
+            row_override = None
+        provider_key = resolve_run_provider_key(
+            provider_override=row_override, assignee=assignee,
+        )
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2070,6 +2320,15 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # Per-provider budget: the provider becomes the bottleneck once the host
+    # stops being it. Over budget defers to the next tick, never a kill.
+    if provider_budgets is not None and provider_key is not None:
+        budget = provider_budget_for(provider_budgets, provider_key)
+        if budget is not None:
+            used = (provider_running or {}).get(provider_key, 0)
+            if used >= budget:
+                result.skipped_provider_capped.append((task_id, provider_key, used, budget))
+                return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2086,10 +2345,13 @@ def _dispatch_lane_task(
         return False
 
     def _count_spawn(name: str) -> None:
-        # Later rows in this tick respect the per-profile cap; subsequent
-        # ticks re-query from the DB.
+        # Later rows in this tick respect the per-profile cap AND the
+        # provider budget; subsequent ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        if provider_budgets is not None and provider_key is not None:
+            running = provider_running if provider_running is not None else {}
+            running[provider_key] = running.get(provider_key, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -2269,7 +2531,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2281,19 +2543,23 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    provider_budgets: Optional[dict[str, int]] = None,
+    provider_running: Optional[dict[str, int]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at the per-profile cap, its resolved provider at budget,
+    or respawn-guarded — cannot consume the reservation, so it must not
+    withhold capacity from an otherwise ready task (one such row would pin
+    ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    prov_running = provider_running or {}
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2302,6 +2568,17 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
+        if provider_budgets is not None:
+            try:
+                row_override = row["provider_override"]
+            except (KeyError, IndexError, TypeError):
+                row_override = None
+            key = resolve_run_provider_key(
+                provider_override=row_override, assignee=assignee,
+            )
+            budget = provider_budget_for(provider_budgets, key)
+            if budget is not None and prov_running.get(key, 0) >= budget:
+                continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
     return False
@@ -2339,6 +2616,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    provider_concurrency: Optional[dict] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2380,6 +2658,15 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Per-provider budget (#123654). Deferred tasks go to
+    # skipped_provider_capped — "provider busy, retry later". Resolved BEFORE
+    # the review reservation so the reservation sees which review rows the
+    # lane loop would refuse this tick. None = unbudgeted, skip accounting.
+    provider_budgets = normalize_provider_budgets(provider_concurrency)
+    provider_running: dict[str, int] = {}
+    if provider_budgets is not None:
+        # Fleet-wide: other boards' workers hit the same endpoint (#123654 review).
+        provider_running = count_running_tasks_per_provider(conn, board=board)
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
@@ -2388,12 +2675,14 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        provider_budgets=provider_budgets, provider_running=provider_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        provider_budgets=provider_budgets, provider_running=provider_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -3014,12 +3303,14 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            provider_concurrency = configured_provider_concurrency()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    provider_concurrency=provider_concurrency,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

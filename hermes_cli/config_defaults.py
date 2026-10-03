@@ -1927,6 +1927,16 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-provider concurrency budget (#123654): optional mapping of a resolved LLM
+        # provider key to how many workers may run against it at once, e.g.
+        # ``{"anthropic": 12, "custom:https://llm.example.internal/v1": 20}``.
+        # Keyed on each run's RESOLVED provider — the task's provider_override first,
+        # then the assignee profile's configured model/provider (never the profile
+        # name) — so one profile's cards can spread across providers and many
+        # profiles can share one endpoint budget. A ``default`` entry budgets providers
+        # with no explicit entry; unlisted providers without it have no budget.
+        # Over budget defers to the next tick, never a kill. None = no per-provider cap.
+        "provider_concurrency": None,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

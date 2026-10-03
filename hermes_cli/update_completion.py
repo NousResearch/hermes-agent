@@ -140,11 +140,10 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
     root = Path(request["source"])
     update_id = request["receipt"]["update_id"]
-    from hermes_cli.venv_sync import (
-        arm_completion, collect_superseded_generations, refuse_foreign_owned_venv,
-    )
+    from hermes_cli.venv_sync import arm_completion, collect_superseded_generations
 
-    refuse_foreign_owned_venv(root)
+    # The foreign-owned-venv refusal runs in the parent BEFORE the swap (update_cmd_commit
+    # .preflight_refusal); the tail was armed there too, so this re-arm is an idempotent backstop.
     arm_completion(root)
     with receipt.worker_context(update_id):
         try:

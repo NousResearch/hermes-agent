@@ -204,15 +204,16 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
     monkeypatch.setattr(update_cmd, "_git_run", fail_fetch)
     installed = []
     if failure in {"swap", "late-swap"}:
-        rename = os.rename
-
-        def fail_second_swap(src, dst):
-            if str(src).endswith(".hermes-update-staging"):
-                installed.append(dst)
-                if len(installed) == (5 if failure == "late-swap" else 2):
-                    raise OSError("locked replacement")
-            return rename(src, dst)
-        monkeypatch.setattr(os, "rename", fail_second_swap)
+        def failing_nth_swap(move):  # root files swap by os.replace, directories by os.rename
+            def fail_second_swap(src, dst):
+                if str(src).endswith(".hermes-update-staging"):
+                    installed.append(dst)
+                    if len(installed) == (5 if failure == "late-swap" else 2):
+                        raise OSError("locked replacement")
+                return move(src, dst)
+            return fail_second_swap
+        monkeypatch.setattr(os, "rename", failing_nth_swap(os.rename))
+        monkeypatch.setattr(os, "replace", failing_nth_swap(os.replace))
         expected = SystemExit
     elif failure == "stage":
         import shutil

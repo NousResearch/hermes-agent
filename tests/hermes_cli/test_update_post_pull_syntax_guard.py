@@ -34,7 +34,7 @@ def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
             continue
         path = tmp_path / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# stub\n")
+        path.write_text("# stub\n", encoding="utf-8")
 
     ok, failing_path, error = update_cmd._validate_critical_files_syntax(tmp_path)
 
@@ -45,7 +45,7 @@ def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
 
 def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_path, monkeypatch, capsys):
     def git(*args):
-        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
@@ -76,7 +76,7 @@ def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_pa
     assert failure.value.code == 1
     assert "syntax error" in capsys.readouterr().out
     assert git("rev-parse", "HEAD") == previous
-    assert subprocess.run([sys.executable, str(source)], capture_output=True, text=True, check=True).stdout == "runnable\n"
+    assert subprocess.run([sys.executable, str(source)], capture_output=True, text=True, encoding="utf-8", check=True).stdout == "runnable\n"
 
     git("reset", "--hard", "origin/main")
     source.write_text("print('corrected')\n", encoding="utf-8")
@@ -86,4 +86,38 @@ def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_pa
     git("reset", "--hard", previous)
     assert pull() == previous
     assert git("rev-parse", "HEAD") == corrected
-    assert subprocess.run([sys.executable, str(source)], capture_output=True, text=True, check=True).stdout == "corrected\n"
+    assert subprocess.run([sys.executable, str(source)], capture_output=True, text=True, encoding="utf-8", check=True).stdout == "corrected\n"
+
+
+def test_syntax_guards_skip_a_target_that_requires_a_newer_python(tmp_path, monkeypatch):
+    """A release that bumps ``requires-python`` past this interpreter may use syntax only the new
+    Python parses; compiling it here would refuse that release forever. A target this interpreter
+    satisfies is still refused for the same file (real git object store, real worktree)."""
+    from hermes_cli import update_cmd_commit as commit
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (tmp_path / "hermes_constants.py").write_text("def newer_syntax(:\n", encoding="utf-8")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "x"\nrequires-python = ">=3.99"\n', encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "requires a future python")
+    newer = git("rev-parse", "HEAD")
+    pyproject.write_text('[project]\nname = "x"\nrequires-python = ">=3.8"\n', encoding="utf-8")
+    git("commit", "-am", "same file, this python")
+    same = git("rev-parse", "HEAD")
+
+    critical = ["hermes_constants.py"]
+    assert commit.target_syntax_error(["git"], tmp_path, newer, critical) is None
+    refused = commit.target_syntax_error(["git"], tmp_path, same, critical)
+    assert refused is not None and refused[0] == "hermes_constants.py"
+
+    # The post-pull backstop judges the worktree the same way (no rollback, no exit).
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    git("checkout", "-q", newer)
+    update_cmd._rollback_if_pulled_syntax_error(["git"], same)
+    assert git("rev-parse", "HEAD") == newer

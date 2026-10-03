@@ -370,12 +370,44 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         print("  ✓ Fork is up to date with upstream")
         return True
     print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
+    # A tree move like the pull itself: the marker and the owed tail are armed before git writes,
+    # and the just-fetched ref is merged (a second `git pull` fetch could move past the marker's target).
+    from hermes_cli import update_cmd_commit as _commit
+    from hermes_cli._early_recovery import interrupted_pull_marker
+    pre = _git_stdout(git_cmd, ["rev-parse", "HEAD"], cwd)
+    target = _git_stdout(git_cmd, ["rev-parse", "upstream/main^{commit}"], cwd) or ""
+    _commit.arm_commit_obligations(cwd, target)
+    with suppress(OSError):
+        _commit.arm_tree_move(git_cmd, cwd, pre=pre, target=target, stash=None)
     try:
-        subprocess.run(git_cmd + ["pull", "--ff-only", "upstream", "main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
+        subprocess.run(git_cmd + ["merge", "--ff-only", "upstream/main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
+        if _commit.settle_failed_tree_move(cwd):
+            # Back at ``pre``; that is still new code when the origin pull moved first, and
+            # disarm refuses then (it only hands obligations back at the run's start commit).
+            _commit.disarm_commit_obligations()
         print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
         return False
-    print("  ✓ Updated from upstream\n→ Syncing fork...")
+    interrupted_pull_marker(cwd).unlink(missing_ok=True)
+    print("  ✓ Updated from upstream")
+    # The fork push waits for a validated update: ``_push_synced_fork`` after the syntax guard.
+    return True
+
+
+def _push_synced_fork(git_cmd: list[str], cwd: Path) -> None:
+    """Publish an upstream sync to the fork's main once the update is validated.
+
+    Pushes only when local HEAD is upstream/main and strictly ahead of origin/main, i.e. this run
+    (or an earlier one whose push failed) fast-forwarded main from upstream.
+    """
+    head = _git_stdout(git_cmd, ["rev-parse", "HEAD"], cwd)
+    upstream = _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "upstream/main^{commit}"], cwd)
+    origin = _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "origin/main^{commit}"], cwd)
+    if not head or head != upstream or head == origin:
+        return
+    if origin and not _git_ok(git_cmd, ["merge-base", "--is-ancestor", origin, head], cwd):
+        return
+    print("→ Syncing fork...")
     if _sync_fork_with_upstream(git_cmd, cwd):
         print("  ✓ Fork synced with upstream")
     else:
@@ -383,7 +415,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)\n"
             "    Your local repo is updated, but your fork on GitHub may be behind."
         )
-    return True
 
 
 def _has_http_code(stderr: str, *codes: str) -> bool:

@@ -507,6 +507,32 @@ def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | No
 # without this, ``pm`` is unimportable and the launch silently skips PM adoption.
 harden_import_path(str(_root))
 
+
+def _settle_interrupted_update() -> None:
+    """Put back the tree a killed ``hermes update`` left half-moved, before PM, launch preparation or
+    any Hermes package imports from it (``hermes_cli._early_recovery``; ``hermes_cli.main`` repeats the
+    call for entries that never reach this module). A killed ZIP swap can leave ``hermes_cli/`` itself
+    moved aside: the journal-driven restore then runs from that moved-aside copy, the code that wrote
+    the journal. Root files are never absent mid-swap (``update_cmd_zip._commit_staged_replacements``)."""
+    try:
+        from hermes_cli import _early_recovery as recovery
+    except ImportError:
+        moved_aside = _root / "hermes_cli.hermes-update-old" / "_early_recovery.py"
+        if not (_root / ".hermes-update-zip-swap").is_file() or not moved_aside.is_file():
+            return  # not a torn update: the imports below report the real damage
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_hermes_moved_aside_recovery", moved_aside)
+        if spec is None or spec.loader is None:
+            return
+        recovery = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recovery)
+    if recovery.restore_interrupted_pull(_root):
+        recovery.relaunch_after_restore()
+
+
+_settle_interrupted_update()
+
 _legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
 if _legacy_post_swap is not None:
     # This continuation exists precisely because the replacement tree may not

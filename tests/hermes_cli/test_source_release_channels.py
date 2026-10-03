@@ -125,10 +125,10 @@ def test_source_check_and_apply_land_on_selected_release(releases, monkeypatch, 
     if start != "old":
         git(releases.root, "checkout", "-b", "my-work", releases.commits[3])
     if start == "local":
-        (releases.root / "my-work.txt").write_text("committed local work\n")
+        (releases.root / "my-work.txt").write_text("committed local work\n", encoding="utf-8")
         git(releases.root, "add", ".")
         git(releases.root, "commit", "-m", "local work")
-        (releases.root / "notes.txt").write_text("uncommitted notes\n")
+        (releases.root / "notes.txt").write_text("uncommitted notes\n", encoding="utf-8")
     branch_sha = git(releases.root, "rev-parse", "HEAD")
     set_install_channel(channel, releases.root)
     before = git(releases.root, "rev-parse", "HEAD")
@@ -159,7 +159,7 @@ def test_source_check_and_apply_land_on_selected_release(releases, monkeypatch, 
     if start != "old":
         assert git(releases.root, "rev-parse", "my-work") == branch_sha
     if start == "local":
-        assert (releases.root / "notes.txt").read_text() == "uncommitted notes\n"
+        assert (releases.root / "notes.txt").read_text(encoding="utf-8") == "uncommitted notes\n"
     update_cmd._cmd_update_check()
     assert "Up to date with" in capsys.readouterr().out
 
@@ -194,15 +194,16 @@ def test_zip_fallback_keeps_selected_repository_and_commit(releases, monkeypatch
     monkeypatch.setattr(update_cmd_zip, "_abort_zip_update_if_dirty_tree", lambda: None)
     class DownloadBoundary(Exception):
         pass
-    def download(branch, url):
-        seen.append(url)
+    def download(branch, url, target_sha=None):
+        seen.append((url, target_sha))
         raise DownloadBoundary
     monkeypatch.setattr(update_cmd_zip, "_download_and_swap_zip", download)
     with pytest.raises(DownloadBoundary):
         update_cmd_zip._update_via_zip(
             SimpleNamespace(branch=None), target_sha=releases.commits[2],
             target_repository="Fixture/hermes-agent", completion_request={})
-    assert seen == [f"https://github.com/Fixture/hermes-agent/archive/{releases.commits[2]}.zip"]
+    assert seen == [(f"https://github.com/Fixture/hermes-agent/archive/{releases.commits[2]}.zip",
+                     releases.commits[2])]
 
 
 @pytest.mark.parametrize("git_cmd", [["git"], None], ids=["git", "no-git"])

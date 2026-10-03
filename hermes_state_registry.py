@@ -79,7 +79,7 @@ class _Generation:
 
 _lock = threading.Lock()
 # path → live generation; retired generations move to _retired (keyed by id(db)) until
-# their last holder releases.
+# their last holder releases. A failed physical close stays retired until a retry settles.
 _generations: Dict[Path, _Generation] = {}
 _retired: Dict[int, _Generation] = {}
 # Paths whose next generation is being constructed. Construction runs outside _lock
@@ -114,15 +114,29 @@ def _teardown(db: "SessionDB") -> None:
 
 def _close_quietly(db: "SessionDB", debug_message: str) -> None:
     """close() that never propagates. A lost WAL generation whose capture failed is data at risk,
-    not teardown noise: the handle stays open and the operator has to act, so that one surfaces."""
+    not teardown noise: retain the handle for a later sweep and surface the capture refusal."""
     try:
         db.close()
     except Exception as exc:
+        path = _db_path_of(db)
+        if path is not None:
+            # A failed close may deliberately leave SQLite live (retired WAL capture).
+            # Never lend it again, but keep ownership so quiescence cannot overlook it.
+            with _lock:
+                generation = _retired.get(id(db))
+                if generation is None:
+                    generation = _Generation(path, db, None)
+                    generation.refcount = 0
+                generation.retired = True
+                _retired[id(db)] = generation
         from hermes_state_dbfile import RetiredGenerationCaptureError
         if isinstance(exc, RetiredGenerationCaptureError):
             logger.error("SessionDB for %s did not settle at close: %s", _db_path_of(db), exc)
         else:
             logger.debug(debug_message, exc_info=True)
+    else:
+        with _lock:
+            _retired.pop(id(db), None)
 
 
 def _path_lifecycle_lock_locked(path: Path) -> threading.Lock:
@@ -359,7 +373,7 @@ def close_all() -> int:
     return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
-def close_all_under(directory: str | Path) -> int:
+def close_all_under(directory: str | Path, *, strict: bool = False) -> int:
     """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
 
     Profile delete rmtree (and a same-name recreate) fails while this process still holds
@@ -373,6 +387,9 @@ def close_all_under(directory: str | Path) -> int:
     An ``acquire`` still constructing a generation under *directory* (``_opening``: its writer
     is connected but not yet installed) is waited for too, then swept on the next pass;
     otherwise it installed after a sweep that reported 0 and kept the file open (#127811).
+
+    A failed physical close stays retired for retry. Strict mutation barriers refuse to
+    acknowledge quiescence while any such handle (including an admitted close) remains.
     """
     try:
         root = Path(directory).expanduser().resolve()
@@ -404,6 +421,14 @@ def close_all_under(directory: str | Path) -> int:
                 _retired.pop(id(generation.db), None)
         closed += _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
         if not openings:
+            if strict:
+                with _lock:
+                    remaining = [generation.path for generation in
+                                 list(_generations.values()) + list(_retired.values())
+                                 if _path_is_under(generation.path, root)]
+                if remaining:
+                    raise RuntimeError(
+                        f"Cannot quiesce {root}: {len(remaining)} session database handle(s) remain open")
             return closed
         for event in openings:
             event.wait()
@@ -418,14 +443,15 @@ def other_generations_for_path(
     that a ``/proc`` descriptor scan structurally cannot: that scan skips our own pid, so it only
     ever proves other PROCESSES are away.
 
-    RETIRED generations are deliberately not holders here. A generation is retired only after its
-    file was replaced, which is exactly when ``SessionDB`` fences it: every write raises
+    Inode-retired generations are deliberately not holders here. Their file was replaced,
+    which is exactly when ``SessionDB`` fences them: every write raises
     ``StateDbReplacedError`` and the close-time checkpoint is disabled, so it is not the live writer
     this gate protects. It also leaves ``_retired`` only when its last holder releases, and a
     gateway handle does not release before shutdown — counting it made ONE inode replacement
     (recovery swap, backup restore, snapshot) skip auto-VACUUM for that path for the rest of the
     process lifetime, turning the unbounded growth this maintenance exists to bound into a
-    permanent condition.
+    permanent condition. Handles retained after a failed close are also excluded from
+    maintenance borrowing; strict directory sweeps account for and retry those separately.
     """
     try:
         path = Path(db_path).resolve()

@@ -581,7 +581,11 @@ class TestDeleteProfile:
         db.close()
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True):
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.gateway_multiplex_served.profile_gateway_homes",
+                   return_value={12345: tmp_path / ".hermes"}), \
+             patch("gateway.control_socket.request_unserve_profile",
+                   return_value={"unserved": "gone", "quiesced": True}):
             with pytest.raises(ProfileIdentitySettlementPending,
                                match="identity settlement is still pending") as ei:
                 delete_profile("gone", yes=True)
@@ -1155,8 +1159,16 @@ class TestRenameProfile:
                 with pytest.raises(FileNotFoundError):
                     mkdir_under_hermes_home(old_dir / "logs")
 
+        def _record_quiesce(home, name, **kwargs):
+            assert kwargs["quiesce"] is True
+            _record_notify(name)
+            return {"unserved": name, "quiesced": True}
+
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.gateway_multiplex_served.profile_gateway_homes",
+                   return_value={12345: tmp_path / ".hermes"}), \
+             patch("gateway.control_socket.request_unserve_profile", side_effect=_record_quiesce), \
              patch("hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
             rename_profile("oldname", "newname")
 
@@ -1167,7 +1179,7 @@ class TestRenameProfile:
         assert not profiles.named_profile_is_deleted(old_dir)  # a future 'oldname' is not born deleted
 
     def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
-        """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
+        """Offline rename fences local openers, clears that fence, and never pings a gateway."""
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
@@ -1178,7 +1190,7 @@ class TestRenameProfile:
             new_dir = rename_profile("oldname", "newname")
 
         notify.assert_not_called()
-        assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
+        assert not profiles.named_profile_is_deleted(old_dir)
         assert not old_dir.exists() and new_dir.is_dir()
 
     def test_rename_migrates_session_identity_without_live_gateway(self, profile_env):
@@ -1229,6 +1241,10 @@ class TestRenameProfile:
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.gateway_multiplex_served.profile_gateway_homes",
+                   return_value={12345: tmp_path / ".hermes"}), \
+             patch("gateway.control_socket.request_unserve_profile",
+                   return_value={"unserved": "oldname", "quiesced": True}), \
              patch("hermes_cli.profiles._notify_multiplexer"), \
              patch("gateway.control_socket.migrate_gateway_profile_identity",
                    return_value={"ok": True, "rekeyed": 1, "db": {}}) as verb, \
@@ -1269,6 +1285,10 @@ class TestRenameProfile:
         # leaves the (in-memory-owned) store alone, so the rows still name the old profile.
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.gateway_multiplex_served.profile_gateway_homes",
+                   return_value={12345: tmp_path / ".hermes"}), \
+             patch("gateway.control_socket.request_unserve_profile",
+                   return_value={"unserved": "oldname", "quiesced": True}), \
              patch("hermes_cli.profiles._notify_multiplexer"), \
              patch("gateway.control_socket.migrate_gateway_profile_identity", return_value=None):
             rename_profile("oldname", "newname")

@@ -255,19 +255,35 @@ class _PipeControlProtocol(asyncio.Protocol):
         self._server = server
         self._transport: Any = None
         self._buffer = bytearray()
+        self._responding = False
 
     def connection_made(self, transport) -> None:  # pragma: no cover - windows
         self._transport = transport
 
     def data_received(self, data: bytes) -> None:  # pragma: no cover - windows
+        if self._responding:
+            return
         self._buffer.extend(data)
         if len(self._buffer) > _MAX_REQUEST_BYTES:
             self._transport.close()
         elif b"\n" in self._buffer:
-            try:
-                self._transport.write(self._server.handle_request_line(bytes(self._buffer).partition(b"\n")[0]))
-            finally:
-                self._transport.close()
+            self._responding = True
+            asyncio.get_running_loop().create_task(
+                self._respond(bytes(self._buffer).partition(b"\n")[0]))
+
+    async def _respond(self, request: bytes) -> None:
+        # Like Unix socket handlers, a pipe verb may wait for work on this loop.
+        # Running it on the loop deadlocks that work until the handler times out.
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, self._server.handle_request_line, request)
+            self._transport.write(response)
+        except (ConnectionError, OSError):
+            pass
+        except Exception:
+            logger.debug("Control pipe connection handler error", exc_info=True)
+        finally:
+            self._transport.close()
 
 
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
@@ -360,8 +376,17 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
-def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
-    return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
+def request_unserve_profile(home: Path, name: str, *, quiesce: bool = False,
+                           timeout: float = 8.0) -> Optional[dict[str, Any]]:
+    """Opt-in quiescence requires a tombstone and explicitly acknowledges the settled sweep.
+
+    Ordinary stop/restart retains its existing contract; pending/error/None is never
+    permission to remove or rename a profile directory.
+    """
+    params: dict[str, Any] = {"name": name}
+    if quiesce:
+        params["quiesce"] = True
+    return query_gateway_control(home, "unserve-profile", params=params, timeout=timeout)
 
 
 def request_serve_profile_hot(home: Path, name: str) -> Optional[dict[str, Any]]:

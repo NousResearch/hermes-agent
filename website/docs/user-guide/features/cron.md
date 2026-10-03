@@ -35,7 +35,19 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 :::
 
 :::tip
-**Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. When set, it overrides both the global `agent.reasoning_effort` and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `hermes cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob_manage` tool — model configuration stays a user decision.) Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. The pin has no effect on `no_agent` jobs (there is no LLM call to tune). Use it to run heavy scheduled analyses at `high` while cheap recurring jobs run at `minimal`, without touching your global default.
+**Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Resolution at fire time is: per-job pin → `cron.reasoning_effort` → per-model `agent.reasoning_overrides` → global `agent.reasoning_effort`.
+
+- **Per-job pin** — when set, it overrides the cron-fleet default, the global `agent.reasoning_effort`, and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `hermes cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob_manage` tool — model configuration stays a user decision.)
+- **`cron.reasoning_effort`** — a cron-fleet default, the same idea as `cron.model`: every unpinned job thinks at this level, independent of the model and of your chat effort. It wins over both `agent.reasoning_overrides` and `agent.reasoning_effort`. Empty (the default) falls through to those. An invalid value logs a warning and falls through too — it never fails the job. Set it once (`hermes config set cron.reasoning_effort low`) and frequent routines stay cheap while chat stays on `high`.
+
+Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. Neither the pin nor `cron.reasoning_effort` has any effect on `no_agent` jobs (there is no LLM call to tune). Use a pin to run one heavy scheduled analysis at `high` while the rest of the fleet stays at the cron default.
+
+```yaml
+agent:
+  reasoning_effort: high          # chat
+cron:
+  reasoning_effort: low           # every unpinned cron job, same model included
+```
 :::
 
 :::warning

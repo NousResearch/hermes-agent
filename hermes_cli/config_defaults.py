@@ -1823,6 +1823,11 @@ DEFAULT_CONFIG = {
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
         "model_provider": "",
+        # Default reasoning effort for cron jobs (HOW HARD they think). Fire-time resolution:
+        # per-job pin > cron.reasoning_effort > agent.reasoning_overrides > agent.reasoning_effort.
+        # Model-independent, like the pin: one fleet default for every routine, chat effort
+        # untouched. "" = fall through. Invalid value warns and falls through; never fails the job.
+        "reasoning_effort": "",
         # Cron SCHEDULER provider (WHEN a due job fires). "" = built-in in-process 60s ticker. Name
         # an installed provider (plugins/cron_providers/<name>/ or $HERMES_HOME/plugins/ <name>/),
         # e.g. "chronos" (NAS-mediated managed cron for scale-to-zero). An unknown or unavailable

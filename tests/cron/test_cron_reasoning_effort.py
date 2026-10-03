@@ -11,11 +11,13 @@ Contract under test:
   at high, etc.) is intentionally NOT validated here — that is owned by the
   provider transports at send time, same as config-set effort.
 - Scheduler resolution (cron/scheduler.py::_resolve_job_reasoning_config):
-  a job-pinned effort wins outright over BOTH the global
-  agent.reasoning_effort and per-model agent.reasoning_overrides; an absent
-  field yields a result byte-identical to resolve_reasoning_config(cfg,
-  model); a garbage value in a hand-edited store warns and falls back to
-  config resolution instead of killing the tick.
+  a job-pinned effort wins outright over BOTH the cron-fleet default
+  (cron.reasoning_effort) and the global agent.reasoning_effort / per-model
+  agent.reasoning_overrides. cron.reasoning_effort, when non-empty, wins over
+  both of those and is model-independent. An absent pin and an empty cron
+  default yield a result byte-identical to resolve_reasoning_config(cfg,
+  model). A garbage pin or cron default warns and falls back instead of
+  killing the tick.
 """
 
 import pytest
@@ -145,6 +147,68 @@ class TestSchedulerJobReasoningPrecedence:
                 "enabled": True,
                 "effort": "ultra",
             }
+
+    def _cfg_with_cron(self, effort):
+        cfg = {
+            "model": self.CFG["model"],
+            "agent": dict(self.CFG["agent"]),
+            "cron": {"reasoning_effort": effort},
+        }
+        return cfg
+
+    def test_cron_reasoning_effort_applies_when_unpinned(self):
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        cfg = self._cfg_with_cron("minimal")
+        result = _resolve_job_reasoning_config({}, cfg, "anthropic/claude-opus-4.5")
+        assert result == {"enabled": True, "effort": "minimal"}
+
+    def test_job_pin_beats_cron_reasoning_effort(self):
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        cfg = self._cfg_with_cron("low")
+        job = {"reasoning_effort": "high"}
+        result = _resolve_job_reasoning_config(job, cfg, "anthropic/claude-opus-4.5")
+        assert result == {"enabled": True, "effort": "high"}
+
+    def test_cron_reasoning_effort_beats_agent_effort_and_overrides(self):
+        """Fleet default is model-independent: it wins over the per-model
+        override (xhigh for opus) and the global agent effort (low)."""
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        cfg = self._cfg_with_cron("medium")
+        for model in ("anthropic/claude-opus-4.5", "gpt-5", ""):
+            assert _resolve_job_reasoning_config({}, cfg, model) == {
+                "enabled": True,
+                "effort": "medium",
+            }
+
+    def test_empty_cron_reasoning_effort_byte_identical_to_config_resolution(self):
+        from hermes_constants import resolve_reasoning_config
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        for effort in ("", None):
+            cfg = self._cfg_with_cron(effort)
+            for model in ("anthropic/claude-opus-4.5", "gpt-5", ""):
+                expected = resolve_reasoning_config(cfg, model)
+                assert _resolve_job_reasoning_config({}, cfg, model) == expected
+                assert _resolve_job_reasoning_config(
+                    {"reasoning_effort": None}, cfg, model
+                ) == expected
+
+    def test_invalid_cron_reasoning_effort_warns_and_falls_back(self, caplog):
+        import logging
+
+        from hermes_constants import resolve_reasoning_config
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        cfg = self._cfg_with_cron("turbo")
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            result = _resolve_job_reasoning_config(
+                {"id": "abc123"}, cfg, "gpt-5"
+            )
+        assert result == resolve_reasoning_config(cfg, "gpt-5")
+        assert any("turbo" in r.message and "cron.reasoning_effort" in r.message for r in caplog.records)
 
 
 class TestCronjobToolReasoningEffort:

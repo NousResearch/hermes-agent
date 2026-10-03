@@ -1168,10 +1168,11 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum tool-calling iterations per conversation (default: 500)
+  # Maximum tool-calling iterations per conversation (default: unlimited;
+  # null = no cap)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
-  max_turns: 500
+  max_turns: null
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
@@ -1967,9 +1968,9 @@ display:
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.
-  #   true:  Stream tokens as they arrive (default)
-  #   false: Wait for the full response before rendering
-  streaming: true
+  #   true:  Stream tokens as they arrive
+  #   false: Wait for the full response before rendering (default)
+  streaming: false
 
   # Show [HH:MM] timestamps on user input and assistant response labels.
   # timestamps: false

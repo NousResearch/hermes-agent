@@ -127,6 +127,17 @@ class TestRequestHeaders:
         assert "Editor-Version" in headers
 
 
+    def test_sends_github_api_version_header(self):
+        """Copilot's context-window ceiling for a model (e.g. 1M vs 200k prompt tokens on the
+        same model id) is gated server-side by this header, confirmed via a live capture of
+        GitHub's own Copilot CLI traffic against api.githubcopilot.com and
+        api.enterprise.githubcopilot.com. Without it Copilot silently answers with legacy,
+        smaller context limits."""
+        from hermes_cli.copilot_auth import copilot_request_headers
+        headers = copilot_request_headers()
+        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
+
+
     def test_no_vision_header_by_default(self):
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
@@ -144,8 +155,15 @@ class TestCopilotDefaultHeaders:
             headers = copilot_default_headers(is_agent_turn=is_agent)
             assert headers["x-initiator"] == expected, (
                 f"is_agent_turn={is_agent} should produce x-initiator={expected!r}, "
-                f"got {headers['x-initiator']!r}"
-            )
+                f"got {headers['x-initiator']!r}")
+
+
+    def test_includes_github_api_version(self):
+        """The /models catalog fetch reuses these headers, so this is also what fixes Copilot
+        reporting legacy (smaller) context windows on the model picker/catalog."""
+        from hermes_cli.models import copilot_default_headers
+        headers = copilot_default_headers()
+        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
 
 
 class TestEnvVarOrder:

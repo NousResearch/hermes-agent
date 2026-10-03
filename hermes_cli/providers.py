@@ -386,6 +386,23 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         # A plugin profile's transport IS its api_mode when a plugin registered that dialect.
         from agent.transports import registered_api_modes
         return pdef.transport if pdef.transport in registered_api_modes() else "chat_completions"
+    # User-config providers (``providers.<name>`` and ``custom_providers.<name>``) are not in
+    # the built-in catalog but declare their transport via config.yaml. Resolve them through
+    # ``resolve_provider_full`` before falling through to chat_completions so a config-defined
+    # anthropic_messages gateway is not misrouted to the OpenAI wire.
+    try:
+        from hermes_cli.config import load_config_readonly
+        user_cfg = load_config_readonly()
+    except Exception:
+        user_cfg = None
+    if user_cfg and isinstance(user_cfg, dict):
+        pdef = resolve_provider_full(
+            provider,
+            user_cfg.get("providers"),
+            user_cfg.get("custom_providers"),
+        )
+        if pdef is not None and pdef.transport in TRANSPORT_TO_API_MODE:
+            return TRANSPORT_TO_API_MODE[pdef.transport]
     if provider == "bedrock":
         return "bedrock_converse"
     return "chat_completions"
@@ -463,8 +480,14 @@ def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str,
         if not display_name or not api_url:
             continue
         provider_key = (entry.get("provider_key") or "").strip()
+        # Forward the declared transport so ``determine_api_mode`` (and any other
+        # downstream consumer of the resolved ProviderDef) honors the user's wire
+        # protocol choice. Without this, a ``custom_providers`` entry that declares
+        # ``transport: anthropic_messages`` is silently collapsed to ``openai_chat``
+        # and the upstream gateway rejects with HTTP 500 on every request.
         pdef = _user_pdef(custom_provider_slug(display_name, provider_key), display_name, api_url,
-                          (entry.get("key_env") or "").strip())
+                          (entry.get("key_env") or "").strip(),
+                          (entry.get("transport", "") or "openai_chat"))
         if first_valid is None:
             first_valid = pdef
         if requested in custom_provider_aliases(display_name, provider_key):

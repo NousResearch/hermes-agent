@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractEmbeddedImages, extractImageRefs } from './embedded-images'
+import { extractEmbeddedImages, extractImageRefs, hideNativeImageHintLines, nativeImageHintRefs } from './embedded-images'
 
 const SAMPLE_PNG_DATA_URL = 'data:image/png;base64,' + 'A'.repeat(120)
 
@@ -87,5 +87,39 @@ describe('extractImageRefs', () => {
       cleanedText: '[screenshot]\nlook at the attached capture',
       refs: []
     })
+  })
+})
+
+describe('native image path hints', () => {
+  it('lifts flattened native-vision hints into @image refs and hides the marker lines', () => {
+    const first = '/opt/data/images/upload_20261001_205359_8.png'
+    const second = '/opt/data/images/upload_20261001_205359_9.png'
+
+    const text = [
+      '有必要花19.9升级吗？',
+      '',
+      `[Image attached at: ${first}]`,
+      `[Image attached at: ${second}]`,
+      '[screenshot]',
+      '[screenshot]'
+    ].join('\n')
+
+    expect(nativeImageHintRefs(text)).toEqual([`@image:${first}`, `@image:${second}`])
+    expect(hideNativeImageHintLines(text)).toBe('有必要花19.9升级吗？')
+    // The stored prompt text stays intact so attachment-turn identity can still see the markers.
+    expect(extractImageRefs(text).cleanedText).toBe(text)
+  })
+
+  it('quotes a path that contains spaces and accepts a remote attachment hint', () => {
+    const path = String.raw`C:\Users\me\Hermes\composer images\a.png`
+
+    expect(nativeImageHintRefs(`[Image attached at: \`${path}\`]`)).toEqual([`@image:\`${path}\``])
+    expect(hideNativeImageHintLines('看这张\n[Image attached: https://cdn.example/a.png]\n[screenshot]')).toBe('看这张')
+  })
+
+  it('leaves a lone screenshot placeholder visible', () => {
+    expect(hideNativeImageHintLines('[screenshot]\nlook at the attached capture')).toBe(
+      '[screenshot]\nlook at the attached capture'
+    )
   })
 })

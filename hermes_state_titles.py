@@ -111,32 +111,7 @@ class SessionTitlesMixin:
             if not is_user and current["title"] is not None and self._title_rank(current["title_source"]) >= new_rank:
                 return 0
             if title:
-                conflict = conn.execute(
-                    f"SELECT id, archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
-                    "FROM sessions WHERE title = ? AND id != ?", (title, session_id),
-                ).fetchone()
-                if conflict:
-                    conflict_id = conflict["id"]
-                    # A hidden compressed ancestor holding the title cannot be freed by the
-                    # user, so transfer it onto the tip (uniqueness + lineage kept).
-                    if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
-                        conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
-                    # A deliberately archived hidden Bot Chat is a retired registry
-                    # entry, not a live identity. Retire its name in the same title
-                    # transaction so a replacement can become the sole canonical row;
-                    # the old session remains archived and otherwise untouched.
-                    # An ended, empty, visible ghost (abandoned new chat that listings filter
-                    # out, so the user cannot find it to free the name) yields too (#81888).
-                    # The full index stays: a ``message_count > 0`` partial index would make
-                    # the ghost's first append_message fail with IntegrityError.
-                    elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])) or (conflict["ghost"] and not conflict["hidden"]):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
-                    else:
-                        raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
+                self._resolve_title_conflict(conn, session_id, title)
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
             # the SELECT and here loses instead of being overwritten.
             return conn.execute(
@@ -145,6 +120,38 @@ class SessionTitlesMixin:
             ).rowcount
 
         return self._execute_write(_do) > 0
+
+    def _resolve_title_conflict(self, conn, session_id: str, title: str) -> None:
+        """Free ``title`` for ``session_id`` inside the caller's write transaction, or raise
+        ValueError when another session legitimately holds it. The one place the uniqueness
+        rule lives, shared by renames and the API server's create-with-title."""
+        conflict = conn.execute(
+            f"SELECT id, archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
+            "FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+        ).fetchone()
+        if not conflict:
+            return
+        conflict_id = conflict["id"]
+        # A hidden compressed ancestor holding the title cannot be freed by the
+        # user, so transfer it onto the tip (uniqueness + lineage kept).
+        if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
+            conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+        # A deliberately archived hidden Bot Chat is a retired registry
+        # entry, not a live identity. Retire its name in the same title
+        # transaction so a replacement can become the sole canonical row;
+        # the old session remains archived and otherwise untouched.
+        # An ended, empty, visible ghost (abandoned new chat that listings filter
+        # out, so the user cannot find it to free the name) yields too (#81888).
+        # The full index stays: a ``message_count > 0`` partial index would make
+        # the ghost's first append_message fail with IntegrityError.
+        elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
+              and bool(conflict["hidden"])) or (conflict["ghost"] and not conflict["hidden"]):
+            conn.execute(
+                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                (conflict_id,),
+            )
+        else:
+            raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
 
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set a title on the user's behalf (``user`` provenance). Empty clears it. Raises

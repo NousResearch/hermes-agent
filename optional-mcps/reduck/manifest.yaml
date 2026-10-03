@@ -1,0 +1,65 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: reduck
+description: >-
+  Run reusable browser scripts for sites with no API, in your own Chrome.
+source: https://docs.reduck.ai/hermes/
+
+# Reduck's hosted remote MCP (URL-only — Hermes never spawns a local process
+# for this entry). Native OAuth 2.1 + Dynamic Client Registration over
+# Streamable HTTP; Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh.
+#
+# Scripts run in the user's own Chrome through the Reduck extension (paired to
+# the account as a "device"), so they act where the user is already signed in.
+# Without a paired browser, run_script fails with a message saying so.
+transport:
+  type: http
+  url: https://mcp.reduck.ai
+
+auth:
+  type: oauth
+
+# The server exposes ~30 tools. Pre-checked: the ones an agent needs to find,
+# run and read back saved scripts, including runs from earlier sessions
+# (list_runs). Left unchecked (opt in with
+# `hermes mcp configure reduck`):
+#   - script authoring: start_session / exec_code / stop_session drive a live
+#     browser to build a script, then create_script and the *_script_version
+#     family save it. Useful, but it overlaps the built-in browser tools for
+#     anyone who is not writing scripts.
+#   - catalogue admin: archive/unarchive, update_script_metadata, host READMEs.
+#   - flock apps (list_flocks, call_flock_tool, ...): a separate product.
+tools:
+  default_enabled:
+    - whoami
+    - list_devices
+    - list_scripts
+    - read_script
+    - run_script
+    - list_runs
+    - read_run_results
+    - read_run_trace
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - reduck
+  hosts:
+    - reduck.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Reduck (or run
+  `hermes mcp login reduck`). Restart the session so tools load.
+
+  Scripts run in your own Chrome: install the Reduck extension and pair it
+  with your account —
+  https://chromewebstore.google.com/detail/reduck/koccidjchcojlmgkdhibpgjbnhcoopio
+  OAuth signs in as whichever Reduck account your browser is using; ask the
+  agent to call `whoami` to confirm it.
+
+  Official scripts: `list_scripts` with handle "reduck". To build your own
+  scripts, enable the authoring tools (start_session, exec_code,
+  create_script, ...) with `hermes mcp configure reduck`.

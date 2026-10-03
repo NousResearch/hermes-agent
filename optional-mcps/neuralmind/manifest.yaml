@@ -1,0 +1,86 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: neuralmind
+description: >-
+  Persistent code-intelligence memory for AI agents: progressive-disclosure
+  semantic search (12-50x cheaper than raw file reads) plus a local Hebbian
+  synapse graph that learns which code moves together from real usage. Indexes
+  and queries locally: no telemetry, and no repository content is transmitted
+  anywhere. The only outbound request is a one-time HTTPS GET for the public
+  MiniLM embedding model when no cached copy exists, which air-gapped installs
+  pre-seed via NEURALMIND_ONNX_MODEL_DIR. (Your agent still sends whatever
+  context it selects to its own model, as with any MCP server.)
+source: https://github.com/dfrostar/neuralmind
+
+# neuralmind-mcp is a PyPI console-script entry point, not a git-cloned
+# server — there is nothing to clone or bootstrap, so no `install:` block.
+# It differs from the npm/uvx case this field is normally omitted for: npx/uvx
+# auto-install on first run, pip does not. `pip install neuralmind` (or
+# pointing `command` at the right venv's binary) is a precondition, spelled
+# out below in `post_install` for the installing user.
+transport:
+  type: stdio
+  command: neuralmind-mcp
+  args: []
+
+auth:
+  type: none
+
+# All tools enabled by default: unlike n8n's mutating workflow actions, none
+# of these mutate state outside the local project directory — `neuralmind_build`
+# only rebuilds that project's own index.
+#
+# Network behaviour, stated exactly. "Makes no network calls" is the usual
+# phrasing and it is simply false here, so it is not used.
+#
+# NEVER transmitted BY THIS SERVER: your source, file paths, queries, results,
+# or any identifier. No telemetry, no remote logging, no update check. None of
+# the tools above open a connection to send them anywhere.
+#
+# Scoped deliberately to the server. Hermes still sends whatever context it
+# selects on to its own model, exactly as with any MCP server, and no property
+# of this one changes that. Saying "nothing leaves the machine" would claim
+# credit for a boundary this server does not control.
+#
+# Transmitted ONCE, and only this: on the first embed with no cached model
+# (normally the first `neuralmind_build`), NeuralMind's own embedder --
+# neuralmind/onnx_embedder.py, not a dependency -- issues a single HTTPS GET
+# for the public all-MiniLM-L6-v2 ONNX archive and checks it against a pinned
+# SHA256. It is a plain file download. The request carries none of your data;
+# an observer learns only that this host downloaded a public model.
+#
+# Removing even that: the resolver checks $NEURALMIND_ONNX_MODEL_DIR, then
+# ~/.cache/neuralmind/onnx_models/, then ~/.cache/chroma/onnx_models/, and
+# downloads only if all three miss. Pre-seed any one and the install never
+# reaches the network. Every later build and every query is offline regardless.
+#
+# This is a property of the server, not something this catalog's CI verifies.
+tools:
+  default_enabled:
+    - neuralmind_wakeup
+    - neuralmind_query
+    - neuralmind_search
+    - neuralmind_skeleton
+    - neuralmind_synaptic_neighbors
+    - neuralmind_synapse_stats
+    - neuralmind_synapse_decay
+    - neuralmind_export_synapse_memory
+    - neuralmind_build
+    - neuralmind_stats
+    - neuralmind_benchmark
+
+post_install: |
+  Requires `pip install neuralmind` first — the catalog does not install
+  it for you. If neuralmind lives in a virtualenv, point `transport.command`
+  at that venv's `neuralmind-mcp` binary instead of the bare command.
+
+  Every tool call takes its own `project_path` argument; there is no launch
+  argument to configure. Run `neuralmind build <project>` once per project
+  before querying — an unbuilt project returns `built: false` instead of
+  context.
+
+  Start a new Hermes session to load the neuralmind tools.

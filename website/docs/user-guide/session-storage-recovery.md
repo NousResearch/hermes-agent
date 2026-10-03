@@ -101,7 +101,45 @@ hermes sessions recover --source ~/.hermes/state.db --inspect-only
 ```
 
 `--inspect-only` never modifies the file. If it reports the store as recoverable, follow the
-command it prints, or restore the newest snapshot from `state-snapshots/`. The mechanics
-behind all of this are in the developer guide:
+command it prints, or restore the newest snapshot from `state-snapshots/`.
+
+## Explicitly install a complete recovery
+
+After reviewing the non-destructive recovery report, the active profile can opt into a guarded
+installation from an external terminal. First stop every writer for that profile: quit Desktop,
+stop its gateway/dashboard service, pause cron workers, and close other Hermes CLI sessions. Then
+run:
+
+```bash
+hermes sessions recover \
+  --source ~/.hermes/state.db \
+  --output ~/.hermes/state-recovered.db \
+  --install
+```
+
+`--install` is accepted only when `--source` resolves to the active profile's `state.db`. Before
+creating anything, Hermes checks free space for the preserved source bundle, the disposable
+recovery copy, and the candidate output (grouped by filesystem, failing closed when usage cannot
+be determined) and refuses without writing when headroom is missing. Only then does it preserve
+the raw database and sidecars under
+`<HERMES_HOME>/backups/session-recovery/` and records file hashes in `manifest.json`. The candidate
+is rebuilt from that preserved copy. Just before installation, Hermes rechecks that the active
+source generation has not changed, refuses if any process still holds the store, then holds the
+existing cross-process repair lock plus SQLite's exclusive repair guard through the transactional
+installation. The candidate gets a distinct SQLite `application_id`, so already-open `SessionDB`
+handles fail closed if they later try to write to the new generation.
+
+Only a **complete, verified** candidate is installed. Partial and best-effort page salvage are
+never installed. The recovered candidate and JSON report remain at the paths you supplied. If a
+writer is active, the source changes, the holder scan is incomplete, or the exclusive guard cannot
+be acquired, the command refuses and leaves the active database unchanged. There is no `--force`
+override. After installation, Hermes reopens the store through `SessionDB` and runs a write/read/FTS
+canary before clearing the process-local corrupt-state latch. If an unexpected post-commit integrity
+or canary check fails, the report marks the store as promoted but unverified; do not resume writers,
+and use the preserved source bundle for recovery.
+
+For a backup file or any other non-active source, omit `--install`: recover it to a separate
+output and review it, but do not replace a live profile's store implicitly. The mechanics behind
+all of this are in the developer guide:
 [State DB recovery](../developer-guide/state-db-recovery.md) and
 [Session storage](../developer-guide/session-storage.md).

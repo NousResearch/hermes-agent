@@ -35,6 +35,10 @@ describe('SidebarStorageCorruptNotice', () => {
     expect(notice.textContent).toContain('for default')
     expect(notice.textContent).toContain('were not deleted')
     expect(notice.textContent).toContain('hermes sessions recover --source <state.db> --inspect-only')
+    expect(notice.textContent).toContain(
+      'hermes sessions recover --source <state.db> --output <recovered-state.db> --install'
+    )
+    expect(notice.textContent).toContain('Installation refuses while any database writer is open')
     // No blanket "run repair" advice: structural damage goes to inspect/restore first.
     expect(notice.textContent).not.toContain('sessions repair')
 

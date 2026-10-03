@@ -4008,6 +4008,8 @@ export const esOverrides = {
         `Hermes no puede leer todo el historial de sesiones de ${profiles}. Los chats que faltan en esta lista no se eliminaron; el archivo donde se guardan está dañado.`,
       action:
         'Sal de Hermes en este perfil y luego inspecciona el archivo sin modificarlo, o restaura una instantánea:',
+      installAction:
+        'Para instalar solo una recuperación completa, cierra el gateway, el backend Desktop/serve, los trabajos cron y las demás sesiones de Hermes. La instalación se rechazará mientras haya un escritor activo:',
       guide: 'Guía de recuperación'
     },
     noFilterMatches: 'Ninguna sesión coincide con estos filtros',

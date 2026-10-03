@@ -4027,6 +4027,8 @@ export const frOverrides = {
       body: (profiles: string) =>
         `Hermes ne peut pas lire tout l’historique des sessions de ${profiles}. Les conversations absentes de cette liste n’ont pas été supprimées ; le fichier qui les contient est endommagé.`,
       action: 'Quittez Hermes sur ce profil, puis inspectez le fichier sans le modifier, ou restaurez un instantané :',
+      installAction:
+        "Pour installer uniquement une récupération complète, quittez d'abord le gateway, le backend Desktop/serve, les tâches cron et les autres sessions Hermes du profil. L'installation sera refusée tant qu'un processus écrit dans la base :",
       guide: 'Guide de récupération'
     },
     noFilterMatches: 'Aucune session ne correspond à ces filtres',

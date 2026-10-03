@@ -4016,6 +4016,8 @@ export const deOverrides = {
         `Hermes kann nicht den gesamten Session-Verlauf für ${profiles} lesen. Chats, die in dieser Liste fehlen, wurden nicht gelöscht; die Datei, in der sie gespeichert sind, ist beschädigt.`,
       action:
         'Beenden Sie Hermes für dieses Profil und prüfen Sie die Datei dann, ohne sie zu ändern, oder stellen Sie einen Snapshot wieder her:',
+      installAction:
+        'Installieren Sie nur eine vollständige Wiederherstellung. Beenden Sie vorher das Gateway, das Desktop/serve-Backend, Cron-Aufgaben und andere Hermes-Sitzungen dieses Profils. Solange ein Datenbank-Schreiber aktiv ist, wird die Installation abgelehnt:',
       guide: 'Wiederherstellungsanleitung'
     },
     noFilterMatches: 'Keine Sessions passen zu diesen Filtern',

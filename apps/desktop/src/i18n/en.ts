@@ -3589,6 +3589,8 @@ export const en: Translations = {
       body: (profiles: string) =>
         `Hermes can't read all of the session history for ${profiles}. Chats missing from this list were not deleted; the file they are stored in is damaged.`,
       action: 'Quit Hermes on this profile, then inspect the file without changing it, or restore a snapshot:',
+      installAction:
+        'To install only a complete recovery, close this profile’s gateway, Desktop/serve backend, cron workers, and other Hermes sessions first. Installation refuses while any database writer is open:',
       guide: 'Recovery guide'
     },
     noFilterMatches: 'No sessions match these filters',

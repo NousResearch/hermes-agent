@@ -56,8 +56,11 @@ class FrameTrackingMixin:
     def _on_frame_attached(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
         frame_id = params.get("frameId")
         if frame_id:
+            # cdp_session_id stays None: the event's session is the emitting (parent)
+            # process's session, and only a real OOPIF target has a session that can
+            # route calls into the frame's own context (_on_target_attached records it).
             self._set_frame(FrameInfo(frame_id=frame_id, url="", origin="", parent_frame_id=params.get("parentFrameId"),
-                                      is_oopif=False, cdp_session_id=session_id))
+                                      is_oopif=False))
 
     def _set_frame(self, frame: FrameInfo) -> None:
         with self._state_lock:
@@ -69,7 +72,7 @@ class FrameTrackingMixin:
         if not frame_id:
             return
         with self._state_lock:
-            old = self._frames.get(frame_id) or FrameInfo(frame_id, "", "", None, False, session_id)
+            old = self._frames.get(frame_id) or FrameInfo(frame_id, "", "", None, False)
             self._frames[frame_id] = FrameInfo(
                 frame_id=frame_id, url=str(frame.get("url") or ""),
                 origin=str(frame.get("securityOrigin") or frame.get("origin") or ""),

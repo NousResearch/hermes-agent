@@ -77,6 +77,7 @@ class TestMessageProjection:
             _row(
                 "user",
                 STANDALONE_SUMMARY,
+                _compressed_summary=True,
                 tool_calls=[{"id": "stale"}],
                 reasoning="internal compression reasoning",
                 reasoning_content="internal compression reasoning",
@@ -101,6 +102,7 @@ class TestMessageProjection:
             _row(
                 "assistant",
                 MERGED_CARRIER,
+                _compressed_summary=True,
                 tool_calls=[{"id": "prior-call"}],
                 finish_reason="tool_calls",
             )
@@ -126,6 +128,7 @@ class TestMessageProjection:
                         "text": f"{_MERGED_SUMMARY_DELIMITER}\n{STANDALONE_SUMMARY}",
                     },
                 ],
+                _compressed_summary=True,
             )
         )
 
@@ -171,8 +174,8 @@ class TestTurnTranscriptProjection:
             "messages": [
                 {"role": "user", "content": REAL_USER},
                 {"role": "assistant", "content": "checking the controller"},
-                _row("user", STANDALONE_SUMMARY),
-                _row("assistant", MERGED_CARRIER),
+                _row("user", STANDALONE_SUMMARY, _compressed_summary=True),
+                _row("assistant", MERGED_CARRIER, _compressed_summary=True),
                 {"role": "assistant", "content": "the controller is ready"},
             ],
             "final_response": "the controller is ready",
@@ -222,8 +225,8 @@ class TestMessagesEndpointProjection:
         session_db.replace_messages(
             session_id,
             [
-                _row("user", STANDALONE_SUMMARY),
-                _row("assistant", MERGED_CARRIER),
+                _row("user", STANDALONE_SUMMARY, _compressed_summary=True),
+                _row("assistant", MERGED_CARRIER, _compressed_summary=True),
                 _row("user", REAL_USER),
             ],
         )

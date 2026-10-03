@@ -85,7 +85,7 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         # agent's typed ``server_error`` / ``overloaded`` verdicts (FailoverReason), which the
         # in-process lanes classify from ``failure_reason`` rather than a status number.
         (rf"{_STATUS}5\d{{2}}\b|server[ _]?error|overloaded", PROVIDER_SERVER_ERROR),
-        (r"context length|context_overflow|maximum context", CONTEXT_OVERFLOW),
+        (r"context length|context_overflow|maximum context|grown too long|grown too large to send|couldn't shrink it enough", CONTEXT_OVERFLOW),
         (r"no llm provider configured|missing config|no access token", MISSING_CONFIG),
         (r"model .*(not found|does not exist)|model_not_found", MODEL_UNAVAILABLE),
     )

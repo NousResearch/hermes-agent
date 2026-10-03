@@ -49,6 +49,8 @@ FIXTURE_TARGET_SCOPE_DETAILED = (
         ("Error code: 529 - overloaded_error: Overloaded", fr.PROVIDER_SERVER_ERROR),
         ("This model's maximum context length is 128000 tokens", fr.CONTEXT_OVERFLOW),
         ("context_overflow: prompt too large", fr.CONTEXT_OVERFLOW),
+        ("This conversation has grown too large to send to model", fr.CONTEXT_OVERFLOW),
+        ("Hermes couldn't shrink it enough automatically", fr.CONTEXT_OVERFLOW),
         ("missing config: no provider block in config.yaml", fr.MISSING_CONFIG),
         ("model 'gpt-9' not found", fr.MODEL_UNAVAILABLE),
         ("The model `foo-bar` does not exist", fr.MODEL_UNAVAILABLE),

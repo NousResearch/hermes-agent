@@ -3,6 +3,10 @@
 The store is deliberately append-only at the lifecycle layer.  Plans and node
 specifications are immutable after sealing; lease/fence and budget state are
 derived from hash-chained events written under ``BEGIN IMMEDIATE``.
+
+For Axl Ibiza (andrexibiza)'s ledger, identity/generation and terminal-state
+design sources, see the shared "Design provenance" note in
+:mod:`agent.phase2_authority`. Implementation authorship is recorded separately.
 """
 
 from __future__ import annotations

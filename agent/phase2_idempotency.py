@@ -10,6 +10,10 @@ authority and resource fencing immediately before an effect; initial binding
 or a claim in this separate store cannot substitute for that gate.
 The persisted deterministic SHA-256 hash still permits offline confirmation
 of guessed arguments; it is an audit identity, not a confidentiality boundary.
+
+For Axl Ibiza (andrexibiza)'s replay/refusal design and September 3 corrective
+review, see the shared "Design provenance" note in :mod:`agent.phase2_authority`.
+Implementation authorship is recorded separately.
 """
 
 from __future__ import annotations

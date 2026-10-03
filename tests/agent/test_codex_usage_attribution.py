@@ -191,7 +191,7 @@ def test_auxiliary_raw_and_async_clients_send_expected_headers(
 ):
     from agent import auxiliary_client
 
-    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (False, None))
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p, **kwargs: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", _jwt)
 
     wrapped, model = auxiliary_client._build_codex_client(MODEL)
@@ -238,7 +238,7 @@ def test_credential_pool_custom_endpoint_keeps_existing_identity(
         runtime_api_key=_jwt(),
         runtime_base_url="https://proxy.example/backend-api/codex",
     )
-    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (True, entry))
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p, **kwargs: (True, entry))
 
     client, model = auxiliary_client._build_codex_client(MODEL)
     try:
@@ -258,7 +258,7 @@ def test_legacy_disabled_setting_cannot_disable_attribution_for_new_clients(
 ):
     from agent import auxiliary_client
 
-    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (False, None))
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p, **kwargs: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", _jwt)
     _set_legacy_attribution(profile, True)
     old, _ = auxiliary_client.resolve_provider_client(

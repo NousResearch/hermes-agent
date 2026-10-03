@@ -98,6 +98,15 @@ def test_hosted_context_rejection_far_below_the_known_window_compresses():
     assert compressed and verdict.action == "break"
 
 
+def test_process_transport_context_rejection_compresses_like_hosted_route():
+    """Subprocess-backed hosted providers must not take the single-slot local-server wait path."""
+    verdict, compressed = _context_rejection(
+        47_000, window=1_000_000, base_url="process://claude-subscription-directsdk-experimental",
+        error="prompt is too long",
+    )
+    assert compressed and verdict.action == "break"
+
+
 def test_empty_response_exhaustion_has_one_text_everywhere():
     """One constant feeds the CLI explainer and the gateway '(empty)' rewrite; no surface
     asserts 'after processing tool results' or 'inspect the tool output above'."""

@@ -152,6 +152,19 @@ def _approx_tokens(text: str) -> int:
     return max(1, estimate_tokens_rough(text))
 
 
+def _head_within_budget(text: str, budget: int) -> str:
+    """Longest prefix of ``text`` whose ``_approx_tokens`` fits ``budget``. A plain ``budget * 4`` char
+    slice would keep ~2x the budget of Cyrillic and ~4x of CJK; ASCII still gets ``budget * 4`` chars."""
+    lo, hi = 0, min(len(text), budget * 4)  # every char costs >= 1/4 token
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _approx_tokens(text[:mid]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+
+
 def _extract_item_text(item: Any) -> Optional[str]:
     """Measurable text from a Responses item (string/multipart/metadata), or None."""
     if not isinstance(item, dict):
@@ -296,7 +309,7 @@ def prune_pre_checkpoint_items(
                 retained_reversed.append(item)
                 user_remaining -= cost
             elif isinstance(item.get("content"), str):
-                truncated = {**item, "content": item["content"][: user_remaining * 4]}
+                truncated = {**item, "content": _head_within_budget(item["content"], user_remaining)}
                 if truncated["content"].strip():
                     retained_reversed.append(truncated)
                 user_remaining = 0

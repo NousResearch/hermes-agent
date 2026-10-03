@@ -98,6 +98,7 @@ Components are rounded rectangles (`rx="6"`) with 1.5px strokes. To prevent arro
 ### Connection Rules
 - **Z-Order:** Draw arrows *early* in the SVG (after the grid) so they render behind component boxes
 - **Arrowheads:** Defined via SVG markers
+- **Semantic Labels:** Every arrow must expose the relationship, operation, or data it represents with a concise verb or phrase; read each label from source to target as a sentence before delivery.
 - **Security Flows:** Use dashed lines in rose color (`#fb7185`)
 - **Boundaries:**
   - *Security Groups:* Dashed (`4,4`), rose color

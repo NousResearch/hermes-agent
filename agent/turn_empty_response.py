@@ -120,10 +120,20 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
             agent._empty_content_retries, agent.model,
             agent.provider,
         )
+        if (
+            getattr(agent, "_fallback_activated", False)
+            or getattr(agent, "_fallback_index", 0) > 0
+        ):
+            exhaustion_detail = " and fallback attempts."
+        elif not agent._fallback_chain:
+            exhaustion_detail = ". No fallback providers configured."
+        else:
+            # A configured chain may be intentionally suppressed by fallback_policy.halt.
+            # Do not infer that an attempt ran from configuration alone.
+            exhaustion_detail = "."
         agent._emit_diagnostic_status(
             "❌ Model returned no content after all retries"
-            + (" and fallback attempts." if agent._fallback_chain else
-               ". No fallback providers configured.")
+            + exhaustion_detail
         )
         return "(empty)"
 
@@ -266,11 +276,14 @@ def recover_empty_response(
 
     # Exhausted retries — try the next provider in the chain before "(empty)".
     if _truly_empty and agent._fallback_chain:
-        logger.warning(
-            "Empty response after %d retries — attempting fallback (model=%s, provider=%s)",
-            agent._empty_content_retries, agent.model, agent.provider,
-        )
-        agent._buffer_diagnostic_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
+        if agent._has_pending_fallback():
+            logger.warning(
+                "Empty response after %d retries — attempting fallback (model=%s, provider=%s)",
+                agent._empty_content_retries, agent.model, agent.provider,
+            )
+            agent._buffer_diagnostic_status(
+                "⚠️ Model returning empty responses — switching to fallback provider..."
+            )
         if agent._try_activate_fallback():
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0

@@ -1681,6 +1681,78 @@
       }
     },
     {
+      "name": "mcp.app.call_tool",
+      "summary": "A view's ``tools/call``: only an app-visible, operator-allowed tool on the call's own server, through the server's trust gate.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/McpAppCallToolParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/McpAppCallToolResult"
+        }
+      }
+    },
+    {
+      "name": "mcp.app.read_resource",
+      "summary": "``resources/read`` on the server the view's tool call ran on.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/McpAppReadResourceParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/McpAppReadResourceResult"
+        }
+      }
+    },
+    {
+      "name": "mcp.app.update_model_context",
+      "summary": "Replace the view's model context; the next turn's model input carries the latest one, never the visible text.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/McpAppUpdateModelContextParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EmptyResult"
+        }
+      }
+    },
+    {
+      "name": "mcp.app.view",
+      "summary": "An MCP App view's tool call: its arguments, its raw result (once stored) and the live tool definition.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/McpAppCallParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/McpAppViewResult"
+        }
+      }
+    },
+    {
       "name": "mcp.catalog",
       "summary": "Curated MCP presets with per-profile installed/enabled state and the env keys each needs.",
       "params": [
@@ -13600,6 +13672,12 @@
         "title": "EmptyRequestParams",
         "type": "object"
       },
+      "EmptyResult": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyResult",
+        "type": "object"
+      },
       "ErrorPayload": {
         "additionalProperties": false,
         "description": "Every ``_emit(\"error\", \u2026)`` site sets exactly ``message``.",
@@ -17367,6 +17445,264 @@
         ],
         "title": "LoopSnapshot",
         "type": "object"
+      },
+      "McpAppCallParams": {
+        "additionalProperties": false,
+        "description": "``tool_call_id``: the model tool call whose MCP App view sends the request.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tool_call_id": {
+            "minLength": 1,
+            "title": "Tool Call Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "tool_call_id"
+        ],
+        "title": "McpAppCallParams",
+        "type": "object"
+      },
+      "McpAppCallToolParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tool_call_id": {
+            "minLength": 1,
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "arguments": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Arguments"
+          }
+        },
+        "required": [
+          "session_id",
+          "tool_call_id",
+          "name"
+        ],
+        "title": "McpAppCallToolParams",
+        "type": "object"
+      },
+      "McpAppCallToolResult": {
+        "additionalProperties": true,
+        "description": "The SDK ``CallToolResult`` unchanged.",
+        "properties": {
+          "content": {
+            "items": {},
+            "title": "Content",
+            "type": "array"
+          }
+        },
+        "title": "McpAppCallToolResult",
+        "type": "object"
+      },
+      "McpAppReadResourceParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tool_call_id": {
+            "minLength": 1,
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "uri": {
+            "minLength": 1,
+            "title": "Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "tool_call_id",
+          "uri"
+        ],
+        "title": "McpAppReadResourceParams",
+        "type": "object"
+      },
+      "McpAppReadResourceResult": {
+        "additionalProperties": true,
+        "description": "The SDK ``ReadResourceResult`` unchanged.",
+        "properties": {
+          "contents": {
+            "items": {},
+            "title": "Contents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "contents"
+        ],
+        "title": "McpAppReadResourceResult",
+        "type": "object"
+      },
+      "McpAppUpdateModelContextParams": {
+        "additionalProperties": false,
+        "description": "``ui/update-model-context``: MCP ``ContentBlock`` objects and/or a structured object.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tool_call_id": {
+            "minLength": 1,
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "structured_content": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Structured Content"
+          }
+        },
+        "required": [
+          "session_id",
+          "tool_call_id"
+        ],
+        "title": "McpAppUpdateModelContextParams",
+        "type": "object"
+      },
+      "McpAppViewResult": {
+        "additionalProperties": false,
+        "description": "``status``: ``running`` while the call runs, ``result`` once its ``CallToolResult`` is stored,\n``cancelled`` when the call ended without one (interrupted, failed before a result, over the MCP\nhard cap). ``arguments`` are what the server received (tool-input); ``result`` is the raw\n``CallToolResult`` (tool-result, ``isError`` kept); ``tool`` is the live ``Tool`` definition\n(``hostContext.toolInfo.tool``).",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/McpAppViewStatus"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result"
+          },
+          "tool": {
+            "additionalProperties": true,
+            "title": "Tool",
+            "type": "object"
+          }
+        },
+        "required": [
+          "status",
+          "arguments",
+          "tool"
+        ],
+        "title": "McpAppViewResult",
+        "type": "object"
+      },
+      "McpAppViewStatus": {
+        "enum": [
+          "running",
+          "result",
+          "cancelled"
+        ],
+        "title": "McpAppViewStatus",
+        "type": "string"
       },
       "McpCatalogEntry": {
         "additionalProperties": false,

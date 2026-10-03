@@ -1834,6 +1834,52 @@ export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
 }
+/** ``tool_call_id``: the model tool call whose MCP App view sends the request. */
+export interface McpAppCallParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+}
+/** ``status``: ``running`` while the call runs, ``result`` once its ``CallToolResult`` is stored, ``cancelled`` when the call ended without one (interrupted, failed before a result, over the MCP hard cap). ``arguments`` are what the server received (tool-input); ``result`` is the raw ``CallToolResult`` (tool-result, ``isError`` kept); ``tool`` is the live ``Tool`` definition (``hostContext.toolInfo.tool``). */
+export interface McpAppViewResult {
+  status: McpAppViewStatus
+  arguments: Record<string, unknown>
+  result?: Record<string, unknown> | null
+  tool: Record<string, unknown>
+}
+export type McpAppViewStatus = 'running' | 'result' | 'cancelled'
+export interface McpAppReadResourceParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+  uri: string
+}
+/** The SDK ``ReadResourceResult`` unchanged. */
+export interface McpAppReadResourceResult {
+  contents: unknown[]
+  [key: string]: unknown
+}
+export interface McpAppCallToolParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+  name: string
+  arguments?: Record<string, unknown> | null
+}
+/** The SDK ``CallToolResult`` unchanged. */
+export interface McpAppCallToolResult {
+  content?: unknown[]
+  [key: string]: unknown
+}
+/** ``ui/update-model-context``: MCP ``ContentBlock`` objects and/or a structured object. */
+export interface McpAppUpdateModelContextParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+  content?: unknown[] | null
+  structured_content?: Record<string, unknown> | null
+}
+export type EmptyResult = Record<string, never>
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -5064,6 +5110,14 @@ export interface RpcMethods {
   'learning.frames': { params: LearningFramesParams; result: LearningFramesResult }
   /** Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend. */
   'llm.oneshot': { params: LlmOneshotParams; result: LlmOneshotResult }
+  /** A view's ``tools/call``: only an app-visible, operator-allowed tool on the call's own server, through the server's trust gate. */
+  'mcp.app.call_tool': { params: McpAppCallToolParams; result: McpAppCallToolResult }
+  /** ``resources/read`` on the server the view's tool call ran on. */
+  'mcp.app.read_resource': { params: McpAppReadResourceParams; result: McpAppReadResourceResult }
+  /** Replace the view's model context; the next turn's model input carries the latest one, never the visible text. */
+  'mcp.app.update_model_context': { params: McpAppUpdateModelContextParams; result: EmptyResult }
+  /** An MCP App view's tool call: its arguments, its raw result (once stored) and the live tool definition. */
+  'mcp.app.view': { params: McpAppCallParams; result: McpAppViewResult }
   /** Curated MCP presets with per-profile installed/enabled state and the env keys each needs. */
   'mcp.catalog': { params: ProfileParams; result: McpCatalogResult }
   /** Add a server to the profile's config from a catalog preset and/or an explicit config. */
@@ -5476,6 +5530,10 @@ export const RPC_METHODS = [
   'learning.edit',
   'learning.frames',
   'llm.oneshot',
+  'mcp.app.call_tool',
+  'mcp.app.read_resource',
+  'mcp.app.update_model_context',
+  'mcp.app.view',
   'mcp.catalog',
   'mcp.servers.add',
   'mcp.servers.list',

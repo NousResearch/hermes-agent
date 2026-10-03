@@ -1115,23 +1115,32 @@ def _install_rebuilt_desktop_app(desktop_dir: Path, candidates: list[Path]) -> t
     return _install_rebuilt_macos_bundles(
         rebuilt_exe.parents[2], candidates, running=_running_macos_app_bundles())
 
-
 def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
     """Install the rebuilt bundle over stale or missing installed copies, report each outcome, and
     record which copies this update keeps current."""
     if not _owns_installed_desktop_apps():
         return
+    candidates = _installed_desktop_app_candidates()
+    installers = {app for app in candidates if _macos_bundle_is_bootstrap_installer(app)}
+    # The full resolver, not just the stamp-claimed set: a recorded copy the user
+    # deleted must come back (Finder, the Dock and Spotlight lose Hermes for good
+    # otherwise), which is the record fallback _installed_desktop_apps carries.
     owned = _installed_desktop_apps()
     missing = {app for app in owned if not app.exists()}
     installed, problems = _install_rebuilt_desktop_app(desktop_dir, owned)
     for app in installed:
+        note = " (replaced the Hermes-Setup installer)" if app in installers else ""
         if app in missing:
             print(f"  ✓ Reinstalled the Desktop app at {app}: it had been removed, so Finder, "
-                  "the Dock and Spotlight could not find Hermes")
+                  "the Dock and Spotlight could not find Hermes{note}")
         else:
-            print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+            print(f"  ✓ Installed the rebuilt Desktop app at {app}{note}")
     for problem in problems:
         print(f"  ⚠ {problem}")
+    rebuilt = _desktop_packaged_executable(desktop_dir)
+    for notice in _unowned_macos_bundle_notices(
+            candidates, rebuilt.parents[2] if rebuilt is not None else desktop_dir):
+        print(f"  ⚠ {notice}")
     from hermes_cli.gui_uninstall import desktop_install_record  # noqa: PLC0415
     from utils import atomic_json_write, read_json_or_empty  # noqa: PLC0415
     # A copy that failed to reinstall stays recorded, so the next update retries it. Every
@@ -1151,17 +1160,55 @@ def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
     Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
     bootstrap build (a local pack or the bootstrap download), and stamps older than the field
     predate every self-updating kind. Bundled/light releases update themselves and commit builds
-    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    are external, so a local build must never be copied over them. No readable stamp, no claim —
+    with one narrow exception (#125245): the Hermes-Setup installer, identified by its exact
+    bundle id, ships no stamp and occupies the documented install path after a DMG drag-install;
+    leaving it unclaimed silently stops ``hermes update`` from refreshing the installed copy the
+    docs promise it maintains.
     """
     owned = []
     for app in candidates:
         try:
             stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
+            if _macos_bundle_is_bootstrap_installer(app):
+                owned.append(app)
             continue
         if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
             owned.append(app)
     return owned
+
+
+BOOTSTRAP_INSTALLER_BUNDLE_ID = "com.nousresearch.hermes.setup"
+
+
+def _macos_bundle_is_bootstrap_installer(app: Path) -> bool:
+    """Whether *app* is the Hermes-Setup installer bundle (#125245), by its exact bundle id."""
+    return _desktop_macos_bundle_id(app) == BOOTSTRAP_INSTALLER_BUNDLE_ID
+
+
+def _macos_bundle_stamp(app: Path) -> Optional[dict]:
+    """The bundle's ``install-stamp.json`` as a dict, or ``None`` when absent/unreadable."""
+    try:
+        stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return stamp if isinstance(stamp, dict) else None
+
+
+def _unowned_macos_bundle_notices(candidates: list[Path], rebuilt_app: Path) -> list[str]:
+    """One user-facing line per stamp-less bundle that is neither owned nor reclaimed (#125245).
+
+    The old silent ``continue`` made an un-owned ``Hermes.app`` at an install path this checkout
+    owns the policy for invisible: the update never refreshed it and never said why.
+    """
+    return [
+        f"{app} has no install stamp and was not refreshed; if it is an old Hermes Desktop "
+        f"copy, move it to the Trash and copy {rebuilt_app} there"
+        for app in candidates
+        if app.is_dir() and _macos_bundle_stamp(app) is None
+        and not _macos_bundle_is_bootstrap_installer(app)
+    ]
 
 
 def _owns_installed_desktop_apps() -> bool:
@@ -1183,17 +1230,25 @@ def _installed_desktop_apps() -> list[Path]:
     Dock and Spotlight lose Hermes for good). A copy moved to the other Applications folder keeps
     its stamp, so it is found instead of doubled. Hermes' GUI uninstall deletes the record.
     """
-    if not _owns_installed_desktop_apps():
-        return []
-    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths  # noqa: PLC0415
+    from hermes_cli.gui_uninstall import desktop_install_record  # noqa: PLC0415
     from utils import read_json_or_empty  # noqa: PLC0415
-    candidates = packaged_gui_app_paths()
+    candidates = _installed_desktop_app_candidates()
     if owned := _update_owned_macos_bundles(candidates):
         return owned
     recorded = read_json_or_empty(desktop_install_record()).get("apps")
     if not isinstance(recorded, list):
         return []
     return [app for app in candidates if str(app) in recorded and not app.exists()]
+
+
+def _installed_desktop_app_candidates() -> list[Path]:
+    """Every install-path bundle candidate (owned or not) on a checkout that owns the policy.
+
+    ``_owns_installed_desktop_apps`` already gated reachability; this split exists so the
+    refresh can report un-owned bundles (#125245) instead of only ever seeing claimed ones.
+    """
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+    return packaged_gui_app_paths()
 
 
 def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Path) -> Path:

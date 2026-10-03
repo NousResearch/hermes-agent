@@ -215,6 +215,37 @@ def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch
     assert (installed / "Contents" / "Resources" / "app.asar").read_bytes() == b"checkout build"
 
 
+@pytest.mark.platforms("macos")
+def test_update_replaces_the_installer_bundle_and_says_so(tmp_path, monkeypatch, capsys):
+    """#125245: the Hermes-Setup installer left at /Applications/Hermes.app is replaced by the
+    checkout build with a line that says so, instead of being silently skipped."""
+    import plistlib
+    import shutil
+
+    root = _make_desktop_tree(tmp_path)
+    _stamped_macos_bundle(root / "apps" / "desktop" / "release" / "mac-arm64" / "Hermes.app", b"checkout build")
+    installer = tmp_path / "Applications" / "Hermes.app"
+    (installer / "Contents" / "MacOS").mkdir(parents=True)
+    (installer / "Contents" / "MacOS" / "Hermes-Setup").write_bytes(b"\xcf\xfa\xed\xfe")
+    (installer / "Contents" / "Resources").mkdir()
+    (installer / "Contents" / "Resources" / "icon.icns").write_bytes(b"icns")
+    (installer / "Contents" / "Info.plist").write_bytes(
+        plistlib.dumps({"CFBundleIdentifier": "com.nousresearch.hermes.setup"}))
+    monkeypatch.setattr("hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installer])
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)
+    monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
+    monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+
+    main_desktop._refresh_installed_desktop_apps(root / "apps" / "desktop")
+
+    out = capsys.readouterr().out
+    assert f"Installed the rebuilt Desktop app at {installer}" in out
+    assert "replaced the Hermes-Setup installer" in out
+    assert (installer / "Contents" / "Resources" / "app.asar").read_bytes() == b"checkout build"
+    assert not (installer / "Contents" / "MacOS" / "Hermes-Setup").exists()
+
+
 def test_packaged_renderer_bom_does_not_bypass_entry_validation(tmp_path):
     import json
     import struct

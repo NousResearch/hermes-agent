@@ -178,6 +178,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termWrapRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // ponytail: single shared ref (not per-caller clearing) — the atlas caches
+  // glyphs at stale font metrics, so fontChanged must drop it before
+  // refresh() re-blits (#34617). Null when WebGL/DOM renderer is in use.
+  const webglRef = useRef<WebglAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const isActiveRef = useRef(isActive);
   useEffect(() => {
@@ -941,8 +945,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          webglRef.current = null;
+        });
         term.loadAddon(webgl);
+        webglRef.current = webgl;
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
@@ -1002,6 +1010,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       if (fontChanged && term.rows > 0) {
         try {
+          // WebGL re-blits stale atlas tiles at the new cell size without
+          // this, surfacing as garbled chars while the buffer is correct.
+          webglRef.current?.clearTextureAtlas();
           term.refresh(0, term.rows - 1);
         } catch {
           /* ignore */
@@ -1643,6 +1654,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      webglRef.current = null;
       if (copyResetRef.current) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;

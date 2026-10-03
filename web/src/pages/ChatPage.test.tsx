@@ -727,3 +727,67 @@ describe("ChatPage PTY ticket connect deadline", () => {
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
   });
 });
+
+// #34617: narrowing the host across a font tier mutates fontSize/lineHeight
+// and refresh()es. Under WebGL the glyph texture atlas must be dropped
+// first, or stale tiles re-blit as garbled chars (FcDataBoss -> FcDataBpsst).
+describe("ChatPage WebGL atlas clear (34617)", () => {
+  it("clears the texture atlas before refresh on font-tier change", async () => {
+    const roCallbacks: Array<() => void> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb?: () => void) {
+          if (cb) roCallbacks.push(cb);
+        }
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      },
+    );
+    // jsdom reports clientWidth/Height 0 (no layout), which makes
+    // syncTerminalMetrics early-return. Stub host metrics instead.
+    let hostWidth = 1280;
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        return hostWidth;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return 800;
+      },
+    });
+    const clearSpy = vi.fn();
+    (FakeWebglAddon.prototype as unknown as Record<string, unknown>).clearTextureAtlas =
+      clearSpy;
+    const refreshSpy = vi.spyOn(FakeTerminal.prototype, "refresh");
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      // 1280px -> font 14; 400px -> font 9: forces the fontChanged branch.
+      hostWidth = 400;
+      clearSpy.mockClear();
+      refreshSpy.mockClear();
+      await act(async () => {
+        roCallbacks.forEach((cb) => cb());
+      });
+      await vi.waitFor(() => expect(refreshSpy).toHaveBeenCalled());
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+      expect(clearSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        refreshSpy.mock.invocationCallOrder[0],
+      );
+    } finally {
+      refreshSpy.mockRestore();
+      delete (FakeWebglAddon.prototype as unknown as Record<string, unknown>)
+        .clearTextureAtlas;
+    }
+  });
+});

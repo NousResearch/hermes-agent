@@ -1433,7 +1433,7 @@ class SessionMessagesMixin:
                                 offset: int = 0, latest: bool = False):
         """One display-history projection for normal reads and transactional verification."""
         direction = "DESC" if latest else "ASC"
-        return conn.execute(
+        rows = conn.execute(
             f"""WITH page AS (
                    SELECT display_order FROM messages
                    WHERE session_id = ? AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}
@@ -1451,6 +1451,28 @@ class SessionMessagesMixin:
                ORDER BY page.display_order ASC""",
             (session_id, -1 if limit is None else limit, offset, session_id),
         ).fetchall()
+        # A compaction rewrite can leave one message_uid in two display_order
+        # slots (#128468 split-slot variant: no NULL involved, so the NULL-safe
+        # join cannot cover it). Fold twins sharing a uid here, preferring the
+        # live copy, at the first slot's position; rows without a uid keep
+        # their own slot. ponytail: page-local fold, O(page) so paged reads
+        # stay page-proportional; twins split across two fetched pages still
+        # double-serve -- closing that needs the write path to carry the
+        # archived copy's display_identity across the rewrite.
+        seen: Dict[Any, int] = {}
+        out: List[Any] = []
+        for row in rows:
+            uid = row["message_uid"] if "message_uid" in row.keys() else None
+            if not uid:
+                out.append(row)
+                continue
+            at = seen.get(uid)
+            if at is None:
+                seen[uid] = len(out)
+                out.append(row)
+            elif (row["active"], row["id"]) > (out[at]["active"], out[at]["id"]):
+                out[at] = row
+        return out
 
     def display_message_count(self, session_id: str) -> int:
         """Rows a display read of this segment paints: one per ``display_order`` group of

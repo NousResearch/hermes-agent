@@ -237,6 +237,22 @@ describe('connection registry cache', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
+  it('validates an already-active remote profile without clearing all-profiles browse mode', async () => {
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    setConnectionsRegistry({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'ghost', registryScoped: true })
+    $activeGatewayProfile.set('ghost')
+    $showAllProfiles.set(true)
+    api.mockResolvedValueOnce({ profiles: [{ name: 'default' }] } as never)
+
+    await initializeConnectionsRegistry()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/profiles' }))
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    expect($activeGatewayProfile.get()).toBe('ghost')
+    expect($showAllProfiles.get()).toBe(true)
+  })
+
   it('boot restore yields to a source the user already picked while boot was settling', async () => {
     // Primary is local, launch mode is primary. The user clicks a fleet-rail
     // square on the homelab gateway before the boot-time restore runs. The

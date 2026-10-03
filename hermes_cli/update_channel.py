@@ -314,7 +314,7 @@ def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]
       new record claimed it; this one is a leftover).
     * ``"missing"``  — nothing at the recorded path: offer GC (keep-on-doubt).
     * ``"unclaimed"`` — the sha16 matches no live install record
-      (``installs/<sha16>/install.json``): offer GC.
+      (``installs/<sha16>/facts.json``): offer GC.
     """
     stale: list[tuple[str, dict, str]] = []
     for sha16, record in _install_records(config).items():
@@ -334,11 +334,14 @@ def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]
                 stale.append((sha16, record, "replaced"))
                 continue
 
-        # Cross-check against the live install-state records: a channel
-        # record whose sha16 has no installs/<sha16>/install.json was
-        # either hand-written or its install never booted post-record.
+        # Cross-check against the live install-state records: a channel record
+        # whose sha16 has no installs/<sha16>/facts.json was either hand-written
+        # or its install never booted post-record. The PM writes per-install
+        # state to facts.json (pm.environments.runtime_facts_path); install.json
+        # is never produced, so checking for it flagged every healthy install as
+        # unclaimed (#131630).
         try:
-            if not (installs_root() / sha16 / "install.json").is_file():
+            if not (installs_root() / sha16 / "facts.json").is_file():
                 stale.append((sha16, record, "unclaimed"))
         except Exception as exc:  # noqa: BLE001 — doctor sweep must not raise
             logger.debug("installs root unavailable: %s", exc)

@@ -385,8 +385,32 @@ def test_doctor_channel_records_are_read_only(tmp_path, monkeypatch, kind, expec
     if kind == 'healthy':
         state = home / 'installs' / key
         state.mkdir(parents=True)
-        (state / 'install.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
+        # A live install is marked by facts.json (pm.environments.runtime_facts_path),
+        # which is what the PM actually writes — not install.json (#131630).
+        (state / 'facts.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
     before = deepcopy(config)
     assert [(key, reason) for key, _, reason in stale_channel_records(config)] == (
         [(key, expected)] if expected else [])
     assert config == before
+
+
+def test_doctor_does_not_flag_install_claimed_only_by_facts_json(tmp_path, monkeypatch):
+    """A healthy source install keeps its live state in ``installs/<sha16>/facts.json``
+    (what ``pm`` writes) and never produces ``install.json``. The liveness check must
+    treat facts.json as the claim, or every real install is falsely flagged
+    ``unclaimed`` (#131630)."""
+    home, root = tmp_path / '.hermes', tmp_path / 'install'
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    root.mkdir()
+    key = install_id(root)
+    config = {'update': {'installs': {key: {'path': str(root), 'channel': 'main'}}}}
+
+    state = home / 'installs' / key
+    state.mkdir(parents=True)
+    # Facts present but no install.json (the real on-disk shape of a booted install).
+    (state / 'facts.json').write_text(json.dumps({'schema': 1}), encoding='utf-8')
+    assert stale_channel_records(config) == []
+
+    # An install dir that exists but carries neither liveness marker is still unclaimed.
+    (state / 'facts.json').unlink()
+    assert [(k, reason) for k, _, reason in stale_channel_records(config)] == [(key, 'unclaimed')]

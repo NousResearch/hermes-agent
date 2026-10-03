@@ -50,11 +50,11 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # on concrete evidence instead of a vibe check.
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 DEFAULT_GATE_MAX_RETRIES = 3
-# Default longest a pid/session wait barrier may hold the loop before judging resumes. Timed
-# barriers (``waiting_until``) carry their own deadline and are exempt. Overridable per profile
+# Default longest a pid/session wait barrier may hold the loop before judging resumes. This is an
+# upper bound even for timed barriers (``waiting_until``): a timed wait still ends early at its own
+# deadline, but the cap fires first when the deadline runs longer. Overridable per profile
 # via ``goals.max_barrier_wait_seconds`` (see ``_barrier_wait_cap_seconds``). Kept at minutes, not
-# the half hour that repeatedly parked an orchestrator on stalled subagents: each 30-min park was
-# a full stall, and they compounded into hours of dead wall-clock across a long run.
+# the half hour that repeatedly parked an orchestrator on stalled subagents.
 _MAX_BARRIER_WAIT_S = 10 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000

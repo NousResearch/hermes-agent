@@ -499,7 +499,7 @@ export interface GatewayEventHandlerContext {
     // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => Promise<void>
+    resumeById: (id: string, options?: { preserveTextDraft?: boolean }) => Promise<void>
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {

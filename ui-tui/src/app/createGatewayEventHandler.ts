@@ -731,7 +731,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     const recoverSid = recoverSidRef?.current
 
     if (recoverSidRef && recoverSid) {
-      void resumeById(recoverSid).then(() => {
+      void resumeById(recoverSid, { preserveTextDraft: true }).then(() => {
         if (getUiState().sid && recoverSidRef.current === recoverSid) {
           recoverSidRef.current = null
         }

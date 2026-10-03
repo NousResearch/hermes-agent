@@ -952,3 +952,32 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
     live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation
+
+
+class TestMicroSummarizeSegmentedContent:
+    """Relays returning segmented (list) content must not persist repr garbage
+    as the rolling micro-compaction summary."""
+
+    def test_micro_summarize_flattens_segmented_content(self, monkeypatch):
+        import types as _types
+
+        seg_response = _types.SimpleNamespace(
+            choices=[_types.SimpleNamespace(
+                message=_types.SimpleNamespace(
+                    content=[
+                        {"type": "thinking", "thinking": "x"},
+                        {"type": "text", "text": "Merged summary."},
+                    ],
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )]
+        )
+
+        from agent import auxiliary_client
+        monkeypatch.setattr(auxiliary_client, "call_llm", lambda **kw: seg_response)
+
+        cc = _compressor(summary="")
+        out = ContextCompressor._micro_summarize_one(cc, "user asked X, agent did Y")
+        assert out == "Merged summary."
+        assert not out.startswith("[")  # no str(list) repr leak

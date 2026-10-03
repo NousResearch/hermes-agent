@@ -8259,7 +8259,10 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
         return msg.strip()
     raw = _message_field(msg, "content")
     if not isinstance(raw, str):
-        raw = str(raw) if raw else ""
+        # Segmented content (list of {"type": "thinking"/"text"} parts) from OpenAI-compatible
+        # relays: flatten instead of str() — str(list) stores Python repr garbage as the summary.
+        from agent.message_content import flatten_message_text
+        raw = flatten_message_text(raw) if raw else ""
     content = raw.strip()
     if content:
         # Same precompiled closed-pair patterns as strip_think_blocks.

@@ -884,8 +884,16 @@ def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
         temperature=0, max_tokens=_goal_judge_max_tokens(), timeout=timeout,
     )
+    # Some OpenAI-compatible relays (e.g. dahetao.org glm-5.3-fast, llama-server) return
+    # segmented content: a LIST of {"type": "thinking"/"text"} parts, not a str. `or ""`
+    # only guards None — a non-empty list is truthy and passes through, then crashes
+    # _extract_json_object's raw.strip() with AttributeError, which escapes
+    # evaluate_after_turn BEFORE state._save() → turns_used stays 0, no continuation,
+    # the goal silently dies as an active orphan. Flatten at the extraction boundary
+    # instead (text parts joined, non-text parts dropped).
+    from agent.message_content import flatten_message_text
     try:
-        return resp.choices[0].message.content or ""
+        return flatten_message_text(resp.choices[0].message.content)
     except Exception:
         return ""
 
@@ -952,7 +960,12 @@ def judge_goal(
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
 
-    verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+    # Defense in depth: a parser bug must fail open (continue), never escape and kill the loop.
+    try:
+        verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+    except Exception as exc:
+        logger.info("goal judge: parse crashed (%s) — falling through to continue", exc)
+        return "continue", f"judge parse error: {type(exc).__name__}", True, None, False
     logger.info("goal judge: verdict=%s reason=%s%s", verdict, _truncate(reason, 120),
                 f" wait={wait_directive}" if wait_directive else "")
     return verdict, reason, parse_failed, wait_directive, False

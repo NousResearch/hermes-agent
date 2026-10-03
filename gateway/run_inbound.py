@@ -1414,7 +1414,10 @@ class GatewayInboundMixin:
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
                 )
             except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
+                # WARNING, not DEBUG: this except once swallowed the AttributeError that
+                # killed the /goal loop silently (turns_used=0, orphaned active goal) for
+                # hours — a post-turn hook failure is a real event the operator must see.
+                logger.warning("post-turn hook failed: %s", _goal_exc)
             return _agent_result
         finally:
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,

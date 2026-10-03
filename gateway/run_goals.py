@@ -340,7 +340,9 @@ class GatewayGoalsMixin:
             try:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
-                logger.debug("%s hook failed: %s", label, exc)
+                # WARNING, not DEBUG: a goal/loop hook failure once hid the silent death
+                # of the /goal loop for hours (orphaned active goal, turns_used=0).
+                logger.warning("%s hook failed: %s", label, exc)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

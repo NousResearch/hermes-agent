@@ -473,6 +473,19 @@ def _reasoning_heavy_small_turn() -> list[dict]:
     return messages
 
 
+def _plain_text_oversized_region() -> list[dict]:
+    """Over the ceiling, but in plain text rows with no tool-call bodies to summarize."""
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "older request"},
+        {"role": "assistant", "content": "older turn finished"},
+    ]
+    messages.extend({"role": "user", "content": f"note-{index}:" + "n" * 600} for index in range(6))
+    messages.append({"role": "user", "content": "keep going"})
+    messages.extend(_tail_group(0) + _tail_group(1))
+    return messages
+
+
 @pytest.mark.parametrize(
     ("build", "allow_split_turn"),
     [
@@ -481,12 +494,15 @@ def _reasoning_heavy_small_turn() -> list[dict]:
         # Stale thinking never reaches the wire on this route, so the escape must price the
         # region like the walk does (#84371) and not drop a reply that fits (#29824).
         (_reasoning_heavy_small_turn, True),
+        # The escape exists to free tool-call bodies; an over-ceiling region of plain text
+        # rows carries none, so the reply anchor still binds.
+        (_plain_text_oversized_region, True),
     ],
 )
 def test_assistant_anchor_still_binds(
     compressor: ContextCompressor, build, allow_split_turn: bool,
 ) -> None:
-    """The #131412 escape fires only for a wire-oversized region with splitting allowed."""
+    """The #131412 escape fires only for a wire-oversized tool region with splitting allowed."""
     messages = build()
     head_end = compressor._protect_head_size(messages)
 

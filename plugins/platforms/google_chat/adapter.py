@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+from concurrent.futures import ThreadPoolExecutor
 import importlib
 import json
 import logging
@@ -706,8 +707,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 if attempt > 0:
                     logger.info("[GoogleChat] Pub/Sub stream reconnected after %d attempts", attempt)
                 attempt = 0
-                # Blocks until stream dies or cancel(); normal completion = disconnect.
-                await asyncio.to_thread(future.result)
+                # A stream lasts for the connection lifetime. Never park it in
+                # the shared executor: enough profiles would starve gateway I/O.
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="google-chat-stream")
+                try:
+                    await asyncio.get_running_loop().run_in_executor(
+                        executor, contextvars.copy_context().run, future.result)
+                finally:
+                    # Cancellation cannot stop result(); disconnect cancels the
+                    # stream next. Waiting here would deadlock that shutdown.
+                    executor.shutdown(wait=False)
                 if self._shutting_down:
                     return
             except asyncio.CancelledError:

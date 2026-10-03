@@ -310,7 +310,7 @@ class SessionTally:
             ),
             # Messages the conversation added: each user turn, each primary-model reply, each tool result.
             "message_count_bucket": contract.long_size_bucket(self.turns + self.replies + self.tool_calls),
-            "user_turn_count_bucket": contract.long_size_bucket(self.replies),
+            "user_turn_count_bucket": contract.long_size_bucket(self.turns),
             "model_call_count_bucket": contract.long_size_bucket(self.model_calls),
             "tool_call_count_bucket": contract.long_size_bucket(self.tool_calls),
         }

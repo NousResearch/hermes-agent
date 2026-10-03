@@ -156,6 +156,22 @@ def test_a_compressed_conversation_is_one_session_row_with_its_whole_volume(dire
          "user_turn_count_bucket": "3_to_5"}
 
 
+@pytest.mark.parametrize("terminal_result", [{"failed": True}, {"interrupted": True}])
+def test_user_turn_bucket_counts_failed_and_cancelled_turns(direct_runtime, tmp_path, terminal_result):
+    """Every user turn counts even when its pending model call closes without a reply."""
+    _turn("s1", "t1")
+    base = {"session_id": "s1", "task_id": "t2", "provider": "openrouter", "model": PUBLIC}
+    lifecycle.invoke_hook("pre_llm_call", **base, platform="cli")
+    lifecycle.invoke_hook("pre_api_request", **base, api_request_id="t2-r")
+    relay_shared_metrics.finish_task_run(session_id="s1", task_id="t2", platform="cli", result=terminal_result)
+    lifecycle.finalize_session(session_id="s1")
+    _flush()
+
+    [(row, _)] = _stored_values(tmp_path, "hermes.session.count")
+    assert row["turn_count_bucket"] == "2"
+    assert row["user_turn_count_bucket"] == "2"
+
+
 def test_only_compression_joins_segments_and_the_retired_segment_closes_at_hand_off(direct_runtime, tmp_path):
     """A reset / /new / /branch child shares the conversation root (the Portal attribution id) but is a
     new conversation: compressed g1 -> g1c, then two resets give 3 rows by the time the last one closes,

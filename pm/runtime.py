@@ -238,16 +238,26 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
         # Setup has already verified/extracted uv, but there are no PM facts
         # yet. Use it to acquire PM's TLS support BEFORE downloading Python.
         package = get_package("uv")
-        version = Lockfile(lockfile_path()).version("uv")
+        python_package = get_package("python")
+        lockfile = Lockfile(lockfile_path())
         target = current_target()
-        staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
-        if staged is not None and staged.is_file():
-            tools = staged, Path(sys.executable)
-        else:
-            # Non-shell bootstrap callers (CI) already have a host interpreter.
-            tools = _toolchain(explicit=True)
+        uv_version = lockfile.version("uv")
+        python_version = lockfile.version("python")
+        staged_uv = package.binary(store_root() / package.store_entry(uv_version, target), target) if uv_version else None
+        staged_python = (python_package.binary(
+            store_root() / python_package.store_entry(python_version, target), target
+        ) if python_version else None)
+        if (staged_uv is not None and staged_uv.is_file()
+                and staged_python is not None and staged_python.is_file()):
+            # The lock may require a newer Python than the caller currently runs;
+            # select the managed interpreter before uv evaluates that lock.
+            tools = staged_uv, staged_python
     if tools is None:
-        raise InstallError("pm-runtime", "pinned uv and Python are unavailable")
+        raise InstallError(
+            "pm-runtime",
+            "pinned uv and managed Python are unavailable",
+            "run `hermes pm install` to prepare the Python runtime",
+        )
     uv, python = tools
     return prepare_runtime(uv, python, install_state_dir(project) / "pm-runtime",
                            bootstrap=bootstrap, cache=cache)

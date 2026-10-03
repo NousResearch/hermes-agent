@@ -80,6 +80,11 @@ async def test_dispatch_progress_rearms_the_report(caplog):
     caplog.set_level(logging.WARNING)
     with patch.object(adapter, "_schedule_polling_recovery") as sched:
         _receive(adapter, 3)
+        recovery = asyncio.get_running_loop().create_future()  # unrelated recovery in flight
+        adapter._polling_error_task = recovery
+        _heartbeats(adapter, tg_adapter._INGRESS_DISPATCH_STALL_HEARTBEATS + 1)
+        assert sched.call_count == 0  # deferred: a report now would be swallowed by the in-flight guard
+        recovery.set_result(None)
         _heartbeats(adapter, 3)  # 270s: a slow-but-bounded (<=300s) sequential handler is not a wedge
         assert sched.call_count == 0
         _heartbeats(adapter, 2)

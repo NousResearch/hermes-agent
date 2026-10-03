@@ -17,6 +17,7 @@ from typing import Any, Optional
 from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from agent.thread_scoped_output import _ThreadRoutingStream
 
 
 _OPENAI_CLS_CACHE = None
@@ -325,11 +326,20 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
 
 
 def _install_safe_stdio() -> None:
-    """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
+    """Wrap stdout/stderr so best-effort console output cannot crash the agent.
+
+    A routing proxy from ``agent.thread_scoped_output`` is left alone. It swallows
+    write/flush/writelines errors itself, and wrapping it would hide the proxy from
+    ``_ensure_installed``, which then cannot adopt the live proxy and instead installs a
+    fresh generation over the wrapper stack: two more layers per agent build, and console
+    output stops reaching the terminal once the chain is deep enough to trip the recursion
+    limit inside the proxy's write path. This runs on every build and again per subagent.
+    """
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
-            setattr(sys, stream_name, _SafeWriter(stream))
+        if stream is None or isinstance(stream, (_SafeWriter, _ThreadRoutingStream)):
+            continue
+        setattr(sys, stream_name, _SafeWriter(stream))
 
 
 # Drop-in for ``openai.OpenAI``.

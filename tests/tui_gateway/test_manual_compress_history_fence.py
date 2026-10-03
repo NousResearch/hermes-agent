@@ -6,19 +6,11 @@ from unittest.mock import MagicMock
 import pytest
 
 
-@pytest.mark.parametrize("in_place", [False, True])
-@pytest.mark.parametrize("compress_args,stale", [
-    ("", False), ("", True), ("", "validation_error"), ("here 2", True),
-])
-def test_manual_compress_rejects_history_rewritten_before_admission(
-    tmp_path, monkeypatch, caplog, stale, in_place, compress_args,
-):
+def _agent_with_history(tmp_path, monkeypatch, in_place=False):
     from hermes_state import SessionDB
     from run_agent import AIAgent
     from agent.context_compressor import SUMMARY_PREFIX
-    from tui_gateway import server
 
-    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
     db = SessionDB(db_path=tmp_path / "state.db")
     parent = "manual-fence-parent"
     db.create_session(parent, source="cli")
@@ -42,9 +34,21 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
     agent.compression_in_place = in_place
     agent._compression_feasibility_checked = True
     monkeypatch.setattr(agent, "_build_system_prompt", lambda *args, **kwargs: "fixture prompt")
+    return db, agent, parent, before
+
+
+@pytest.mark.parametrize("in_place", [False, True])
+@pytest.mark.parametrize("compress_args,stale", [("", False), ("", True), ("here 2", True)])
+def test_manual_compress_rejects_history_rewritten_before_admission(
+    tmp_path, monkeypatch, caplog, stale, in_place, compress_args,
+):
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    db, agent, parent, before = _agent_with_history(tmp_path, monkeypatch, in_place)
     session = {"agent": agent, "history_lock": threading.Lock(), "history": list(before),
                "history_version": 1, "running": False, "session_key": parent, "cwd": str(tmp_path)}
-    if stale is True:
+    if stale:
         # A real guarded edit wins after the host snapshot but before the durable lease.
         replacement = [{"role": "user", "content": "edited question"},
                        {"role": "assistant", "content": "edited answer"}]
@@ -59,25 +63,12 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
 
         monkeypatch.setattr(db, "try_acquire_compression_lock", edit_then_acquire)
     try:
-        if stale == "validation_error":
-            from agent.conversation_compression_manual import compress_now, parse_compress_args
-
-            def fail_validation():
-                assert db.get_compression_lock_holder(parent) is not None
-                raise RuntimeError("validation failed")
-
-            with pytest.raises(RuntimeError, match="validation failed"):
-                compress_now(agent, before, parse_compress_args(compress_args), snapshot_is_current=fail_validation)
-            assert db.get_compression_lock_holder(parent) is None
-            assert agent.session_id == parent
-            assert db.get_messages_as_conversation(parent) == before
-            return
         with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
             removed, _ = server._compress_session_history(
                 session, focus_topic=compress_args, before_messages=before, history_version=1,
             )
         assert db.get_compression_lock_holder(parent) is None
-        if stale is True:
+        if stale:
             assert removed == 0
             assert agent.session_id == parent, "stale compression rotated the live agent"
             assert db.find_live_compression_child(parent) is None
@@ -90,6 +81,26 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
             assert removed > 0
             assert (agent.session_id == parent) is in_place
             assert (db.find_live_compression_child(parent) is None) is in_place
+    finally:
+        agent.close()
+        db.close()
+
+
+def test_manual_compress_releases_lease_when_snapshot_check_raises(tmp_path, monkeypatch):
+    from agent.conversation_compression_manual import compress_now, parse_compress_args
+
+    db, agent, parent, before = _agent_with_history(tmp_path, monkeypatch)
+
+    def fail_validation():
+        assert db.get_compression_lock_holder(parent) is not None
+        raise RuntimeError("validation failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="validation failed"):
+            compress_now(agent, before, parse_compress_args(""), snapshot_is_current=fail_validation)
+        assert db.get_compression_lock_holder(parent) is None
+        assert agent.session_id == parent
+        assert db.get_messages_as_conversation(parent) == before
     finally:
         agent.close()
         db.close()

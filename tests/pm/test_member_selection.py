@@ -87,3 +87,25 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_workspace_member_excludes_plugin_dev_extra(tmp_path):
+    """Test-only plugin pins must not participate in the runtime workspace lock."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "runtime-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "runtime-plugin"\nversion = "1.0"\n'
+        'dependencies = ["runtime-dep"]\n'
+        '[project.optional-dependencies]\ndev = ["pytest<9"]\nfeature = ["feature-dep"]\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    member = _workspace_member(plugin, root, identity=plugin)
+    optional = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+
+    assert optional == {"feature": ["feature-dep"]}

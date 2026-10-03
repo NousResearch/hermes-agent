@@ -9,7 +9,7 @@ import time
 import types
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -7956,6 +7956,88 @@ class _RecordingAgent:
     def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
+
+
+@pytest.mark.parametrize("path", ["live", "shutdown", "post_turn"])
+@pytest.mark.parametrize("outcome", ["closing", "replacement", "accepted"])
+def test_notification_receipt_requires_accepted_turn(monkeypatch, tmp_path, path, outcome):
+    """A real refusal must leave the durable result unclaimed and retryable."""
+    import queue
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "delivery.db")
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    for name in ("_poll_bot_live_delivery_once", "_maybe_fire_tui_loop_tick",
+                 "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
+        monkeypatch.setattr(server, name, lambda *_args: None)
+    turns = []
+    session = _session(agent=_RecordingAgent(turns), _closing=outcome == "closing")
+    monkeypatch.setitem(server._sessions, "receipt-sid", {} if outcome == "replacement" else session)
+    event = {
+        "type": "async_delegation", "delegation_id": "receipt-delegation",
+        "origin_ui_session_id": "receipt-sid", "session_key": session["session_key"],
+        "status": "completed", "results": [{"status": "completed", "summary": "done"}],
+    }
+    ad._persist_dispatch({**event, "dispatched_at": time.time()})
+    ad._persist_completion(event, {"status": "completed"})
+    pending = queue.Queue()
+    pending.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", pending)
+
+    if path == "post_turn":
+        server._run_post_turn_followups("receipt-rid", "receipt-sid", session, {}, None)
+    else:
+        if path == "shutdown":
+            stop = threading.Event()
+            stop.set()
+        else:
+            stop = _StopAfterOneNotificationPoll()
+        server._notification_poller_loop(stop, "receipt-sid", session)
+
+    assert bool(turns) is (outcome == "accepted")
+    assert session["running"] is False
+    with ad._transaction() as conn:
+        state, claim = conn.execute(
+            "SELECT delivery_state, delivery_claim FROM async_delegations WHERE delegation_id=?",
+            (event["delegation_id"],),
+        ).fetchone()
+    assert state == ("delivered" if outcome == "accepted" else "pending")
+    assert claim is None
+    retry = ad.claim_event_delivery(event, "retry-probe")
+    if outcome == "accepted":
+        assert retry is None
+    else:
+        assert retry
+        ad.release_event_delivery(event, retry)
+
+
+@pytest.mark.parametrize("outcome", ["closing", "replacement", "accepted", "suppressed"])
+def test_completion_batch_receipt_requires_acceptance_or_suppression(monkeypatch, tmp_path, outcome):
+    """Process batches have no durable row, but must still release refused claims."""
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    turns = []
+    session = _session(agent=_RecordingAgent(turns), _closing=outcome == "closing")
+    monkeypatch.setitem(server._sessions, "batch-receipt-sid", {} if outcome == "replacement" else session)
+    events = [{"type": "completion", "session_id": f"receipt-proc-{i}"} for i in range(2)]
+    monkeypatch.setattr(process_registry, "_completion_consumed",
+                        {e["session_id"] for e in events} if outcome == "suppressed" else set())
+    completed = Mock(wraps=ad.complete_event_delivery)
+    released = Mock(wraps=ad.release_event_delivery)
+    monkeypatch.setattr(ad, "complete_event_delivery", completed)
+    monkeypatch.setattr(ad, "release_event_delivery", released)
+    server._notif_dispatch_completions(
+        "batch-receipt-sid", session, [(e, e["session_id"]) for e in events], process_registry, [])
+
+    assert bool(turns) is (outcome == "accepted")
+    assert session["running"] is False
+    acknowledged = outcome in {"accepted", "suppressed"}
+    assert completed.call_args_list == ([call(e, "") for e in events] if acknowledged else [])
+    assert released.call_args_list == ([] if acknowledged else [call(e, "") for e in events])
 
 
 def test_run_prompt_submit_rejects_worker_when_close_wins_publication(

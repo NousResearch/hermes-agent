@@ -447,7 +447,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['compose'],
-    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
+    help: 'compose your next prompt in $EDITOR (same as Cmd/Ctrl+G, Alt+G fallback)',
     name: 'prompt',
     run: (arg, ctx) => {
       if (arg) {

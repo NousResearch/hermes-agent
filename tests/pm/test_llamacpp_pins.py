@@ -27,3 +27,35 @@ def test_llamacpp_backends_have_pins_for_their_supported_targets():
             if backend == "cuda":
                 assert len(artifacts) == 2
                 assert any("cudart-" in a["url"] for a in artifacts)
+
+
+def test_llamacpp_cuda_infix_tracks_the_release_not_a_hardcode(monkeypatch):
+    """Upstream renames the CUDA line between tags (b10964 built 13.3-x64;
+    b11370 moved to 13.4-x64). The infix must come from the release's asset
+    list, not a hardcoded string, or the pin step 404s the moment it moves."""
+    from pm import packages
+
+    # Offline: the release index is unavailable, so the static default holds.
+    monkeypatch.setattr(packages, "_github_release_digests", lambda *a, **k: {})
+    monkeypatch.setattr(packages, "_cuda_infix_cache", {})
+    cuda = pm.get_package("llamacpp-cuda")
+    assert cuda._asset_names("11370", "win32-x64")[0].endswith("win-cuda-13.4-x64.zip")
+
+    # With the release's assets visible, the advertised infix wins even when
+    # it differs from the static default -- and the newest CUDA line wins when
+    # a tag ships several (b11370 carries both 12.4 and 13.4 for x64).
+    monkeypatch.setattr(
+        packages,
+        "_github_release_digests",
+        lambda *a, **k: {
+            "llama-b99999-bin-win-cuda-99.9-x64.zip": "0" * 64,
+            "llama-b99999-bin-win-cuda-88.8-x64.zip": "0" * 64,
+            # a non-cuda archive for the same arch must not match
+            "llama-b99999-bin-win-cpu-x64.zip": "0" * 64,
+        },
+    )
+    monkeypatch.setattr(packages, "_cuda_infix_cache", {})
+    assert cuda._asset_names("99999", "win32-x64") == [
+        "llama-b99999-bin-win-cuda-99.9-x64.zip",
+        "cudart-llama-bin-win-cuda-99.9-x64.zip",
+    ]

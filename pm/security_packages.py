@@ -121,7 +121,9 @@ class IronProxy(_SignedBinary):
         # Linux releases are built with CGO_ENABLED=0, so the same signed
         # archive is portable across glibc and musl userlands.
         lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
-        platform, arch = lookup_target.split("-")
+        # Targets are "<platform>-<arch>" optionally followed by a libc suffix
+        # (e.g. "linux-arm64-bionic"), so only the first two fields matter.
+        platform, arch = lookup_target.split("-")[:2]
         arch = "amd64" if arch == "x64" else arch
         return f"https://github.com/paradigmxyz/iron-proxy/releases/download/v{version}/iron-proxy_{version}_{platform}_{arch}.tar.gz"
 

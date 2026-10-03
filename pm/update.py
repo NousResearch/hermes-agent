@@ -466,9 +466,15 @@ def btbn_versions(target: str) -> list[str]:
 
 
 def pbs_versions(minor: str, triple: str) -> list[str]:
-    """Return the exact interpreter identity advertised by the newest matching release."""
-    for page in range(1, 3):
-        data = _get_json(f"https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=30&page={page}")
+    """Return the exact interpreter identity advertised by the newest matching release.
+
+    Pages are kept small on purpose: python-build-standalone carries ~600
+    assets per release, so `per_page=30` is a ~50 MB response that GitHub's
+    API gateway times out on (504). `per_page=5` is ~8 MB and reliable; the
+    extra pages cost little against an authenticated 5000/hr budget.
+    """
+    for page in range(1, 13):
+        data = _get_json(f"https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=5&page={page}")
         if not data:
             break
         for release in data:
@@ -482,6 +488,6 @@ def pbs_versions(minor: str, triple: str) -> list[str]:
                 match = re.fullmatch(pattern, asset.get("name", ""))
                 if match:
                     return [match.group(1)]
-        if len(data) < 30:
+        if len(data) < 5:
             break
     return []

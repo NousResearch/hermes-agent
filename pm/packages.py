@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from pm.update import (
     node_latest_versions,
     npm_dist_tags,
     pbs_versions,
+    version_key,
 )
 
 LOG = logging.getLogger(__name__)
@@ -214,6 +216,11 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Bionic is a manual pin from the termux repo, which lags astral's
+        # releases (and builds uv from source). Resolving it against the
+        # upstream tags produces a .deb url termux does not ship -> 404.
+        if target == "linux-arm64-bionic":
+            return []
         return github_release_tags("astral-sh/uv")
 
 
@@ -477,6 +484,11 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Bionic is a manual pin from the termux repo, whose nodejs .deb
+        # carries a `-1` revision and lags nodejs.org. Resolving it against
+        # the upstream release list produces a url termux does not ship.
+        if target == "linux-arm64-bionic":
+            return []
         # Keep one Node version across targets. If unofficial musl publication
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
@@ -644,9 +656,13 @@ class Git(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         tag, build = version.split("+")
         arch = "arm64" if target.endswith("arm64") else "64-bit"
+        # The asset filename drops the build suffix on the first build of a
+        # release (v2.56.0.windows.1 -> PortableGit-2.56.0-64-bit.7z.exe) but
+        # keeps it from the second on (v2.55.0.windows.5 -> ...2.55.0.5...).
+        ver = tag if build == "1" else f"{tag}.{build}"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
+            f"v{tag}.windows.{build}/PortableGit-{ver}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -712,7 +728,9 @@ class Gh(BinaryPackage):
         # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
         # so the generic Linux archive is libc-independent.
         lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
-        osname, arch = lookup_target.split("-")
+        # Targets are "<osname>-<arch>" optionally followed by a libc suffix
+        # (e.g. "linux-arm64-bionic"), so only the first two fields matter.
+        osname, arch = lookup_target.split("-")[:2]
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"
@@ -1137,6 +1155,9 @@ def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
 _release_digest_cache: dict[tuple, dict] = {}
 
 
+_cuda_infix_cache: dict[tuple[str, str], str] = {}
+
+
 @register
 class LlamaCppCuda(LlamaCpp):
     """Windows only: upstream publishes no prebuilt Linux CUDA archive at
@@ -1144,17 +1165,71 @@ class LlamaCppCuda(LlamaCpp):
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
+    # Upstream renames the CUDA line between tags (b10964 built 13.3-x64;
+    # b11370 moved to 13.4-x64), so the infix is read from the release's own
+    # asset list rather than hardcoded -- a stale line here 404s the whole
+    # pin step. These defaults are the offline fallback and track the newest
+    # upstream line.
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
+
+    def _cuda_infix(self, version: str, target: str) -> str:
+        """The `win-cuda-<line>-<arch>` infix upstream built for this tag.
+
+        Upstream renames the CUDA line between tags (b10964 built 13.3-x64;
+        b11370 moved to 13.4-x64), so a hardcoded infix 404s the whole pin
+        step as soon as upstream moves. Resolution order: the lock's own pin
+        (authoritative for an already-locked version, and the offline path
+        tests take), then the release's asset list, then the static default.
+        """
+        default = self.assets[target]
+        arch = default.rsplit("-", 1)[-1]
+        key = (version, arch)
+        if key not in _cuda_infix_cache:
+            _cuda_infix_cache[key] = (
+                self._locked_infix(version, target)
+                or self._release_infix(version, arch)
+                or default
+            )
+        return _cuda_infix_cache[key]
+
+    def _locked_infix(self, version: str, target: str) -> str:
+        """The full `win-cuda-<line>-<arch>` infix the lock pins for this version."""
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path
+
+        lock = Lockfile(lockfile_path())
+        if lock.version(self.name) != version:
+            return ""
+        pattern = re.compile(rf"llama-b{re.escape(version)}-bin-(win-cuda-.+)\.zip")
+        for row in lock.artifacts(self.name, target):
+            match = pattern.fullmatch(row["url"].rsplit("/", 1)[-1])
+            if match:
+                return match.group(1)
+        return ""
+
+    def _release_infix(self, version: str, arch: str) -> str:
+        """The newest `win-cuda-<line>-<arch>` infix the release advertises.
+
+        Constrained to `win-cuda-` (the release also ships `win-cpu-` and
+        `win-vulkan-` for the same arch) and taking the highest CUDA line,
+        since a tag can carry both, e.g. 12.4 and 13.4 for x64."""
+        head, tail = f"llama-b{version}-bin-win-cuda-", f"-{arch}.zip"
+        infixes = [
+            name[len(f"llama-b{version}-bin-") : -len(".zip")]
+            for name in _github_release_digests("ggml-org/llama.cpp", f"b{version}")
+            if name.startswith(head) and name.endswith(tail)
+        ]
+        return max(infixes, key=version_key, default="")
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
+        infix = self._cuda_infix(version, target)
+        cudart = infix.removeprefix("win-cuda-")
+        return [
+            f"llama-b{version}-bin-{infix}.zip",
+            f"cudart-llama-bin-win-cuda-{cudart}.zip",
         ]
 
 

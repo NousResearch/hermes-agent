@@ -54,6 +54,11 @@ def _make_adapter() -> TelegramAdapter:
 # ===========================================================================
 
 class TestRegisterPlatformHandlerAPI:
+    def test_reload_safe_must_be_boolean(self):
+        _, ctx = _make_ctx()
+        with pytest.raises(ValueError, match="non-boolean reload_safe"):
+            ctx.register_platform_handler("telegram", lambda n, a: None, reload_safe=1)
+
     def test_factory_is_queued_with_plugin_name(self):
         mgr, ctx = _make_ctx()
 
@@ -132,6 +137,56 @@ class TestTelegramAlias:
 # ===========================================================================
 
 class TestAdapterPluginWiring:
+    def test_reload_safe_generation_rewires_after_owned_unload(self):
+        adapter = _make_adapter()
+        adapter._app.callbacks = []
+        wire_count = 0
+
+        def factory(native, adp):
+            nonlocal wire_count
+            wire_count += 1
+            native.callbacks.append(adp)
+
+        mgr, ctx = _make_ctx()
+        ctx.register_platform_handler("telegram", factory, reload_safe=True)
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            adapter._wire_plugin_handlers(adapter._app)
+            adapter._wire_plugin_handlers(adapter._app)
+            assert wire_count == 1
+
+            assert mgr.unload("test_plugin")
+            adapter._app.callbacks.clear()  # The plugin's unload callback owns this cleanup.
+            PluginContext(ctx.manifest, mgr).register_platform_handler(
+                "telegram", factory, reload_safe=True,
+            )
+            adapter._wire_plugin_handlers(adapter._app)
+            adapter._wire_plugin_handlers(adapter._app)
+
+        assert wire_count == 2
+        assert adapter._app.callbacks == [adapter]
+
+    def test_legacy_factory_keeps_qualname_deduplication_after_reload(self):
+        adapter = _make_adapter()
+        calls = []
+
+        def make_factory():
+            def factory(native, adp):
+                calls.append((native, adp))
+
+            return factory
+
+        mgr, ctx = _make_ctx()
+        ctx.register_platform_handler("telegram", make_factory())
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            adapter._wire_plugin_handlers(adapter._app)
+            mgr._platform_handler_factories["telegram"].clear()
+            PluginContext(ctx.manifest, mgr).register_platform_handler(
+                "telegram", make_factory(),
+            )
+            adapter._wire_plugin_handlers(adapter._app)
+
+        assert calls == [(adapter._app, adapter)]
+
     def test_factory_invoked_with_native_and_adapter(self):
         adapter = _make_adapter()
         calls = []

@@ -197,6 +197,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
     from agent.skill_commands import _inject_skill_config
     from agent.skill_utils import normalize_skill_lookup_name
+    from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
     parts: list[str] = []
@@ -231,6 +232,17 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
                 loaded.get("error") or f"Failed to load skill '{skill_name}'")
             continue
 
+        # The prompt carries only the skill index entry, but this read still
+        # crosses the cron execution boundary. Scan the body here so deferred
+        # loading cannot bypass cron's injection guard.
+        _, scan_error = _scan_cron_skill_assembled(str(loaded.get("content") or ""))
+        if scan_error:
+            logger.warning(
+                "Cron job '%s': loaded skill '%s' blocked by injection scanner — %s",
+                job_label, skill_name, scan_error,
+            )
+            raise _sched.CronPromptInjectionBlocked(scan_error)
+
         try:
             bump_use(skill_name, task_id=task_id)
         except Exception:
@@ -238,10 +250,11 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
 
         if parts:
             parts.append("")
+        description = str(loaded.get("description") or "").strip()
         parts.extend([
-            f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
-            "",
-            str(loaded.get("content") or "").strip()])
+            f'[The "{skill_name}" skill is available for this job. Use skill_view(name="{normalize_skill_lookup_name(skill_name)}") to load its instructions when needed.]',
+            f"Description: {description}" if description else "",
+        ])
         _inject_skill_config(loaded, parts)
 
     if skipped:

@@ -250,8 +250,14 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
     values so the agent needn't read config.yaml. Any failure leaves the message without it."""
     try:
         from agent.skill_utils import extract_skill_config_vars, parse_frontmatter, resolve_skill_config_values
-        raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
-        frontmatter, _ = parse_frontmatter(raw_content)
+        raw_content = loaded_skill.get("raw_content")
+        if raw_content:
+            frontmatter, _ = parse_frontmatter(str(raw_content))
+        else:
+            # ``skill_view`` returns metadata without the full frontmatter. Keep
+            # config injection working for callers that intentionally defer the
+            # skill body, such as scheduled cron prompts.
+            frontmatter = {"metadata": loaded_skill.get("metadata") or {}}
         resolved = resolve_skill_config_values(extract_skill_config_vars(frontmatter))
         if not resolved:
             return

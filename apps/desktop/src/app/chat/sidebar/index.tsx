@@ -1595,7 +1595,7 @@ export function ChatSidebar({
       data-tour="sessions-sidebar"
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
-        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
+        <SidebarGroup className="shrink-0 p-0 pb-0 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
               {navItems.map(item => {
@@ -1733,7 +1733,7 @@ export function ChatSidebar({
         <SidebarStorageCorruptNotice />
 
         {showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          <div className="shrink-0 px-2 pb-1.5 pt-1">
             <SearchField
               aria-label={s.searchAria}
               inputRef={searchInputRef}
@@ -2064,17 +2064,20 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && cronJobs.length > 0 && (
-              <SidebarCronJobsSection
-                jobs={cronJobs}
-                label={s.cronJobs}
-                onManageJob={onManageCronJob}
-                onOpenRun={onResumeSession}
-                onToggle={() => setSidebarCronOpen(!cronOpen)}
-                onTriggerJob={onTriggerCronJob}
-                open={cronOpen}
-              />
-            )}
+          </div>
+        )}
+
+        {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && cronJobs.length > 0 && (
+          <div className="shrink-0 px-0.5 pt-3.5">
+            <SidebarCronJobsSection
+              jobs={cronJobs}
+              label={s.cronJobs}
+              onManageJob={onManageCronJob}
+              onOpenRun={onResumeSession}
+              onToggle={() => setSidebarCronOpen(!cronOpen)}
+              onTriggerJob={onTriggerCronJob}
+              open={cronOpen}
+            />
           </div>
         )}
 

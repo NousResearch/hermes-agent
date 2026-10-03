@@ -291,8 +291,25 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     for base in _hermes_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
-                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                protected = os.path.realpath(os.path.join(str(base), sub))
+                if not _is_under(resolved, protected):
+                    continue
+                if sub == "vault" and resolved in {
+                    os.path.realpath(os.path.join(protected, "vault.key")),
+                    os.path.realpath(os.path.join(protected, "vault.json.enc")),
+                }:
                     return "credential"
+                # ``vault/`` is also a conventional name for user content (for
+                # example an Obsidian vault). Treat it as Hermes credential
+                # storage only when its credential markers are present; this
+                # preserves protection for an existing vault without making the
+                # directory name alone a write deny.
+                if sub == "vault" and not any(
+                    os.path.isfile(os.path.join(protected, marker))
+                    for marker in ("vault.key", "vault.json.enc")
+                ):
+                    continue
+                return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -398,9 +415,15 @@ def get_read_block_error(path: str) -> Optional[str]:
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
             for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if _is_under(resolved, blocked_dir):
-                    reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
-                    break
+                if not _is_under(resolved, blocked_dir):
+                    continue
+                if subdir == "vault" and not any(
+                    os.path.isfile(blocked_dir / marker)
+                    for marker in ("vault.key", "vault.json.enc")
+                ):
+                    continue
+                reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
+                break
             if reason:
                 break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:

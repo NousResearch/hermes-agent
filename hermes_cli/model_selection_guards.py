@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
+from agent.backend_identity import same_route
 from agent.models_dev import ModelInfo
 
 
@@ -31,25 +32,51 @@ class SelectionContext:
     stay silent."""
 
     context_tokens: Optional[int] = None
+    # Which class of evidence ``context_tokens`` is. The names are the switch summary's
+    # (``context_switch_guard.SIZE_FROM_*``) because both surfaces describe one assessment: only a
+    # provider reading taken on this session's own route is a context size, a display seed is a
+    # local estimate, and the session prompt counter is a cumulative total.
+    context_tokens_source: str = "measured"
     current_model: Optional[str] = None
+    # The rest of the route the session is on. A model string alone cannot tell a reselect of the
+    # warm deployment from an endpoint or alias move onto a different one, and the two answers
+    # differ, so the surface supplies the whole route and the guard resolves it the way the switch
+    # summary does.
+    current_provider: Optional[str] = None
+    current_base_url: Optional[str] = None
 
 
 def selection_context_for_agent(agent: object) -> Optional[SelectionContext]:
-    """:class:`SelectionContext` from a live ``AIAgent``: the compressor's measured
-    ``last_prompt_tokens`` (what the provider billed on the latest turn), else the session prompt
-    counter. ``None`` when no live size is known — the guard then stays silent rather than guess."""
+    """:class:`SelectionContext` from a live ``AIAgent``: how much conversation the switch abandons,
+    the route it was taken on, and the evidence the figure came from — the compressor's provider
+    reading (``last_real_prompt_tokens``, what the latest turn was billed) is a measurement, the
+    display seed written from a local estimate is an estimate, and the session prompt counter is a
+    cumulative total. ``None`` when no size is known — the guard then stays silent rather than
+    guess."""
     if agent is None:
         return None
+    source = "measured"
     try:
         cc = getattr(agent, "context_compressor", None)
-        tokens = int(getattr(cc, "last_prompt_tokens", 0) or 0) if cc else 0
+        tokens = int(getattr(cc, "last_real_prompt_tokens", 0) or 0) if cc else 0
+        if tokens <= 0:
+            # ``update_model`` clears the real reading, so a seed written afterwards
+            # (``maybe_seed_preflight_display_tokens``) is the compressor's only figure and it states
+            # a local estimate. Only then does the session counter stand in, and as a total, not a
+            # size.
+            tokens = int(getattr(cc, "last_prompt_tokens", 0) or 0) if cc else 0
+            source = "estimate" if tokens > 0 else "counter"
         if tokens <= 0:
             tokens = int(getattr(agent, "session_prompt_tokens", 0) or 0)
     except Exception:
-        tokens = 0
+        tokens, source = 0, "measured"
     if tokens <= 0:
         return None
-    return SelectionContext(context_tokens=tokens, current_model=getattr(agent, "model", "") or None)
+    return SelectionContext(
+        context_tokens=tokens, context_tokens_source=source,
+        current_model=getattr(agent, "model", "") or None,
+        current_provider=getattr(agent, "provider", "") or None,
+        current_base_url=getattr(agent, "base_url", "") or None)
 
 
 def _wrap(kind: str, title: str, warning, model_name: str, provider: Optional[str]):
@@ -104,24 +131,49 @@ def _context_cache_guard(
     model_name: str, provider: Optional[str], base_url: Optional[str], api_key: Optional[str],
     model_info: Optional[ModelInfo], ctx: Optional[SelectionContext] = None) -> Optional[SelectionWarning]:
     """Confirm a mid-session switch that abandons a large cached context. Fires only when the surface
-    supplied live facts showing the active context at/above the threshold; smaller sessions, sessions
-    with no measured size and same-model re-selects (cache stays warm) are silent."""
+    supplied live facts showing the session at/above the threshold; smaller sessions, sessions with
+    no size at all and a reselect of the deployment the session already runs on (cache stays warm)
+    are silent. The figure is quoted with the evidence class it was read from — a display seed or a
+    session total is not the size of what the next reply re-reads — and the cost of the move is
+    stated as the condition it is, because nothing here observes whether the provider still holds a
+    cache for this session or how it bills a re-read."""
     if ctx is None or not ctx.context_tokens:
         return None
     target = (model_name or "").strip()
-    current = (ctx.current_model or "").strip()
-    if not target or (current and target == current):
+    if not target:
+        return None
+    # Whether this is a switch at all is the *resolved* transition — model, provider label and
+    # endpoint — not the model string on its own, and it is asked through the same owner the switch
+    # summary reads (``agent.backend_identity.same_route``): an endpoint-only move under one label is
+    # another route, and two aliases at one URL and model are the deployment that already served the
+    # session. Resolving it independently here is what let the two screens describe one transition
+    # two ways.
+    if same_route(
+            old_model=(ctx.current_model or "").strip(),
+            old_provider=(ctx.current_provider or "").strip(),
+            old_base_url=(ctx.current_base_url or "").strip(),
+            new_model=target, new_provider=(provider or "").strip(),
+            new_base_url=(base_url or "").strip()):
         return None
     threshold = _context_cache_threshold()
     tokens = int(ctx.context_tokens)
     if threshold <= 0 or tokens < threshold:
         return None
+    # The size sentence is the summary's, quoted through the same evidence contract: a provider
+    # reading for this session's own route is the context size, and anything weaker says what it is
+    # instead of claiming to be what the next reply re-reads.
+    from hermes_cli.context_switch_guard import SIZE_FROM_MEASURED, size_label
+
+    size = (f"This session holds ~{tokens:,} tokens of context."
+            if ctx.context_tokens_source == SIZE_FROM_MEASURED
+            else f"{size_label(tokens, ctx.context_tokens_source)}.")
     message = "\n".join([
         "!!! LARGE CONTEXT MODEL SWITCH !!!",
         "",
-        f"This session holds ~{tokens:,} tokens of context.",
-        f"Switching to {target} makes the next reply re-read all of it uncached (providers key "
-        "prompt caches per model) — a one-time full-price input cost.",
+        size,
+        f"Switching to {target} moves off the route this session was served on (providers key prompt "
+        f"caches per model), so if {target} has not served it there is no warm prefix cache and the "
+        f"next reply reads the conversation as uncached input.",
         "",
         f"Threshold: model.switch_context_confirm_tokens (currently {threshold:,}; 0 disables this check).",
         "Confirm only if you intend to switch now."])

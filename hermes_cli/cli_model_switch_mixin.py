@@ -95,22 +95,63 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
         return None
 
 
+def _configured_route_facts() -> dict:
+    """The configured model route — and the context pin that belongs to it — read from config.
+
+    Used when no live agent can supply them: with agentless history the pin must still be scoped to
+    the route it was written for, and ``custom_providers`` is what resolves a destination's declared
+    window. Best-effort; a caller with a live agent takes the facts from the agent instead.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+
+        cfg = load_config() or {}
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+        facts: dict = {"custom_providers": get_compatible_custom_providers(cfg)}
+        if isinstance(model_cfg, dict):
+            facts.update(
+                config_context_length=model_cfg.get("context_length"),
+                configured_model=model_cfg.get("default") or model_cfg.get("model"),
+                configured_provider=model_cfg.get("provider"),
+                configured_base_url=model_cfg.get("base_url"))
+        return facts
+    except Exception:
+        return {}
+
+
 def _merge_preflight_warning(cli, result, custom_providers) -> None:
-    """Fold the context-compression preflight warning into ``result`` (fail-soft)."""
+    """Fold the context-compression preflight warning into ``result`` (fail-soft).
+
+    A resumed session has its transcript restored while the agent is built lazily on the next turn,
+    so the switch still costs the destination a re-read of history that outlives any live agent.
+    That window is assessed from the transcript with the configured route facts standing in for the
+    agent's, instead of skipping the warning with the agent that is not there yet.
+    """
     from cli import logger
-    if cli.agent is None:
-        return
+    agent = cli.agent
+    messages = list(cli.conversation_history or [])
+    facts: dict = {}
+    if agent is None:
+        if not messages:
+            return
+        facts = _configured_route_facts()
+        if custom_providers is None:
+            custom_providers = facts.pop("custom_providers", None)
     try:
         from hermes_cli.context_switch_guard import merge_preflight_compression_warning
         # Prefer the fresh inventory list (same source as switch_model / TUI); fall back
         # to the agent-init snapshot.
         merge_preflight_compression_warning(
             result,
-            agent=cli.agent,
-            messages=list(cli.conversation_history or []),
+            agent=agent,
+            messages=messages,
             custom_providers=custom_providers if custom_providers is not None
-            else getattr(cli.agent, "_custom_providers", None),
-            config_context_length=getattr(cli.agent, "_config_context_length", None))
+            else getattr(agent, "_custom_providers", None),
+            config_context_length=(getattr(agent, "_config_context_length", None) if agent is not None
+                                   else facts.get("config_context_length")),
+            configured_model=facts.get("configured_model"),
+            configured_provider=facts.get("configured_provider"),
+            configured_base_url=facts.get("configured_base_url"))
     except Exception as exc:
         logger.debug("preflight-compression switch warning failed: %s", exc)
 

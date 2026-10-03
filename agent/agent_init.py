@@ -1986,6 +1986,50 @@ def _compressor_max_tokens(agent):
     return None
 
 
+def _build_builtin_engine(agent, cs: CompressionSettings, _custom_providers, _effective_context_length):
+    """Construct the built-in ``ContextCompressor`` these settings describe.
+
+    One owner for the construction, so a caller that has to state the policy without an agent
+    (``resolve_installed_compression_policy``) cannot drift from what the initializer installs.
+    """
+    return ContextCompressor(
+        model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
+        protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
+        summary_model_override=None, quiet_mode=agent.quiet_mode, base_url=agent.base_url,
+        api_key=getattr(agent, "api_key", ""), config_context_length=_effective_context_length,
+        provider=agent.provider, api_mode=agent.api_mode,
+        abort_on_summary_failure=cs.abort_on_summary_failure,
+        max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
+        threshold_tokens_cap=cs.threshold_tokens,
+        proactive_prune_tokens=cs.proactive_prune_tokens,
+        proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
+        proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
+        min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+        custom_providers=_custom_providers,
+    )
+
+
+def resolve_installed_compression_policy(agent, _agent_cfg, context_length, custom_providers=None):
+    """``(enabled, installed trigger)`` a built-in engine would install for this destination.
+
+    Same parser (``_parse_compression_config``) and same construction the initializer uses, so a
+    caller with no live engine — a switch warning about a session with no resident agent — states
+    the policy the runtime will actually install instead of re-deriving one from the raw section:
+    normalized flags and caps, Codex model adjustments and the native-Gemini output reservation all
+    come out of those producers. ``None`` when an external context engine owns compaction for this
+    config, where the built-in trigger does not describe the destination at all.
+
+    The auxiliary-summariser ceiling is a runtime feasibility probe and is not part of construction,
+    so it is not included here; a caller that can observe the live engine's retained ceiling applies
+    that itself, and one that cannot must qualify the figure rather than call it exact.
+    """
+    if _select_context_engine(_agent_cfg) is not None:
+        return None
+    cs = _parse_compression_config(agent, _agent_cfg)
+    engine = _build_builtin_engine(agent, cs, custom_providers, context_length)
+    return bool(cs.enabled), int(getattr(engine, "threshold_tokens", 0) or 0)
+
+
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
@@ -2013,21 +2057,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
-        agent.context_compressor = ContextCompressor(
-            model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
-            protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
-            summary_model_override=None, quiet_mode=agent.quiet_mode, base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""), config_context_length=_effective_context_length,
-            provider=agent.provider, api_mode=agent.api_mode,
-            abort_on_summary_failure=cs.abort_on_summary_failure,
-            max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
-            threshold_tokens_cap=cs.threshold_tokens,
-            proactive_prune_tokens=cs.proactive_prune_tokens,
-            proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
-            proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
-            min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
-            custom_providers=_custom_providers,
-        )
+        agent.context_compressor = _build_builtin_engine(
+            agent, cs, _custom_providers, _effective_context_length)
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         with suppress(Exception):

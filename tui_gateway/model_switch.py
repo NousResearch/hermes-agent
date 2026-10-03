@@ -234,13 +234,23 @@ def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) ->
     """Fold the context-compression preflight warning into ``result`` (best-effort)."""
     try:
         from hermes_cli.context_switch_guard import merge_preflight_compression_warning
-        cfg_ctx = None
+        cfg_ctx = configured_model = configured_provider = configured_base_url = None
         mc = cfg.get("model", {}) if isinstance(cfg, dict) else None
-        if isinstance(mc, dict) and mc.get("context_length") is not None:
-            cfg_ctx = int(mc["context_length"])
+        if isinstance(mc, dict):
+            if mc.get("context_length") is not None:
+                cfg_ctx = int(mc["context_length"])
+            # The context pin belongs to the configured route, so it may only speak for a
+            # destination that route still describes. Without the route facts an agentless
+            # assessment keeps the old model's pin, which outranks the destination's own metadata
+            # and suppresses the cost note for a session the destination really has to re-read.
+            configured_model = mc.get("default") or mc.get("model")
+            configured_provider = mc.get("provider")
+            configured_base_url = mc.get("base_url")
         merge_preflight_compression_warning(
             result, agent=agent, messages=list(session.get("history", [])),
-            custom_providers=custom_provs, config_context_length=cfg_ctx)
+            custom_providers=custom_provs, config_context_length=cfg_ctx,
+            configured_model=configured_model, configured_provider=configured_provider,
+            configured_base_url=configured_base_url)
     except Exception as exc:
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
@@ -322,7 +332,11 @@ def _apply_model_switch(
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
-    if agent:
+    # The assessment is history-driven, not residency-driven: a session whose agent slot is empty
+    # (an explicit ``--provider`` pick skips the build above) still has the conversation the new
+    # route re-reads, and the guard can size it from that history. Gating this on ``agent`` is what
+    # left the primary Desktop/TUI surface printing an empty warning on a live large session.
+    if agent or session.get("history"):
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:
         confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)

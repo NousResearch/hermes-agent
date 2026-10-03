@@ -124,6 +124,40 @@ _SCOPE_PREDICATES = {
 }
 
 
+def same_route(
+    *, old_model: str, old_provider: str, old_base_url: str,
+    new_model: str, new_provider: str, new_base_url: str,
+    provider_changed: bool = False,
+) -> bool:
+    """Whether a switch between two (provider, model, endpoint) triples stays on one route.
+
+    ``same_deployment`` answers "would retrying this repeat the failure"; a route asks the weaker
+    question the prompt cache asks — is this still the deployment the session already warmed? The
+    endpoint is the deployment fact and the label is the weaker one: an explicit URL that moved is
+    another route whatever the labels say, and a label-only difference is settled by
+    :func:`same_deployment` (two custom aliases at one URL *and* model are one deployment, which is
+    what alias shims produce), never by the label itself. Unknown facts are not proof of sameness.
+
+    ``provider_changed`` lets a caller that resolved the move itself (the switch result carries the
+    fact even when the two labels stringify the same) force the label comparison. Callers that only
+    have the labels pass ``False`` and let the labels decide.
+    """
+    if not old_model or old_model != (new_model or ""):
+        return False
+    old_url = normalize_route_base_url(old_base_url)
+    new_url = normalize_route_base_url(new_base_url or old_base_url)
+    if old_url and new_url and old_url != new_url:
+        return False
+    target_provider = new_provider or old_provider
+    if not (provider_changed or (
+            target_provider and old_provider and old_provider != target_provider)):
+        return True
+    return same_deployment(
+        BackendIdentity.build(provider=old_provider, model=old_model, base_url=old_base_url),
+        BackendIdentity.build(
+            provider=target_provider, model=new_model, base_url=new_base_url or old_base_url))
+
+
 def should_skip_candidate(
     candidate: BackendIdentity, failed: BackendIdentity, scope: FailureScope = FailureScope.MODEL
 ) -> bool:

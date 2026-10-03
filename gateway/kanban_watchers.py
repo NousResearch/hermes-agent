@@ -120,11 +120,17 @@ class GatewayKanbanWatchersMixin:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
 
-    def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
-        """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""
+    def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, *, db_path: Optional[str] = None, **extra: Any) -> None:
+        """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription.
+        ``db_path`` is the exact DB the batch was claimed from (single source of truth);
+        prefer it over re-deriving from ``board``, which can map to a different file when
+        HERMES_KANBAN_DB pins the active board."""
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_notify as _kbn
-        conn = _kbc.connect(board=board)
+        if db_path:
+            conn = _kbc.connect(db_path=Path(db_path))
+        else:
+            conn = _kbc.connect(board=board)
         try:
             getattr(_kbn, op)(
                 conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
@@ -133,15 +139,15 @@ class GatewayKanbanWatchersMixin:
         finally:
             conn.close()
 
-    def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None) -> None:
-        self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor)
+    def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None, *, db_path: Optional[str] = None) -> None:
+        self._kanban_sub_op(board, "advance_notify_cursor", sub, db_path=db_path, new_cursor=cursor)
 
-    def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
-        self._kanban_sub_op(board, "remove_notify_sub", sub)
+    def _kanban_unsub(self, sub: dict, board: Optional[str] = None, *, db_path: Optional[str] = None) -> None:
+        self._kanban_sub_op(board, "remove_notify_sub", sub, db_path=db_path)
 
-    def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None) -> None:
+    def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None, *, db_path: Optional[str] = None) -> None:
         """Undo a claimed notification cursor after send failure."""
-        self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
+        self._kanban_sub_op(board, "rewind_notify_cursor", sub, db_path=db_path, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
 
     async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
         """Upload artifact files referenced by a completed kanban task.

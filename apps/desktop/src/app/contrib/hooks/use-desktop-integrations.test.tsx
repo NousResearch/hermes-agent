@@ -10,7 +10,12 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { _resetLegacyDiscardForTests } from '@/store/session'
+import {
+  _resetLegacyDiscardForTests,
+  _resetSessionOwnerHintsForTests,
+  getSessionOwnerHint,
+  setSessionOwnerHint
+} from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -79,6 +84,9 @@ describe('useDesktopIntegrations', () => {
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
     peerWindowMock.mockReturnValue(false)
+    // Isolated owner-hint state per test: persisted hints are global
+    // module state that would otherwise leak between restore cases.
+    _resetSessionOwnerHintsForTests({ storage: true })
 
     // Stub the desktop bridge so the hook's useEffect callbacks don't try to
     // reach real Electron IPC. The established desktop-test pattern assigns a
@@ -422,6 +430,22 @@ describe('useDesktopIntegrations', () => {
 
       // The route and session match the active profile — should restore.
       expect(navigate).toHaveBeenCalledWith('/ai-session', { replace: true })
+    })
+
+    it('drops a legacy local owner hint when auto-restoring an untagged row (#97809)', () => {
+      // Older builds persisted a `local` hint for a session whose row carries
+      // no connection tag (the legacy primary-SSH path). At click time
+      // openStoredSession clears it; the boot auto-restore must too, or the
+      // pathname-driven resume routes a remote session to the Mac backend.
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ssh-session')
+      setSessionOwnerHint('ssh-session', { connectionId: 'local', profile: 'default' })
+
+      const sessions = [session({ id: 'ssh-session', profile: 'default' })]
+
+      render({ activeProfile: 'default', profileReady: true, sessions })
+
+      expect(navigate).toHaveBeenCalledWith('/ssh-session', { replace: true })
+      expect(getSessionOwnerHint('ssh-session')).toBeUndefined()
     })
   })
 

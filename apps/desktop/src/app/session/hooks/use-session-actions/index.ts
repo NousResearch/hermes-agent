@@ -39,6 +39,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
+  activeGatewayConnectionId,
   openGatewayForAgent,
   openGatewayForProfile,
   pendingSessionReplay,
@@ -81,6 +82,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  forgetSessionOwnerHintsForSession,
   getCurrentModelSource,
   getSessionOwnerHint,
   idsShareLineage,
@@ -1427,7 +1429,38 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      //
+      // A persisted owner hint is only trustworthy when the connection it
+      // names is still this window's live primary. Current builds mint hints
+      // from the real registry id at create/resume time, but older builds
+      // persisted `local` for rows that actually live on a remote primary
+      // (the legacy primary-SSH path): an auto-restored resume that trusts
+      // that hint dials the Mac backend and dies with "session not found"
+      // (#97809). The click path (openStoredSession) already drops such hints
+      // for untagged rows; every OTHER pathname-driven resume funnels through
+      // here, so the same hygiene applies at this seam. The hint is repaired,
+      // not just ignored: a stale route left in the map re-poisons the next
+      // resume, the row ladder and every session-scoped RPC dispatch.
+      //
+      // An explicitly captured owner (requestSessionResume with a row route,
+      // a plugin open) is authoritative as given; only the REMEMBERED hint
+      // is validated, never the caller's capture.
+      const rememberedHint = capturedOwner ? undefined : getSessionOwnerHint(storedSessionId)
+
+      const rememberedOwner = rememberedHint
+        ? rememberedHint.connectionId === (activeGatewayConnectionId() ?? 'local')
+          ? rememberedHint
+          : undefined
+        : undefined
+
+      if (rememberedHint && !rememberedOwner) {
+        forgetSessionOwnerHintsForSession(storedSessionId)
+      }
+
+      // An explicit capture outranks the remembered hint; the hint only
+      // fills in when the caller had no route to give.
+      const ownerRoute = capturedOwner || rememberedOwner
+
       // A connection switch clears/reloads the session rows before this path
       // runs, so an untagged row belongs to the connection that supplied the
       // current list. Capture that source before the async metadata lookup. If

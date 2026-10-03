@@ -85,6 +85,7 @@ import {
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
+  setSessionOwnerHint,
   setSessions,
   setSessionStartedAt,
   setTurnStartedAt,
@@ -1729,6 +1730,13 @@ describe('resumeSession failure recovery', () => {
     $sessionMutationsInFlight.set(new Set())
     clearClarifyRequest()
     clearSessionTodos('runtime-1')
+    // Persisted owner hints are global module state; the hint-hygiene tests
+    // below write them and must not leak into later describes' resumes.
+    _resetSessionOwnerHintsForTests()
+    // Same for this describe's source-override: mockReset() restores the
+    // default-preserving spy (the real registry read), unlike
+    // restoreAllMocks() below, which is a no-op for factory-created vi.fn().
+    vi.mocked(activeGatewayConnectionId).mockReset()
     vi.restoreAllMocks()
   })
 
@@ -2607,6 +2615,73 @@ describe('resumeSession failure recovery', () => {
 
     expect($resumeFailedSessionId.get()).toBe('stored-1')
     expect($activeSessionId.get()).toBeNull()
+  })
+
+  // #97809 remaining edge: older builds persisted a `local` owner hint for
+  // sessions whose rows carry no connection tag (the legacy primary-SSH
+  // path). Clicks repair it (openStoredSession drops the hint for untagged
+  // rows), but every pathname-driven resume (boot auto-restore, reconnect
+  // re-resume, stranded-view self-heal) funnels through here and used to
+  // trust the hint verbatim — dialing the Mac backend for a remote session
+  // and dying with "session not found". A hint naming a connection that is
+  // not this window's live primary is stale by definition and must be
+  // dropped, not honored.
+  it('drops a legacy local owner hint when the window primary is a remote connection (#97809)', async () => {
+    _resetSessionOwnerHintsForTests()
+    setSessionOwnerHint('stored-1', { connectionId: 'local', profile: 'default' })
+    // The window's live primary is the SSH connection, not `local`.
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-proxmox')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    // The poisoned hint is repaired, not just ignored: a stale route left
+    // in the map re-poisons the next resume and every session-scoped RPC
+    // dispatch that consults the hint rung.
+    expect(getSessionOwnerHint('stored-1')).toBeUndefined()
+  })
+
+  it('keeps a current owner hint that names the live primary connection', async () => {
+    _resetSessionOwnerHintsForTests()
+    setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-proxmox')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect(getSessionOwnerHint('stored-1')).toMatchObject({ connectionId: 'ssh-proxmox' })
   })
 })
 

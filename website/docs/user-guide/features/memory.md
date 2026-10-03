@@ -402,6 +402,35 @@ auxiliary:
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works.
 
+### Choosing the completion boundary (`timing`)
+
+Automatic review defaults to the historical background lifecycle: the foreground
+turn returns first, then a daemon review may call a model and update memory or
+skills. Set `timing: before_final` when the user-visible terminal response must be
+a true side-effect boundary:
+
+```yaml
+auxiliary:
+  background_review:
+    timing: before_final  # background (default) | before_final
+```
+
+In `before_final` mode Hermes runs the review inline after the foreground
+transcript is durable and before it emits the final response or completion
+banner. The review does not enter the managed-local idle queue and does not
+create a daemon thread. Terminal assistant text is intentionally held back
+for the turn, while tool and reasoning progress can remain visible. Runtimes
+that cannot distinguish commentary from the terminal assistant message
+withhold all assistant text. Cancellation, review usage accounting, write
+controls, and review summaries use the same fork lifecycle as background mode.
+Review failure is
+fail-open: the foreground answer is still returned.
+
+Use the default `background` mode when lowest foreground latency matters more
+than a strict terminal boundary. Use `before_final` when completion must mean
+that the turn will make no further review model calls, tool calls, or durable
+memory/skill writes.
+
 ### Capping review cost (`max_input_tokens`)
 
 The review loop replays the conversation on every provider request it makes,

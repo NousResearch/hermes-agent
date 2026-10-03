@@ -49,6 +49,9 @@ def _should_stream(agent: Any) -> bool:
     checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
     external-process provider profile), MoA without a display consumer, or Mock clients in
     tests (SimpleNamespace, not stream iterators)."""
+    turn_review = getattr(agent, "_background_review_turn_settings", None) or {}
+    if turn_review.get("enabled", True) and turn_review.get("timing") == "before_final":
+        return False
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()

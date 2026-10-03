@@ -13,9 +13,17 @@ import re
 
 # Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
 # VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
+# ``python``/``osascript`` bodies are code, not data (``os.system``/``do shell script`` reach a
+# shell at runtime), so they are masked for UX-grade scanners only: a security guard scanning for
+# forbidden substrings must pass ``mask_code_consumers=False`` or the payload hides in the blanked
+# body (#127698).
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
     r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
+    re.IGNORECASE)
+_STRICT_INERT_HEREDOC_CONSUMER_RE = re.compile(
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"cat(?=\s|$)",
     re.IGNORECASE)
 
 
@@ -177,8 +185,17 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def strip_inert_heredoc_bodies(command: str, *, mask_code_consumers: bool = True) -> str:
+    """Mask heredoc bodies that are provably inert data (see module docstring).
+
+    ``mask_code_consumers=False`` also leaves bodies owned by code-bearing interpreters
+    (``python``, ``osascript``) visible: their payload executes at runtime, so a scanner that
+    looks for forbidden substrings must not have them blanked (#127698).
+    """
+    consumer_re = (
+        _INERT_HEREDOC_CONSUMER_RE if mask_code_consumers
+        else _STRICT_INERT_HEREDOC_CONSUMER_RE
+    )
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
         return command
@@ -219,7 +236,7 @@ def strip_inert_heredoc_bodies(command: str) -> str:
             if not any(
                 marker in masked_opener
                 for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
-            ) and _INERT_HEREDOC_CONSUMER_RE.search(masked_owner):
+            ) and consumer_re.search(masked_owner):
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

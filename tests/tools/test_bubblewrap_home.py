@@ -17,7 +17,9 @@ from tools.environments.bubblewrap_home import (
     allow_unit,
     denied_home_names,
     denied_home_paths,
+    home_layout_args,
     resolve_allowlist,
+    resolve_home_root,
 )
 
 
@@ -187,3 +189,218 @@ class TestAllowlist:
     def test_allowlist_is_sorted_and_unique(self, home):
         allowed = _allowlist(home, os.path.join(home, ".cargo", "bin"), (".cargo",))
         assert list(allowed) == sorted(set(allowed))
+
+
+def _mounts(argv):
+    """(flag, dest) for every mount directive in *argv*, in order."""
+    arity = {"--tmpfs": 1, "--remount-ro": 1, "--bind": 2, "--ro-bind": 2, "--bind-try": 2,
+             "--ro-bind-try": 2, "--symlink": 2}
+    found, i = [], 0
+    while i < len(argv):
+        flag = argv[i]
+        assert flag in arity, f"unexpected token {flag!r} at {i}"
+        found.append((flag, argv[i + arity[flag]]))
+        i += 1 + arity[flag]
+    return found
+
+
+def _layout(home, allowlist=None, hidden=(), **kwargs):
+    allowlist = _allowlist(home) if allowlist is None else allowlist
+    return home_layout_args(home, allowlist, hidden, empty_file=os.path.join(os.path.dirname(home), "empty"), **kwargs)
+
+
+def _touch(home, rel, text="x"):
+    path = os.path.join(home, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return path
+
+
+class TestLayout:
+    def test_layout_starts_with_a_tmpfs_on_home_and_ends_with_its_remount(self, home):
+        argv = _layout(home)
+        assert argv[:2] == ["--tmpfs", home]
+        assert argv[-2:] == ["--remount-ro", home]
+
+    def test_layout_shows_non_dot_entries_read_only(self, home):
+        os.makedirs(os.path.join(home, "proj"))
+        _touch(home, "notes.txt")
+        mounts = _mounts(_layout(home))
+        assert ("--ro-bind-try", os.path.join(home, "proj")) in mounts
+        assert ("--ro-bind-try", os.path.join(home, "notes.txt")) in mounts
+
+    def test_layout_shows_non_dot_entries_read_write_under_a_writable_home(self, home):
+        os.makedirs(os.path.join(home, "proj"))
+        _touch(home, ".bashrc")
+        for root in (home, os.path.dirname(home)):
+            mounts = _mounts(_layout(home, writable_roots=(root,)))
+            assert ("--bind-try", os.path.join(home, "proj")) in mounts
+            assert ("--ro-bind-try", os.path.join(home, ".bashrc")) in mounts
+
+    def test_layout_keeps_entries_read_only_when_only_a_child_is_writable(self, home):
+        os.makedirs(os.path.join(home, "proj", "sub"))
+        mounts = _mounts(_layout(home, writable_roots=(os.path.join(home, "proj", "sub"),)))
+        assert ("--ro-bind-try", os.path.join(home, "proj")) in mounts
+
+    def test_layout_hides_a_dot_entry_that_is_not_allowed(self, home):
+        _touch(home, ".zz-unlisted/secret")
+        _touch(home, ".zz-unlisted-file")
+        _touch(home, ".pgpass")
+        dests = [dest for _flag, dest in _mounts(_layout(home))]
+        assert not any(".zz-unlisted" in dest or ".pgpass" in dest for dest in dests)
+
+    def test_layout_shows_an_allowed_dot_entry_read_only_even_under_a_writable_home(self, home):
+        _touch(home, ".gitconfig")
+        os.makedirs(os.path.join(home, ".cargo", "bin"))
+        mounts = _mounts(_layout(home, writable_roots=(home,)))
+        assert ("--ro-bind-try", os.path.join(home, ".gitconfig")) in mounts
+        assert ("--ro-bind-try", os.path.join(home, ".cargo")) in mounts
+
+    def test_layout_gives_each_default_deny_directory_a_tmpfs_with_its_allowed_children(self, home):
+        _touch(home, ".config/git/config")
+        _touch(home, ".config/zz-unlisted/token")
+        _touch(home, ".local/bin/tool")
+        _touch(home, ".local/state/history")
+        _touch(home, ".local/share/pnpm/x")
+        _touch(home, ".local/share/zz-unlisted/db")
+        mounts = _mounts(_layout(home))
+        for rel in (".config", ".local", ".local/share"):
+            assert ("--tmpfs", os.path.join(home, rel)) in mounts
+            assert ("--remount-ro", os.path.join(home, rel)) in mounts
+        assert ("--ro-bind-try", os.path.join(home, ".config/git")) in mounts
+        assert ("--ro-bind-try", os.path.join(home, ".local/bin")) in mounts
+        assert ("--ro-bind-try", os.path.join(home, ".local/share/pnpm")) in mounts
+        dests = [dest for _flag, dest in mounts]
+        assert not any("zz-unlisted" in dest or dest.endswith(".local/state") for dest in dests)
+
+    def test_layout_seals_inner_directories_before_outer_ones(self, home):
+        _touch(home, ".local/share/pnpm/x")
+        remounts = [dest for flag, dest in _mounts(_layout(home)) if flag == "--remount-ro"]
+        assert remounts.index(os.path.join(home, ".local/share")) < remounts.index(os.path.join(home, ".local"))
+        assert remounts[-1] == home
+
+    def test_layout_orders_tmpfs_before_children_before_remount(self, home):
+        _touch(home, ".config/git/config")
+        mounts = _mounts(_layout(home))
+        config = os.path.join(home, ".config")
+        assert (mounts.index(("--tmpfs", config))
+                < mounts.index(("--ro-bind-try", os.path.join(config, "git")))
+                < mounts.index(("--remount-ro", config)))
+
+    def test_layout_skips_a_default_deny_directory_missing_on_the_host(self, home):
+        dests = [dest for _flag, dest in _mounts(_layout(home))]
+        assert dests == [home, home]
+
+    def test_layout_makes_a_visible_symlink_again_and_never_binds_through_it(self, home):
+        _touch(home, "dotfiles/bashrc")
+        os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
+        os.symlink("dotfiles", os.path.join(home, "df"))
+        argv = _layout(home)
+        at = argv.index(os.path.join(home, ".bashrc"))
+        assert argv[at - 2:at + 1] == ["--symlink", "dotfiles/bashrc", os.path.join(home, ".bashrc")]
+        mounts = _mounts(argv)
+        assert ("--symlink", os.path.join(home, ".bashrc")) in mounts
+        assert ("--symlink", os.path.join(home, "df")) in mounts
+        binds = [dest for flag, dest in mounts if "bind" in flag]
+        assert os.path.join(home, ".bashrc") not in binds and os.path.join(home, "df") not in binds
+
+    def test_layout_pins_the_target_of_an_allowed_dot_symlink_read_only(self, home):
+        target = _touch(home, "dotfiles/bashrc")
+        os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
+        os.symlink("dotfiles", os.path.join(home, "df"))
+        mounts = _mounts(_layout(home, writable_roots=(home,)))
+        assert ("--bind-try", os.path.join(home, "dotfiles")) in mounts
+        assert ("--ro-bind-try", target) in mounts
+        assert mounts.index(("--bind-try", os.path.join(home, "dotfiles"))) < mounts.index(("--ro-bind-try", target))
+        assert ("--ro-bind-try", os.path.join(home, "dotfiles")) not in mounts
+
+    def test_layout_allowed_entry_linked_to_a_hidden_directory_yields_only_a_symlink(self, home):
+        _touch(home, ".zz-secret/key")
+        os.symlink(".zz-secret", os.path.join(home, ".cargo"))
+        mounts = _mounts(_layout(home))
+        assert ("--symlink", os.path.join(home, ".cargo")) in mounts
+        assert not any(".zz-secret" in dest for _flag, dest in mounts)
+
+    def test_layout_skips_a_default_deny_directory_that_is_a_symlink(self, home):
+        _touch(home, "dotfiles/config/git/config")
+        os.symlink("dotfiles/config", os.path.join(home, ".config"))
+        dests = [dest for _flag, dest in _mounts(_layout(home))]
+        assert not any(dest.startswith(os.path.join(home, ".config")) for dest in dests)
+
+    def test_layout_has_no_symlink_as_a_mount_destination(self, home):
+        _touch(home, "dotfiles/bashrc")
+        os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
+        os.makedirs(os.path.join(home, "real"))
+        os.symlink("real", os.path.join(home, "link"))
+        _touch(home, ".config/git/config")
+        os.symlink("git", os.path.join(home, ".config", "pip"))
+        for flag, dest in _mounts(_layout(home)):
+            if flag != "--symlink":
+                assert not os.path.islink(dest), dest
+                assert os.path.realpath(dest) == dest
+
+    def test_layout_overlays_a_hidden_path_below_a_visible_entry(self, home):
+        creds = _touch(home, ".cargo/credentials.toml")
+        keys = os.path.join(home, "Documents", "keys")
+        os.makedirs(keys)
+        empty = os.path.join(os.path.dirname(home), "empty")
+        argv = _layout(home, hidden=(creds, keys))
+        mounts = _mounts(argv)
+        assert ("--ro-bind", creds) in mounts
+        assert argv[argv.index(creds) - 1] == empty
+        assert ("--tmpfs", keys) in mounts
+        assert mounts.index(("--ro-bind-try", os.path.join(home, ".cargo"))) < mounts.index(("--ro-bind", creds))
+
+    def test_layout_emits_no_overlay_for_a_hidden_path_that_is_not_visible(self, home):
+        ssh = os.path.join(home, ".ssh")
+        os.makedirs(ssh)
+        dests = [dest for _flag, dest in _mounts(_layout(home, hidden=(ssh, os.path.join(home, ".netrc"))))]
+        assert ssh not in dests
+
+    def test_layout_leaves_out_a_top_level_entry_that_is_hidden(self, home):
+        secrets = os.path.join(home, "Secrets")
+        os.makedirs(secrets)
+        dests = [dest for _flag, dest in _mounts(_layout(home, hidden=(secrets,)))]
+        assert secrets not in dests
+
+    def test_layout_places_binds_after_entries_and_late_args_after_overlays(self, home):
+        os.makedirs(os.path.join(home, "proj", "sub"))
+        gh = os.path.join(home, "proj", "sub", "gh")
+        os.makedirs(gh)
+        sub = os.path.join(home, "proj", "sub")
+        state = os.path.join(home, ".zz-state")
+        argv = _layout(home, hidden=(gh,), binds=(("--bind-try", sub, sub),), late_args=["--bind", state, state])
+        mounts = _mounts(argv)
+        order = [mounts.index(m) for m in (
+            ("--ro-bind-try", os.path.join(home, "proj")), ("--bind-try", sub), ("--tmpfs", gh),
+            ("--bind", state), ("--remount-ro", home),
+        )]
+        assert order == sorted(order)
+
+    def test_layout_overlays_a_hidden_path_inside_a_bind(self, home):
+        data = os.path.join(home, ".zz-data")
+        token = _touch(home, ".zz-data/token")
+        mounts = _mounts(_layout(home, hidden=(token,), binds=(("--bind", data, data),)))
+        assert ("--ro-bind", token) in mounts
+
+    def test_layout_uses_the_listing_it_is_given(self, home):
+        os.makedirs(os.path.join(home, "proj"))
+        os.makedirs(os.path.join(home, "other"))
+        dests = [dest for _flag, dest in _mounts(_layout(home, listing=("proj",)))]
+        assert os.path.join(home, "proj") in dests
+        assert os.path.join(home, "other") not in dests
+
+    def test_layout_is_empty_without_a_home_root(self):
+        assert home_layout_args(None, (), (), empty_file="/nonexistent") == []
+
+    def test_home_root_is_the_real_path(self, home, tmp_path):
+        link = tmp_path / "parent-link"
+        link.symlink_to(os.path.dirname(home))
+        assert resolve_home_root(os.path.join(str(link), "home")) == os.path.realpath(home)
+
+    @pytest.mark.parametrize("value", ["/", "", "/nonexistent/zz-home"])
+    def test_home_root_is_none_for_an_unusable_home(self, value, caplog):
+        with caplog.at_level("WARNING"):
+            assert resolve_home_root(value) is None
+        assert len(caplog.records) == 1

@@ -2618,6 +2618,7 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
+        "coding": {"show_controls": False, "default_checkout": "worktree"},
         # Git repo discovery for the Projects sidebar. Empty roots are a safe
         # no-op; users must explicitly configure roots for filesystem scanning.
         # Session-derived projects remain available.

@@ -28,6 +28,7 @@ import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } f
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
+  cwd?: string | null
   attachments?: ComposerAttachment[]
   busy?: boolean
   inputDisabled?: boolean
@@ -39,9 +40,21 @@ interface SubmitHarnessOptions {
   visible?: boolean
 }
 
+it('passes the completion CWD with inline refs and restores the original text on refusal', async () => {
+  const text = '@file:`retry-app/README.md`'
+  const { hook, onSubmit, loadIntoComposer } = renderSubmitHook({ cwd: '/scope/fixtures', text })
+  onSubmit.mockResolvedValueOnce(false)
+  await act(async () => {
+    hook.result.current.submitDraft()
+  })
+  expect(onSubmit).toHaveBeenCalledWith(text, expect.objectContaining({ referenceCwd: '/scope/fixtures' }))
+  expect(loadIntoComposer).toHaveBeenCalledWith(text, [])
+})
+
 let surfaceSequence = 0
 
 function renderSubmitHook({
+  cwd,
   attachments = [],
   busy = false,
   inputDisabled = false,
@@ -59,11 +72,11 @@ function renderSubmitHook({
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
+  const loadIntoComposer = vi.fn()
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
   const onSteerHidden = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
-  const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
   const queueCurrentDraft = vi.fn(() => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
@@ -103,6 +116,7 @@ function renderSubmitHook({
   const hook = renderHook(
     () =>
       useComposerSubmit({
+        cwd,
         activeQueueSessionKey: sessionKey,
         activeQueueSessionKeyRef: { current: sessionKey },
         attachments,
@@ -132,13 +146,13 @@ function renderSubmitHook({
   )
 
   return {
+    loadIntoComposer,
     clearDraft,
     hook,
     onCancel,
     onSteer,
     onSteerHidden,
     onSubmit,
-    loadIntoComposer,
     stashAt,
     queueCurrentDraft,
     composerSurfaceId: resolvedSurfaceId,

@@ -474,6 +474,9 @@ export function useSessionTileDelegate({
               ? { reasoningEffortWire: info.reasoning_effort_wire }
               : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+            ...(typeof info?.branch === 'string' ? { branch: info.branch } : {}),
+            ...(info && 'coding_workspace' in info ? { codingWorkspace: info.coding_workspace } : {}),
+            ...(info && 'agent_worktree' in info ? { agentWorktree: info.agent_worktree } : {}),
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
           }),

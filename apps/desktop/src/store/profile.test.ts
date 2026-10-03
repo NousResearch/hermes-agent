@@ -54,6 +54,18 @@ const {
 const { $projectScope, ALL_PROJECTS } = await import('./project-scope')
 const { $projectTree, resolveNewSessionCwd } = await import('./projects')
 
+const profileModule = await import('./profile')
+
+it('carries explicit coding presentation through the existing fresh-chat request, then clears it on ordinary New chat', () => {
+  const route = { connectionId: 'local', profile: 'coder' }
+  const options = { codingWorkspaceControls: true, workspaceTarget: null }
+  profileModule.newSessionInAgent(route, options)
+  expect(profileModule.$freshSessionRequestOptions?.get()).toEqual(options)
+  expect(profileModule.$newChatRoute.get()).toEqual(route)
+  profileModule.requestFreshSession()
+  expect(profileModule.$freshSessionRequestOptions?.get()).toEqual({})
+})
+
 const { $poolLimits } = await import('@/store/pool-limits')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 

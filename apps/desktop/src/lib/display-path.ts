@@ -138,6 +138,22 @@ export function displayPath(raw: null | string | undefined, options: DisplayPath
   return `~${path.slice(home.length)}`
 }
 
+/** Compact disclosure label: keep the checkout end, not a long home/cache prefix.
+ * Display only — title, Copy and Open must retain the original path.
+ */
+export function displayPathSuffix(raw: string): string {
+  const path = displayPath(raw)
+
+  // Fit the compact menu's mono line without a second CSS ellipsis.
+  const maxLength = 34
+
+  if (path.length <= maxLength) {return path}
+  const suffix = path.split('/').slice(-2).join('/')
+  const tail = suffix.length <= maxLength - 2 ? suffix : pathLeaf(path)
+
+  return `…/${tail.slice(-(maxLength - 2))}`
+}
+
 /** Last path segment for compact labels (statusbar leaf, settings rows). */
 export function pathLeaf(raw: null | string | undefined): string {
   const path = normalizeDisplayPath(raw || '')

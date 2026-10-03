@@ -685,6 +685,11 @@ def _(rid, params: dict) -> dict:
     if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
         return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
     turn_author = raw_author.author if raw_author is not None else None
+    from tui_gateway.coding_workspaces import verify_session_workspace
+    try:
+        verify_session_workspace(session)
+    except Exception as exc:
+        return _err(rid, 4016, f"Coding workspace verification failed: {exc}")
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None

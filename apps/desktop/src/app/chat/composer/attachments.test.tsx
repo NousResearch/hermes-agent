@@ -28,6 +28,20 @@ async function renderWithI18n(ui: React.ReactNode) {
 }
 
 describe('AttachmentList', () => {
+  it('keeps folders as references unless the fresh-chat project action is explicitly used', async () => {
+    const folder: ComposerAttachment = { id: 'folder', kind: 'folder', label: 'repo', path: '/repo', refText: '@folder:/repo' }
+    const useProject = vi.fn()
+    const remove = vi.fn()
+    const { rerender } = await renderWithI18n(<AttachmentList attachments={[folder]} onRemove={remove} onUseAsProject={useProject} />)
+    expect(useProject).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Use as project' }))
+    expect(useProject).toHaveBeenCalledWith('/repo')
+    expect(remove).not.toHaveBeenCalled()
+    expect(folder.refText).toBe('@folder:/repo')
+    rerender(<I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}><AttachmentList attachments={[folder]} /></I18nProvider>)
+    expect(screen.queryByRole('button', { name: 'Use as project' })).toBeNull()
+  })
+
   afterEach(() => {
     cleanup()
     Reflect.deleteProperty(window, 'hermesDesktop')

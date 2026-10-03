@@ -57,6 +57,7 @@ import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
+  $freshSessionRequestOptions,
   $profileScope,
   ALL_PROFILES,
   ensureGatewayProfile,
@@ -606,7 +607,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
+    startFreshSessionDraft($freshSessionRequestOptions.get())
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another source or profile must re-pull that

@@ -348,7 +348,7 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
-def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+def _create_session(rid, params: dict, *, copy_parent_history: bool = False, workspace_key: str | None = None) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
@@ -397,7 +397,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                 # The session was closed between the original create and the retry —
                 # fall through and create a fresh one under the same key.
                 _idempotency_keys.pop(idem_key, None)
-    (sid, source), key = _new_runtime_ids(params), _new_session_key()
+    (sid, source), key = _new_runtime_ids(params), workspace_key or _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
@@ -424,6 +424,10 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(profile_home)
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
+    coding_workspace = params.get("coding_workspace")
+    if coding_workspace is not None:
+        if not isinstance(coding_workspace, dict) or not explicit_cwd or coding_workspace.get("cwd") != raw_cwd:
+            return _err(rid, 4016, "Invalid coding workspace; refusing cwd fallback")
     _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     composer_override_profile = None
@@ -440,7 +444,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
-            "explicit_cwd": explicit_cwd,
+            "explicit_cwd": explicit_cwd, "coding_workspace": coding_workspace,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
@@ -459,6 +463,16 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         _register_session_cwd(_sessions[sid])
         if idem_key is not None:
             _idempotency_keys[idem_key] = (sid, now)
+    if coding_workspace:
+        from tui_gateway.coding_workspaces import persist_session_workspace
+        try:
+            persist_session_workspace(_sessions[sid])
+        except Exception as exc:
+            with _sessions_lock:
+                _sessions.pop(sid, None)
+                if idem_key is not None:
+                    _idempotency_keys.pop(idem_key, None)
+            return _err(rid, 4016, f"Coding workspace setup failed: {exc}")
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;
         # name both so agent.log alone explains which model a new chat runs, and why (#107410).
@@ -503,12 +517,16 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         "info": {"model": override.get("model") if override else _session_default_model(_sessions[sid]),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
+                 "coding_workspace": _sessions[sid].get("coding_workspace"),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
 
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    if params.get("coding_workspace") is not None:
+        from tui_gateway.coding_workspaces import create_workspace_session
+        return create_workspace_session(rid, params, _create_session)
     return _create_session(rid, params)
 
 
@@ -680,6 +698,9 @@ class _Resume:
                 composer_override_profile=(model_config.get("composer_override_profile")
                                            if overrides and overrides.get("model_override") else None),
             )
+        stored_config = _parse_model_config((self.found or {}).get("model_config"), quiet=True)
+        record["coding_workspace"] = stored_config.get("coding_workspace")
+        _restore_agent_worktree(record, stored_config)
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
@@ -910,7 +931,9 @@ def _resume_response(
         message_count = len(count_source) if ctx.omit_messages else len(messages)
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
-               "info": info, "inflight": None, "running": running, "session_key": ctx.target,
+               "info": {**info, "coding_workspace": record.get("coding_workspace"),
+                        "agent_worktree": record.get("agent_worktree")},
+               "inflight": None, "running": running, "session_key": ctx.target,
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
@@ -1082,6 +1105,31 @@ def _(rid, params: dict) -> dict:
 
 
 # ── cwd / workspace / live-session bookkeeping ───────────────────────
+@_session_method("session.workspace.verify")
+def _(rid, params, session) -> dict:
+    from tui_gateway.coding_workspaces import verify_session_workspace
+    try:
+        verified = verify_session_workspace(session, str(params.get("cwd") or ""), probe=True)
+        return _ok(rid, {**verified, "gatewayCwd": verified["cwd"]} if verified else None)
+    except Exception as exc:
+        return _err(rid, 4016, f"Coding workspace verification failed: {exc}")
+
+
+@_session_method("session.workspace.references")
+def _(rid, params, session) -> dict:
+    from tui_gateway.coding_workspaces import remap_workspace_reference_text, remap_workspace_references, verify_session_workspace
+    try:
+        verify_session_workspace(session)
+        binding = session.get("coding_workspace")
+        base = params.get("reference_cwd")
+        result: dict = {"paths": remap_workspace_references(binding, params.get("paths"), base)}
+        if "text" in params:
+            result["text"] = remap_workspace_reference_text(binding, params["text"], base)
+        return _ok(rid, result)
+    except Exception as exc:
+        return _err(rid, 4016, f"Coding workspace references failed: {exc}")
+
+
 @_session_method("session.cwd.set")
 def _(rid, params: dict, session: dict) -> dict:
     if session.get("running"):

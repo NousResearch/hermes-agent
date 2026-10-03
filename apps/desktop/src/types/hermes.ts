@@ -485,6 +485,7 @@ export interface HermesConfig {
     tool_progress?: boolean | string
   }
   desktop?: {
+    coding?: { show_controls?: boolean; default_checkout?: 'worktree' | 'current' }
     font_family?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
@@ -829,7 +830,30 @@ export interface SessionResumeResult {
   turn_started_at?: number | null
 }
 
+export interface CodingWorkspaceBinding {
+  requestId: string
+  sourcePath: string
+  cwd: string
+  projectId: string
+  branch: string | null
+  repoRoot: string | null
+  projectName?: string
+  mode?: 'worktree' | 'existing' | 'current' | 'folder'
+}
+
+/** The linked git worktree the agent's terminal activity settled in, when that
+ *  tree is NOT the session's own workspace (e.g. the agent ran `git worktree add`
+ *  mid-chat and worked there via `workdir=`). Display-only: never a re-home. */
+export interface AgentWorktree {
+  cwd: string
+  branch: string | null
+  repoRoot: string
+  projectName: string
+}
+
 export interface SessionRuntimeInfo {
+  coding_workspace?: CodingWorkspaceBinding | null
+  agent_worktree?: AgentWorktree | null
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string

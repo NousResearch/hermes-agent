@@ -3,7 +3,7 @@ import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, typ
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
-import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
+import type { AgentWorktree, CodingWorkspaceBinding, MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
   toolResultMetadata?: ToolResultMetadata
@@ -207,6 +207,8 @@ export type GatewayEventPayload = {
   // Lets the desktop app map runtime→stored for background sessions it hasn't
   // opened, so the sidebar working indicator updates without opening the chat.
   stored_session_id?: string
+  coding_workspace?: CodingWorkspaceBinding | null
+  agent_worktree?: AgentWorktree | null
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number

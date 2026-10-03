@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { memo, useEffect } from 'react'
+import { computed } from 'nanostores'
+import { memo, useEffect, useMemo, useState } from 'react'
 
 import { PrTag } from '@/app/chat/pr-tag'
 import { StatusRow } from '@/components/chat/status-row'
@@ -16,15 +17,23 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { displayPath } from '@/lib/display-path'
+import { displayPath, displayPathSuffix } from '@/lib/display-path'
 import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
+import { $activeGatewayRoute, $gateway, activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
 import { $pullRequestsByBranch, branchPrKey, refreshPullRequests } from '@/store/pull-requests'
+import { $connection } from '@/store/session'
+import { $sessionStates, knownOwnerForSession } from '@/store/session-states'
+
+import { workspaceRowClassName } from '../workspace-row'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
 
 interface CodingStatusRowProps {
+  /** This surface's runtime; durable metadata arrives on create/resume. */
+  sessionId?: null | string
   /** Branch the current draft off into a fresh worktree + session, based on
    *  `base` (a branch name; omitted = current HEAD). The composer owns the
    *  draft, so it supplies the orchestration; the row just collects the new
@@ -59,13 +68,83 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   onOpen,
   onOpenWorktree,
   onSwitchBranch,
-  repoPath
+  repoPath,
+  sessionId
 }: CodingStatusRowProps) {
   const { t } = useI18n()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
   const fileMenu = t.fileMenu
-  const resolvedRepoPath = repoPath?.trim() || undefined
+  const c = t.codingWorkspace
+
+  const workspace = useStore(useMemo(() => computed($sessionStates, states =>
+    sessionId ? states[sessionId]?.codingWorkspace : undefined), [sessionId]))
+
+  // The binding's branch is a creation receipt, not the checkout's current HEAD.
+  const workspaceBranch = useStore(useMemo(() => computed($sessionStates, states =>
+    sessionId && states[sessionId]?.codingWorkspace ? states[sessionId]?.branch : undefined), [sessionId]))
+
+  // The linked worktree the AGENT settled in (created mid-chat, worked via
+  // `workdir=`), reported by the backend when it is not the session's own
+  // workspace. A user-chosen binding above always wins; this is a badge on a
+  // chat that otherwise has no repo to show.
+  const agentWorktree = useStore(useMemo(() => computed($sessionStates, states =>
+    sessionId && !states[sessionId]?.codingWorkspace ? states[sessionId]?.agentWorktree : undefined), [sessionId]))
+
+  const connection = useStore($connection)
+  const activeProfile = useStore($activeGatewayRoute)
+  // A same-name source switch changes the socket, not necessarily the profile.
+  useStore($gateway)
+  const activeConnectionId = activeGatewayConnectionId()
+  const owner = knownOwnerForSession(sessionId)
+  const ownerProfile = typeof owner === 'object' ? owner?.profile : owner
+
+  // The git adapter is foreground-routed. Compare the actual socket route:
+  // legacy getConnection('coder') can describe `local` while its pool key is
+  // null, and that legacy door can also resolve a per-profile remote override.
+  const localWorkspace = Boolean(owner && connection?.mode === 'local' &&
+    ownerProfile === activeProfile && ownerProfile === connection.profile &&
+    (typeof owner === 'object'
+      ? owner.mode !== 'remote' && owner.connectionId === activeConnectionId && owner.connectionId === connection.connectionId
+      // gatewayForProfile selects its primary by profile, otherwise the legacy pool.
+      : isActivePrimary() || activeConnectionId === null))
+
+  // Native reveal is not a foreground-routed Git operation. A registry tile
+  // may use a different socket; resolve that exact owner before allowing the
+  // local file-manager bridge. Never infer locality from a matching path/id.
+  const ownerConnectionId = typeof owner === 'object' ? owner?.connectionId : undefined
+  const ownerMode = typeof owner === 'object' ? owner?.mode : undefined
+  const hasWorkspace = Boolean(workspace || agentWorktree)
+
+  const revealRequest = useMemo(() => hasWorkspace && ownerConnectionId && ownerProfile && ownerMode !== 'remote'
+    ? { connectionId: ownerConnectionId, profile: ownerProfile } : null,
+  [hasWorkspace, ownerConnectionId, ownerProfile, ownerMode, connection])
+
+  const [verifiedReveal, setVerifiedReveal] = useState<{ request: typeof revealRequest, local: boolean } | null>(null)
+
+  useEffect(() => {
+    const resolve = window.hermesDesktop?.getConnectionFor
+
+    if (!revealRequest || !resolve) {return}
+    let cancelled = false
+    void Promise.resolve().then(() => resolve(revealRequest)).then(descriptor => {
+      if (!cancelled) {setVerifiedReveal({ request: revealRequest, local: descriptor.mode === 'local' &&
+        descriptor.connectionId === revealRequest.connectionId && descriptor.profile === revealRequest.profile })}
+    }).catch(() => {
+      if (!cancelled) {setVerifiedReveal({ request: revealRequest, local: false })}
+    })
+
+    return () => { cancelled = true }
+  }, [revealRequest])
+
+  const canRevealWorkspace = localWorkspace || Boolean(revealRequest && verifiedReveal?.request === revealRequest && verifiedReveal.local)
+
+  const resolvedRepoPath = workspace
+    ? localWorkspace && workspace.repoRoot ? workspace.cwd : undefined
+    : agentWorktree
+      ? localWorkspace ? agentWorktree.cwd : undefined
+      : repoPath?.trim() || undefined
+
   // This surface's OWN worktree, always — never the primary's. The row used to
   // fall back to the global `$repoStatus` for a blank repoPath, which painted
   // the main pane's branch/± onto a tile whose cwd hadn't resolved yet. That
@@ -114,16 +193,26 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     void openWorktreeDialog({ base, repoPath: resolvedRepoPath })
   }
 
-  if (!status) {
+  if (!status && !workspace && !agentWorktree) {
     return null
   }
 
-  const branchLabel = status.detached ? s.detached : status.branch || s.noBranch
+  const branchLabel = status?.detached ? s.detached : status?.branch || workspaceBranch || agentWorktree?.branch || s.noBranch
+  const projectPath = workspace?.repoRoot || workspace?.sourcePath || workspace?.cwd || ''
+  const projectName = workspace?.projectName || projectPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || projectPath
+  const folderWorkspace = workspace && (!workspace.repoRoot || workspace.mode === 'folder')
+  const workspaceKind = folderWorkspace ? c.folder : workspace?.cwd === workspace?.repoRoot ? c.currentCheckout : c.worktree
+
+  const summary = workspace
+    ? [projectName, workspaceKind, ...(folderWorkspace ? [] : [branchLabel])].join(' · ')
+    : [agentWorktree?.projectName, c.agentWorktree, branchLabel].join(' · ')
+
+  const summaryPath = workspace?.cwd ?? agentWorktree?.cwd ?? ''
   // The kebab offers branching off the trunk and/or the current branch. The
   // worktree-add bases the new branch on `base` (a branch name; undefined =
   // current HEAD). We dedupe so "on main" shows a single trunk entry, and fall
   // back to a plain off-HEAD branch when no trunk is detected.
-  const current = status.detached ? null : status.branch
+  const current = status?.detached ? null : status?.branch
   const branchTargets: { base: string | undefined; label: string }[] = []
 
   // Current branch first (the 99% "branch off where I am"), then the trunk just
@@ -132,7 +221,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     branchTargets.push({ base: current, label: s.branchOffFrom(current) })
   }
 
-  if (status.defaultBranch && status.defaultBranch !== current) {
+  if (status?.defaultBranch && status.defaultBranch !== current) {
     branchTargets.push({ base: status.defaultBranch, label: s.branchOffFrom(status.defaultBranch) })
   }
 
@@ -141,7 +230,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   }
 
   const switchTarget =
-    onSwitchBranch && current && status.defaultBranch && status.defaultBranch !== current ? status.defaultBranch : null
+    onSwitchBranch && current && status?.defaultBranch && status.defaultBranch !== current ? status.defaultBranch : null
 
   // Other worktrees to jump into — everything except the one we're already in
   // (matched by its checked-out branch) and the bare/main placeholder entry.
@@ -149,15 +238,49 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     ? worktrees.filter(w => w.path && !w.detached && w.branch && w.branch !== current)
     : []
 
-  const hasLineDelta = status.added > 0 || status.removed > 0
+  const hasLineDelta = Boolean(status && (status.added > 0 || status.removed > 0))
   // Untracked files carry no line delta vs HEAD, so surface them as a count when
   // they're the only change (otherwise +/- tells the story).
-  const untrackedOnly = !hasLineDelta && status.untracked > 0
+  const untrackedOnly = !hasLineDelta && Boolean(status && status.untracked > 0)
 
   // The branch actions, rendered identically by the kebab dropdown and the
   // row's right-click menu so the two never drift. `onBranchOff` gates the
   // whole menu (omitted = remote backend), matching the kebab.
   const renderBranchItems = (kit: MenuKit) => {
+    if (workspace || agentWorktree) {
+      return <>
+        <kit.Label>
+          <span className="block truncate font-mono text-xs font-normal" data-slot="coding-workspace-path" title={summaryPath}>{displayPathSuffix(summaryPath)}</span>
+          {!workspace && <span className="mt-0.5 block text-[0.68rem] font-normal text-(--ui-text-tertiary)">{c.agentWorktreeNote}</span>}
+        </kit.Label>
+        <CopyButton appearance={kit.copyAppearance} label={fileMenu.copyPath} text={summaryPath} />
+        {canRevealWorkspace && window.hermesDesktop?.revealPath && renderActionItem(kit, {
+          label: t.rightSidebar.openFolder,
+          icon: 'folder-opened',
+          onSelect: () => void window.hermesDesktop?.revealPath?.(summaryPath).then(ok => {
+            if (!ok) { notifyError(null, c.openFailed) }
+          }).catch(error => notifyError(error, c.openFailed))
+        })}
+        {workspace ? renderActionItem(kit, {
+          label: c.newChat,
+          icon: 'comment',
+          disabled: !owner || (typeof owner === 'string' && !localWorkspace),
+          onSelect: () => {
+            const options = { codingWorkspaceControls: true, workspaceTarget: null }
+
+            if (owner && typeof owner === 'object') { newSessionInAgent(owner, options) }
+            else if (typeof owner === 'string' && localWorkspace) { newSessionInProfile(owner, options) }
+          }
+        }) : onOpenWorktree && renderActionItem(kit, {
+          // A chat that STARTS in the agent's worktree gets the full coding
+          // rail there; this chat keeps its original (non-git) workspace.
+          label: c.newChatHere,
+          icon: 'comment',
+          onSelect: () => onOpenWorktree(summaryPath)
+        })}
+      </>
+    }
+
     const branchItems: ActionItemSpec[] = branchTargets.map(target => ({
       key: target.base ?? '__head__',
       label: <span className="truncate">{target.label}</span>,
@@ -202,11 +325,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
 
   return (
     <>
-      <ActionsContextMenu contentClassName="w-60" disabled={!onBranchOff} items={renderBranchItems}>
+      <ActionsContextMenu contentClassName={hasWorkspace ? 'w-72 max-w-[calc(100vw-2rem)]' : 'w-60'} disabled={!hasWorkspace && !onBranchOff} items={renderBranchItems}>
         <StatusRow
-          // The base "where am I working" strip is part of the composer surface
-          // itself, so it inherits the composer's width and clipped top radius.
-          className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
+          // The base "where am I working" strip is the composer surface's own
+          // header row, so it inherits the input's fill, width and top radius.
+          className={workspaceRowClassName}
           // Static branch glyph — never the loading spinner. This row only renders
           // once `status` exists, so a spinner here only ever fired on *refreshes*
           // of an already-loaded repo (window focus, turn settle), reading as an
@@ -214,8 +337,12 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           // It's a button (not the whole row) so the glyph opens the review pane
           // while the strip around it stays inert; size-3.5 fills the slot exactly.
           leading={
-            <button className="flex size-3.5 items-center justify-center" onClick={onOpen} type="button">
-              <Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />
+            <button className="flex size-3.5 items-center justify-center" disabled={Boolean(hasWorkspace && !status)} onClick={onOpen} type="button">
+              {/* The agent's own worktree wears the yellow marker so a glance
+                  tells "the agent moved" apart from "I chose this workspace". */}
+              {agentWorktree && !workspace
+                ? <Codicon className="text-(--ui-yellow)" data-slot="agent-worktree-glyph" name="git-branch" size="0.8rem" />
+                : <Codicon className="text-(--ui-green)" name={folderWorkspace ? 'folder' : 'git-branch'} size="0.8rem" />}
             </button>
           }
         >
@@ -228,11 +355,15 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             {/* Branch name — the other half of the review-pane target. `contents`
                 so the button lays out nothing of its own: the label stays the
                 same flex child it always was, and the hit area is the text. */}
-            <button className="contents" onClick={onOpen} type="button">
+            {hasWorkspace ? <ActionsMenu align="start" contentClassName="w-72 max-w-[calc(100vw-2rem)]" items={renderBranchItems} side="top">
+              <Button className="min-w-0 max-w-full shrink" data-slot="coding-workspace-summary" size="inline" type="button" variant="text">
+                <span className="truncate text-xs font-normal">{summary}</span>
+              </Button>
+            </ActionsMenu> : <button className="contents" onClick={onOpen} type="button">
               <span className="min-w-0 truncate text-xs font-normal text-muted-foreground/92" title={branchLabel}>
                 {branchLabel}
               </span>
-            </button>
+            </button>}
 
             {/* Worktree path + copy — plain muted text, not a chip. Always in the
                 flex so hover doesn't reflow the row; opacity alone reveals the
@@ -242,7 +373,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 home → ~; the copy still takes the real absolute path, and it's
                 the shared `CopyButton` so it confirms with the same inline
                 checkmark as every other copy in the app. */}
-            {resolvedRepoPath && (
+            {!hasWorkspace && resolvedRepoPath && (
               <div className="flex min-w-0 flex-1 items-center gap-0.5 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100">
                 <span
                   className="min-w-0 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50"
@@ -267,7 +398,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 ALWAYS laid out; only its opacity flips on hover/focus/open, so
                 revealing it never reflows the row (no layout shift). pointer-events
                 follow opacity so the invisible trigger isn't clickable at rest. */}
-            {onBranchOff && (
+            {!hasWorkspace && onBranchOff && (
               <ActionsMenu
                 align="end"
                 contentClassName="w-60"
@@ -291,7 +422,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           {/* The counts describe what's in the review pane, so clicking them
               opens it. `contents` again: the two spans stay direct flex children
               of the row, keeping their gap and `ml-auto` behaviour untouched. */}
-          {(status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
+          {status && (status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
             <button className="contents" onClick={onOpen} type="button">
               {(status.ahead > 0 || status.behind > 0) && (
                 <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">

@@ -17,7 +17,7 @@ import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, type NewChatBackendOwner, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
@@ -1860,12 +1860,12 @@ export function upsertOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  owner?: null | SessionProfileRoute
+  owner?: null | NewChatBackendOwner
 ) {
   const session = buildOptimisticSession(created, id, title, preview, parentSessionId, lastActive, owner)
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
+  if (owner?.connectionId) {
+    setSessionOwnerHint(id, { ...owner, connectionId: owner.connectionId })
   }
 
   // A real row supersedes any unlisted-draft stub for the same id (first send
@@ -1907,7 +1907,7 @@ function buildOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  owner?: null | SessionProfileRoute
+  owner?: null | NewChatBackendOwner | SessionProfileRoute
 ): SessionInfo {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on so the scoped sidebar
@@ -1921,7 +1921,7 @@ function buildOptimisticSession(
   // inserted), so a row stamped `default` then misroutes every session-scoped
   // RPC that resolves its owner off the row ("session not found" on turn two).
   const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
-  const connectionId = owner?.connectionId.trim() || ''
+  const connectionId = owner?.connectionId?.trim() || ''
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -2322,7 +2322,9 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
+    | 'agentWorktree'
     | 'branch'
+    | 'codingWorkspace'
     | 'cwd'
     | 'fast'
     | 'model'
@@ -2427,6 +2429,14 @@ export function applyRuntimeInfo(
   reportInstallMethodWarning(info.install_warning)
 
   const sessionState: SessionRuntimeStatePatch = {}
+
+  if (info.coding_workspace !== undefined) {
+    sessionState.codingWorkspace = info.coding_workspace
+  }
+
+  if (info.agent_worktree !== undefined) {
+    sessionState.agentWorktree = info.agent_worktree
+  }
 
   if (typeof info.model === 'string') {
     sessionState.model = info.model

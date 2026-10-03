@@ -271,7 +271,7 @@ def _effective_terminal_backend() -> str:
 def _display_session_cwd(session: dict | None) -> str:
     """Session cwd for display/probe surfaces, healed past deleted worktrees (healed value persisted back; local only)."""
     cwd = _session_cwd(session)
-    if not _session_is_local_backend(session):
+    if (session and session.get("coding_workspace")) or not _session_is_local_backend(session):
         return cwd
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
@@ -330,6 +330,10 @@ def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
         _reconcile_session_cwd_from_terminal(session)
     except Exception:
         logger.debug("failed to reconcile settled session cwd", exc_info=True)
+    try:
+        _revalidate_agent_worktree(session)
+    except Exception:
+        logger.debug("failed to revalidate agent worktree", exc_info=True)
     _emit("session.info", sid, _session_info(agent, session))
 
 
@@ -402,6 +406,8 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     for flag in ("room_plumbing", "follow_profile_config"):
         if session.get(flag):
             model_config[flag] = True
+    if session.get("coding_workspace"):
+        model_config["coding_workspace"] = session["coding_workspace"]
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
     return row_model, model_config

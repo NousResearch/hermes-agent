@@ -18,9 +18,10 @@ function rejectsCwdExplicit(params: Record<string, unknown>, error: unknown): bo
   return 'cwd_explicit' in params && CWD_EXPLICIT_REJECTED.test(error instanceof Error ? error.message : String(error))
 }
 
-/** `session.create` on the captured owner route (or the window's gateway). */
+/** `session.create` on the captured owner route (or the window's gateway).
+ *  A null `connectionId` is a legacy named-profile owner (coding workspaces). */
 export async function createGatewaySession(
-  route: AgentProfileRoute | null,
+  route: (Omit<AgentProfileRoute, 'connectionId'> & { connectionId: null | string }) | null,
   params: Record<string, unknown>,
   requestGateway: RequestGateway
 ): Promise<SessionCreateResponse> {

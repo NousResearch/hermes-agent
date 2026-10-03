@@ -330,31 +330,6 @@ def _seed_row(record: dict) -> None:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
-def _create_overrides(params: dict) -> tuple:
-    """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
-    write. An explicit tier wins over legacy ``fast``; omitted inherits and normal pins ""."""
-    create_model = _str_param(params, "model")
-    model_override = None
-    if create_model:
-        model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
-    reasoning_override = None
-    if effort := _str_param(params, "reasoning_effort"):
-        with contextlib.suppress(Exception):
-            from hermes_constants import parse_reasoning_effort
-            reasoning_override = parse_reasoning_effort(effort)
-    service_tier_override = None
-    if params.get("service_tier") is not None:
-        from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
-        raw_tier = str(params["service_tier"] or "").strip().lower()
-        parsed_tier = parse_service_tier(raw_tier)
-        if parsed_tier is None and raw_tier not in NORMAL_TIER_WORDS:
-            raise ValueError(f"unknown service tier: {raw_tier}")
-        service_tier_override = parsed_tier or ""
-    elif "fast" in params:
-        service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
-    return model_override, reasoning_override, service_tier_override
-
-
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -432,8 +407,9 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
+    from .methods_session_model_guard import create_overrides
     try:
-        session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+        session_model_override, create_reasoning_override, create_service_tier_override = create_overrides(params)
     except ValueError as exc:
         return _err(rid, 4002, str(exc))
     composer_override_profile = None

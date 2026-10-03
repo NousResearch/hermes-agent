@@ -666,7 +666,9 @@ def _render_get_prompt(result, server_name: str) -> dict:
     for msg in getattr(result, "messages", []):
         entry = _pick(msg, ("role", "role"))
         if hasattr(msg, "content"):
-            entry["content"] = strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content))
+            # A prompt message holds one block of the same kinds a tool result does; the pydantic
+            # repr of an image/resource block put raw base64 and escaped text in front of the model.
+            entry["content"] = _render_content_blocks(SimpleNamespace(content=[msg.content]), server_name)[0]
         messages.append(entry)
     return {"messages": messages, **_pick(result, ("description", "description", True))}
 

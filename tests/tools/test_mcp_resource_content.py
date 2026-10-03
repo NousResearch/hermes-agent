@@ -212,3 +212,24 @@ class TestErrorPathResourceText:
         ))
         data = json.loads(handler({}))
         assert data["error"]
+
+
+class TestPromptMessageBlocks:
+    def test_get_prompt_renders_blocks_like_a_tool_result(self):
+        """prompts/get messages carry the same block kinds as tool results: embedded text must
+        arrive as the text itself and an image as a MEDIA tag, never as the SDK object's repr."""
+        import mcp.types as types
+        from tools.mcp_tool_handlers import _render_get_prompt
+
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 64).decode("ascii")
+        source = "def f():\n    return 'x'\n"
+        result = types.GetPromptResult(messages=[
+            types.PromptMessage(role="user", content=types.EmbeddedResource(
+                type="resource", resource=types.TextResourceContents(uri="file:///src/f.py", text=source))),
+            types.PromptMessage(role="user", content=types.ImageContent(type="image", data=png, mimeType="image/png")),
+        ])
+
+        embedded, image = (m["content"] for m in _render_get_prompt(result, "srv")["messages"])
+
+        assert embedded == source
+        assert image.startswith("MEDIA:") and png not in image

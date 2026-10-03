@@ -10,6 +10,7 @@ import ipaddress
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -1777,6 +1778,7 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 # ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
+_codex_oauth_cache_lock = threading.Lock()
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 _CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES = 128
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
@@ -1849,18 +1851,19 @@ def _codex_oauth_token_fingerprint(access_token: str, base_url: str = "") -> str
 
 def _prune_codex_oauth_context_caches(now: float) -> None:
     """Remove expired and oldest entries from the paired Codex OAuth caches."""
-    cutoff = now - _CODEX_OAUTH_CONTEXT_CACHE_TTL
-    expired = [key for key, (_, cached_at) in _codex_oauth_context_cache.items() if cached_at <= cutoff]
-    for key in expired:
-        _codex_oauth_context_cache.pop(key, None)
-        _codex_oauth_max_context_cache.pop(key, None)
-
-    overflow = len(_codex_oauth_context_cache) - _CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES
-    if overflow > 0:
-        oldest = sorted(_codex_oauth_context_cache, key=lambda key: _codex_oauth_context_cache[key][1])[:overflow]
-        for key in oldest:
+    with _codex_oauth_cache_lock:
+        cutoff = now - _CODEX_OAUTH_CONTEXT_CACHE_TTL
+        expired = [key for key, (_, cached_at) in _codex_oauth_context_cache.items() if cached_at <= cutoff]
+        for key in expired:
             _codex_oauth_context_cache.pop(key, None)
             _codex_oauth_max_context_cache.pop(key, None)
+
+        overflow = len(_codex_oauth_context_cache) - _CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES
+        if overflow > 0:
+            oldest = sorted(_codex_oauth_context_cache.items(), key=lambda item: item[1][1])[:overflow]
+            for key, _ in oldest:
+                _codex_oauth_context_cache.pop(key, None)
+                _codex_oauth_max_context_cache.pop(key, None)
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> Tuple[Dict[str, int], bool]:
@@ -1873,7 +1876,8 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
     if not _codex_catalog_probe_allowed(access_token, base_url):
         return {}, False
     cache_key = _codex_oauth_token_fingerprint(access_token, base_url)
-    cached = _codex_oauth_context_cache.get(cache_key)
+    with _codex_oauth_cache_lock:
+        cached = _codex_oauth_context_cache.get(cache_key)
     if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return cached[0], False
     # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
@@ -1900,8 +1904,10 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
             if isinstance(max_ctx, int) and max_ctx > 0:
                 max_result[slug.strip()] = max_ctx
     if result:
-        _codex_oauth_context_cache[cache_key] = (result, now)
-        _codex_oauth_max_context_cache[cache_key] = max_result
+        with _codex_oauth_cache_lock:
+            _codex_oauth_context_cache[cache_key] = (result, now)
+            _codex_oauth_max_context_cache[cache_key] = max_result
+        _prune_codex_oauth_context_caches(now)
     return result, True
 
 
@@ -1929,7 +1935,10 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, base_url=base_url)
-        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
+        with _codex_oauth_cache_lock:
+            live_max = _codex_oauth_max_context_cache.get(
+                _codex_oauth_token_fingerprint(access_token, base_url), {}
+            )
         # Exact slug, then case-insensitive in case casing drifts.
         slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
         if slug is not None:

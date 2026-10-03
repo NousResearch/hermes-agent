@@ -11,6 +11,7 @@ Coverage levels:
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import hermes_yaml as yaml
@@ -428,6 +429,7 @@ class TestCodexOAuthContextLength:
     def setup_method(self):
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
+        mm._codex_oauth_max_context_cache = {}
 
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
@@ -489,6 +491,49 @@ class TestCodexOAuthContextLength:
             assert mm._fetch_codex_oauth_context_lengths_with_source("token") == ({}, False)
         assert "expired" not in mm._codex_oauth_context_cache
         assert "expired" not in mm._codex_oauth_max_context_cache
+
+    def test_overflow_prunes_oldest_entries_with_companion_cache(self):
+        from agent import model_metadata as mm
+
+        mm._codex_oauth_context_cache = {
+            f"key-{index}": ({"gpt-5.5": index}, float(index))
+            for index in range(mm._CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES + 1)
+        }
+        mm._codex_oauth_max_context_cache = {
+            f"key-{index}": {"gpt-5.5": index * 10}
+            for index in range(mm._CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES + 1)
+        }
+
+        mm._prune_codex_oauth_context_caches(now=mm._CODEX_OAUTH_CONTEXT_CACHE_TTL)
+
+        assert len(mm._codex_oauth_context_cache) == mm._CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES
+        assert set(mm._codex_oauth_context_cache) == set(mm._codex_oauth_max_context_cache)
+        assert "key-0" not in mm._codex_oauth_context_cache
+        assert "key-0" not in mm._codex_oauth_max_context_cache
+
+    def test_concurrent_catalogue_fetches_prune_cache_without_iteration_errors(self):
+        from agent import model_metadata as mm
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "models": [{"slug": "gpt-5.5", "context_window": 272_000}]
+        }
+
+        def fetch(index):
+            return mm._fetch_codex_oauth_context_lengths_with_source(
+                f"token-{index}", base_url="https://gateway.example/v1"
+            )
+
+        with (
+            patch.object(mm.model_metadata_http, "get", return_value=response),
+            ThreadPoolExecutor(max_workers=8) as pool,
+        ):
+            results = list(pool.map(fetch, range(mm._CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES * 2)))
+
+        assert all(result == ({"gpt-5.5": 272_000}, True) for result in results)
+        assert len(mm._codex_oauth_context_cache) <= mm._CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES
+        assert set(mm._codex_oauth_context_cache) == set(mm._codex_oauth_max_context_cache)
 
     def test_probe_failure_falls_back_to_hardcoded(self):
         """If the probe fails (non-200 / network error), we still return

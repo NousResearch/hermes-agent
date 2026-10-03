@@ -85,19 +85,22 @@ class TestPackageManagerInstallExemption:
             "npm add nodemon --save-dev",
             "python3 -m pip install uvicorn",
             "apt install gunicorn",
+            "uv pip install --python /tmp/project/.venv fastapi uvicorn",
+            "uv pip install --python /tmp/project/.venv fastapi uvicorn && "
+            "python -c 'import fastapi, uvicorn; print(fastapi.__version__, uvicorn.__version__)'",
         ):
             assert _foreground_background_guidance(cmd) is None, cmd
 
-    def test_install_then_launch_still_warns(self):
+    def test_real_server_launch_segments_still_warn(self):
         # The exemption is per chained segment: an install earlier in the line
-        # must not suppress the warning for a real launch later in it.
+        # must not suppress guidance for a real or standalone server launch.
         for cmd in (
             "npm install nodemon && npm start",
             "pip install uvicorn; uvicorn app:app",
             "npm install nodemon || nodemon app.js",
+            "npm start",
+            "uvicorn app:app",
+            "nodemon app.js",
+            "yarn dev",
         ):
-            assert _foreground_background_guidance(cmd) is not None, cmd
-
-    def test_bare_launches_still_warn(self):
-        for cmd in ("npm start", "uvicorn app:app", "nodemon app.js", "yarn dev"):
             assert _foreground_background_guidance(cmd) is not None, cmd

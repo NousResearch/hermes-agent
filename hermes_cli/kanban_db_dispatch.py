@@ -201,8 +201,47 @@ def any_capacity_full(results: Iterable[Optional["DispatchResult"]]) -> bool:
     Used by health telemetry to tell "fully and correctly loaded" from a
     genuine stall (broken PATH/venv/credentials) so a saturated queue never
     raises a false ``dispatcher stuck`` alarm (#DRE-223).
+
+    NOTE: this is intentionally an ``any()``, not an ``all()`` — it answers
+    "is there a healthy reason a board held back", which is exactly the
+    wrong question for a MULTI-board tick: one saturated board must not
+    excuse a different, uncapped board's genuine zero-spawn stall. Health
+    telemetry across multiple boards must use :func:`any_genuine_stall`
+    instead, which judges each board against its OWN capacity state
+    (#DRE-292).
     """
     return any(res is not None and res.capacity_full for res in results)
+
+
+def any_genuine_stall(
+    entries: Iterable[tuple[bool, Optional["DispatchResult"]]],
+) -> bool:
+    """True iff some board has ready work pending, spawned nothing THIS tick,
+    and its own zero-spawn is not explained by ITS OWN concurrency cap.
+
+    ``entries`` is one ``(board_ready_pending, result)`` pair per dispatched
+    board for the tick. Judging capacity per board (rather than collapsing
+    every board's ``capacity_full`` into one ``any()`` — the pre-fix bug) is
+    required because ``max_spawn`` is a per-board cap: a board that is full
+    on ITS OWN budget must not suppress health telemetry for a different,
+    uncapped board whose zero spawn has no such excuse (broken PATH/venv/
+    credentials) (#DRE-292). A board with no ready work, or that spawned
+    something, or whose own result reports ``capacity_full``, is excused;
+    a board the dispatcher never even reached (``result is None``, e.g. a
+    quarantined/corrupt DB — already logged separately) is also excused
+    here to avoid double-alarming.
+    """
+    for ready_pending, res in entries:
+        if not ready_pending:
+            continue
+        if res is None:
+            continue
+        if res.spawned:
+            continue
+        if res.capacity_full:
+            continue
+        return True
+    return False
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in

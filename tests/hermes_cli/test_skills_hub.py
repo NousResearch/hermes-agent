@@ -490,7 +490,8 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
 # ---------------------------------------------------------------------------
 
 
-def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
+def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool,
+                pycache_after_install: bool = False):
     """Install a fake hub skill on disk, optionally edit it, and wire mocks.
 
     Returns (console_sink, installs_list).
@@ -508,6 +509,11 @@ def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
     recorded = content_hash(skill_dir)
     if edit_after_install:
         (skill_dir / "SKILL.md").write_text("# hub-skill\nuser edited\n")
+    if pycache_after_install:
+        # Simulate the skill's scripts having been executed after install.
+        pycache = skill_dir / "__pycache__"
+        pycache.mkdir()
+        (pycache / "hub_skill.cpython-314.pyc").write_bytes(b"\x00bytecode")
 
     monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(hub_install, "check_for_skill_updates", lambda **_kwargs: [{
@@ -564,6 +570,20 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
     do_update(console=console)
 
     assert installs == ["someone/hub-skill"]
+    assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+def test_do_update_does_not_misread_pycache_as_local_edits(monkeypatch, tmp_path):
+    """#130331: running a skill's scripts generates __pycache__ after install; the
+    pending update must proceed instead of skipping the skill as locally edited
+    on every run."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=False,
+                                          pycache_after_install=True)
+
+    do_update(console=console)
+
+    assert installs == ["someone/hub-skill"]
+    assert "local edits" not in sink.getvalue()
     assert "Updated 1 skill(s)" in sink.getvalue()
 
 

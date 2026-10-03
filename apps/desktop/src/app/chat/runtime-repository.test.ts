@@ -39,6 +39,46 @@ describe('useRuntimeMessageRepository', () => {
     expect(ids).toEqual(['user-1', 'assistant-1'])
   })
 
+  it('collapses settled messages that repeat with different ids after compression (#101938)', () => {
+    // The streaming copy (no rowId) and the rehydrated copy (rowId set) of the
+    // same logical message arrive with different ids but identical settled
+    // content and timestamp — only the first may render.
+    const settled = (id: string, role: ChatMessage['role'], body: string): ChatMessage => ({
+      ...text(id, role, body),
+      timestamp: 1_771_500_000
+    })
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        settled('user-1', 'user', 'hi'),
+        settled('assistant-stream-1', 'assistant', 'the answer'),
+        settled('assistant-rehydrated-1', 'assistant', 'the answer'),
+        settled('user-2', 'user', 'next')
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual([
+      'user-1',
+      'assistant-stream-1',
+      'user-2'
+    ])
+  })
+
+  it('keeps two settled messages whose text differs only in whitespace distinct', () => {
+    const settled = (id: string, body: string): ChatMessage => ({
+      ...text(id, 'assistant', body),
+      timestamp: 1_771_500_001
+    })
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        settled('a-1', 'same words'),
+        settled('a-2', 'same\n  words'),
+        settled('a-3', 'same words, but longer')
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['a-1', 'a-2', 'a-3'])
+  })
+
   it('builds a repository the runtime can link without throwing', () => {
     const { result } = renderHook(() =>
       useRuntimeMessageRepository([

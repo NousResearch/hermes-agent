@@ -84,6 +84,7 @@ Hermes will:
 
 - See `../repo-feature` as the project root.
 - Use that directory for context files, code edits, and tools.
+- Inherit project skill trust from the primary repository (see [Project Skills](./features/skills.md#git-worktrees)).
 - Use a **separate checkpoint history** for `/rollback` scoped to this worktree.
 
 ## Running Multiple Agents in Parallel

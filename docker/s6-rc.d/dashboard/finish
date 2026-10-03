@@ -10,11 +10,15 @@
 # (no dashboard process is running).
 #
 # When HERMES_DASHBOARD IS enabled and the run script later exits or
-# is killed, we want s6-supervise to restart it (the whole point of
-# supervised lifecycle). So we exit non-125 in that case.
+# is killed, we want s6-supervise to restart it unless startup refused a
+# permanent configuration error (EX_CONFIG / 78). Auth setup or a conflicting
+# host owner needs operator intervention, not another identical startup.
 
 # Arguments passed to a finish script: $1=run-exit-code, $2=signal-num,
 # $3=service-dir-name, $4=run-pgid. See servicedir(7).
+if [ "${1:-}" = 78 ]; then
+    exit 125
+fi
 
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes)

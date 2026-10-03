@@ -350,7 +350,7 @@ def test_start_server_loopback_public_url_enables_gate(monkeypatch):
         clear_providers()
 
 
-def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypatch):
+def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypatch, capsys):
     """Trusting an external Host must never expose the loopback token mode."""
     from hermes_cli.dashboard_auth import clear_providers
 
@@ -368,11 +368,13 @@ def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypa
         "trusted_public_hosts",
     )
 
-    with pytest.raises(SystemExit, match=r"no auth providers"):
+    with pytest.raises(SystemExit) as error:
         web_server.start_server(
             host="127.0.0.1", port=9119,
             open_browser=False, allow_public=False,
         )
+    assert error.value.code == 78
+    assert "no auth providers" in capsys.readouterr().err
     assert web_server.app.state.auth_required is True
 
 

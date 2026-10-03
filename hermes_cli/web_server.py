@@ -1142,7 +1142,7 @@ def _configure_auth_gate(
 ) -> None:
     """Resolve the trusted public hosts + auth-gate flag onto ``app.state``.
 
-    Fails closed (``SystemExit`` with an actionable message) when the gate
+    Fails closed (exit 78 with an actionable message on stderr) when the gate
     engages but no dashboard auth provider is registered.
     """
     # dashboard.public_url is also the exact Host/Origin trust declaration for
@@ -1180,7 +1180,12 @@ def _configure_auth_gate(
         # No escape hatch serves a gated dashboard without a provider.
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
-            raise SystemExit(_no_auth_provider_message(host))
+            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+            # A missing provider is configuration, not a transient crash. Give
+            # supervisors the same permanent-refusal status as host conflicts.
+            print(_no_auth_provider_message(host), file=sys.stderr)
+            raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
             host,

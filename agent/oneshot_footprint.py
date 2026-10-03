@@ -8,8 +8,9 @@ back into context. Three rules follow, all keyed on the same session marker the 
 delegation dispatcher already read (``HERMES_SINGLE_QUERY_SESSION``), so interactive sessions are untouched:
 
 * ``skill_manage`` is not offered (``skills_list``/``skill_view`` stay: reading a domain skill can still win);
-* the ## Skills prompt drops the "record it / patch it / offer to save" coaching and the "load process skills
-  even for tasks you already know" push, keeping only "load a skill when it adds knowledge you lack";
+* the ## Skills prompt drops the "record it / patch it / offer to save" authoring coaching (no later
+  session consumes it) but keeps the interactive scan-and-load contract: every relevant or partially
+  relevant skill must still be loaded with ``skill_view`` before substantive work;
 * delegation is capped per session (``delegation.oneshot_max_children``): subagents each re-pay a cold
   system prompt and re-explore the repo, and the observed spawns were mostly "independent review of my own
   work" rather than parallel work.
@@ -41,8 +42,13 @@ def prune_oneshot_tools(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 ONESHOT_SKILLS_LOAD_GUIDANCE = (
     "## Skills\n"
-    "Scan the skills below and load one with skill_view(name) only when it carries domain knowledge you lack "
-    "for THIS task (an API, a tool's commands, a project's conventions). Do not load general process skills "
-    "(testing, debugging, review methodology) for work you already know how to do, and do not create or edit "
-    "skills: this is a one-shot run with no later session to reuse them.\n"
+    "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
+    "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
+    "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
+    "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
+    "commands, and proven workflows that outperform general-purpose approaches. Skills also encode "
+    "the user's preferred approach, conventions, and quality standards for tasks like code review, "
+    "planning, and testing — load them even for tasks you already know how to do, because the skill "
+    "defines how it should be done here.\n"
+    "This is a one-shot run with no later session to reuse new skills: do not create or edit skills.\n"
 )

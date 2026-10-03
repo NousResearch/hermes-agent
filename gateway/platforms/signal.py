@@ -188,6 +188,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.attachment_staging_dir = extra.get("attachment_staging_dir")
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
@@ -691,9 +692,20 @@ class SignalAdapter(BasePlatformAdapter):
             return chunks
         return [(f"{txt} ({idx}/{len(chunks)})", st) for idx, (txt, st) in enumerate(chunks, start=1)]
 
+    async def _rpc_send_attachments(self, params: Dict[str, Any], **rpc_kwargs: Any) -> Any:
+        from gateway.platforms.signal_attachments import staged_signal_attachments
+
+        with staged_signal_attachments(params["attachments"], self.attachment_staging_dir) as paths:
+            return await self._rpc("send", dict(params, attachments=paths), **rpc_kwargs)
+
     async def _rpc_send(self, params: Dict[str, Any], fail_error: str) -> Tuple[Any, Optional[SendResult]]:
         """Run a ``send`` RPC, validate and track it; ``(result, None)`` or ``(None, failed SendResult)``."""
-        if (result := await self._rpc("send", params)) is None:
+        try:
+            result = (await self._rpc_send_attachments(params) if params.get("attachments")
+                      else await self._rpc("send", params))
+        except OSError as exc:
+            return None, SendResult(success=False, error=f"Signal attachment staging failed: {exc}")
+        if result is None:
             return None, SendResult(success=False, error=fail_error)
         success, err_msg = self._validate_send_result(result)
         if not success:
@@ -811,9 +823,14 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal batch %d/%d: %d attachments, estimated wait=%.1fs", idx, n_batches, n, estimated)
             if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
                 await self._notify_batch_pacing(chat_id, idx, n_batches, estimated)
-            if await self._send_attachment_batch(scheduler, dict(base_params, attachments=att_batch), n,
-                                                 f"{idx}/{n_batches}"):
-                delivered = True
+            try:
+                if await self._send_attachment_batch(scheduler, dict(base_params, attachments=att_batch), n,
+                                                     f"{idx}/{n_batches}"):
+                    delivered = True
+            except OSError as exc:
+                error = f"Signal attachment staging failed: {exc}"
+                logger.error("%s", error)
+                return SendResult(success=delivered, error=error)
         return SendResult(
             success=delivered,
             error=None if delivered else "all Signal attachment batches failed")
@@ -827,7 +844,7 @@ class SignalAdapter(BasePlatformAdapter):
             await scheduler.acquire(n)
             t0 = time.monotonic()
             try:
-                result = await self._rpc("send", params, raise_on_rate_limit=True, timeout=send_timeout)
+                result = await self._rpc_send_attachments(params, raise_on_rate_limit=True, timeout=send_timeout)
             except SignalRateLimitError as e:
                 scheduler.feedback(e.retry_after, n)
                 retry_after = f"{e.retry_after:.0f}s" if e.retry_after else "unknown"

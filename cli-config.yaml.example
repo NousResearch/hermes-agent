@@ -1469,6 +1469,11 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#   signal:
+#     extra:
+#       # Optional: dedicated directory mounted at the same absolute path in
+#       # Hermes and signal-cli containers (Hermes writes; signal-cli reads).
+#       attachment_staging_dir: /shared/signal-attachments
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

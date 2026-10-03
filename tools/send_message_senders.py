@@ -433,6 +433,8 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
             logger.warning("Signal: rate-limited on batch %d/%d (attempt %d/%d, server retry_after=%s); "
                            "scheduler will pace the retry",
                            idx + 1, n_batches, attempt, max_attempts, retry_after_label)
+        except OSError as e:
+            return _error(f"Signal attachment staging failed: {e}")
         except Exception as e:
             if attempt >= max_attempts:
                 logger.error("Signal: send error on batch %d/%d after %d attempts: %s",
@@ -451,6 +453,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return {"error": "httpx not installed"}
     from gateway.platforms import signal_rate_limit as rl
     from gateway.platforms.signal_format import markdown_to_signal
+    from gateway.platforms.signal_attachments import staged_signal_attachments
     try:
         http_url, account = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/"), extra.get("account", "")
         if not account:
@@ -473,12 +476,13 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             if styled and text and text_styles:
                 params["textStyle" if len(text_styles) == 1 else "textStyles"] = (
                     text_styles[0] if len(text_styles) == 1 else text_styles)
-            if attachments:
-                params["attachments"] = attachments
-            payload = {"jsonrpc": "2.0", "method": "send", "params": params,
-                       "id": f"{id_prefix}_{int(time.time() * 1000)}"}
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                return await client.post(f"{http_url}/api/v1/rpc", json=payload)
+            with staged_signal_attachments(attachments or [], extra.get("attachment_staging_dir")) as paths:
+                if paths:
+                    params["attachments"] = paths
+                payload = {"jsonrpc": "2.0", "method": "send", "params": params,
+                           "id": f"{id_prefix}_{int(time.time() * 1000)}"}
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    return await client.post(f"{http_url}/api/v1/rpc", json=payload)
 
         async def _post(batch_attachments, batch_message):
             resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments, styled=True,

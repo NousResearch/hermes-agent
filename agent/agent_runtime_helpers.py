@@ -34,6 +34,7 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from agent.fallback_route_gate import clear_route_gate
 logger = logging.getLogger(__name__)
 
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
@@ -1505,6 +1506,11 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
         agent._rate_limit_backoff_count = 0
+        # Clear the gate pair HERE, after the route is restored and before the two calls below that
+        # can raise: clearing earlier would lose the fallback identity that a retry needs to emit
+        # its recovery notice (test_restore_retry_preserves_fallback_identity_after_partial_failure),
+        # and clearing later could leave the flag True on a turn now serving the primary (#117495).
+        clear_route_gate(agent)
         # Reset the stale-call circuit breaker: its streak measured the fallback provider.
         from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
         _reset_stale_streak(agent)
@@ -1512,8 +1518,6 @@ def restore_primary_runtime(agent) -> bool:
         # again (prefix cache match).
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
-        agent._provider_fallback_active = False
-        agent._provider_fallback_route = None
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
@@ -2157,6 +2161,9 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+    # The route gate is route state: a rollback that restores the route but not the gate leaves
+    # the refusal armed (or disarmed) on the wrong route (#117495).
+    "_provider_fallback_active", "_provider_fallback_route",
 )
 _MISSING = object()
 
@@ -2296,6 +2303,11 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     """Swap identity/transport fields, reload the pool, rebuild the client (rolled back by the caller on error)."""
     # Clear the per-config override so the new model's context window is re-resolved.
     agent._config_context_length = None
+    # A deliberate /model picks a route the user chose, so the fallback gate must be off from the
+    # moment the route changes. _finish_switch clears it too, but six fallible steps run first and
+    # this function's own rollback restores the route without touching the gate — leaving the
+    # refusal armed on a route the user selected (#117495).
+    clear_route_gate(agent)
     agent.model = new_model
     agent.provider = agent.requested_provider = new_provider
     # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
@@ -2453,8 +2465,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
-    agent._provider_fallback_active = False
-    agent._provider_fallback_route = None
+    clear_route_gate(agent)
     agent._fallback_index = 0
     agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
@@ -2600,6 +2611,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         logger.debug("tool_request middleware error: %s", _mw_err)
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
+        # The automatic-fallback route gate runs once at _dispatch_authorized_once, the funnel
+        # every dispatch path reaches. It is not repeated here: the only production caller
+        # passes pre_tool_block_checked=True, so a second copy would be dead code reading as
+        # load-bearing (#117495).
         block_message, function_args = _pre_tool_block_message(
             agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
         )
@@ -2608,7 +2623,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         emit_terminal_post_tool_call(
             agent, function_name=function_name, function_args=function_args, result=result,
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
-            error_type="plugin_block", error_message=block_message,
+            error_type="plugin_block",
+            error_message=block_message,
             middleware_trace=_tool_middleware_trace,
         )
         return result

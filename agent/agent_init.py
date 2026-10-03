@@ -890,6 +890,13 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             _refused_entries.append((_fb_provider, "no usable credentials"))
             continue
         agent._fallback_activated = True
+        # Only the automatic fallback path arms the route gate; a deliberate /model switch
+        # must never be restricted (#117495). Reached only past the refusal branch above.
+        agent._provider_fallback_active = True
+        # The mid-turn arming records the pair; init-time must too, or a session born on a
+        # fallback has no recorded route and restore_primary_runtime reports the fallback's own
+        # route as the "previous" one in its recovery notice.
+        agent._provider_fallback_route = (str(_fb_model or _fb["model"]), _fb_provider)
         if _fb_provider.strip().lower() == "moa":
             # The chokepoint handed back the preset's aggregator client, which only proves the
             # preset resolves and its aggregator has credentials. A MoA entry means the preset
@@ -1109,6 +1116,10 @@ def _init_fallback_chain(agent, fallback_model):
     agent._fallback_chain = _fallback_entries(fallback_model)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    # Seed the automatic-fallback provenance pair so every reader is a plain attribute access
+    # instead of a getattr default that silently masks a missing seed (#117495).
+    agent._provider_fallback_active = getattr(agent, "_provider_fallback_active", False)
+    agent._provider_fallback_route = getattr(agent, "_provider_fallback_route", None)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     chain = agent._fallback_chain

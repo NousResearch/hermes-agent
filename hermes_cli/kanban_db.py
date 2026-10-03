@@ -3226,10 +3226,13 @@ def block_task(
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
-    is supplied: ``block_kind``/``block_recurrences`` are set and a ``blocked``
-    audit event is appended, while status, failure evidence and the terminal
-    runs stay exactly as the breaker left them. A typed block, a card with a
-    live run, or a kind-less call on a blocked card are still refused.
+    is supplied. Non-dependency kinds retain the parked status while setting
+    ``block_kind``/``block_recurrences`` and appending a ``blocked`` audit
+    event; ``kind='dependency'`` follows the normal dependency route, which
+    may move the card to ``todo`` or re-kind it to sticky ``needs_input``.
+    Failure evidence and terminal runs stay exactly as the breaker left them.
+    A typed block, a card with a live run, or a kind-less call on a blocked
+    card are still refused.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")

@@ -207,6 +207,26 @@ def _ensure_screen_for_headed_chromium() -> None:
         ensure_started_for_tool()
 
 
+def _windows_browser_elevation_error() -> Optional[str]:
+    """Return an actionable error when Windows would start Chrome elevated.
+
+    Chrome can exit successfully without creating its DevTools endpoint when its
+    launcher and desktop token are elevated; treating that as a generic backend
+    failure hides the actual configuration error.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return None
+    if elevated:
+        return "The local browser backend cannot run elevated on Windows; start Hermes from a non-Administrator process."
+    return None
+
+
+
 def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str,
                          stdin_payload: Optional[bytes] = None) -> "subprocess.Popen":
     """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``;
@@ -739,12 +759,26 @@ def _spawn_and_collect(
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
     cmd_parts, browser_env = _sandbox_wrap(cmd_parts, browser_env, task_socket_dir)
+    if (
+        os.name == "nt"
+        and engine != "lightpanda"
+        and (session_info.get("features") or {}).get("local")
+        and not _browser_in_sandbox()
+        and "--cdp" not in cmd_parts
+    ):
+        elevation_error = _windows_browser_elevation_error()
+        if elevation_error:
+            raise RuntimeError(elevation_error)
     proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command, stdin_payload)
 
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        # agent-browser may have already forked Chrome/its daemon; killing only the
+        # CLI leaves the browser tree behind and defeats the orphan reaper's clean
+        # shutdown path. Use the same parent-first tree teardown as session cleanup.
+        from tools.browser_tool_lifecycle import _kill_process_tree
+        _kill_process_tree(proc)
         proc.wait()
         stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
         _unlink_command_output_files(stdout_path, stderr_path)

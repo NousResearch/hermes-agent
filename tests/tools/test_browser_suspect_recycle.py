@@ -65,6 +65,7 @@ class TestTimeoutMarksSuspect:
         bt._active_sessions[TASK] = session_info
 
         process = Mock()
+        process.pid = 1234
         process.returncode = -9
         process.wait.side_effect = [subprocess.TimeoutExpired("agent-browser", 1), -9]
         _install_command_stubs(monkeypatch, tmp_path, process)
@@ -96,7 +97,7 @@ class TestTimeoutMarksSuspect:
         # Alive branch: session stays cached for the next-use recycle...
         assert bt._active_sessions[TASK] is session_info
         # ...and the daemon is NOT tree-killed.
-        assert kills == []
+        assert kills == [1234]
 
 
 class TestNextUseRecycles:
@@ -203,6 +204,7 @@ class TestWedgedDaemonTreeKill:
         (socket_dir / "wedged-session.pid").write_text(str(daemon_pid))
 
         process = Mock()
+        process.pid = 1234
         process.returncode = -9
         process.wait.side_effect = [subprocess.TimeoutExpired("agent-browser", 1), -9]
         _install_command_stubs(monkeypatch, tmp_path, process)
@@ -221,7 +223,7 @@ class TestWedgedDaemonTreeKill:
         result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=1)
 
         assert result["success"] is False
-        assert kills == [daemon_pid]  # tree-kill hit the daemon PID
+        assert kills == [1234, daemon_pid]  # command and daemon trees are both reaped
         assert TASK not in bt._active_sessions  # evicted now, not at next use
         assert TASK not in bt._session_last_activity
         assert TASK not in bt._last_active_session_key
@@ -248,6 +250,58 @@ class TestWedgedDaemonTreeKill:
         # The eviction already removed the poisoned entry, so the flag is
         # dropped too — it must not poison a later session under this key.
         assert TASK not in bt._suspect_browser_sessions
+
+
+class TestTerminalSandboxElevationScope:
+    def test_terminal_placement_reaches_spawn_on_elevated_windows(self, monkeypatch, tmp_path):
+        """Terminal placement runs Chromium in the sandbox, not under the host token."""
+        session_info = {
+            "session_name": "terminal-session",
+            "bb_session_id": None,
+            "cdp_url": None,
+            "features": {"local": True},
+        }
+        spawned = []
+        proc = Mock(returncode=0)
+        proc.wait.return_value = 0
+
+        monkeypatch.setattr(bt_session.os, "name", "nt")
+        monkeypatch.setattr(bt_session, "_browser_in_sandbox", lambda: True)
+        monkeypatch.setattr(
+            bt_session,
+            "_windows_browser_elevation_error",
+            lambda: "elevated host",
+        )
+        monkeypatch.setattr(bt_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
+        monkeypatch.setattr(bt_session, "_ensure_screen_for_headed_chromium", lambda: None)
+        monkeypatch.setattr(bt_session, "_agent_browser_command_env", lambda _path: {})
+        monkeypatch.setattr(bt_session, "_apply_chromium_sandbox_args", lambda _env: None)
+        monkeypatch.setattr(
+            bt_session,
+            "_sandbox_wrap",
+            lambda argv, env, _path: (["sandbox", *argv], env),
+        )
+
+        def fake_spawn(argv, env, socket_dir, tag, stdin_payload=None):
+            spawned.append(argv)
+            (tmp_path / f"_stdout_{tag}").write_text("{}")
+            (tmp_path / f"_stderr_{tag}").write_text("")
+            return proc
+
+        monkeypatch.setattr(bt_session, "_popen_agent_browser", fake_spawn)
+        monkeypatch.setattr(bt_session, "_interpret_browser_command_output", lambda *args: {"success": True})
+
+        result = bt_session._spawn_and_collect(
+            TASK,
+            session_info,
+            ["agent-browser", "--session", "terminal-session", "open", "about:blank"],
+            "open",
+            "chromium",
+            1,
+        )
+
+        assert result == {"success": True}
+        assert spawned == [["sandbox", "agent-browser", "--session", "terminal-session", "open", "about:blank"]]
 
 
 class TestFreshSessionClearsStaleFlag:

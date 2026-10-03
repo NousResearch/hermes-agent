@@ -1563,10 +1563,12 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         # Windows is available on PATH. Only fall back to PM when PATH has no
         # non-PM Git, preserving the installer behavior for Git-less systems.
         from hermes_platform.resolver import LookupContext, locate_command
-        from pm.paths import store_root
+        from pm.paths import store_root, writable_store_root
 
         git = locate_command("git", LookupContext(path=build_env.get("PATH", ""))).command
-        if not git or Path(git[0]).resolve().is_relative_to(store_root()):
+        git_path = Path(git[0]).resolve() if git else None
+        pm_roots = tuple(root.resolve() for root in (store_root(), writable_store_root()))
+        if git_path is None or any(git_path.is_relative_to(root) for root in pm_roots):
             import pm
             build_env = pm.ensure("git", base_env=build_env).env
     if _force_adhoc_macos_signing(build_env, source_mode=source_mode):

@@ -1,9 +1,11 @@
 """Tests for the platform adapter registry and dynamic Platform enum."""
 
+import threading
 from unittest.mock import MagicMock
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry
 from gateway.config import Platform, GatewayConfig
+from hermes_cli import plugins_loader
 
 
 # ── Platform enum dynamic members ─────────────────────────────────────────
@@ -681,10 +683,6 @@ class TestMigratedPlatformWiring:
 
 def test_registry_walk_from_plugin_load_worker_does_not_wait_on_parent(monkeypatch):
     """register() re-walking the registry on its deadline worker must not block on its own or a sibling load."""
-    import threading
-
-    from hermes_cli import plugins_loader
-
     monkeypatch.setattr(plugins_loader, "_resolve_plugin_load_timeout", lambda: 0.5)
     reg = PlatformRegistry()
     abandoned = []

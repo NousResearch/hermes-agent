@@ -221,7 +221,7 @@ def test_foreign_owner_warning_names_the_failing_side(host_dir, monkeypatch, cap
     locks.mkdir(parents=True)
     record = locks / "host-gateway.json"
     record.write_text("{}")
-    monkeypatch.setattr(hr, "_FOREIGN_OWNER_WARNED", set())
+    monkeypatch.setattr(hr, "_FOREIGN_OWNER_WARNED", {})
 
     real = os.getuid()
     fake = real + 424242  # a uid no CI account runs as; asserted verbatim below
@@ -236,7 +236,7 @@ def test_foreign_owner_warning_names_the_failing_side(host_dir, monkeypatch, cap
     monkeypatch.setattr(Path, "stat", foreign_stat)
     with caplog.at_level(logging.WARNING, logger="gateway.host_rendezvous"):
         assert hr._record_is_own(record) is False
-        assert hr._record_is_own(record) is False  # read_record polls: same path warns once
+        assert hr._record_is_own(record) is False  # read_record polls: same culprit warns once
 
     message = caplog.text
     assert message.count("ignoring host record") == 1
@@ -245,3 +245,24 @@ def test_foreign_owner_warning_names_the_failing_side(host_dir, monkeypatch, cap
     assert f"file uid {file_uid}" in message
     assert f"parent dir {locks} uid {parent_uid}" in message
     assert f"(expected {real})" in message
+
+    # The file is then repaired but the parent dir goes foreign under a different uid: a
+    # changed culprit on the same path is a different failure (chown the state root, not
+    # the record) and must re-arm the warning — dedup keyed on the path alone used to
+    # silence it for the rest of the process's life.
+    other_fake = real + 777777
+
+    def parent_now_foreign_stat(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if self == locks:
+            st = _stat_with_uid(st, other_fake)
+        return st
+
+    monkeypatch.setattr(Path, "stat", parent_now_foreign_stat)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="gateway.host_rendezvous"):
+        assert hr._record_is_own(record) is False
+    message_b = caplog.text
+    assert message_b.count("ignoring host record") == 1
+    assert f"file uid {real}" in message_b
+    assert f"parent dir {locks} uid {other_fake}" in message_b

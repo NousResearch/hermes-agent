@@ -13,12 +13,13 @@ import json
 import logging
 import shutil
 from contextlib import suppress
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.skills_sync_client_wire import (
     ObjectSet, SyncClient, SyncConflict, SyncError, assemble_root_from_skill_trees, build_commit, build_tree,
-    checked_capabilities, materialize_tree, read_ref_hash, root_tree_of_commit, skill_trees_of_root)
+    checked_capabilities, confined_tree_dest, fold_rel_to_disk, materialize_tree, read_ref_hash,
+    root_tree_of_commit, skill_trees_of_root, _is_safe_tree_name)
 
 logger = logging.getLogger("tools.skills_sync_client")
 ORG_DIR_NAME = "_org"
@@ -45,6 +46,11 @@ def resolve_org_identity() -> Dict[str, Any]:
     org_id, org_role = claims.get("org_id"), claims.get("org_role")
     if not org_id:
         raise ssc.SyncInertError("no organisation associated with this account")
+    if not _is_safe_tree_name(org_id):
+        # org_id is verbatim filesystem input (``_org/<org_id>/``) and comes from JWT claims the
+        # client does not verify -- an issuer-controlled id with separators would escape the
+        # skills dir under every confinement check downstream.
+        raise ssc.SyncInertError("organisation id is not usable as a sync namespace")
     if not isinstance(org_role, str) or not org_role:
         raise ssc.SyncInertError("this account isn't a member of a shared organisation")
     identity.update(org_id=str(org_id), org_role=org_role)
@@ -145,7 +151,10 @@ def _clear_active_org_marker() -> None:
 
 def org_skill_is_locally_modified(skill_rel_path: str, org_id: str) -> bool:
     """Local copy differs from upstream's fingerprint. No baseline (pre-existing mirror) => unmodified."""
-    dest = _mirror_root(org_id) / PurePosixPath(skill_rel_path)
+    dest = confined_tree_dest(_mirror_root(org_id), skill_rel_path)
+    if dest is None:
+        # A pre-fix baseline can carry a poisoned rel path; never stat outside the mirror.
+        return False
     entry = _read_org_baseline(org_id).get(skill_rel_path) or {}
     recorded = entry.get("fingerprint") if isinstance(entry, dict) else entry
     return dest.is_dir() and bool(recorded) and _skill_dir_fingerprint(dest) != recorded
@@ -200,10 +209,42 @@ def pull_org_skills(client: Optional[SyncClient] = None, *, identity: Optional[D
     if not head:
         return {"ok": True, "org_id": org_id, "head": None, "updated": []}
     head_commit = client.get_commit_json(head, org_scope=True)
-    updated, conflicted = [], []
+    updated, conflicted, skipped = [], [], []
     baseline = _read_org_baseline(org_id)
+    mirror = _mirror_root(org_id)
+    seen_dests: Dict[str, str] = {}
     for rel_path, tree_hash in sorted(skill_trees_of_root(client, head_commit["tree"], org_scope=True).items()):
-        dest = _mirror_root(org_id) / PurePosixPath(rel_path)
+        # A remote skill named '.org-baseline.json' materializes as a directory that shadows the
+        # baseline sidecar: writes then fail inside _write_sidecar's never-raise guard and
+        # org_skill_is_locally_modified stays False forever, so later pulls rmtree locally
+        # modified mirrors with no 'conflicted' marking. Refuse leading-dot first components.
+        if rel_path.split("/", 1)[0].startswith("."):
+            skipped.append(rel_path)
+            logger.warning("skills_sync_client: org path %r claims a reserved namespace, skipping", rel_path)
+            continue
+        # A remote path that aliases an existing differently-spelled dir (folding filesystems,
+        # or just a lookalike name on POSIX) must not merge remote blobs into a dir whose
+        # baseline entry is keyed under the other spelling -- on Win32/APFS that skips the
+        # local-edit check and rmtrees modified content. Skip instead of folding.
+        if fold_rel_to_disk(mirror, rel_path) != rel_path:
+            skipped.append(rel_path)
+            logger.warning("skills_sync_client: org skill %r aliases an existing differently-spelled "
+                           "dir on disk, skipping", rel_path)
+            continue
+        # Win32/APFS fold case and trailing dots/spaces, so 'deploy' and 'deploy ' alias the same
+        # on-disk dir -- the later (sorted) one would rmtree+rewrite the earlier under its name.
+        norm_key = "/".join(p.rstrip(" .").casefold() for p in rel_path.split("/"))
+        if norm_key in seen_dests:
+            skipped.append(rel_path)
+            logger.warning("skills_sync_client: org skill %r aliases %r on this filesystem, skipping",
+                           rel_path, seen_dests[norm_key])
+            continue
+        dest = confined_tree_dest(mirror, rel_path)
+        if dest is None:
+            skipped.append(rel_path)
+            logger.warning("skills_sync_client: org skill path escapes the mirror, skipping: %r", rel_path)
+            continue
+        seen_dests[norm_key] = rel_path
         try:
             if dest.exists():
                 if org_skill_is_locally_modified(rel_path, org_id):
@@ -215,6 +256,7 @@ def pull_org_skills(client: Optional[SyncClient] = None, *, identity: Optional[D
             baseline[rel_path] = {"fingerprint": _skill_dir_fingerprint(dest), "tree": tree_hash}
             updated.append(rel_path)
         except Exception as e:
+            skipped.append(rel_path)
             logger.warning("skills_sync_client: org skill materialize failed for %s: %s", rel_path, e)
     # Provenance for the skill_view header: the HEAD author is token-verified by the plane at
     # push time, so it is trustworthy to display.
@@ -226,7 +268,10 @@ def pull_org_skills(client: Optional[SyncClient] = None, *, identity: Optional[D
     if conflicted:
         logger.warning("skills_sync_client: %d org skill(s) have local edits AND upstream "
                        "changes; left untouched: %s", len(conflicted), ", ".join(conflicted))
-    return {"ok": True, "org_id": org_id, "head": head, "updated": updated, "conflicted": conflicted}
+    result = {"ok": True, "org_id": org_id, "head": head, "updated": updated, "conflicted": conflicted}
+    if skipped:
+        result["skipped"] = skipped
+    return result
 
 
 def propose_skill(skill_name: str, client: Optional[SyncClient] = None, *,
@@ -242,6 +287,10 @@ def propose_skill(skill_name: str, client: Optional[SyncClient] = None, *,
     rel = ssc._skill_rel_path(skill_name)
     if rel is None:
         raise SyncError(f"skill '{skill_name}' not found under the skills dir")
+    if not all(_is_safe_tree_name(p) for p in rel.parts):
+        # A local dir name that is unsafe on the wire must fail loudly here, not silently drop
+        # the skill from the proposed root after the build work has run.
+        raise SyncError(f"skill '{skill_name}' cannot be proposed: rel path {str(rel)!r} is not wire-safe")
     skill_dir = ssc._skills_dir() / rel
     if not (skill_dir / "SKILL.md").exists():
         raise SyncError(f"skill '{skill_name}' has no SKILL.md")

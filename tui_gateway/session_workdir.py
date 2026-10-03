@@ -407,11 +407,17 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     return row_model, model_config
 
 
-def _ensure_session_db_row(session: dict) -> bool:
+def _ensure_session_db_row(session: dict, session_id: str | None = None) -> bool:
     """Idempotently persist the session's DB row on first real activity (prompt.submit), so abandoned drafts never
     leave an empty "Untitled" session. INSERT OR IGNORE: re-calls and the AIAgent's lazy create are no-ops. Returns
     False only when the store is unavailable (no openable state.db) — prompt.submit fails the send loudly instead of
     streaming into a store that will never save it; no key / best-effort / success are all True.
+
+    ``session_id`` overrides the row's identity for callers that write under the LIVE ``agent.session_id``
+    rather than ``session_key``. A rotation mints a child id that nothing has created yet, and an
+    off-turn message write against it is FK-constrained on that row existing — so such a caller must
+    pass the id it is about to write under, or its INSERT fails with "FOREIGN KEY constraint failed"
+    (see the model-switch marker persist in tui_gateway/server.py).
 
     A cwd the user *chose* is always persisted. Otherwise the launch directory stands in only for terminal sessions
     (the user deliberately ``cd``'d there; dropping it left the sidebar with no cwd AND no git_repo_root); desktop
@@ -419,7 +425,8 @@ def _ensure_session_db_row(session: dict) -> bool:
 
     See #98924.
     """
-    if not (key := session.get("session_key")):
+    key = session_id or session.get("session_key")
+    if not key:
         return
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").

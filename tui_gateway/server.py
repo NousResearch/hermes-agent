@@ -1837,15 +1837,20 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     try:
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
-        if db is None:
-            _ensure_session_db_row(session)
+        # Same stale-key hazard as the submit row: this durable pivot must land in the session the live agent
+        # writes to, or a model switch between turns on a rotated session files the notice under a parent the
+        # conversation no longer reads from (#123545).
+        target = _submit_row_target_key(session)
+        # The durable pivot lands under the LIVE agent session id, which is a rotation-produced child the
+        # store may never have seen — and messages.session_id is FK-constrained on that row existing. The
+        # old code ensured the row only on the ``db is None`` branch, which created the PARENT
+        # (session_key) and never the rotated child, so a session that still owned its _session_db failed
+        # the write with "FOREIGN KEY constraint failed" and the notice was lost (it is caught and logged,
+        # so the next resume simply replays without it). Ensure the row for the id actually written.
+        _ensure_session_db_row(session, session_id=target)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
-                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
-                # live agent writes to, or a model switch between turns on a rotated session files the notice
-                # under a parent the conversation no longer reads from (#123545).
-                target = _submit_row_target_key(session)
                 # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
                 # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
                 db.deactivate_messages_by_display_kind(target, "model_switch")

@@ -208,14 +208,61 @@ def test_modify_other_keys_shift_letter_produces_uppercase(letter):
 def test_modify_other_keys_shift_symbol_produces_char(cp):
     """Under modifyOtherKeys=2, Shift+symbol (e.g. Shift+[ -> '{') arrives as
     ESC[27;2;<produced_cp>~ (xterm's own key table; Ghostty follows it). It must parse
-    to the produced character, not leak literal escape text. The kitty CSI-u spelling
-    carries the UNSHIFTED codepoint and must stay unmapped (layout-specific)."""
+    to the produced character, not leak literal escape text.
+
+    The kitty CSI-u spelling splits in two, and they are not equally safe:
+
+    * the SHIFTED codepoint (this test) is an identity — echo back whatever the
+      terminal reported, correct on every layout, so it maps unconditionally;
+    * the UNSHIFTED codepoint (``ESC[91;2u`` for Shift+[) is layout-specific
+      and must stay unmapped unless the layout is positively known, because a
+      wrong guess types the WRONG character rather than leaking.
+    """
     ch = chr(cp)
     mok_seq = f"\x1b[27;2;{cp}~"
     assert _parse(mok_seq) == [ch], (
         f"modifyOtherKeys Shift+symbol ({mok_seq!r}) should produce {ch!r}"
     )
-    assert ANSI_SEQUENCES.get(f"\x1b[{cp};2u") is None
+    # Identity half: shifted codepoint, layout-independent, always installed.
+    assert ANSI_SEQUENCES.get(f"\x1b[{cp};2u") == ch
+
+
+@pytest.mark.parametrize("base_cp,shifted_cp", [
+    (59, 58),    # ';' -> ':'
+    (45, 95),    # '-' -> '_'
+    (91, 123),   # '[' -> '{'
+    (93, 125),   # ']' -> '}'
+])
+def test_kitty_shift_symbol_base_codepoint_is_not_guessed(base_cp, shifted_cp, monkeypatch):
+    """The base-codepoint CSI-u spelling is a US-layout GUESS and must not be
+    produced when the layout is unknown — leaking is the better failure (the
+    original Shift+letter patch's rule), and this is the safety property the
+    tilde-form mapping above relies on staying intact.
+
+    Asserted on the resolver rather than the already-populated table: the
+    autouse fixture installs the aliases before this test runs, so the table
+    reflects whatever the *ambient* layout resolved to, not the forced one.
+    """
+    import hermes_cli.pt_input_extras as ex
+
+    # Force the kitty path so the base half is actually consulted rather than
+    # short-circuiting as inert, then make the layout unknowable. Ghostty is
+    # excluded ahead of the KITTY_WINDOW_ID check (see
+    # _kitty_reports_unshifted_codepoints), so a test run from inside an actual
+    # Ghostty session must clear its ambient TERM_PROGRAM/TERM or this always
+    # takes the excluded branch instead of the one under test.
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    monkeypatch.setenv("TERM", "xterm-kitty")
+    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+    monkeypatch.setattr(ex, "_configured_layout_and_variant", lambda: ("", ""))
+    assert ex._shift_punctuation_base_map() is None
+
+    # With a positively-US layout the same resolver DOES produce the map —
+    # this is the half that is only safe because it is derived, never assumed.
+    monkeypatch.setattr(ex, "_configured_layout_and_variant", lambda: ("us", ""))
+    base_map = ex._shift_punctuation_base_map()
+    assert base_map is not None
+    assert base_map[base_cp] == chr(shifted_cp)
 
 
 @pytest.mark.parametrize("seq, ch", [

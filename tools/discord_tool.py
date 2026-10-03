@@ -357,7 +357,8 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
-    auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
+    auto_archive_duration: int = 1440, message: str = "", applied_tags: Any = None,
+    **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
     body: Dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
     path = f"/channels/{channel_id}/threads"
@@ -365,6 +366,11 @@ def _create_thread(
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
     else:
         body["type"] = 11  # PUBLIC_THREAD
+        # A forum post carries its opening content and tags on the create call.
+        if message:
+            body["message"] = {"content": message}
+        if applied_tags is not None:
+            body["applied_tags"] = applied_tags
     thread = _discord_request("POST", path, token, body=body)
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
@@ -480,6 +486,15 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "message_id": {"type": "string", "description": "Discord message ID."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
+    "message": {
+        "type": "string",
+        "description": "Opening post content (create_thread on a forum channel).",
+    },
+    "applied_tags": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Forum tag IDs to apply (create_thread).",
+    },
     "limit": {
         "type": "integer",
         "minimum": 1,
@@ -581,7 +596,8 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "message": "", "applied_tags": None}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

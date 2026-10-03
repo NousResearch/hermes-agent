@@ -881,7 +881,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: 
 
     chosen = curses_checklist(
         f"Tools for {platform_label}", labels, pre_selected, cancel_returns=pre_selected, status_fn=status_fn,
-    )
+        wrap=True)
     return {effective[i][0] for i in chosen}
 
 

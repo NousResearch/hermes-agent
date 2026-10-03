@@ -1273,13 +1273,28 @@ def max_retries_exhausted_result(
     return result
 
 
+def _format_unexpected_kwarg_diagnostics(api_kwargs: Any, middleware_trace: Any) -> str:
+    """Render the request's kwargs keys and ``llm_request`` middleware trace for an
+    ``unexpected keyword argument`` TypeError. Such a kwarg was injected upstream of the
+    transport — by middleware (which may replace the whole request) or stale kwargs crossing
+    an api_mode switch — and #60821 took a multi-day hunt because neither was logged."""
+    keys = ", ".join(sorted(str(k) for k in api_kwargs)) if isinstance(api_kwargs, dict) else "<unavailable>"
+    rendered = [
+        (entry.get("name") or entry.get("source") or str(entry)) if isinstance(entry, dict) else str(entry)
+        for entry in middleware_trace or ()
+    ]
+    trace = "; ".join(rendered) if rendered else "none applied"
+    return f"api_kwargs keys: [{keys}]; llm_request middleware trace: {trace}"
+
+
 def log_api_error_attempt(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int,
     status_code: Optional[int], elapsed_time: float, api_messages: Any, approx_tokens: int,
-    retryable: bool = True,
+    retryable: bool = True, api_kwargs: Any = None, middleware_trace: Any = None,
 ) -> Tuple[str, str, Any, Any, Any]:
-    """Log one failed API attempt (warning + buffered retry trace, OpenRouter "no tool
-    endpoints" hint, bare-404 missing-vendor-prefix hint); the buffer only surfaces if every
+    """Log one failed API attempt (warning + buffered retry trace, unexpected-kwarg kwargs/
+    middleware diagnostic, OpenRouter "no tool endpoints" hint, bare-404 missing-vendor-prefix
+    hint); the buffer only surfaces if every
     retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``.
 
     ``retryable=False`` (the classifier's verdict, e.g. a 401 on a static-key route) is
@@ -1293,6 +1308,12 @@ def log_api_error_attempt(
         "API call failed (%s) error_type=%s %s summary=%s",
         _attempt, error_type, agent._client_log_context(), _error_summary,
     )
+    if error_type == "TypeError" and "unexpected keyword argument" in error_msg:
+        logger.warning(
+            "%sUnexpected-kwarg TypeError at dispatch (api_mode=%s) — %s",
+            agent.log_prefix, getattr(agent, "api_mode", "unknown"),
+            _format_unexpected_kwarg_diagnostics(api_kwargs, middleware_trace),
+        )
 
     _provider = getattr(agent, "provider", "unknown")
     _base = getattr(agent, "base_url", "unknown")

@@ -55,7 +55,7 @@ def handle_api_error(
     conversation_history: Any, approx_tokens: Any, retry_count: Any, max_retries: Any,
     compression_attempts: Any, max_compression_attempts: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
-    current_turn_user_idx: Any = None,
+    current_turn_user_idx: Any = None, _llm_middleware_trace: Any = None,
 ) -> ApiErrorVerdict:
     """Recover from ``api_error`` in the original order. Every fallback activation must leave
     the retry loop with ``restart_with_rebuilt_messages`` armed (``"break"``) so the pre-API
@@ -145,7 +145,8 @@ def handle_api_error(
     error_type, error_msg, _provider, _base, _model = log_api_error_attempt(
         agent, api_error, retry_count=retry_count, max_retries=max_retries, status_code=status_code,
         elapsed_time=elapsed_time, api_messages=api_messages, approx_tokens=approx_tokens,
-        retryable=bool(classified.retryable),
+        retryable=bool(classified.retryable), api_kwargs=api_kwargs,
+        middleware_trace=_llm_middleware_trace,
     )
 
     if agent._interrupt_requested:

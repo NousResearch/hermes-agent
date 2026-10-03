@@ -7828,7 +7828,11 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route)
+    # Stop fallback after the host deadline, but keep the caller-side cleanup below.
+    if _host_deadline_has_expired(first_err):
+        resp = None
+    else:
+        resp = yield from _ladder_provider_fallback(first_err, route)
     if resp is not None:
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read

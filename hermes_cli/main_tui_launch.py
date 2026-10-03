@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 from pathlib import Path
 from typing import Optional
@@ -163,6 +164,99 @@ def _tui_node_bin(bin: str) -> str:
     return path
 
 
+class _TuiBuildLock:
+    """Cross-process mutual exclusion around a TUI rebuild, so a concurrent launch
+    never execs a half-published bundle.
+
+    The product publisher stages into a scratch dir and swaps directories with two
+    renames, which leaves ``dist/entry.js`` absent for a moment mid-swap (#121286). A
+    second launch resolving its argv in that window execs a missing or half-swapped
+    bundle and dies immediately with a SyntaxError on the truncated text. A staleness
+    re-check alone cannot fix it: two launches that both see "stale" still race.
+
+    ``O_CREAT|O_EXCL`` is this repo's existence-as-mutex idiom (see
+    ``hermes_cli.gitlock._ShallowLock``). A lock whose owner died is taken over once it
+    is older than ``STALE_LOCK_S`` — an abandoned lock must not wedge every later
+    launch forever. Waiters always re-run the staleness check *after* acquiring, so the
+    second process builds nothing when the first one already produced a current bundle.
+    """
+
+    STALE_LOCK_S = 300.0
+    POLL_S = 0.2
+    # How long a launch waits for a peer's build before proceeding with whatever is on
+    # disk. Generous next to a real esbuild build, bounded so a wedged peer degrades to
+    # "run the existing bundle" instead of hanging the launch forever.
+    DEFAULT_TIMEOUT_S = 300.0
+
+    def __init__(self, path: Path, *, timeout: float | None = None):
+        self._path = path
+        self._timeout = self.DEFAULT_TIMEOUT_S if timeout is None else timeout
+        self._fd: int | None = None
+
+    def _take_over_if_stale(self) -> None:
+        try:
+            age = time.time() - self._path.stat().st_mtime
+        except OSError:
+            return  # vanished between the failed create and this check: retry the create
+        if age <= self.STALE_LOCK_S:
+            return
+        with contextlib.suppress(OSError):
+            os.unlink(self._path)
+
+    def acquire(self) -> bool:
+        deadline = time.monotonic() + self._timeout
+        while True:
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(self._fd, b"hermes tui build\n")
+                return True
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    return False
+                self._take_over_if_stale()
+                time.sleep(self.POLL_S)
+            except OSError:
+                return False
+
+    def release(self) -> None:
+        if self._fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(self._fd)
+            self._fd = None
+        with contextlib.suppress(OSError):
+            os.unlink(self._path)
+
+    def __enter__(self) -> "_TuiBuildLock":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.release()
+
+
+def _build_tui_exclusive(tui_dir: Path, project_root: Path, env: dict) -> None:
+    """Run the production TUI build under a cross-process lock.
+
+    After acquiring, the staleness check runs again: if the process that held the lock
+    already rebuilt, there is nothing left to do and no second build runs.
+    """
+    lock = _TuiBuildLock(project_root / ".hermes-tui-build.lock")
+    if not lock.acquire():
+        # Another launch is mid-build. Its publish will land a complete bundle, and
+        # running ours too would only add another swap for readers to race against.
+        return
+    try:
+        from hermes_cli.source_build import source_product_current
+
+        if source_product_current(project_root, "tui", tui_dir / "dist"):
+            return
+        from hermes_cli.source_build import build_source_tui
+
+        build_source_tui(project_root, env=env)
+    finally:
+        lock.release()
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
 
@@ -201,7 +295,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if not tui_dev and not _tui_need_rebuild(tui_dir):
         return [_tui_node_bin("node"), "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
 
-    from hermes_cli.source_build import build_source_tui, prepare_launch_dependencies, source_build_env
+    from hermes_cli.source_build import prepare_launch_dependencies, source_build_env
 
     project_root = tui_dir.parent
     env = source_build_env()
@@ -214,7 +308,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         tsx = tui_dir / "node_modules/.bin/tsx"
         return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [npm, "start"]), tui_dir
 
-    build_source_tui(project_root, env=env)
+    _build_tui_exclusive(tui_dir, project_root, env)
     node = shutil.which("node", path=env["PATH"])
     return [node, "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
 

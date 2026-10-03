@@ -89,6 +89,41 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)
 
 
+def test_undelivered_interim_marker_persists_only_in_the_api_sidecar(tmp_path):
+    from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+    agent = _agent_with_capturing_db()
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(agent.session_id, source="gateway")
+    agent._session_db = db
+    marked = f"Total = $519\n\n{UNDELIVERED_INTERIM_MARKER}"
+    messages = [
+        {"role": "user", "content": "confirm the total"},
+        {
+            "role": "assistant",
+            "content": "Total = $519",
+            "api_content": marked,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "x", "arguments": "{}"}}],
+        },
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+        {"role": "assistant", "content": "When do you need the items by?"},
+    ]
+
+    try:
+        agent._flush_messages_to_session_db(messages, conversation_history=[])
+        stored = db.get_messages_as_conversation(agent.session_id)
+    finally:
+        db.close()
+
+    assert [msg["role"] for msg in stored] == ["user", "assistant", "tool", "assistant"]
+    assert stored[1]["content"] == "Total = $519"
+    assert stored[1]["api_content"] == marked
+    assert all(
+        UNDELIVERED_INTERIM_MARKER not in (msg.get("content") or "") for msg in stored
+    )
+
+
 def test_persist_session_keeps_unmarked_terminal_empty_response():
     agent = _agent_with_stubbed_persistence()
     messages = [

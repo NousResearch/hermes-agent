@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
-from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin
+from tools.mcp_tool_config import _npx_cached_bin
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
 from tools.mcp_tool_server_run import MCPServerRunMixin
@@ -549,7 +549,7 @@ def _spawn_death_supervisor():
         # which would kill the supervisor before it could reap anything.
         return subprocess.Popen(
             [sys.executable, supervisor, "--parent-pgid", str(os.getpgid(0))],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=_get_mcp_stderr_log(),
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True, close_fds=True, text=True)
     except Exception:
         # Never let supervisor bookkeeping block a real MCP connection: graceful shutdown paths

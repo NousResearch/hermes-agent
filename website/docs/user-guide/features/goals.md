@@ -201,6 +201,16 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
 
+### Empty responses
+
+An empty final answer under a goal (empty stream, provider hiccup, a model with nothing to add to the continuation prompt) is neither progress nor a verdict. Hermes re-prompts without spending a judge call, and after **3 empty responses in a row** it auto-pauses with a named reason instead of stalling silently or spending the whole turn budget on nothing:
+
+```
+⏸ Goal paused — the agent returned an empty response 3 turns in a row (usually a provider/stream problem or a model with nothing to add). Check the model and provider, then /goal resume to keep going, or /goal clear to stop.
+```
+
+Any real response resets the streak, and `/goal resume` re-arms it. Interrupted or failed turns never count — they do not drive the goal loop at all.
+
 ### User messages always preempt
 
 Any real message you send while a goal is active takes priority over the continuation loop. On the CLI your message lands in `_pending_input` ahead of the queued continuation; on the gateway it goes through the adapter FIFO the same way. The judge runs again after your turn — so if your message happens to complete the goal, the judge will catch it and stop.

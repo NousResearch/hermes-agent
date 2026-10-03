@@ -35,7 +35,7 @@ class CatalogEntry:
     _tokens: List[str] = field(default_factory=list)  # pre-tokenized for BM25
 
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _thread_local = threading.local()
 
 
@@ -88,7 +88,53 @@ def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     name_words = re.sub(r"[_.:-]", " ", name)
     extra = source_label if source_label and source_label not in name_words.split() else ""
     param_names = " ".join(((fn.get("parameters") or {}).get("properties") or {}).keys())
-    return f"{name_words} {extra} {fn.get('description', '') or ''} {param_names}"
+    alias = _search_aliases().get(fn.get("name", "") or "", "")
+    return f"{name_words} {extra} {fn.get('description', '') or ''} {param_names} {alias}"
+
+
+_SEARCH_ALIASES_ENV = "HERMES_TOOL_SEARCH_ALIASES"
+
+
+@functools.lru_cache(maxsize=1)
+def _search_aliases() -> Dict[str, str]:
+    """Extra search text appended to a tool's indexed document, keyed by tool name.
+
+    The catalog is indexed from English names/descriptions, so a non-English query
+    scores 0 against every document and the rarest-token gate rejects it — the tool
+    is unreachable, not merely low-ranked. Aliases put the user's own vocabulary into
+    the document itself. Config/env supplied (``tool_search.aliases`` or the env var
+    as JSON) so this stays data, not a hardcoded language list.
+    """
+    import json
+    import os
+
+    raw = os.environ.get(_SEARCH_ALIASES_ENV)
+    data: Any = None
+    if raw:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            import hermes_cli.config as _cfg_mod
+            tools_cfg = (_cfg_mod.load_config_readonly() or {}).get("tools")
+            tools_cfg = tools_cfg if isinstance(tools_cfg, dict) else {}
+            ts_cfg = tools_cfg.get("tool_search")
+            data = (ts_cfg or {}).get("aliases") if isinstance(ts_cfg, dict) else {}
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, str):
+            out[key] = value
+        elif isinstance(value, (list, tuple)):
+            out[key] = " ".join(str(v) for v in value)
+    return out
 
 
 def _classify_source(name: str) -> Tuple[str, str]:

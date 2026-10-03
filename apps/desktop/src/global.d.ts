@@ -5,6 +5,7 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
@@ -86,7 +87,12 @@ declare global {
       // a running subagent's session.
       openSessionWindow: (
         sessionId: string,
-        opts?: { connectionId?: null | string; profile?: null | string; watch?: boolean }
+        opts?: {
+          connectionId?: null | string
+          ownerRoute?: SessionOwnerRoute
+          profile?: null | string
+          watch?: boolean
+        }
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.

@@ -1899,6 +1899,8 @@ export interface Translations {
       autoArchiveDaysLabel: string
       autoArchiveDaysUnit: string
       autoArchiveFailed: string
+      sidebarOpenInNewTabTitle: string
+      sidebarOpenInNewTabDesc: string
       defaultDirTitle: string
       defaultDirDesc: string
       defaultDirUpdated: string
@@ -3310,6 +3312,7 @@ export interface Translations {
     goalDone: string
     goalPaused: string
     goalWaiting: string
+    restoredUnfinished: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
     previousTodos: (done: number, total: number) => string

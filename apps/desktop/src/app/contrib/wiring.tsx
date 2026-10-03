@@ -13,6 +13,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -38,7 +40,7 @@ import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
@@ -79,10 +81,7 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
-  forgetSessionOwnerHintsForSession,
-  requestSessionResume,
   sessionMatchesStoredId,
-  sessionOwnerRouteFromRow,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -156,8 +155,7 @@ import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
 import {
-  hydrateStoredSessionTranscript,
-  profileScopeForTranscriptSession,
+  postTurnHydrationSupersededCheck,
   reconcileActiveTranscript,
   resolveActiveTranscriptSession,
   useBackgroundSync
@@ -172,9 +170,12 @@ import { useOnboardingHandoff } from './onboarding-handoff'
 import { useOnboardingKickoff } from './onboarding-kickoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { forgetSessionOwnerHintsForSession, requestSessionResume, sessionOwnerRouteFromRow } from '@/store/session'
+import { openSidebarSession } from './sidebar-session-open'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
+import { hydratePostTurnStoredSession } from './wiring-todo-hydration'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -212,6 +213,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const cronReviewSeenRef = useRef(0)
   const activeTranscriptSignatureRef = useRef(new Map<string, string>())
   const activeTranscriptRequestSequenceRef = useRef(0)
+  const postTurnHydrationRequestSequenceRef = useRef(0)
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
@@ -491,16 +493,49 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      const storedProfile = profileScopeForTranscriptSession(
-        resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)
-      )
+      const requestId = postTurnHydrationRequestSequenceRef.current + 1
+      postTurnHydrationRequestSequenceRef.current = requestId
+      // This fallback belongs to the completed turn; a later turn or a transcript
+      // change during the read makes it (and its todo restore) stale.
+      const superseded = postTurnHydrationSupersededCheck(runtimeSessionId)
 
-      await hydrateStoredSessionTranscript({
+      const isCurrent = () =>
+        postTurnHydrationRequestSequenceRef.current === requestId &&
+        selectedStoredSessionIdRef.current === storedSessionId &&
+        activeSessionIdRef.current === runtimeSessionId &&
+        !superseded()
+
+      await hydratePostTurnStoredSession({
         attempts,
-        storedSessionId,
+        isCurrent,
+        publishTranscript: messages => {
+          if (!isCurrent()) {
+            return
+          }
+
+          updateSessionState(
+            runtimeSessionId,
+            state => ({
+              ...state,
+              // Post-turn rehydrate reads only the newest tail page — graft it
+              // onto any backfilled older pages instead of dropping them, and
+              // keep any un-acked optimistic `user-*` row, which lives nowhere
+              // else (a reconnect-triggered rehydrate would otherwise lose a
+              // message the user then has to retype). Same composition order
+              // as reconcileAuthoritativeChatMessages.
+              messages: preserveLocalAssistantErrors(
+                preserveLocalPendingTurnMessages(
+                  graftRefreshedTailOntoBackfill(messages, state.messages),
+                  state.messages
+                ),
+                state.messages
+              )
+            }),
+            storedSessionId
+          )
+        },
         runtimeSessionId,
-        storedProfile,
-        updateSessionState
+        storedSessionId
       })
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
@@ -1207,9 +1242,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main. Same owner-aware door every other session
-    // link uses (openStoredSession).
-    onResumeSession: openStoredSession,
+    // otherwise load it into main. Same door every other session link uses.
+    // The clicked ROW is the identity, not its bare id: two profiles can hold
+    // twins with the same stored id (#92454), and an id-only resume resolves
+    // against whichever cached row is found first — the user clicks a row
+    // previewing profile A and the resume dials profile B. Pin the row's own
+    // (connection, profile) as the resume owner before navigating; untagged
+    // rows (single-profile installs and the legacy primary-SSH path) keep the
+    // ambient/id-only path. The helper also clears stale explicit hints before
+    // that fallback so an older local stamp cannot steal a remote session.
+    onResumeSession: (sessionId, session, intent) => openSidebarSession(sessionId, session, navigate, intent),
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSteerHidden: injectHiddenPrompt,

@@ -2,9 +2,11 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $goalsBySession } from '@/store/goals'
 import { $sessionControlBySession } from '@/store/session-control'
+import { $sessionStates } from '@/store/session-states'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import { $todosBySession, clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 
@@ -33,11 +35,16 @@ const stack = (parked = false) => (
   </MemoryRouter>
 )
 
+// Durable Todo state shows unfinished rows only for a live turn (or an
+// explicit continuation/restore), so this fixture declares one.
+const liveTurn = (sid: string) => ({ [sid]: { ...createClientSessionState(sid), busy: true, turnLive: true } })
+
 afterEach(() => {
   cleanup()
   $backgroundStatusBySession.set({})
   $goalsBySession.set({})
   $sessionControlBySession.set({})
+  $sessionStates.set({})
   $subagentsBySession.set({})
   $todosBySession.set({})
   clearSessionTodos('owner')
@@ -66,6 +73,7 @@ it('offers a collapsed read-only checklist from an idle session, without a runni
 })
 
 it('auto-expands only todos and keeps other groups closed as activity arrives', () => {
+  $sessionStates.set(liveTurn('owner'))
   $todosBySession.set({ owner: [{ id: 'todo', content: 'Visible todo', status: 'in_progress' }] })
   $goalsBySession.set({ owner: { status: 'active', title: 'Hidden legacy goal', updatedAt: 1 } })
   $backgroundStatusBySession.set({

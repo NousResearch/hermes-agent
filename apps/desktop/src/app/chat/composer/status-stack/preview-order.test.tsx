@@ -2,8 +2,10 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
+import { $sessionStates } from '@/store/session-states'
 import { $todosBySession } from '@/store/todos'
 
 import { QueuePanel } from '../queue-panel'
@@ -35,14 +37,20 @@ function expectBefore(before: HTMLElement, after: HTMLElement) {
   expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 }
 
+// Durable Todo state shows unfinished rows only for a live turn (or an
+// explicit continuation/restore), so the ordering fixture declares one.
+const liveTurn = (sid: string) => ({ [sid]: { ...createClientSessionState(sid), busy: true, turnLive: true } })
+
 afterEach(() => {
   cleanup()
   $backgroundStatusBySession.set({})
   $previewStatusBySession.set({})
+  $sessionStates.set({})
   $todosBySession.set({})
 })
 
 it.each([false, true])('keeps artifact links below the queue with background work: %s', background => {
+  $sessionStates.set(liveTurn('owner'))
   $todosBySession.set({ owner: [{ id: 'todo', content: 'Task item', status: 'in_progress' }] })
   $previewStatusBySession.set({
     owner: [

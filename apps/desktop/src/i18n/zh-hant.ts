@@ -95,7 +95,10 @@ export const zhHant = defineLocale({
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
   composer: zhHantChat.composer,
-  statusStack: zhHantChat.statusStack,
+  statusStack: {
+    ...zhHantChat.statusStack,
+    restoredUnfinished: '已還原的未完成工作'
+  },
   updates: zhHantBoot.updates,
   guidedGreeting: zhHantBoot.guidedGreeting,
   install: zhHantBoot.install,

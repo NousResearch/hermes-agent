@@ -2268,6 +2268,9 @@ export const en: Translations = {
       autoArchiveDaysLabel: 'Archive after',
       autoArchiveDaysUnit: 'days of inactivity',
       autoArchiveFailed: 'Could not update auto-archive',
+      sidebarOpenInNewTabTitle: 'Open or focus a tab',
+      sidebarOpenInNewTabDesc:
+        'Ordinary sidebar session clicks open or focus a tab. Turn off to open in the main tab. Cmd/Ctrl-click always uses a tab.',
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
@@ -4008,6 +4011,7 @@ export const en: Translations = {
     goalDone: 'Goal done',
     goalPaused: 'Goal paused',
     goalWaiting: 'Goal waiting',
+    restoredUnfinished: 'Restored unfinished work',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
     previousTodos: (done, total) => `Previous tasks ${done}/${total}`,

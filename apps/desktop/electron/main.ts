@@ -42,6 +42,7 @@ import {
   httpStatusError,
   jsonAgentFor,
   readJsonErrorBody,
+  readApiJsonResponseWithByteLimit,
   readStatusCode,
   withRetry
 } from './api-transport'
@@ -553,8 +554,10 @@ import {
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds,
+  normalizeSessionWindowOwnerRoute,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  type SessionWindowOwnerRoute
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
@@ -5682,7 +5685,6 @@ function fetchJson(url, token, options: any = {}) {
         const client = parsed.protocol === 'https:' ? https : http
         const agent = jsonAgentFor(parsed.protocol)
         const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
           reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
 
@@ -5709,12 +5711,12 @@ function fetchJson(url, token, options: any = {}) {
             }
           },
           res => {
-            const chunks = []
-            res.on('error', reject)
-            res.on('data', chunk => chunks.push(chunk))
-            res.on('end', () => {
-              const text = Buffer.concat(chunks).toString('utf8')
-
+            readApiJsonResponseWithByteLimit(res, {
+              method: options.method || 'GET',
+              url,
+              path: `${parsed.pathname}${parsed.search}`,
+              abort: () => req.destroy()
+            }).then(text => {
               if ((res.statusCode || 500) >= 400) {
                 reject(httpStatusError(res.statusCode, text, res.statusMessage))
 
@@ -5754,7 +5756,7 @@ function fetchJson(url, token, options: any = {}) {
               } catch {
                 reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
               }
-            })
+            }, reject)
           }
         )
 
@@ -7862,6 +7864,9 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
       request.on('response', (res: Electron.IncomingMessage): void => {
         wireOauthSessionResponse(res, {
+          abort: () => request.abort(),
+          method: options.method || 'GET',
+          path: `${parsed.pathname}${parsed.search}`,
           url,
           isTimedOut: (): boolean => timedOut,
           clearTimer: (): void => clearTimeout(timer),
@@ -13807,8 +13812,15 @@ function spawnSecondaryWindow({
   connectionId,
   sessionId,
   profile,
+  ownerRoute,
   watch
-}: { connectionId?: null | string; sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
+}: {
+  connectionId?: null | string
+  sessionId?: string
+  profile?: null | string
+  ownerRoute?: SessionWindowOwnerRoute
+  watch?: boolean
+} = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -13882,6 +13894,7 @@ function spawnSecondaryWindow({
       connectionId,
       devServer: DEV_SERVER,
       profile,
+      ownerRoute,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
     }),
@@ -13892,8 +13905,25 @@ function spawnSecondaryWindow({
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
+function createSessionWindow(
+  sessionId,
+  {
+    connectionId = null,
+    ownerRoute,
+    profile = null,
+    watch = false
+  }: {
+    connectionId?: null | string
+    ownerRoute?: SessionWindowOwnerRoute
+    profile?: null | string
+    watch?: boolean
+  } = {}
+) {
+  return sessionWindows.openOrFocus(
+    sessionId,
+    () => spawnSecondaryWindow({ connectionId, ownerRoute, profile, sessionId, watch }),
+    ownerRoute
+  )
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -15795,6 +15825,7 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   createSessionWindow(sessionId.trim(), {
     connectionId: typeof opts?.connectionId === 'string' ? opts.connectionId : null,
     profile: typeof opts?.profile === 'string' ? opts.profile : null,
+    ownerRoute: normalizeSessionWindowOwnerRoute(opts?.ownerRoute),
     watch: opts?.watch === true
   })
 

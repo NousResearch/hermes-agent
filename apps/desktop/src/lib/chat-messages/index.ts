@@ -24,6 +24,8 @@ export {
   spliceOlderPreservedRows
 } from './reconciliation'
 export {
+  discardOpenClarifyToolCalls,
+  discardPendingClarifyToolCall,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,

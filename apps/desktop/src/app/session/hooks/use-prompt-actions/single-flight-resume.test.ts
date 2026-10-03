@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  $todosBySession,
+  bindTodoHydrationToken,
+  captureTodoWriteFence,
+  clearAllSessionTodos,
+  setSessionTodos
+} from '@/store/todos'
+import { deferred } from '@/test/deferred'
+
+import {
   clearSingleFlightSessionResumeState,
   registerRecoveredRuntime,
+  sessionResumeFlightKey,
   singleFlightSessionResume,
   takeRecoveredRuntime
 } from './single-flight-resume'
@@ -10,6 +20,7 @@ import { resumeStoredRuntimeSession, SessionRecoveryAborted, withSessionNotFound
 
 afterEach(() => {
   clearSingleFlightSessionResumeState()
+  clearAllSessionTodos()
   vi.restoreAllMocks()
 })
 
@@ -54,6 +65,45 @@ describe('singleFlightSessionResume', () => {
     expect(requestGateway).toHaveBeenCalledTimes(2)
   })
 
+  it('same-id sessions on different exact owners resume independently', async () => {
+    const ownerA = { connectionId: 'source-a', profile: 'default' }
+    const ownerB = { connectionId: 'source-b', profile: 'default' }
+    const runA = vi.fn(async () => ({ session_id: 'runtime-a' }))
+    const runB = vi.fn(async () => ({ session_id: 'runtime-b' }))
+
+    const [a, b] = await Promise.all([
+      singleFlightSessionResume('shared-id', runA, ownerA),
+      singleFlightSessionResume('shared-id', runB, ownerB)
+    ])
+
+    expect(a.session_id).toBe('runtime-a')
+    expect(b.session_id).toBe('runtime-b')
+    expect(runA).toHaveBeenCalledOnce()
+    expect(runB).toHaveBeenCalledOnce()
+  })
+
+  it('coalesces equivalent owner routes across informational mode and implicit target shape', async () => {
+    const first = { connectionId: 'source-a', mode: 'local' as const, profile: 'default' }
+    const second = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'default'
+    }
+    const run = vi.fn(async () => ({ session_id: 'runtime-a' }))
+
+    expect(sessionResumeFlightKey('shared-id', first)).toBe(sessionResumeFlightKey('shared-id', second))
+
+    const [a, b] = await Promise.all([
+      singleFlightSessionResume('shared-id', run, first),
+      singleFlightSessionResume('shared-id', run, second)
+    ])
+
+    expect(a.session_id).toBe('runtime-a')
+    expect(b.session_id).toBe('runtime-a')
+    expect(run).toHaveBeenCalledOnce()
+  })
+
   it('a rejected flight is not cached: the next caller retries', async () => {
     const run = vi
       .fn<() => Promise<{ session_id: string }>>()
@@ -63,6 +113,43 @@ describe('singleFlightSessionResume', () => {
     await expect(singleFlightSessionResume('stored-a', run)).rejects.toThrow('boom')
     await expect(singleFlightSessionResume('stored-a', run)).resolves.toEqual({ session_id: 'rt-second' })
     expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('binds concurrent cold joiners to one runtime before either Todo hydration publishes', async () => {
+    const resumed = deferred<{ session_id: string }>()
+    const run = vi.fn(() => resumed.promise)
+    const olderToken = captureTodoWriteFence()
+    const newerToken = captureTodoWriteFence()
+
+    const olderJoiner = singleFlightSessionResume('stored-shared', run).then(result => {
+      bindTodoHydrationToken(olderToken, result.session_id)
+
+      return result
+    })
+
+    const newerJoiner = singleFlightSessionResume('stored-shared', run).then(result => {
+      bindTodoHydrationToken(newerToken, result.session_id)
+
+      return result
+    })
+
+    resumed.resolve({ session_id: 'runtime-shared' })
+    await Promise.all([olderJoiner, newerJoiner])
+
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(
+      setSessionTodos('runtime-shared', [{ content: 'older', id: 'older', status: 'pending' }], {
+        ifUnchangedSince: olderToken,
+        preserved: true
+      })
+    ).toBe(false)
+    expect(
+      setSessionTodos('runtime-shared', [{ content: 'newer', id: 'newer', status: 'pending' }], {
+        ifUnchangedSince: newerToken,
+        preserved: true
+      })
+    ).toBe(true)
+    expect($todosBySession.get()['runtime-shared']).toEqual([{ content: 'newer', id: 'newer', status: 'pending' }])
   })
 })
 

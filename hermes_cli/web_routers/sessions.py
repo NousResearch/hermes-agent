@@ -686,15 +686,26 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False), inline_images: bool = Query(True)):
+    include_compacted: bool = Query(False), inline_images: bool = Query(True),
+    projection: Optional[str] = Query(None), before_id: Optional[str] = Query(None)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
+
+    if projection is not None:
+        if projection not in {"todo-state", "todo-state-candidates"}:
+            raise HTTPException(status_code=400, detail="Unknown session messages projection")
+        if (offset != 0 or order is not None or before_id is not None
+                or (projection == "todo-state" and limit is not None)):
+            raise HTTPException(
+                status_code=400, detail="Todo-state projection is a single bounded authoritative read")
 
     def _read(db):
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return None
         sid = db.resolve_resume_session_id(sid)
+        if projection is not None:
+            return sid, 2, db.get_todo_state_messages(sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -710,10 +721,31 @@ async def get_session_messages(
             sid, limit=_limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
 
-    result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+    # Todo lookup may advance its bounded derived-authority migration.
+    result = await asyncio.to_thread(_with_db, profile, _read, read_only=projection is None)
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
+    if projection is not None:
+        if messages is None:
+            raise HTTPException(status_code=503, detail={
+                "code": "todo_state_migration_pending",
+                "message": "Todo state migration is still in progress"})
+        # Preserve the validated carrier and its identity, bypassing display-only filtering.
+        body = jsonable_encoder({
+            "session_id": sid,
+            "profile": _serving_profile(profile),
+            "messages": [
+                {key: value for key, value in message.items() if key != "_todo_snapshot_provenance"}
+                for message in messages],
+            "pagination": {
+                "limit": 2, "returned": len(messages), "has_more": False,
+                "exhausted": True, "next_before_id": None}})
+        if len(json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")) > 1_100_000:
+            raise HTTPException(status_code=413, detail={
+                "code": "todo_state_response_too_large",
+                "message": "Todo-state projection exceeded its bounded response contract"})
+        return body
     projected_messages = await asyncio.to_thread(
         _project_for_display, messages, home=_history_profile_home(profile),
         inline_images=inline_images)

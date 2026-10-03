@@ -272,6 +272,20 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
+def _has_structured_todo_snapshot(display_metadata: Any) -> bool:
+    """Whether display metadata carries a durable TodoStore snapshot."""
+    metadata = display_metadata
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    if not isinstance(metadata, dict):
+        return False
+    snapshot = metadata.get("todo_snapshot")
+    return isinstance(snapshot, dict) and isinstance(snapshot.get("todos"), list)
+
+
 _HISTORY_ASSISTANT_DETAIL_KEYS = (
     "reasoning",
     "reasoning_content",
@@ -296,8 +310,26 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if m is None:
             continue
         role = m.get("role")
-        # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
-        if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
+        if role not in _HISTORY_ROLES:
+            continue
+        # Hidden scaffolding never paints as transcript prose, but a durable
+        # Todo carrier must keep its structured sidecar so clients can restore
+        # the task panel after resume.
+        if m.get("display_kind") == "hidden":
+            metadata = m.get("display_metadata")
+            if _has_structured_todo_snapshot(metadata):
+                hidden = {
+                    "role": role,
+                    "text": "",
+                    "display_kind": "hidden",
+                    "display_metadata": metadata,
+                }
+                ts = m.get("timestamp")
+                if isinstance(ts, (int, float)) and ts > 0:
+                    hidden["timestamp"] = float(ts)
+                if m.get("_row_id") is not None:
+                    hidden["row_id"] = m["_row_id"]
+                messages.append(hidden)
             continue
         content_text = _user_image_display_text(m.get("content")) if role == "user" else None
         if content_text is None:

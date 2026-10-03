@@ -19,6 +19,7 @@ _TRUNCATION_MARKER = "… [truncated]"
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
+TODO_INJECTION_FORMAT_V2 = "[Todo carrier format: 2]"
 _STATUS_MARKERS = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]", "cancelled": "[~]"}
 _ACTIVE_STATUSES = {"pending", "in_progress"}
 
@@ -101,6 +102,15 @@ class TodoStore:
         active so subtasks keep context."""
         if not self._items:
             return None
+        versioned = any(
+            ". " in item["id"]
+            or "\r" in item["id"]
+            or "\n" in item["id"]
+            or ". " in item["content"]
+            or "\r" in item["content"]
+            or "\n" in item["content"]
+            for item in self._items
+        )
         children: Dict[str, List[Dict[str, str]]] = {}
         for item in self._items:
             if item.get("parent"):
@@ -114,16 +124,27 @@ class TodoStore:
             keep = item["status"] in _ACTIVE_STATUSES or has_active_kid
             if keep:
                 marker = _STATUS_MARKERS.get(item["status"], "[?]")
-                out.append(f"{'  ' * depth}- {marker} {item['id']}. "
-                           f"{item['content']} ({item['status']})")
+                if versioned:
+                    payload = json.dumps(
+                        {"id": item["id"], "content": item["content"], "status": item["status"]},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    out.append(f"{'  ' * depth}- {marker} {payload}")
+                else:
+                    out.append(f"{'  ' * depth}- {marker} {item['id']}. "
+                               f"{item['content']} ({item['status']})")
                 out.extend(kid_lines)
             return keep
 
         lines = [TODO_INJECTION_HEADER]
+        if versioned:
+            lines.append(TODO_INJECTION_FORMAT_V2)
+        body_start = len(lines)
         for item in self._items:
             if not item.get("parent"):
                 render(item, 0, lines)
-        return "\n".join(lines) if len(lines) > 1 else None
+        return "\n".join(lines) if len(lines) > body_start else None
 
     @staticmethod
     def _cap_content(content: str) -> str:

@@ -11,16 +11,20 @@ import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { group } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import {
   deleteSession,
   getAllSessionMessages,
   getLatestSessionMessages,
   getSession,
+  getSessionMessages,
   type ProfileScope,
   type SessionInfo,
   type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
+import { type ChatMessagePart, settlePendingClarifyToolCall, toChatMessages } from '@/lib/chat-messages'
+import { clearAllPrompts, sessionApprovalRequest } from '@/store/prompts'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -45,6 +49,7 @@ import {
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
+import { $routeTiles, closeRouteTile } from '@/store/route-tiles'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -96,6 +101,7 @@ import { requestForSessionProfile, type SessionProfileRoute } from '@/store/sess
 import {
   $sessionTiles,
   clearAllSessionStates,
+  clearMainSessionOwner,
   dropSessionState,
   knownOwnerForSession,
   publishSessionState,
@@ -104,12 +110,22 @@ import {
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
-import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
-import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import { $retainedTodosBySession } from '@/store/todos'
+import {
+  $preservedTodosBySession,
+  $todosBySession,
+  _todoHydrationAuthorityStatsForTests,
+  clearAllSessionTodos,
+  clearAllTodoContinuations,
+  clearSessionTodos,
+  setSessionTodos
+} from '@/store/todos'
+import { LEGACY_TODOS_277757, legacyEvidenceMessage277757 } from '@/test/evidence-row-277757'
+import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
-import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
@@ -131,6 +147,7 @@ vi.mock('@/hermes', async importOriginal => ({
   getAllSessionMessages: vi.fn(),
   getLatestSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
+  getSessionMessages: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionArchived: vi.fn()
 }))
@@ -161,6 +178,27 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+const TODO_CARRIER_HEADER = '[Your active task list was preserved across context compression]'
+const resumeCarrierTodos = [
+  { content: 'parent', id: 'plan', status: 'completed' as const },
+  { content: 'child', id: 'child', parent: 'plan', status: 'in_progress' as const },
+  { content: 'next', id: 'next', status: 'pending' as const }
+]
+
+const resumeCarrierMessages = [
+  {
+    content: `${TODO_CARRIER_HEADER}\n- [x] plan. parent (completed)\n  - [>] child. child (in_progress)\n- [ ] next. next (pending)`,
+    display_kind: 'hidden' as const,
+    display_metadata: { todo_snapshot: { todos: resumeCarrierTodos } },
+    role: 'user' as const,
+    timestamp: 1
+  }
+]
+const ordinaryFullTailMessages = Array.from({ length: 120 }, (_, index) => ({
+  content: `ordinary persisted tail message ${index}`,
+  role: 'assistant' as const,
+  timestamp: index + 1
+}))
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
@@ -711,13 +749,14 @@ describe('active stored-session id rotation routing', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
-    setActiveSessionStoredIdRotation(null)
+    clearMainSessionOwner()
     setSelectedStoredSessionId(null)
     setSessions([])
     $sessionTiles.set([])
     $layoutTree.set(null)
     $activeTreeGroup.set(null)
     window.history.pushState({}, '', '/')
+    setActiveSessionStoredIdRotation(null)
     vi.restoreAllMocks()
   })
 
@@ -1721,6 +1760,9 @@ describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    clearMainSessionOwner()
+    setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
     setMessages([])
@@ -1728,7 +1770,11 @@ describe('resumeSession failure recovery', () => {
     $removedSessionIds.set(new Set())
     $sessionMutationsInFlight.set(new Set())
     clearClarifyRequest()
+    clearAllPrompts()
+    dropTranscriptTail('stored-A')
     clearSessionTodos('runtime-1')
+    clearAllSessionTodos()
+    clearAllTodoContinuations()
     vi.restoreAllMocks()
   })
 
@@ -1757,6 +1803,351 @@ describe('resumeSession failure recovery', () => {
     expect(requestGateway).not.toHaveBeenCalled()
     expect($resumeFailedSessionId.get()).toBeNull()
     expect($selectedStoredSessionId.get()).toBeNull()
+  })
+
+  it.each([
+    ['structured carrier', resumeCarrierMessages, resumeCarrierTodos],
+    ['legacy evidence row 277757', [legacyEvidenceMessage277757], LEGACY_TODOS_277757]
+  ])(
+    'restores carrier-only todo state from the cold REST prefetch using %s',
+    async (_label, carrierMessages, expectedTodos) => {
+      const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+      setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: carrierMessages,
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.resume') {
+          return {
+            info: {},
+            message_count: 1,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: 'runtime-cold',
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+
+      expect($todosBySession.get()['runtime-cold']).toEqual(expectedTodos)
+      expect(JSON.stringify(stateMapRef.current.get('runtime-cold')?.messages ?? [])).not.toContain(TODO_CARRIER_HEADER)
+    }
+  )
+
+  it.each([
+    ['structured carrier', resumeCarrierMessages, resumeCarrierTodos],
+    ['legacy evidence row 277757', [legacyEvidenceMessage277757], LEGACY_TODOS_277757]
+  ])(
+    'restores carrier-only todo state while activating a warm runtime using %s',
+    async (_label, carrierMessages, expectedTodos) => {
+      const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+        current: new Map([['stored-1', 'runtime-warm']])
+      }
+      const warmState = createClientSessionState('stored-1')
+
+      warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+      const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+        current: new Map([['runtime-warm', warmState]])
+      }
+
+      setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: carrierMessages,
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.activate') {
+          return {
+            info: {},
+            message_count: 1,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: 'runtime-warm',
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+      expect($todosBySession.get()['runtime-warm']).toEqual(expectedTodos)
+      expect(JSON.stringify(sessionStateByRuntimeIdRef.current.get('runtime-warm')?.messages ?? [])).not.toContain(
+        TODO_CARRIER_HEADER
+      )
+    }
+  )
+
+  it.each([
+    ['cold', false, 'runtime-cold-paged'],
+    ['warm', true, 'runtime-warm-paged']
+  ] as const)(
+    'restores row 277757 beyond a full 120-message tail during %s resume',
+    async (_label, warm, runtimeSessionId) => {
+      const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+        current: warm ? new Map([['stored-1', runtimeSessionId]]) : new Map()
+      }
+      const warmState = createClientSessionState('stored-1')
+
+      warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+      const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+        current: warm ? new Map([[runtimeSessionId, warmState]]) : new Map()
+      }
+
+      setSessions([storedSession({ id: 'stored-1', message_count: 121 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: ordinaryFullTailMessages,
+        session_id: 'stored-1'
+      } as never)
+      vi.mocked(getSessionMessages).mockResolvedValue({
+        messages: [legacyEvidenceMessage277757],
+        pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 1 },
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === (warm ? 'session.activate' : 'session.resume')) {
+          return {
+            info: {},
+            message_count: 121,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: runtimeSessionId,
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+      expect(getSessionMessages).toHaveBeenCalledWith('stored-1', undefined, {
+        projection: 'todo-state'
+      })
+      expect($todosBySession.get()[runtimeSessionId]).toEqual(LEGACY_TODOS_277757)
+    }
+  )
+
+  it.each([
+    ['cold', false, 'runtime-cold-absent'],
+    ['warm', true, 'runtime-warm-absent']
+  ] as const)(
+    'clears stale Todo state only after genuine candidate exhaustion during %s resume',
+    async (_label, warm, runtimeSessionId) => {
+      const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+        current: warm ? new Map([['stored-1', runtimeSessionId]]) : new Map()
+      }
+      const warmState = createClientSessionState('stored-1')
+
+      warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+      const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+        current: warm ? new Map([[runtimeSessionId, warmState]]) : new Map()
+      }
+
+      setSessionTodos(runtimeSessionId, [{ content: 'stale Todo', id: 'stale', status: 'in_progress' }])
+      setSessions([storedSession({ id: 'stored-1', message_count: 121 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: ordinaryFullTailMessages,
+        session_id: 'stored-1'
+      } as never)
+      vi.mocked(getSessionMessages).mockResolvedValue({
+        messages: [],
+        pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 0 },
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === (warm ? 'session.activate' : 'session.resume')) {
+          return {
+            info: {},
+            message_count: 121,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: runtimeSessionId,
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+      expect(getSessionMessages).toHaveBeenCalledWith('stored-1', undefined, {
+        projection: 'todo-state'
+      })
+      expect($todosBySession.get()[runtimeSessionId]).toBeUndefined()
+    }
+  )
+
+  it('keeps a newer live Todo write while cold resume waits for an older REST carrier', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const liveTodos = [{ content: 'new live progress', id: 'live', status: 'in_progress' as const }]
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-cold',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.anything()))
+    await act(async () => {
+      await Promise.resolve()
+      setSessionTodos('runtime-cold', liveTodos)
+    })
+
+    await act(async () => {
+      persisted.resolve({ messages: resumeCarrierMessages, session_id: 'stored-1' } as never)
+      await resumePromise
+    })
+
+    expect($todosBySession.get()['runtime-cold']).toEqual(liveTodos)
+    expect($preservedTodosBySession.get()['runtime-cold']).toBeUndefined()
+  })
+
+  it('keeps a newer live Todo write while warm activation waits for an older post-barrier REST carrier', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const liveTodos = [{ content: 'new warm progress', id: 'live-warm', status: 'in_progress' as const }]
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-1', 'runtime-warm']])
+    }
+    const warmState = createClientSessionState('stored-1')
+
+    warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-warm', warmState]])
+    }
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-warm',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+    act(() => setSessionTodos('runtime-warm', liveTodos))
+
+    await act(async () => {
+      persisted.resolve({ messages: resumeCarrierMessages, session_id: 'stored-1' } as never)
+      await resumePromise
+    })
+
+    expect($todosBySession.get()['runtime-warm']).toEqual(liveTodos)
+    expect($preservedTodosBySession.get()['runtime-warm']).toBeUndefined()
+  })
+
+  it('keeps a newer Todo clear while cold resume waits for an older REST carrier', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-cold-clear',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.anything()))
+    await act(async () => {
+      await Promise.resolve()
+      setSessionTodos('runtime-cold-clear', [{ content: 'live before clear', id: 'live', status: 'in_progress' }])
+      clearSessionTodos('runtime-cold-clear')
+    })
+
+    await act(async () => {
+      persisted.resolve({ messages: resumeCarrierMessages, session_id: 'stored-1' } as never)
+      await resumePromise
+    })
+
+    expect($todosBySession.get()['runtime-cold-clear']).toBeUndefined()
+    expect($preservedTodosBySession.get()['runtime-cold-clear']).toBeUndefined()
   })
 
   it.each([
@@ -2283,6 +2674,26 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('prompt after compression')
     expect(renderedMessages).toContain('answer after compression')
     expect(renderedMessages).not.toContain('answer before compression')
+  })
+
+  it('does NOT throw out of the fallback when REST also fails (no unhandled rejection)', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('request timed out: session.resume')
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('network down'))
+
+    // resumeSession must resolve (swallow the fallback failure), not reject.
+    await expect(runResume(requestGateway)).resolves.toBeUndefined()
+    expect(_todoHydrationAuthorityStatsForTests()).toMatchObject({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      latestSessionCount: 0
+    })
   })
 
   it('leaves the failure latch clear when resume succeeds', async () => {
@@ -3736,6 +4147,9 @@ describe('resumeSession warm-cache mapping integrity', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    clearMainSessionOwner()
+    setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
     setMessages([])
@@ -4591,6 +5005,114 @@ describe('resumeSession warm-cache mapping integrity', () => {
     persistedTranscript.resolve({ messages: [], session_id: 'stored-A' } as never)
     await resumePromise
     expect(answerableClarifyRows(viewSyncs.at(-1)?.messages)).toHaveLength(1)
+  })
+
+  it('bridges one matching warm clarify to its provider occurrence while retaining concurrent edits', async () => {
+    const persistedMessages = [
+      { id: 201, content: 'help me choose', role: 'user' as const, timestamp: 1 },
+      {
+        id: 202,
+        content: 'I found two paths.',
+        role: 'assistant' as const,
+        timestamp: 2,
+        tool_calls: [
+          {
+            id: 'call-answered',
+            function: {
+              name: 'clarify',
+              arguments: '{"questions":[{"question":"Which path?","choices":["safe","fast"]}]}'
+            }
+          },
+          { id: 'call-unrelated', function: { name: 'clarify', arguments: '{"question":"Another question?"}' } },
+          {
+            id: 'call-provider',
+            function: {
+              name: 'clarify',
+              arguments: '{"questions":[{"question":"Which path?","choices":["safe","fast"]}]}'
+            }
+          }
+        ]
+      },
+      { id: 203, content: 'Earlier answer', role: 'tool' as const, tool_call_id: 'call-answered', timestamp: 3 }
+    ]
+    const cachedMessages = toChatMessages(persistedMessages).map(message =>
+      message.role === 'assistant' ? { ...message, pending: true } : message
+    )
+    const { persistedTranscript, resumePromise, sessionStateByRuntimeIdRef, viewSyncs } =
+      await resumeClarifyBeforeHydration({ messageCount: 3, messages: cachedMessages })
+    const matchingParts = (messages: ClientSessionState['messages']) =>
+      messages
+        .flatMap(message => message.parts)
+        .filter(
+          part =>
+            part.type === 'tool-call' &&
+            part.toolName === 'clarify' &&
+            part.result === undefined &&
+            (part.toolCallId === 'call-provider' || part.toolCallId === 'req-navigation')
+        )
+    const preHydration = viewSyncs.find(state => state.needsInput)!
+    expect(matchingParts(preHydration.messages)).toHaveLength(1)
+    const earlyState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    expect(matchingParts(earlyState.messages)).toHaveLength(1)
+    const unrelatedEarly = earlyState.messages
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolCallId === 'call-unrelated')
+    expect(unrelatedEarly?.type === 'tool-call' && unrelatedEarly.result).toBeUndefined()
+    expect(earlyState.messages.flatMap(message => message.parts)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolCallId: 'call-unrelated' }),
+        expect.objectContaining({ toolCallId: 'call-answered', result: 'Earlier answer' }),
+        expect.objectContaining({ type: 'text', text: 'I found two paths.' })
+      ])
+    )
+
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...earlyState,
+      messages: [
+        ...earlyState.messages.map(message =>
+          message.role === 'user'
+            ? { ...message, parts: [{ type: 'text' as const, text: 'edited while loading' }] }
+            : message
+        ),
+        {
+          id: 'assistant-stream-concurrent',
+          role: 'assistant',
+          pending: true,
+          parts: [{ type: 'text', text: 'Concurrent live delta' }]
+        }
+      ]
+    })
+    persistedTranscript.resolve({ messages: persistedMessages, session_id: 'stored-A' } as never)
+    await resumePromise
+    const hydrated = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    expect(matchingParts(hydrated.messages)).toEqual([expect.objectContaining({ toolCallId: 'call-provider' })])
+    const providerMessage = hydrated.messages.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-provider')
+    )!
+    expect(providerMessage).toMatchObject({ id: '2-1-assistant', rowId: 202 })
+    const unrelatedHydrated = providerMessage.parts.find(
+      part => part.type === 'tool-call' && part.toolCallId === 'call-unrelated'
+    )
+    expect(unrelatedHydrated?.type === 'tool-call' && unrelatedHydrated.result).toBeUndefined()
+    expect(providerMessage.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'I found two paths.', sourceRowId: 202 }),
+        expect.objectContaining({ toolCallId: 'call-unrelated' }),
+        expect.objectContaining({ toolCallId: 'call-answered', result: 'Earlier answer' })
+      ])
+    )
+    expect(hydrated.messages.flatMap(message => message.parts)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'edited while loading' }),
+        expect.objectContaining({ type: 'text', text: 'Concurrent live delta' })
+      ])
+    )
+    expect(
+      hydrated.messages
+        .flatMap(message => message.parts)
+        .some(part => part.type === 'tool-call' && part.toolCallId === 'req-navigation')
+    ).toBe(false)
+    expect(matchingParts(viewSyncs.at(-1)!.messages)).toHaveLength(1)
   })
 
   it('keeps the snapshot clarify row visible when the unproven warm cache has no prefix (#108718)', async () => {
@@ -5866,6 +6388,1151 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     expect($sessionStartedAt.get()).toBe(runtimeStartedAt)
   })
+
+  it('preserves an activation-time message delta through early clarify projection and REST reconciliation', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'I found two paths.' }],
+        pending: true
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const activated = deferred<SessionResumeResult>()
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const publications: ClientSessionState[] = []
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn((method: string) =>
+      method === 'session.activate' ? activated.promise : Promise.resolve({})
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, published) => publications.push(published)}
+        requestGateway={requestGateway as never}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+    const liveState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...liveState,
+      messages: liveState.messages.map(message =>
+        message.id === 'cached-assistant'
+          ? {
+              ...message,
+              parts: [{ type: 'text', text: 'I found two paths. Concurrent delta.' }]
+            }
+          : message
+      )
+    })
+
+    setClarifyRequest({
+      requestId: 'req-warm-delta',
+      sessionId: 'rt-A',
+      questions: [{ qid: 'q0', question: 'Which path?', choices: ['safe', 'fast'], multiSelect: false }]
+    })
+    activated.resolve({
+      info: {},
+      message_count: 2,
+      messages: [],
+      messages_omitted: true,
+      open_requests: [
+        {
+          id: 'req-warm-delta',
+          method: 'clarify',
+          params: { choices: ['safe', 'fast'], question: 'Which path?' }
+        }
+      ],
+      resumed: 'stored-A',
+      running: true,
+      session_id: 'rt-A',
+      session_key: 'stored-A'
+    })
+
+    await waitFor(() => expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm-delta' }))
+    const preRestState = publications.findLast(published => published.needsInput)
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        { content: 'I found two paths.', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const finalState = sessionStateByRuntimeIdRef.current.get('rt-A')
+
+    const openClarifyCount = (snapshot: ClientSessionState | undefined) =>
+      snapshot?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined).length ??
+      0
+
+    expect(JSON.stringify(preRestState?.messages)).toContain('Concurrent delta.')
+    expect(openClarifyCount(preRestState)).toBe(1)
+    expect(JSON.stringify(finalState?.messages)).toContain('Concurrent delta.')
+    expect(openClarifyCount(finalState)).toBe(1)
+  })
+
+  it('fails closed on stale cached clarify liveness before activation returns', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.needsInput = true
+    state.streamId = 'cached-stale-clarify'
+    state.messages = [
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'stale cached history' }] },
+      {
+        id: 'cached-stale-clarify',
+        pending: true,
+        role: 'assistant',
+        parts: [
+          {
+            args: { choices: ['stale'], question: 'Stale question?' },
+            argsText: '{"question":"Stale question?","choices":["stale"]}',
+            result: undefined,
+            toolCallId: 'req-stale-cache',
+            toolName: 'clarify',
+            type: 'tool-call'
+          }
+        ]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const activated = deferred<SessionResumeResult>()
+    const viewPublications: ClientSessionState[] = []
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn((method: string) =>
+      method === 'session.activate' ? activated.promise : Promise.resolve({})
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, published) => viewPublications.push(published)}
+        requestGateway={requestGateway as never}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+    const preActivationPublication = viewPublications.at(-1)
+
+    expect(preActivationPublication?.needsInput).toBe(false)
+    expect(preActivationPublication?.streamId).toBeNull()
+    expect(preActivationPublication?.messages).toHaveLength(0)
+
+    activated.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      open_requests: [],
+      resumed: 'stored-A',
+      running: false,
+      session_id: 'rt-A',
+      session_key: 'stored-A'
+    } as never)
+    await resumePromise
+  })
+
+  it('does not resurrect a clarify completed while persisted transcript hydration is pending', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        setClarifyRequest({
+          requestId: 'req-warm-answer',
+          sessionId: 'rt-A',
+          questions: [{ qid: 'q0', question: 'Which path?', choices: ['safe', 'fast'], multiSelect: false }]
+        })
+
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          open_requests: [
+            {
+              id: 'req-warm-answer',
+              method: 'clarify',
+              params: { choices: ['safe', 'fast'], question: 'Which path?' }
+            }
+          ],
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm-answer' }))
+
+    const pendingState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+
+    const settledProjection = settlePendingClarifyToolCall(
+      pendingState.messages,
+      {
+        args: { questions: [{ choices: ['safe', 'fast'], question: 'Which path?' }] },
+        tool_id: 'req-warm-answer'
+      },
+      false
+    )
+
+    const answeredMessages = settledProjection.messages.map(message => ({
+      ...message,
+      parts: message.parts.map(part =>
+        part.type === 'tool-call' && part.toolName === 'clarify'
+          ? { ...part, result: { question: 'Which path?', user_response: 'safe' } }
+          : part
+      )
+    }))
+
+    clearClarifyRequest('req-warm-answer', 'rt-A')
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...pendingState,
+      messages: answeredMessages,
+      needsInput: false,
+      streamId: null
+    })
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: 'I found two paths.',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Which path?","choices":["safe","fast"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const finalState = sessionStateByRuntimeIdRef.current.get('rt-A')
+
+    const clarifyParts =
+      finalState?.messages
+        .flatMap(message => message.parts)
+        .filter(
+          (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+            part.type === 'tool-call' && part.toolName === 'clarify'
+        ) ?? []
+
+    const openClarifyCount = clarifyParts.filter(part => part.result === undefined).length
+    const clarifyResults = clarifyParts.filter(part => part.result !== undefined).map(part => part.result)
+
+    const cachedClarifyParts =
+      loadTranscriptTail('stored-A')
+        ?.flatMap(message => message.parts)
+        .filter(
+          (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+            part.type === 'tool-call' && part.toolName === 'clarify'
+        ) ?? []
+
+    expect($clarifyRequests.get()['rt-A']).toBeUndefined()
+    expect(finalState?.needsInput).toBe(false)
+    expect(clarifyParts).toHaveLength(1)
+    expect(openClarifyCount).toBe(0)
+    expect(clarifyResults).toContainEqual({ question: 'Which path?', user_response: 'safe' })
+    expect(clarifyResults).not.toContainEqual(expect.objectContaining({ timed_out: true }))
+    expect(cachedClarifyParts).toHaveLength(1)
+    expect(cachedClarifyParts[0]).toMatchObject({
+      result: { question: 'Which path?', user_response: 'safe' },
+      toolCallId: 'call-provider'
+    })
+  })
+
+  it('clears stale clarify liveness when a response succeeds before tool completion', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        setClarifyRequest({
+          requestId: 'req-warm-response-gap',
+          sessionId: 'rt-A',
+          questions: [{ qid: 'q0', question: 'Which path?', choices: ['safe', 'fast'], multiSelect: false }]
+        })
+
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          open_requests: [
+            {
+              id: 'req-warm-response-gap',
+              method: 'clarify',
+              params: { choices: ['safe', 'fast'], question: 'Which path?' }
+            }
+          ],
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm-response-gap' }))
+
+    const pendingState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+
+    expect(pendingState.needsInput).toBe(true)
+
+    // Successful clarify.respond clears the request immediately. The
+    // tool.complete event that settles the transcript can arrive later.
+    clearClarifyRequest('req-warm-response-gap', 'rt-A')
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: 'I found two paths.',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Which path?","choices":["safe","fast"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const finalState = sessionStateByRuntimeIdRef.current.get('rt-A')
+
+    const finalClarifyParts =
+      finalState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify') ?? []
+
+    const cachedClarifyParts =
+      loadTranscriptTail('stored-A')
+        ?.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify') ?? []
+
+    expect($clarifyRequests.get()['rt-A']).toBeUndefined()
+    expect(finalState?.needsInput).toBe(false)
+    expect(finalClarifyParts).toHaveLength(0)
+    expect(cachedClarifyParts).toHaveLength(0)
+  })
+
+  it('fails closed when the active clarify is cleared while session.activate is pending', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.needsInput = true
+    state.streamId = 'req-start'
+    state.messages = [
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'req-start',
+        pending: true,
+        role: 'assistant',
+        parts: [
+          {
+            args: { choices: ['same'], question: 'Repeated question?' },
+            argsText: '{"question":"Repeated question?","choices":["same"]}',
+            toolCallId: 'req-start',
+            toolName: 'clarify',
+            type: 'tool-call'
+          }
+        ]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    setClarifyRequest({
+      requestId: 'req-start',
+      sessionId: 'rt-A',
+      questions: [{ qid: 'q0', question: 'Repeated question?', choices: ['same'], multiSelect: false }]
+    })
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+
+    const activated = deferred<SessionResumeResult>()
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const publications: ClientSessionState[] = []
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn((method: string) =>
+      method === 'session.activate' ? activated.promise : Promise.resolve({})
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, published) => publications.push(published)}
+        requestGateway={requestGateway as never}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+    clearClarifyRequest('req-start', 'rt-A')
+    activated.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      open_requests: [
+        {
+          id: 'req-start',
+          method: 'clarify',
+          params: { choices: ['same'], question: 'Repeated question?' }
+        }
+      ],
+      resumed: 'stored-A',
+      running: true,
+      session_id: 'rt-A',
+      session_key: 'stored-A'
+    })
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    const preRestState = publications.at(-1)
+
+    const preRestOpenClarify =
+      preRestState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined) ?? []
+
+    expect($clarifyRequests.get()['rt-A']).toBeUndefined()
+    expect(preRestState?.needsInput).toBe(false)
+    expect(preRestOpenClarify).toHaveLength(0)
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: '',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Repeated question?","choices":["same"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider-start'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const finalState = sessionStateByRuntimeIdRef.current.get('rt-A')
+
+    const finalOpenClarify =
+      finalState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined) ?? []
+
+    expect(finalState?.needsInput).toBe(false)
+    expect(finalOpenClarify).toHaveLength(0)
+  })
+
+  it.each([
+    [
+      'keeps a newer live request when delayed activation still has the old clarify',
+      { choices: ['safe', 'fast'], question: 'Which path?', request_id: 'req-old' },
+      { arguments: '{"question":"Which path?","choices":["safe","fast"]}', id: 'call-provider-old' },
+      'req-newer'
+    ],
+    [
+      'keeps a newer live request when delayed old activation has the same payload',
+      { choices: ['new'], question: 'New question?', request_id: 'req-old' },
+      {
+        arguments: '{"question":"New question?","choices":["new"]}',
+        id: 'call-provider-old'
+      },
+      'req-newer'
+    ],
+    [
+      'keeps exactly one newer live request when delayed activation has caught up',
+      { choices: ['new'], question: 'New question?', request_id: 'req-newer' },
+      { arguments: '{"question":"New question?","choices":["new"]}', id: 'call-provider-new' },
+      'call-provider-new'
+    ]
+  ])('%s', async (_title, activationPendingClarify, persistedClarify, finalToolCallId) => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const activated = deferred<SessionResumeResult>()
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const publications: ClientSessionState[] = []
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn((method: string) =>
+      method === 'session.activate' ? activated.promise : Promise.resolve({})
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, published) => publications.push(published)}
+        requestGateway={requestGateway as never}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+    setClarifyRequest({
+      receivedAt: Date.now() / 1000 + 1,
+      requestId: 'req-newer',
+      sessionId: 'rt-A',
+      questions: [{ qid: 'q0', question: 'New question?', choices: ['new'], multiSelect: false }]
+    })
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...sessionStateByRuntimeIdRef.current.get('rt-A')!,
+      messages: [
+        ...sessionStateByRuntimeIdRef.current.get('rt-A')!.messages,
+        {
+          id: 'req-newer',
+          pending: true,
+          role: 'assistant',
+          parts: [
+            {
+              args: { questions: [{ choices: ['new'], question: 'New question?' }] },
+              argsText: '{"questions":[{"question":"New question?","choices":["new"]}]}',
+              toolCallId: 'req-newer',
+              toolName: 'clarify',
+              type: 'tool-call'
+            }
+          ]
+        }
+      ],
+      needsInput: true,
+      streamId: 'req-newer'
+    })
+
+    const publicationsBeforeActivation = publications.length
+
+    activated.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      open_requests: [
+        {
+          id: activationPendingClarify.request_id,
+          method: 'clarify',
+          params: {
+            choices: activationPendingClarify.choices,
+            question: activationPendingClarify.question
+          }
+        }
+      ],
+      resumed: 'stored-A',
+      running: true,
+      session_id: 'rt-A',
+      session_key: 'stored-A'
+    })
+
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined))
+
+    const preRestPublications = publications.slice(publicationsBeforeActivation)
+    const preRestState = preRestPublications.at(-1)
+
+    const preRestClarifyParts =
+      preRestState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined) ?? []
+
+    const preRestClarifyMessage = preRestState?.messages.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+    )
+
+    const heldPreRestState = preRestState
+      ? suppressTranscriptForView(preRestState, { cutoffIds: new Set<string>() })
+      : undefined
+
+    const heldPreRestClarifyParts =
+      heldPreRestState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined) ?? []
+
+    expect(preRestPublications).not.toHaveLength(0)
+    expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
+    expect(preRestState?.awaitingResponse).toBe(false)
+    expect(preRestState?.needsInput).toBe(true)
+    expect(preRestState?.streamId).toBe(preRestClarifyMessage?.id)
+    expect(preRestClarifyParts).toHaveLength(1)
+    expect(preRestClarifyParts[0]).toMatchObject({
+      args: { questions: [{ choices: ['new'], question: 'New question?' }] },
+      toolCallId: 'req-newer'
+    })
+    expect(heldPreRestState?.needsInput).toBe(true)
+    expect(heldPreRestClarifyParts).toHaveLength(1)
+    expect(heldPreRestClarifyParts[0]).toMatchObject({
+      args: { questions: [{ choices: ['new'], question: 'New question?' }] },
+      toolCallId: 'req-newer'
+    })
+    expect(JSON.stringify(preRestClarifyParts)).not.toContain('req-old')
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: 'I found two paths.',
+          role: 'assistant',
+          timestamp: 2,
+          ...(persistedClarify
+            ? {
+                tool_calls: [
+                  {
+                    function: {
+                      arguments: persistedClarify.arguments,
+                      name: 'clarify'
+                    },
+                    id: persistedClarify.id
+                  }
+                ]
+              }
+            : {})
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const finalState = sessionStateByRuntimeIdRef.current.get('rt-A')
+
+    const openClarifyParts =
+      finalState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined) ?? []
+
+    const finalClarifyMessage = finalState?.messages.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+    )
+
+    const cachedClarifyParts =
+      loadTranscriptTail('stored-A')
+        ?.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify') ?? []
+
+    expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
+    expect(finalState?.awaitingResponse).toBe(false)
+    expect(finalState?.needsInput).toBe(true)
+    expect(finalState?.streamId).toBe(finalClarifyMessage?.id)
+    expect(openClarifyParts).toHaveLength(1)
+    expect(openClarifyParts[0]).toMatchObject({
+      args: { questions: [{ choices: ['new'], question: 'New question?' }] },
+      toolCallId: finalToolCallId
+    })
+    expect(JSON.stringify(finalState?.messages)).not.toContain('req-old')
+    expect(cachedClarifyParts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ toolCallId: 'req-newer' })])
+    )
+  })
+
+  it('publishes a pending clarify card before warm activation waits for persisted transcript', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const publications: ClientSessionState[] = []
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        setClarifyRequest({
+          requestId: 'req-warm',
+          sessionId: 'rt-A',
+          questions: [{ qid: 'q0', question: 'Which path?', choices: ['safe', 'fast'], multiSelect: false }]
+        })
+
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          open_requests: [
+            {
+              id: 'req-warm',
+              method: 'clarify',
+              params: { choices: ['safe', 'fast'], question: 'Which path?' }
+            }
+          ],
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, published) => publications.push(published)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm' }))
+
+    const preRestState = publications.findLast(published => published.needsInput)
+
+    const preRestClarifyCount =
+      preRestState?.messages.filter(message =>
+        message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      ).length ?? 0
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: 'I found two paths.',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Which path?","choices":["safe","fast"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const resumedClarifyMessages =
+      sessionStateByRuntimeIdRef.current
+        .get('rt-A')
+        ?.messages.filter(message =>
+          message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+        ) ?? []
+
+    const cachedClarifyParts =
+      loadTranscriptTail('stored-A')
+        ?.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify') ?? []
+
+    expect(preRestState).toBeDefined()
+    expect(preRestClarifyCount).toBe(1)
+    expect(preRestState?.messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        parts: [expect.objectContaining({ toolName: 'clarify', type: 'tool-call' })]
+      })
+    ])
+    expect(resumedClarifyMessages).toHaveLength(1)
+    expect(
+      resumedClarifyMessages[0].parts.find(part => part.type === 'tool-call' && part.toolName === 'clarify')
+    ).toMatchObject({ toolCallId: 'call-provider' })
+    expect(cachedClarifyParts).toHaveLength(1)
+    expect(cachedClarifyParts[0]).toMatchObject({ toolCallId: 'call-provider' })
+    expect(loadTranscriptTail('stored-A')?.some(message => message.pending)).toBe(false)
+  })
+
+  it.each([
+    ['keeps a newer same-payload clarify that remains active during persisted hydration', false],
+    ['drops a newer same-payload clarify cleared during persisted hydration', true]
+  ])('%s', async (_case, clearNewerRequest) => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        setClarifyRequest({
+          requestId: 'req-old-rest',
+          sessionId: 'rt-A',
+          questions: [{ qid: 'q0', question: 'Repeated question?', choices: ['same'], multiSelect: false }]
+        })
+
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          open_requests: [
+            {
+              id: 'req-old-rest',
+              method: 'clarify',
+              params: { choices: ['same'], question: 'Repeated question?' }
+            }
+          ],
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-old-rest' }))
+
+    setClarifyRequest({
+      receivedAt: Date.now() / 1000 + 1,
+      requestId: 'req-new-rest',
+      sessionId: 'rt-A',
+      questions: [{ qid: 'q0', question: 'Repeated question?', choices: ['same'], multiSelect: false }]
+    })
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...sessionStateByRuntimeIdRef.current.get('rt-A')!,
+      messages: [
+        { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+        {
+          id: 'req-new-rest',
+          pending: true,
+          role: 'assistant',
+          parts: [
+            {
+              args: { questions: [{ choices: ['same'], question: 'Repeated question?' }] },
+              argsText: '{"questions":[{"question":"Repeated question?","choices":["same"]}]}',
+              toolCallId: 'req-new-rest',
+              toolName: 'clarify',
+              type: 'tool-call'
+            }
+          ]
+        }
+      ],
+      needsInput: true,
+      streamId: 'req-new-rest'
+    })
+
+    if (clearNewerRequest) {
+      clearClarifyRequest('req-new-rest', 'rt-A')
+    }
+
+    persisted.resolve({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: '',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Repeated question?","choices":["same"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider-old-rest'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const finalState = sessionStateByRuntimeIdRef.current.get('rt-A')
+
+    const finalOpenClarifyParts =
+      finalState?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined) ?? []
+
+    const finalClarifyMessage = finalState?.messages.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+    )
+
+    const cachedClarifyParts =
+      loadTranscriptTail('stored-A')
+        ?.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify') ?? []
+
+    if (clearNewerRequest) {
+      expect($clarifyRequests.get()['rt-A']).toBeUndefined()
+      expect(finalState?.needsInput).toBe(false)
+      expect(finalOpenClarifyParts).toHaveLength(0)
+    } else {
+      expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-new-rest' })
+      expect(finalState?.needsInput).toBe(true)
+      expect(finalState?.streamId).toBe(finalClarifyMessage?.id)
+      expect(finalOpenClarifyParts).toHaveLength(1)
+      expect(finalOpenClarifyParts[0]).toMatchObject({
+        args: { questions: [{ choices: ['same'], question: 'Repeated question?' }] },
+        toolCallId: 'req-new-rest'
+      })
+    }
+
+    expect(JSON.stringify(finalState?.messages)).not.toContain('call-provider-old-rest')
+    expect(cachedClarifyParts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ toolCallId: 'req-new-rest' })])
+    )
+  })
+
+  it('does not publish a stale clarify card while pending approval waits for persisted REST', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.needsInput = true
+    state.streamId = 'cached-assistant'
+    state.messages = [
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args: { choices: ['safe', 'fast'], question: 'Which path?' },
+            argsText: '{"question":"Which path?","choices":["safe","fast"]}'
+          }
+        ]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    setClarifyRequest({
+      requestId: 'req-stale-clarify',
+      sessionId: 'rt-A',
+      questions: [{ qid: 'q0', question: 'Which path?', choices: ['safe', 'fast'], multiSelect: false }]
+    })
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const publications: ClientSessionState[] = []
+
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          pending_approval: {
+            choices: ['once', 'deny'],
+            command: 'rm -rf build',
+            description: 'delete build output',
+            request_id: 'req-live-approval'
+          },
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, published) => publications.push(published)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(sessionApprovalRequest('rt-A').get()?.requestId).toBe('req-live-approval'))
+
+    const preRestState = publications.findLast(published => published.needsInput)
+
+    const preRestClarify = preRestState?.messages
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolName === 'clarify')
+
+    const preRestHasOpenClarify = preRestClarify?.type === 'tool-call' && preRestClarify.result === undefined
+
+    persisted.resolve({ messages: [], session_id: 'stored-A' } as never)
+    await resumePromise
+
+    expect(preRestState).toBeDefined()
+    expect(preRestHasOpenClarify).toBe(false)
+  })
 })
 
 describe('createBackendSessionForSend workspace target', () => {
@@ -6386,6 +8053,78 @@ describe('selectSidebarItem', () => {
     expect(navigate).toHaveBeenCalledWith('/capabilities', undefined)
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
+  })
+
+  it('opens route-backed plugin sidebar items as stable closeable route tiles', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    const disposeRoutes = registry.registerMany([
+      {
+        area: ROUTES_AREA,
+        data: { path: '/kanban' },
+        id: 'kanban-page',
+        render: () => null,
+        source: 'plugin:kanban',
+        title: 'Kanban'
+      },
+      {
+        area: ROUTES_AREA,
+        data: { path: '/llm-usage' },
+        id: 'llm-usage-page',
+        render: () => null,
+        source: 'plugin:llm-usage',
+        title: 'LLM Usage'
+      }
+    ])
+
+    let handle: HarnessHandle | null = null
+
+    $routeTiles.set([])
+
+    try {
+      render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+      await waitFor(() => expect(handle).not.toBeNull())
+
+      act(() => {
+        handle!.selectSidebarItem({ icon: (() => null) as never, id: 'kanban', label: 'Kanban', route: '/kanban' })
+        handle!.selectSidebarItem({ icon: (() => null) as never, id: 'kanban', label: 'Kanban', route: '/kanban' })
+        handle!.selectSidebarItem({
+          icon: (() => null) as never,
+          id: 'llm-usage',
+          label: 'LLM Usage',
+          route: '/llm-usage'
+        })
+      })
+
+      expect(navigate).not.toHaveBeenCalled()
+      expect($routeTiles.get()).toEqual([
+        { dir: 'center', path: '/kanban' },
+        { dir: 'center', path: '/llm-usage' }
+      ])
+      expect(revealTreePane).toHaveBeenCalledWith('route-tile:/kanban')
+      expect(revealTreePane).toHaveBeenCalledWith('route-tile:/llm-usage')
+    } finally {
+      disposeRoutes()
+      closeRouteTile('/kanban')
+      closeRouteTile('/llm-usage')
+    }
+  })
+
+  it('falls back to router navigation when a previously contributed route is unloaded', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => {
+      handle!.selectSidebarItem({ icon: (() => null) as never, id: 'kanban', label: 'Kanban', route: '/kanban' })
+    })
+
+    expect(navigate).toHaveBeenCalledWith('/kanban', undefined)
+    expect($routeTiles.get()).toEqual([])
   })
 })
 
@@ -7176,4 +8915,54 @@ describe('branchStoredSession failure retry', () => {
       expect(errorNotifications[0].message.length).toBeLessThan(180)
     })
   })
+})
+
+it('keeps the running projection stream target when an accepted queued user follows it', async () => {
+  const storedMessages = [
+    { content: 'earlier question', role: 'user', timestamp: 1 },
+    { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+  ]
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+  const requestGateway = vi.fn(async (method: string) => {
+    if (method === 'session.resume') {
+      return {
+        session_id: 'runtime-queued',
+        session_key: 'stored-1',
+        resumed: 'stored-1',
+        message_count: storedMessages.length,
+        messages: storedMessages,
+        running: true,
+        inflight: {
+          user: 'running prompt',
+          assistant: 'partial answer',
+          streaming: true
+        },
+        queued: { user: 'accepted queued prompt' },
+        info: {}
+      } as never
+    }
+
+    return {} as never
+  })
+
+  let resumedState: ClientSessionState | undefined
+  let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+  render(
+    <ResumeHarness
+      onReady={ready => (resume = ready)}
+      onStateUpdate={(_sessionId, state) => (resumedState = state)}
+      requestGateway={requestGateway}
+    />
+  )
+  await waitFor(() => expect(resume).not.toBeNull())
+  await resume!('stored-1', true)
+
+  expect(resumedState?.messages.slice(-2).map(message => message.id)).toEqual([
+    'assistant-stream-runtime-queued',
+    'user-queued-runtime-queued'
+  ])
+  expect(resumedState?.streamId).toBe('assistant-stream-runtime-queued')
 })

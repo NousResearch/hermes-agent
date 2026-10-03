@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 from collections import Counter
+from enum import Enum, auto
 from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
+
+
+_TODO_SNAPSHOT_PROVENANCE_KEY = "_todo_snapshot_provenance"
+
+
+class _MessageProvenance(Enum):
+    """Process-local identities that JSON/API callers cannot manufacture."""
+
+    PERSISTED_TODO_SNAPSHOT = auto()
 
 
 # These fields describe Hermes' durable record and timeline display, not
@@ -42,7 +52,7 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
     # backend 400s on any key it does not know.
     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
-     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID}
+     _TODO_SNAPSHOT_PROVENANCE_KEY, MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID}
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
@@ -235,6 +245,23 @@ def tool_call_uid_from_history(messages: List[dict], tool_index: int, owners: di
     return None
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
+
+
+def stamp_persisted_todo_snapshot(message: _Message) -> _Message:
+    """Mark structured Todo state decoded from an authoritative SessionDB row."""
+    message[_TODO_SNAPSHOT_PROVENANCE_KEY] = (
+        _MessageProvenance.PERSISTED_TODO_SNAPSHOT
+    )
+    return message
+
+
+def has_persisted_todo_snapshot_provenance(message: Any) -> bool:
+    """Return whether *message* crossed the trusted persisted-session boundary."""
+    return bool(
+        isinstance(message, MutableMapping)
+        and message.get(_TODO_SNAPSHOT_PROVENANCE_KEY)
+        is _MessageProvenance.PERSISTED_TODO_SNAPSHOT
+    )
 
 
 def stamp_message_timestamp(

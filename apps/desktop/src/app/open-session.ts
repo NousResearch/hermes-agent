@@ -4,8 +4,8 @@
  * already a tile (or the main tab) is JUMPED TO instead of yanked into main.
  *
  * Intents:
- *   - `in-place` (sidebar click / Enter) — focus existing tile/main if on
- *     screen; else load into main (same as the left sessions sidebar).
+ *   - `in-place` (default non-sidebar open) — focus existing tile/main if on
+ *     screen; else load into main.
  *   - `stack` (⌘K, notifications — anything that opens a chat from outside the
  *     workspace) — like `tab`, but may spend main or an open blank draft tab
  *     when either is empty.
@@ -55,7 +55,7 @@ export function mainChatOccupied(activeSessionId: null | string, selectedStoredS
 
 /** Read modifiers the way session rows do — meta OR ctrl for tab, +shift for
  *  window. `base` is what an unmodified select means for the caller: the
- *  sidebar spends main (`in-place`), a palette-style open doesn't (`stack`). */
+ *  an inline open spends main (`in-place`), a palette-style open doesn't (`stack`). */
 export function openSessionIntentFromModifiers(
   event?: null | { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean },
   base: OpenSessionIntent = 'in-place'
@@ -113,14 +113,16 @@ export function openSession(
   // already on screen (open tile, or the main session) would otherwise return
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
-  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
-  const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 
   let resolved: OpenSessionIntent = intent
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId)
+      if (workspaceScope.ownerRoute) {
+        void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+      } else {
+        void openSessionInNewWindow(storedSessionId)
+      }
 
       return
     }
@@ -128,6 +130,13 @@ export function openSession(
     // No pop-out support → treat like a new tab.
     resolved = 'tab'
   }
+
+  // A native window is an independent surface. Only local tab/main opens may
+  // rewrite the existing tile's workspace owner; doing this before the window
+  // return silently rebound a same-id owner-A tile when opening owner B.
+  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+  const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
+  const routedWorkspaceScope = workspaceScope.ownerRoute ? workspaceScope : botWorkspaceScope
 
   if (resolved === 'main') {
     // Canonical relationship chats explicitly own the main workspace. Route
@@ -182,8 +191,8 @@ export function openSession(
       return
     }
 
-    if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+    if (routedWorkspaceScope) {
+      openSessionTile(storedSessionId, 'center', undefined, undefined, routedWorkspaceScope)
     } else {
       openSessionTile(storedSessionId, 'center')
     }
@@ -193,10 +202,9 @@ export function openSession(
     return
   }
 
-  // Already on screen (open tile, or the main session)? Jump to its tab;
-  // otherwise load it into main. From a full page (artifacts, skills, …) a
-  // `'main'` hit still has to route back: fronting the workspace tab alone
-  // leaves the page showing.
+  // Already on screen? Front it. If the main session is hidden behind a full
+  // page, route back to the workspace; a tile hit remains front-only for the
+  // default intent used by non-sidebar callers.
   const focused = focusOpenSession(storedSessionId, workspaceScope)
 
   if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {

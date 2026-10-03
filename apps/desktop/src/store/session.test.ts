@@ -42,6 +42,7 @@ import {
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedSessionOwner,
   getRememberedWorkspaceCwd,
   getSessionOwnerHint,
   getSessionOwnerHints,
@@ -51,6 +52,7 @@ import {
   knownSessionProfile,
   lineageAliases,
   mergeSessionPage,
+  migrateRememberedNavigationForProfile,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   rotateFreshDraftKey,
@@ -69,6 +71,7 @@ import {
   setMessagingSessions,
   setRememberedRoute,
   setRememberedSessionId,
+  setRememberedSessionOwner,
   setSelectedStoredSessionId,
   setSessionOwnerHint,
   setSessions,
@@ -878,7 +881,43 @@ describe('mergeSessionPage', () => {
   })
 })
 
+it('migrates the remembered exact local owner with its renamed profile', () => {
+  window.localStorage.clear()
+  $connection.set(null)
+  setRememberedSessionId('mine', 'old')
+  setRememberedSessionOwner('mine', { connectionId: 'local', profile: 'old', targetProfile: 'old' }, 'old')
+  migrateRememberedNavigationForProfile('old', 'new')
+  expect(getRememberedSessionId('new')).toBe('mine')
+  expect(getRememberedSessionOwner('mine', 'new')).toEqual({
+    connectionId: 'local',
+    profile: 'new',
+    targetProfile: 'new'
+  })
+  expect(getRememberedSessionOwner('mine', 'old')).toBeUndefined()
+})
+
 describe('applySessionTitle', () => {
+  it('patches matching-owner lineage rows in every slice without touching same-id foreign rows', () => {
+    const mine = session({
+      id: 'tip',
+      _lineage_ids: ['root', 'tip'],
+      connection_id: 'source-a',
+      profile: 'worker',
+      title: 'Old'
+    })
+    const foreign = session({ ...mine, connection_id: 'source-b' })
+    setSessions([mine, foreign])
+    setCronSessions([mine, foreign])
+    setMessagingSessions([mine, foreign])
+    applySessionTitle('root', 'Fresh', { connectionId: 'source-a', profile: 'worker' })
+    for (const rows of [$sessions.get(), $cronSessions.get(), $messagingSessions.get()]) {
+      expect(rows.find(row => row.connection_id === 'source-a')?.title).toBe('Fresh')
+      expect(rows.find(row => row.connection_id === 'source-b')?.title).toBe('Old')
+    }
+    setCronSessions([])
+    setMessagingSessions([])
+  })
+
   afterEach(() => {
     setSessions([])
   })
@@ -1661,6 +1700,16 @@ describe('remembered route (per profile)', () => {
     expect(getRememberedRoute('default')).toBeNull()
     expect(getRememberedSessionId('default')).toBeNull()
     expect(getRememberedRoute('ai-engineer')).toBe('/session/stored-1')
+  })
+
+  it('restores an exact main owner only for the remembered stored id', () => {
+    const ownerRoute = { connectionId: 'source-b', profile: 'default', targetProfile: 'worker' }
+
+    setRememberedSessionOwner('shared-id', ownerRoute, 'default')
+
+    expect(getRememberedSessionOwner('shared-id', 'default')).toEqual(ownerRoute)
+    expect(getRememberedSessionOwner('other-id', 'default')).toBeUndefined()
+    expect(getRememberedSessionOwner('shared-id', 'worker')).toBeUndefined()
   })
 })
 

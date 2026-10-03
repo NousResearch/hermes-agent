@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -22,6 +22,7 @@ import {
 import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
+  adoptLatestDuplicatePersistedRows,
   appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
@@ -33,10 +34,12 @@ import {
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   preserveEquivalentTranscript,
+  preserveLoadedHistoryThroughCompaction,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
+  runningProjectionStreamId,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -654,6 +657,188 @@ describe('reconcileResumeMessages', () => {
 
     expect(reconciled[1]).toMatchObject({ id: 'assistant-stream-live', pending: false })
     expect(chatMessageText(reconciled[1])).toBe('streamed body')
+  })
+})
+
+describe('preserveLoadedHistoryThroughCompaction', () => {
+  it('keeps the first logical position while adopting a later duplicate durable row', () => {
+    const firstCopy = msg('title-first-position', 'user', 'title', { rowId: 243, timestamp: 1 })
+    const refreshedCopy = msg('title-refreshed-copy', 'user', 'title', {
+      reactions: [{ at: 3, author: 'user', emoji: '👍' }],
+      rowId: 243,
+      timestamp: 1
+    })
+    const systemSummary = msg('system-summary', 'system', 'Compressed')
+    const duplicated = [
+      firstCopy,
+      msg('history', 'assistant', 'answer', { rowId: 244, timestamp: 2 }),
+      refreshedCopy,
+      systemSummary
+    ]
+
+    const reconciled = adoptLatestDuplicatePersistedRows(duplicated)
+
+    expect(reconciled.map(message => message.id)).toEqual(['title-first-position', 'history', 'system-summary'])
+    expect(reconciled[0]).toMatchObject({
+      id: 'title-first-position',
+      reactions: [{ at: 3, author: 'user', emoji: '👍' }],
+      rowId: 243
+    })
+    expect(reconciled[0]).not.toBe(firstCopy)
+    expect(reconciled[0]).not.toBe(refreshedCopy)
+    expect(adoptLatestDuplicatePersistedRows(reconciled)).toBe(reconciled)
+  })
+
+  it('keeps mounted renderer ids when durable rows move within a refreshed hydration array', () => {
+    const mounted = [
+      msg('mounted-history-63', 'user', 'history 63', { rowId: 125, timestamp: 10 }),
+      msg('mounted-history-64', 'user', 'history 64', { rowId: 127, timestamp: 11 })
+    ]
+    const refreshed = [
+      msg('new-prefix', 'user', 'new prefix', { rowId: 243, timestamp: 1 }),
+      msg('rehydrated-history-63-at-new-index', 'user', 'history 63', {
+        reactions: [{ at: 12, author: 'user', emoji: '👍' }],
+        rowId: 125,
+        timestamp: 10
+      }),
+      msg('rehydrated-history-64-at-new-index', 'user', 'history 64', { rowId: 127, timestamp: 11 })
+    ]
+
+    const reconciled = adoptLatestDuplicatePersistedRows(refreshed, mounted)
+
+    expect(reconciled.map(message => message.id)).toEqual(['new-prefix', 'mounted-history-63', 'mounted-history-64'])
+    expect(reconciled[1]).toMatchObject({
+      id: 'mounted-history-63',
+      reactions: [{ at: 12, author: 'user', emoji: '👍' }],
+      rowId: 125
+    })
+  })
+
+  it('retains loaded compacted rows while adopting authoritative active copies', () => {
+    const previous = [
+      msg('history-1-user-old', 'user', 'history 1', { rowId: 3, timestamp: 10 }),
+      msg('history-1-assistant', 'assistant', 'answer 1', { rowId: 4, timestamp: 11 }),
+      msg('history-2-user', 'user', 'history 2', { rowId: 5, timestamp: 12 }),
+      msg('history-2-assistant', 'assistant', 'answer 2', { rowId: 6, timestamp: 13 }),
+      msg('tail-user-old', 'user', 'tail', { rowId: 235, timestamp: 20 }),
+      msg('tail-assistant-old', 'assistant', 'tail answer', { rowId: 236, timestamp: 21 })
+    ]
+    const compactedActive = [
+      msg('title-user-new', 'user', 'title', { rowId: 243, timestamp: 1 }),
+      msg('title-assistant-new', 'assistant', 'title answer', { rowId: 244, timestamp: 2 }),
+      msg('history-1-user-new', 'user', 'history 1', {
+        reactions: [{ at: 3, author: 'user', emoji: '👍' }],
+        rowId: 245,
+        timestamp: 10
+      }),
+      msg('tail-user-new', 'user', 'tail', { rowId: 253, timestamp: 20 }),
+      msg('tail-assistant-new', 'assistant', 'tail answer', { rowId: 254, timestamp: 21 })
+    ]
+
+    const merged = preserveLoadedHistoryThroughCompaction(compactedActive, previous)
+
+    expect(merged.map(chatMessageText)).toEqual([
+      'title',
+      'title answer',
+      'history 1',
+      'answer 1',
+      'history 2',
+      'answer 2',
+      'tail',
+      'tail answer'
+    ])
+    expect(merged.map(message => message.id)).toEqual([
+      'title-user-new',
+      'title-assistant-new',
+      'history-1-user-old',
+      'history-1-assistant',
+      'history-2-user',
+      'history-2-assistant',
+      'tail-user-old',
+      'tail-assistant-old'
+    ])
+    expect(merged.map(message => message.rowId)).toEqual([243, 244, 245, 4, 5, 6, 253, 254])
+    expect(merged[2].reactions).toEqual([{ at: 3, author: 'user', emoji: '👍' }])
+    expect(new Set(merged.map(message => message.rowId)).size).toBe(merged.length)
+  })
+
+  it('retains compacted rows when a trailing UI-only system summary accompanies authority', () => {
+    const previous = [
+      msg('history-1-user-old', 'user', 'history 1', { rowId: 3, timestamp: 10 }),
+      msg('history-1-assistant', 'assistant', 'answer 1', { rowId: 4, timestamp: 11 }),
+      msg('history-2-user', 'user', 'history 2', { rowId: 5, timestamp: 12 }),
+      msg('tail-user-old', 'user', 'tail', { rowId: 235, timestamp: 20 })
+    ]
+    const summary = msg('system-compress-summary', 'system', 'Compressed: 4 → 3 messages')
+    const compactedActive = [
+      msg('history-1-user-new', 'user', 'history 1', { rowId: 243, timestamp: 10 }),
+      msg('tail-user-new', 'user', 'tail', { rowId: 244, timestamp: 20 }),
+      summary
+    ]
+
+    const merged = preserveLoadedHistoryThroughCompaction(compactedActive, previous)
+
+    expect(merged.map(message => message.id)).toEqual([
+      'history-1-user-old',
+      'history-1-assistant',
+      'history-2-user',
+      'tail-user-old',
+      'system-compress-summary'
+    ])
+    expect(merged.at(-1)).toBe(summary)
+  })
+
+  it('retains loaded rows when later compacted authority follows a mounted UI-only summary', () => {
+    const summary = msg('system-compress-summary', 'system', 'Compressed: 6 → 3 messages')
+    const previous = [
+      msg('history-1-user-old', 'user', 'history 1', { rowId: 3, timestamp: 10 }),
+      msg('history-1-assistant', 'assistant', 'answer 1', { rowId: 4, timestamp: 11 }),
+      msg('history-2-user', 'user', 'history 2', { rowId: 5, timestamp: 12 }),
+      msg('history-2-assistant', 'assistant', 'answer 2', { rowId: 6, timestamp: 13 }),
+      msg('tail-user-old', 'user', 'tail', { rowId: 235, timestamp: 20 }),
+      msg('tail-assistant-old', 'assistant', 'tail answer', { rowId: 236, timestamp: 21 }),
+      summary
+    ]
+    const laterCompactedAuthority = [
+      msg('history-1-user-new', 'user', 'history 1', { rowId: 245, timestamp: 10 }),
+      msg('tail-user-new', 'user', 'tail', { rowId: 253, timestamp: 20 }),
+      msg('tail-assistant-new', 'assistant', 'tail answer', { rowId: 254, timestamp: 21 })
+    ]
+
+    const merged = preserveLoadedHistoryThroughCompaction(laterCompactedAuthority, previous)
+
+    expect(merged.map(message => message.id)).toEqual([
+      'history-1-user-old',
+      'history-1-assistant',
+      'history-2-user',
+      'history-2-assistant',
+      'tail-user-old',
+      'tail-assistant-old',
+      'system-compress-summary'
+    ])
+    expect(merged.at(-1)).toBe(summary)
+  })
+
+  it('does not retain rows for an ordinary authoritative rewind', () => {
+    const previous = [
+      msg('first', 'user', 'first', { rowId: 1, timestamp: 1 }),
+      msg('second', 'assistant', 'second', { rowId: 2, timestamp: 2 }),
+      msg('third', 'user', 'third', { rowId: 3, timestamp: 3 })
+    ]
+    const rewound = previous.slice(0, 2)
+
+    expect(preserveLoadedHistoryThroughCompaction(rewound, previous)).toBe(rewound)
+  })
+
+  it('does not merge an unpersisted live projection', () => {
+    const previous = [
+      msg('stored-user', 'user', 'prompt', { rowId: 1, timestamp: 1 }),
+      msg('stored-assistant', 'assistant', 'answer', { rowId: 2, timestamp: 2 }),
+      msg('optimistic-user', 'user', 'next prompt', { timestamp: 3 })
+    ]
+    const next = [msg('copied-user', 'user', 'prompt', { rowId: 3, timestamp: 1 })]
+
+    expect(preserveLoadedHistoryThroughCompaction(next, previous)).toBe(next)
   })
 })
 
@@ -1552,9 +1737,214 @@ describe('preserveLocalPendingTurnMessages', () => {
       'assistant-stream-live'
     ])
   })
+
+  // A compaction rewrite can leave the original optimistic prompt as the newest
+  // remaining `user-*` row even after its authoritative row and later turns are
+  // settled. Role ordinals and "latest authoritative user" both miss it; the
+  // submission timestamp is stable identity for the already-persisted turn.
+  it('drops a stale optimistic prompt whose authoritative timestamped row already exists', () => {
+    const prompt = 'investigate why the session looks active but is not'
+
+    const next = [
+      msg('stored-original-user', 'user', prompt, { rowId: 10, timestamp: 100 }),
+      msg('stored-original-answer', 'assistant', 'root cause', { rowId: 11, timestamp: 110 }),
+      msg('stored-later-user', 'user', 'show me the screenshot', { rowId: 12, timestamp: 200 }),
+      msg('stored-later-answer', 'assistant', 'screenshot analysis', { rowId: 13, timestamp: 210 })
+    ]
+
+    const staleOptimistic = msg('user-original-optimistic', 'user', prompt, { timestamp: 100 })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, staleOptimistic])).toBe(next)
+  })
+
+  it('retains a genuinely new repeated prompt with a later timestamp', () => {
+    const prompt = 'repeat the same request'
+
+    const next = [
+      msg('stored-user', 'user', prompt, { rowId: 10, timestamp: 100 }),
+      msg('stored-answer', 'assistant', 'first answer', { rowId: 11, timestamp: 110 })
+    ]
+
+    const newOptimistic = msg('user-repeat-optimistic', 'user', prompt, { timestamp: 300 })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, newOptimistic]).map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-answer',
+      'user-repeat-optimistic'
+    ])
+  })
+})
+
+describe('runningProjectionStreamId', () => {
+  it('adopts the empty assistant boundary at the tail of a running resume projection', () => {
+    const projected = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        assistant: 'already streamed',
+        correction_offsets: [16],
+        corrections: ['redirect'],
+        streaming: true,
+        user: 'prompt'
+      }
+    })
+
+    expect(projected.at(-1)).toMatchObject({ id: 'assistant-stream-runtime-1', parts: [], pending: true })
+    expect(runningProjectionStreamId(projected, true)).toBe('assistant-stream-runtime-1')
+  })
+
+  it('does not adopt a settled or non-tail assistant row', () => {
+    const settled = msg('assistant-stream-runtime-1', 'assistant', '', { pending: false })
+    const displaced = [
+      msg('assistant-stream-runtime-1', 'assistant', '', { pending: true }),
+      msg('user-next', 'user', 'next')
+    ]
+
+    expect(runningProjectionStreamId([settled], true)).toBeNull()
+    expect(runningProjectionStreamId(displaced, true)).toBeNull()
+    expect(
+      runningProjectionStreamId([msg('assistant-stream-runtime-1', 'assistant', '', { pending: true })], false)
+    ).toBeNull()
+  })
 })
 
 describe('appendLiveSessionProjection', () => {
+  it('keeps the accepted durable queue after the active assistant without consuming repeated history or uncertain rows', () => {
+    for (const queuedText of ['next prompt', 'repeat this']) {
+      const rows = [
+        { id: 1, role: 'user' as const, content: 'repeat this', timestamp: 1 },
+        { id: 2, role: 'assistant' as const, content: 'Completed old answer', timestamp: 2 },
+        { id: 3, role: 'user' as const, content: 'repeat this', timestamp: 3 },
+        {
+          id: 4,
+          role: 'user' as const,
+          content: '@file:/tmp/input.txt\n\n' + queuedText,
+          timestamp: 4,
+          display_metadata: { _queued_prompt: true, reactions: [{ emoji: '👍', author: 'user' as const, at: 4 }] }
+        }
+      ]
+      const persisted = toChatMessages(rows)
+      const original = structuredClone(persisted)
+      expect(
+        preserveEquivalentTranscript([{ ...persisted[3], queuedPrompt: undefined }], [persisted[3]])[0].queuedPrompt
+      ).toBe(true)
+      const runtime = persisted.slice(0, 2)
+      const projection = {
+        session_id: 'runtime-1',
+        inflight: { user: 'repeat this', assistant: 'Hello', streaming: true },
+        queued: { user: '@file:/tmp/input.txt\n\n' + queuedText }
+      } as SessionResumeResult
+      const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+      const result = appendLiveSessionProjection(persisted, deduped)
+      expect(result.map(chatMessageText)).toEqual([
+        'repeat this',
+        'Completed old answer',
+        'repeat this',
+        'Hello',
+        queuedText
+      ])
+      expect(result.at(-1)).toMatchObject({
+        id: 'user-queued-runtime-1',
+        rowId: 4,
+        queuedPrompt: true,
+        attachmentRefs: ['@file:/tmp/input.txt'],
+        parts: persisted[3].parts
+      })
+      expect(result.at(-1)?.reactions).toEqual([{ emoji: '👍', author: 'user', at: 4 }])
+      expect(deduped).not.toBe(projection)
+      expect(result.filter(message => message.role === 'assistant')).toHaveLength(2)
+      expect(result.filter(message => message.rowId === 4)).toHaveLength(1)
+      expect(persisted).toEqual(original)
+      const cachedAssistant = msg('assistant-stream-old', 'assistant', 'Hello + local delta', {
+        pending: true,
+        rowId: 42,
+        reactions: [{ emoji: '👍', author: 'user', at: 4 }]
+      })
+      const cached = [...persisted.slice(0, 3), cachedAssistant, persisted[3]]
+      const unmatchedActive = appendLiveSessionProjection(cached, {
+        ...projection,
+        inflight: { ...projection.inflight, user: 'unproven new active turn' }
+      })
+      expect(unmatchedActive).toContainEqual(cachedAssistant)
+      const resumed = appendLiveSessionProjection(cached, projection)
+      expect(resumed.map(chatMessageText)).toEqual([
+        'repeat this',
+        'Completed old answer',
+        'repeat this',
+        'Hello + local delta',
+        queuedText
+      ])
+      expect(resumed.at(-2)).toMatchObject({
+        id: 'assistant-stream-runtime-1',
+        rowId: 42,
+        parts: cachedAssistant.parts,
+        reactions: cachedAssistant.reactions
+      })
+      expect(runningProjectionStreamId(resumed, true)).toBe('assistant-stream-runtime-1')
+      expect(resumed.at(-1)).toMatchObject({ id: 'user-queued-runtime-1', rowId: 4, queuedPrompt: true })
+      expect(appendLiveSessionProjection(resumed, projection).map(chatMessageText)).toEqual(
+        resumed.map(chatMessageText)
+      )
+
+      const divergent = appendLiveSessionProjection(
+        [
+          ...persisted.slice(0, 3),
+          { ...cachedAssistant, parts: [{ type: 'text', text: 'Different local output' }] },
+          persisted[3]
+        ],
+        projection
+      )
+      expect(divergent.map(chatMessageText)).toEqual([
+        'repeat this',
+        'Completed old answer',
+        'repeat this',
+        'Different local output',
+        'Hello',
+        queuedText
+      ])
+      expect(runningProjectionStreamId(divergent, true)).toBe('assistant-stream-runtime-1')
+      let canonicalDivergence = [
+        ...persisted.slice(0, 3),
+        msg('inflight-assistant-segment-queued-runtime-1-0', 'assistant', 'Earlier local output', { pending: true }),
+        {
+          ...cachedAssistant,
+          id: 'assistant-stream-runtime-1',
+          parts: [{ type: 'text' as const, text: 'Different local output' }]
+        },
+        persisted[3]
+      ]
+      for (let replay = 0; replay < 3; replay++) {
+        canonicalDivergence = appendLiveSessionProjection(canonicalDivergence, projection)
+        expect(canonicalDivergence.map(chatMessageText)).toEqual([
+          'repeat this',
+          'Completed old answer',
+          'repeat this',
+          'Earlier local output',
+          'Different local output',
+          'Hello',
+          queuedText
+        ])
+        expect(new Set(canonicalDivergence.map(message => message.id)).size).toBe(canonicalDivergence.length)
+        expect(runningProjectionStreamId(canonicalDivergence, true)).toBe('assistant-stream-runtime-1')
+      }
+
+      for (const uncertain of [
+        { ...persisted[3], queuedPrompt: undefined },
+        { ...persisted[3], rowId: undefined },
+        { ...persisted[3], rowId: 4.5 },
+        { ...persisted[3], rowId: -4 },
+        { ...persisted[3], parts: [{ type: 'text' as const, text: 'different queued request' }] }
+      ]) {
+        const legacy = [...persisted.slice(0, 3), uncertain]
+        expect(appendLiveSessionProjection(legacy, projection)).toContainEqual(uncertain)
+      }
+      expect(appendLiveSessionProjection(persisted, { session_id: 'runtime-1' })).toBe(persisted)
+      // A marker retained in completed history cannot identify this running queue.
+      const oldQueue = { ...persisted[0], queuedPrompt: true as const }
+      const history = [oldQueue, ...persisted.slice(1, 3)]
+      expect(appendLiveSessionProjection(history, projection)).toContainEqual(oldQueue)
+    }
+  })
+
   // A synthetic starting prompt keeps the display typing its persisted row
   // will get: on reconnect it renders as the same timeline event as history,
   // never as a user bubble; a real user quoting the marker text stays a user
@@ -1754,6 +2144,8 @@ describe('appendLiveSessionProjection', () => {
       'newest prompt'
     ])
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+    expect(restored[4]).toMatchObject({ id: 'user-queued-runtime-1', role: 'user' })
+    expect(runningProjectionStreamId(restored, true)).toBe('assistant-stream-runtime-1')
   })
 
   it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {
@@ -2490,4 +2882,23 @@ describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', ()
     expect(localStorage.getItem('hermes.desktop.composer.model')).toBe('user-pick')
     expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
+})
+
+it('adopts the running assistant before a durable accepted queue without treating an ordinary user as queued', () => {
+  const active = {
+    id: 'assistant-stream-runtime',
+    role: 'assistant' as const,
+    pending: true,
+    parts: [{ type: 'text' as const, text: 'Current reply' }]
+  }
+  const queued = {
+    id: 'durable-user-7',
+    role: 'user' as const,
+    rowId: 7,
+    queuedPrompt: true as const,
+    parts: [{ type: 'text' as const, text: 'Next' }]
+  }
+  expect(runningProjectionStreamId([active, queued], true)).toBe(active.id)
+  expect(runningProjectionStreamId([active, { ...queued, queuedPrompt: undefined }], true)).toBeNull()
+  expect(runningProjectionStreamId([active, queued], false)).toBeNull()
 })

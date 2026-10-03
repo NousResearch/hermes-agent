@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
@@ -256,7 +256,7 @@ class CodexAppServerSession:
         self._active_turn_lock = threading.Lock()
         # In-progress fileChange items by id (item/started -> item/completed):
         # approval params don't carry the changeset, so this feeds the prompt summary.
-        self._pending_file_changes: dict[str, str] = {}
+        self._pending_file_changes: dict[str, tuple[str, list[str]]] = {}
         self._closed = False
 
     def ensure_started(self) -> str:
@@ -728,17 +728,59 @@ class CodexAppServerSession:
         "mcpServer/elicitation/request": _respond_elicitation,
     }
 
-    def _run_approval_callback(self, auto_approve: bool, prompt: Callable[[], tuple[str, str]], log_label: str) -> str:
-        """Protocol routing only: auto-approve, fail-closed without a callback, else ask via ``prompt()``.
+    def _run_approval_callback(self, auto_approve: bool, prompt: Callable[[], tuple[str, str]], log_label: str,
+                               write_paths: Sequence[str] = ()) -> str:
+        """Protocol routing only: auto-approve, fail-closed without a callback, resolve
+        single-query sessions through the shared gate, else ask via ``prompt()``.
 
         Approval mode/timeout resolution lives upstream (codex_runtime.py derives the
-        auto flags; the callback runs the shared gate). Do not re-read config here.
+        auto flags; the callback runs the shared gate). Do not re-read ``approvals.*``
+        config here — the shared gate is the single source of policy truth.
+        ``write_paths`` carries the fileChange changeset so single-query file edits
+        gate on real paths instead of the display label.
         """
         if auto_approve:
             return "accept"
         if self._approval_callback is None:
             return "decline"
         command, description = prompt()
+        try:
+            from tools.approval_context import _is_single_query_approval_context
+            single_query = _is_single_query_approval_context()
+        except Exception:
+            logger.exception("single-query approval context lookup failed on %s", log_label)
+            return "decline"
+        if single_query:
+            # -q has nobody to answer the panel below: it would park for the full
+            # approvals.timeout and then decline (#121296). Resolve through the same
+            # gates the terminal tool uses (approvals.single_query_mode: deny
+            # blocks dangerous commands/flagged writes and allows safe ones; approve allows).
+            if write_paths:
+                # fileChange: gate the actual changeset with the file-tool write
+                # guards. The command gate below matches dangerous *commands* in a
+                # display string — path-blind (approves a patch to ~/.ssh/config)
+                # and wording-flaky (blocks a doc edit that mentions rm -rf /).
+                try:
+                    blocked = _single_query_write_blocked(write_paths)
+                except Exception:
+                    logger.exception("single-query write gate raised on %s", log_label)
+                    return "decline"
+                if blocked:
+                    logger.warning("codex %s declined in single-query mode: %s",
+                                   log_label, blocked.splitlines()[0])
+                    return "decline"
+                return "accept"
+            try:
+                from tools.approval import check_all_command_guards
+                result = check_all_command_guards(command, "local")
+            except Exception:
+                logger.exception("single-query approval gate raised on %s", log_label)
+                return "decline"
+            if not result.get("approved"):
+                logger.warning("codex %s denied in single-query mode: %s",
+                               log_label, result.get("message") or "blocked by approval gate")
+                return "decline"
+            return "accept"
         try:
             choice = self._approval_callback(command, description, allow_permanent=False)
             return _approval_choice_to_codex_decision(choice)
@@ -757,10 +799,12 @@ class CodexAppServerSession:
         return self._run_approval_callback(self._routing.auto_approve_exec, prompt, "exec request")
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        tracked = self._pending_file_changes.get(params.get("itemId") or "")
+        change_summary, tracked_paths = tracked if tracked else (None, [])
+
         def prompt() -> tuple[str, str]:
             # Params carry reason + grantRoot only; the changeset comes from _track_pending_file_change.
             reason, grant_root = params.get("reason"), params.get("grantRoot")
-            change_summary = self._pending_file_changes.get(params.get("itemId") or "") or None
             parts = [p for p in (reason, change_summary, grant_root and f"grants write to {grant_root}") if p]
             detail = change_summary or reason
             return (
@@ -768,7 +812,10 @@ class CodexAppServerSession:
                 "; ".join(parts) if parts else "Codex requests to apply a patch",
             )
 
-        return self._run_approval_callback(self._routing.auto_approve_apply_patch, prompt, "apply_patch")
+        grant_root = params.get("grantRoot")
+        write_paths = [*tracked_paths, *([grant_root] if grant_root else [])]
+        return self._run_approval_callback(self._routing.auto_approve_apply_patch, prompt, "apply_patch",
+                                           write_paths=write_paths)
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Track fileChange items (item/started -> item/completed) so the apply_patch prompt can show the changeset."""
@@ -780,7 +827,44 @@ class CodexAppServerSession:
         if method == "item/completed":
             self._pending_file_changes.pop(item_id, None)
         elif method == "item/started":
-            self._pending_file_changes[item_id] = _summarize_file_changes(item.get("changes") or [])
+            changes = item.get("changes") or []
+            self._pending_file_changes[item_id] = (
+                _summarize_file_changes(changes),
+                [ch["path"] for ch in changes if isinstance(ch, dict) and ch.get("path")],
+            )
+
+
+def _single_query_write_blocked(paths: Sequence[str]) -> str | None:
+    """File-tool write guards for a codex fileChange resolved in ``-q``.
+
+    Keyed on the actual changeset (+ grantRoot), matching what the terminal
+    write layer enforces: sensitive system paths are hard-denied, protected
+    agent-instruction files fail closed (always-ask — ``-q`` has no human, and
+    the gate's own prompt would park like #121296), and flagged paths
+    (``~/.ssh/config``) resolve from ``approvals.single_query_mode``. Returns
+    the block message, or None when the write may proceed.
+    """
+    from tools.file_tools_write_guards import (
+        _check_approval_required_write,
+        _check_sensitive_path,
+        _protected_instruction_config,
+        _protected_instruction_reason,
+    )
+    for path in paths:
+        err = _check_sensitive_path(path)
+        if err:
+            return err
+    enabled, extra = _protected_instruction_config()
+    if enabled:
+        for path in paths:
+            reason = _protected_instruction_reason(path, enabled=enabled, extra_patterns=extra)
+            if reason:
+                return (
+                    f"BLOCKED: write to protected agent-instruction file ({reason}) "
+                    "requires approval but single-query (-q) sessions run without a "
+                    "user present to approve it."
+                )
+    return _check_approval_required_write(list(paths))
 
 
 def _summarize_file_changes(raw_changes: list) -> str:

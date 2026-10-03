@@ -1,0 +1,17 @@
+name: soma
+repo: https://github.com/enduserrr/SOMA-Hermes-compressor
+sha: 122a5a78c19ec16d4bb0118972c7b2b47e115004
+description: SOMA extractive context engine — shrinks oversized tool results per-request
+  (TF-IDF line scoring, deterministic, cache-stable) before each provider call. No LLM
+  calls; whole-session compaction is delegated to the built-in compressor.
+maintainer: enduserrr
+tier: community
+category: tools
+requires_hermes: '>=0.21.0'
+docs_url: https://github.com/enduserrr/SOMA-Hermes-compressor#readme
+version: 0.2.0
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

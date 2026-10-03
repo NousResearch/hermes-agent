@@ -15,6 +15,11 @@ Restart Hermes after setup. If dependency preparation fails, retry through
 For manual source-checkout setup, see the
 [plugin guide](../../../website/docs/user-guide/features/built-in-plugins.md#observabilitylangfuse).
 
+**If you self-host Langfuse, the server must also be v3+.** SDK v3+ ships
+traces via OTLP (`/api/public/otel/v1/traces`), which does not exist on
+Langfuse server 2.x — every export 404s regardless of how correctly the
+SDK is configured.
+
 ## Required credentials
 
 Set these in `~/.hermes/.env` (or via `hermes tools`):
@@ -92,3 +97,10 @@ For personal sessions or shared Langfuse projects, prefer `metadata`.
 ```bash
 hermes plugins disable observability/langfuse
 ```
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `agent.log` shows `Failed to detach context` / `ValueError: <Token ...> was created in a different Context` | Older versions of this plugin entered `start_as_current_observation()`'s context in one hook call and ended the span in another. Hermes fires a turn's pre and post hooks on different worker threads, and OTEL's contextvars token cannot be popped cross-thread. `_start_root_trace` now uses the detached `client.start_observation()`. | Update Hermes; your plugin copy predates the fix |
+| Self-hosted: every trace export gets `404` in the exporter logs | The Langfuse *server* is still on major version 2; SDK v3+ only speaks OTLP, which 2.x servers don't implement | Upgrade the server to Langfuse v3 |

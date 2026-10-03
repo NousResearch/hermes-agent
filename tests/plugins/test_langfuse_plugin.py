@@ -162,10 +162,9 @@ class TestTurnTraceIsolation:
     def _fake_client(started):
         """A minimal Langfuse stand-in that records each root trace opened.
 
-        ``_start_root_trace`` calls ``create_trace_id`` then opens a root via
-        ``start_as_current_observation(...)`` (a context manager whose
-        ``__enter__`` returns the root span).  We record one entry per root
-        actually opened so the test can count distinct traces.
+        ``_start_root_trace`` calls ``create_trace_id`` then opens a detached root
+        via ``start_observation(...)``.  We record one entry per root actually
+        opened so the test can count distinct traces.
         """
 
         class _Span:
@@ -181,20 +180,13 @@ class TestTurnTraceIsolation:
             def start_observation(self, **kw):
                 return _Span()
 
-        class _RootCM:
-            def __enter__(self):
-                return _Span()
-
-            def __exit__(self, *exc):
-                return False
-
         class _Client:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
-            def start_as_current_observation(self, **kw):
+            def start_observation(self, **kw):
                 started.append(kw.get("trace_context", {}).get("trace_id"))
-                return _RootCM()
+                return _Span()
 
             def flush(self):
                 pass
@@ -297,59 +289,60 @@ class TestTurnTraceIsolation:
         surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
         assert surviving == list(range(42, 50))
 
-    def test_finish_trace_exits_root_context_manager(self, monkeypatch):
-        """_finish_trace must call root_ctx.__exit__(), not just root_span.end().
+    def test_a_turn_finished_on_another_thread_detaches_nothing(self, monkeypatch):
+        """Hermes fires a turn's pre and post hooks on different worker threads (#95057).
 
-        Regression for the "Exception ignored in: <generator>" traceback
-        on CLI exit.  The plugin enters the root observation's context
-        manager (start_as_current_observation(...).__enter__()) but must
-        also exit it; otherwise the generator is left suspended and is
-        only unwound when the GC collects it during interpreter teardown.
-        By then opentelemetry.trace.Span has been set to None, and the
-        generator's close() -> use_span.__exit__ -> isinstance(span, Span)
-        raises TypeError: isinstance() arg 2 must be a type.  Exiting the
-        context manager here unwinds the generator while modules are intact.
+        The root used to be opened with ``start_as_current_observation(...).__enter__()``, which
+        pushes an OTEL contextvars token, and exited later from ``_finish_trace`` on another thread,
+        where OTEL cannot pop it: every turn logged "Failed to detach context". The fake mirrors
+        that rule: a current-span context exited on a different thread than it was entered on is
+        recorded as a cross-context detach. The root must end with none.
         """
+        import threading
+
         mod = self._fresh_plugin()
-        started: list = []
         monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
         mod._TRACE_STATE.clear()
-
-        exited: list = []
+        cross_context: list = []
+        ended: list = []
 
         class _S:
             def update(self, **kw): pass
-            def end(self, **kw): pass
-            def set_trace_io(self, **kw): pass
+            def update_trace(self, **kw): pass
+            def end(self, **kw): ended.append(threading.current_thread())
             def start_observation(self, **kw): return _S()
 
-        class _TrackingRootCM:
+        class _CurrentSpanCM:
+            # Thread objects, not get_ident(): a joined thread's ident is reused by the next one.
             def __enter__(self):
+                self._entered_on = threading.current_thread()
                 return _S()
+
             def __exit__(self, *exc):
-                exited.append(exc)
+                if threading.current_thread() is not self._entered_on:
+                    cross_context.append("Failed to detach context")
                 return False
 
-        class _TrackingClient:
-            def create_trace_id(self, seed=None):
-                return f"trace::{seed}"
-            def start_as_current_observation(self, **kw):
-                started.append(kw.get("trace_context", {}).get("trace_id"))
-                return _TrackingRootCM()
-            def flush(self):
-                pass
+        class _Client:
+            def create_trace_id(self, seed=None): return f"trace::{seed}"
+            def start_as_current_observation(self, **kw): return _CurrentSpanCM()
+            def start_observation(self, **kw): return _S()
+            def flush(self): pass
 
-        monkeypatch.setattr(mod, "_get_langfuse", lambda: _TrackingClient())
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        session, turn_id = "sess-threads", "sess-threads:sess-threads:turn1"
+        common = dict(task_id=session, session_id=session, model="m", provider="p", api_mode="chat",
+                      api_call_count=1, turn_id=turn_id, api_request_id=f"{turn_id}:api:1")
+        opener = threading.Thread(target=lambda: mod.on_pre_llm_request(
+            request_messages=[{"role": "user", "content": "hi"}], **common))
+        opener.start(); opener.join()
+        finisher = threading.Thread(target=lambda: mod.on_post_llm_call(
+            assistant_content_chars=5, assistant_tool_call_count=0,
+            usage={"input_tokens": 10, "output_tokens": 5}, **common))
+        finisher.start(); finisher.join()
 
-        self._run_turn(mod, session="sess-exit", turn_n=1, finalize=True)
-
-        assert exited, (
-            "_finish_trace did not call root_ctx.__exit__; the generator is "
-            "left suspended and will raise TypeError on GC at interpreter "
-            "teardown when opentelemetry.trace.Span is None"
-        )
-        assert len(exited) == 1
-        assert exited[0] == (None, None, None)
+        assert ended, "the root span was never ended"
+        assert cross_context == []
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +575,7 @@ class TestToolCallOutputBackfill:
         mod = importlib.import_module("plugins.observability.langfuse")
 
         observation = object()
-        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="trace-1", root_span=None)
         state.tools["call-1"] = observation
         state.turn_tool_calls.append({
             "id": "call-1",
@@ -652,7 +645,7 @@ class TestToolObservationKeying:
     def test_empty_tool_call_id_single_tool_sets_output(self, monkeypatch):
         mod = self._make_mod()
         obs = object()
-        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="t", root_span=None)
         state.pending_tools_by_name.setdefault("my_tool", []).append(obs)
 
         task_key = mod._trace_key("task-1", "sess-1")
@@ -690,7 +683,7 @@ class TestToolObservationKeying:
         mod = self._make_mod()
         n = 8
         observations = [object() for _ in range(n)]
-        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="t", root_span=None)
         state.pending_tools_by_name["web_extract"] = list(observations)
 
         task_key = mod._trace_key("task-thr", "sess-thr")
@@ -729,7 +722,7 @@ class TestToolObservationKeying:
         """When tool_call_id is present, pending_tools_by_name is not touched."""
         mod = self._make_mod()
         obs = object()
-        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="t", root_span=None)
         state.tools["call-99"] = obs
 
         task_key = mod._trace_key("task-1", "sess-1")
@@ -763,7 +756,7 @@ class TestUsageFromSanitizedResponse:
         # Active client so on_post_llm_call does not early-return.
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
         observation = object()
-        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="trace-1", root_span=None)
         state.generations[mod._request_key(1)] = observation
         monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
         captured = {}
@@ -856,6 +849,7 @@ class TestModelAttribution:
         class _Client:
             def create_trace_id(self, seed=None): return "t"
             def start_as_current_observation(self, **kw): return _RootCM()
+            def start_observation(self, **kw): return _RootCM().__enter__()
             def flush(self): pass
 
         return _Client()
@@ -916,7 +910,7 @@ class TestModelAttribution:
 
         turn_id = "s:t:turn3"
         key = mod._trace_key("t", "s", turn_id=turn_id)
-        state = mod.TraceState(trace_id="x", root_ctx=None, root_span=_Root())
+        state = mod.TraceState(trace_id="x", root_span=_Root())
         state.generations["1"] = _Gen()
         mod._TRACE_STATE[key] = state
 
@@ -973,7 +967,7 @@ class TestCostTotal:
     def test_usage_summary_path_totals_the_breakdown(self, monkeypatch):
         mod = self._fresh_plugin()
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
-        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="trace-1", root_span=None)
         state.generations[mod._request_key(1)] = object()
         monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
         captured = {}
@@ -1137,7 +1131,7 @@ class TestApiRequestErrorHook:
 
         gen = _Gen()
         root = _Root()
-        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=root)
+        state = mod.TraceState(trace_id="t", root_span=root)
         state.generations[gen_key] = gen
         mod._TRACE_STATE[task_key] = state
         return gen, root
@@ -1237,7 +1231,7 @@ class TestSessionFinalizeHook:
             def end(self, **kw): self.ended = True
             def set_trace_io(self, **kw): pass
         root = _Root()
-        return mod.TraceState(trace_id="t", root_ctx=None, root_span=root), root
+        return mod.TraceState(trace_id="t", root_span=root), root
 
     def test_finalize_closes_matching_session_traces(self, monkeypatch):
         mod = self._fresh_plugin()
@@ -1363,7 +1357,7 @@ class TestSubagentTracing:
                 return obs
 
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
-        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=_Root())
+        state = mod.TraceState(trace_id="trace-1", root_span=_Root())
         monkeypatch.setitem(mod._TRACE_STATE, key, state)
         return state
 
@@ -1476,7 +1470,7 @@ class TestMoAReferenceGenerations:
                 return obs
 
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
-        return mod.TraceState(trace_id="t", root_ctx=None, root_span=_Root())
+        return mod.TraceState(trace_id="t", root_span=_Root())
 
     def _refs(self):
         return [
@@ -1670,7 +1664,7 @@ class TestSystemPromptInGenerationInput:
         generation observation kwargs."""
         captured = {}
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
-        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="t", root_span=None)
         task_key = mod._trace_key("task-1", "sess-1")
         monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
 
@@ -1753,7 +1747,7 @@ class TestSystemPromptCrossesHookBoundary:
     def _capture_generation(self, mod, monkeypatch):
         captured = {}
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
-        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="t", root_span=None)
         task_key = mod._trace_key("task-1", "sess-1")
         monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
 
@@ -1918,6 +1912,9 @@ class TestFinishTraceUsesUpdateTrace:
             def start_as_current_observation(self, **kw):
                 return _RootCM()
 
+            def start_observation(self, **kw):
+                return _RootCM().__enter__()
+
             def flush(self):
                 pass
 
@@ -1995,6 +1992,9 @@ class TestFinishTraceUsesUpdateTrace:
             def start_as_current_observation(self, **kw):
                 return _RootCM()
 
+            def start_observation(self, **kw):
+                return _RootCM().__enter__()
+
             def flush(self):
                 pass
 
@@ -2065,7 +2065,7 @@ class TestCanonicalCostExport:
     def _capture_summary_path(mod, monkeypatch, usage, *, provider, model, api_mode):
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
         observation = object()
-        state = mod.TraceState(trace_id="trace-cost", root_ctx=None, root_span=None)
+        state = mod.TraceState(trace_id="trace-cost", root_span=None)
         state.generations[mod._request_key(1)] = observation
         task_key = mod._trace_key("task-cost", "session-cost")
         monkeypatch.setitem(mod._TRACE_STATE, task_key, state)

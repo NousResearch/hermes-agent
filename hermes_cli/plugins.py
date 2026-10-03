@@ -108,6 +108,11 @@ _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
+    # Admission gates: all registered callbacks must return {"action": "allow"}.
+    # Missing/invalid/error/timeout results block at the caller before context mutation.
+    # pre_tool_call also needs an explicit allow/approve/block when listed under
+    # plugins.required_policy_hooks; optional hook behavior remains unchanged.
+    "pre_memory_context", "pre_compression_commit",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
@@ -2045,23 +2050,54 @@ def _get_pre_tool_call_directive_details(
     human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). Precedence is
     ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
     earlier plugin's request for human confirmation (#87420); among approves the first valid one
-    wins. Irrelevant returns are ignored."""
+    wins. ``{"action": "allow"}`` explicitly passes a required policy hook; irrelevant returns
+    are ignored for optional hooks and block when no valid directive remains on a required hook."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
+    # A profile that requires tool governance must not silently proceed when
+    # its policy plugin failed discovery, import, or registration.
+    try:
+        from agent.context_governance import policy_hook_required
+        required = policy_hook_required("pre_tool_call")
+    except Exception:
+        return _PreToolCallDirective(action="block", message="BLOCKED: tool policy configuration unavailable")
+    if required:
+        try:
+            available = has_hook("pre_tool_call")
+        except Exception:
+            available = False
+        if not available:
+            logger.warning("context governance event=pre_tool_call decision=block reason=required_hook_missing")
+            return _PreToolCallDirective(action="block", message="BLOCKED: required tool policy hook unavailable")
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
-    hook_results = invoke_lifecycle_hook(
-        "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
-        task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
-    )
+    try:
+        hook_results = invoke_lifecycle_hook(
+            "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
+            task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
+            api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
+        )
+    except Exception:
+        if required:
+            logger.warning("context governance event=pre_tool_call decision=block reason=dispatch_error")
+            return _PreToolCallDirective(action="block", message="BLOCKED: required tool policy failed")
+        raise
+    if not isinstance(hook_results, (list, tuple)):
+        if required:
+            logger.warning("context governance event=pre_tool_call decision=block reason=invalid_dispatch_result")
+            return _PreToolCallDirective(action="block", message="BLOCKED: required tool policy returned no decision")
+        hook_results = []
     modified_args: Optional[Dict[str, Any]] = None
     first_approve: Optional[Tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
+    explicit_allow = False
     for result in hook_results:
         if not isinstance(result, dict):
             continue
         action = result.get("action")
+        if action == "allow":
+            explicit_allow = True
+            continue
         # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
         # so modify directives are visible even when a later hook blocks. Each modify directive
         # shallow-merges its keys into one accumulated dict built from the original args.
@@ -2086,6 +2122,10 @@ def _get_pre_tool_call_directive_details(
             first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
     if first_approve is not None:
         return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
+                                     modified_args=modified_args)
+    if required and not explicit_allow:
+        logger.warning("context governance event=pre_tool_call decision=block reason=no_valid_directive")
+        return _PreToolCallDirective(action="block", message="BLOCKED: required tool policy returned no decision",
                                      modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 

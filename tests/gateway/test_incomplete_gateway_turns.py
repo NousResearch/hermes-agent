@@ -158,3 +158,62 @@ async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(mo
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),
     ]
+
+
+@pytest.mark.asyncio
+async def test_configured_incomplete_turn_reply_reaches_a_user_turn(monkeypatch, tmp_path):
+    """``display.incomplete_turn_reply`` replaces the silent blank for a human sender (#102338).
+
+    The suppression itself is unchanged — the sentinel text must never be re-ingested — but an
+    operator can opt into a line so a customer-facing bot does not leave the message unanswered.
+    """
+    adapter = CaptureSlackAdapter()
+    runner = _make_runner(adapter)
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *_a, **_k: 100)
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_config",
+        lambda *a, **k: {"display": {"incomplete_turn_reply": "Sorry — please resend that."}},
+    )
+
+    adapter.set_message_handler(runner._handle_message)
+    adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
+
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    delivered = "\n".join(send["content"] for send in adapter.sent)
+    assert "Sorry — please resend that." in delivered
+    assert "remained incomplete after 3 continuation attempts" not in delivered
+
+
+@pytest.mark.asyncio
+async def test_per_platform_incomplete_turn_reply_wins_over_the_global_key(monkeypatch, tmp_path):
+    """``display.platforms.<platform>.incomplete_turn_reply`` overrides the global key (#102338)."""
+    adapter = CaptureSlackAdapter()
+    runner = _make_runner(adapter)
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *_a, **_k: 100)
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_config",
+        lambda *a, **k: {"display": {
+            "incomplete_turn_reply": "global line",
+            "platforms": {"slack": {"incomplete_turn_reply": "slack line"}},
+        }},
+    )
+
+    adapter.set_message_handler(runner._handle_message)
+    adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
+
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    delivered = "\n".join(send["content"] for send in adapter.sent)
+    assert "slack line" in delivered
+    assert "global line" not in delivered

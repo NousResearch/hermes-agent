@@ -29,7 +29,17 @@ def validate_profile_name(name: str) -> None:
         raise ValueError(f"profile name must match [a-z0-9][a-z0-9_-]*, got {name!r}")
 
 
+_VALID_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def validate_env_key(key: str) -> None:
+    """Raise ValueError unless ``key`` is a valid POSIX environment variable identifier."""
+    if not isinstance(key, str) or not _VALID_ENV_KEY_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+
+
 @runtime_checkable
+
 class ServiceManager(Protocol):
     """Init-system-specific service operations.
 
@@ -448,7 +458,9 @@ class S6ServiceManager:
             "cd /opt/data",
         ]
         for k, v in sorted(extra_env.items()):
-            lines.append(f"export {k}={shlex.quote(v)}")
+            validate_env_key(k)
+            lines.append(f"export {k}={shlex.quote(str(v))}")
+
         # Supervised-child sentinel: without it the supervised gateway re-entering
         # `_gateway_command_inner` with subcmd == "run" would dispatch `gateway start` → re-exec
         # `gateway run --replace` → `gateway start` … (see the matching guard there).

@@ -530,14 +530,16 @@ class GatewaySlashCommandsMixin(
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
-        # update_id) and we see it *again*, it's a redelivery from PTB's graceful-shutdown get_updates
-        # ACK failing on the way out. Ignoring it prevents a loop where every fresh gateway re-restarts.
+        # update_id, or platform + message id for adapters without update ids) and we see it *again*,
+        # it's a redelivery from PTB's graceful-shutdown get_updates ACK failing on the way out, or a
+        # Discord/Slack webhook retry with the identical payload (#121325). Ignoring it prevents a loop
+        # where every fresh gateway re-restarts.
         if self._is_stale_restart_redelivery(event):
             src = event.source
-            logger.info("Ignoring redelivered /restart (platform=%s, update_id=%s) — "
+            logger.info("Ignoring redelivered /restart (platform=%s, id=%s) — "
                         "already processed by a previous gateway instance.",
                         src.platform.value if src and src.platform else "?",
-                        event.platform_update_id)
+                        event.platform_update_id if event.platform_update_id is not None else event.message_id)
             return ""
         if self._restart_requested or self._draining:
             count = self._running_agent_count()
@@ -559,18 +561,22 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            # Platform + update_id (or message_id for adapters that don't stamp update ids, e.g.
+            # Discord/Slack — #121325) of the triggering /restart, for redelivery detection.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
+            elif event.message_id is not None:
+                # Discord/Slack redeliver the identical raw payload, so the message id repeats.
+                data["message_id"] = str(event.message_id)
             return data
 
         # Save the requester's routing info so the new gateway process can notify them once back.
         await _write_marker(".restart_notify.json", _notify_payload, "notify file")
-        # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
-        # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
-        # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
+        # Record the triggering platform + update_id (or message id — #121325) in a dedicated dedup
+        # marker. Unlike .restart_notify.json (unlinked once the new gateway sends its notification)
+        # this persists so a delayed redelivery is still detectable. Overwritten on every /restart.
         await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
         active_agents = self._running_agent_count()
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /

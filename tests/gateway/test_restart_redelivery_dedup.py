@@ -1,9 +1,11 @@
-"""Tests for /restart idempotency guard against Telegram update re-delivery.
+"""Tests for /restart idempotency against update/message re-delivery.
 
-When PTB's graceful-shutdown ACK call (the final `get_updates` on exit) fails
-with a network error, Telegram re-delivers the `/restart` message to the new
-gateway process.  Without a dedup guard, the new gateway would process
-`/restart` again and immediately restart — a self-perpetuating loop.
+Telegram: when PTB's graceful-shutdown ACK call (the final `get_updates` on exit)
+fails with a network error, Telegram re-delivers the `/restart` message to the
+new gateway process.  Adapters without update ids (Discord/Slack) retry the
+identical webhook payload, so dedup keys on the message id instead (#121325).
+Without a dedup guard, the new gateway would process `/restart` again and
+immediately restart — a self-perpetuating loop.
 """
 import json
 import time
@@ -135,6 +137,145 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
     runner.request_restart.assert_called_once()
 
 
+def _make_discord_restart_event() -> MessageEvent:
+    """Discord /restart: adapters other than Telegram don't stamp platform_update_id."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    return MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="discord-chan",
+            chat_type="dm",
+            user_id="u1",
+        ),
+        message_id="1234567890123456789",
+        platform_update_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_discord_redelivered_restart_with_same_message_id_is_ignored(tmp_path, monkeypatch):
+    """Adapters without update ids (Discord/Slack) dedup on the raw message id (#121325)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "discord",
+        "message_id": "1234567890123456789",
+        "requested_at": time.time(),
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock()
+
+    event = _make_discord_restart_event()
+    result = await runner._handle_restart_command(event)
+
+    assert result == ""
+    runner.request_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discord_restart_with_different_message_id_is_honored(tmp_path, monkeypatch):
+    """A fresh Discord /restart carries a new snowflake — not a redelivery."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "discord",
+        "message_id": "1234567890123456789",
+        "requested_at": time.time(),
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    event = _make_discord_restart_event()
+    event = MessageEvent(
+        text=event.text,
+        message_type=event.message_type,
+        source=event.source,
+        message_id="9876543210987654321",  # different message — genuinely new /restart
+        platform_update_id=None,
+    )
+    await runner._handle_restart_command(event)
+
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cross_platform_message_id_marker_does_not_block(tmp_path, monkeypatch):
+    """A Slack marker with the same message id never blocks a Discord /restart."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "slack",
+        "message_id": "1234567890123456789",
+        "requested_at": time.time(),
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    await runner._handle_restart_command(_make_discord_restart_event())
+
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch):
+    """The 5-minute trust window applies to the message-id path too."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "discord",
+        "message_id": "1234567890123456789",
+        "requested_at": time.time() - 600,  # 10 minutes ago
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    event = _make_discord_restart_event()
+    await runner._handle_restart_command(event)
+
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dedup_marker_records_message_id_for_adapters_without_update_ids(tmp_path, monkeypatch):
+    """The dedup marker records message_id for events without platform_update_id."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    event = _make_discord_restart_event()
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=event.source,
+        message_id="dm-42",
+        platform_update_id=None,
+    )
+    await runner._handle_restart_command(event)
+
+    data = json.loads((tmp_path / ".restart_last_processed.json").read_text(encoding="utf-8"))
+    assert data["platform"] == "discord"
+    assert data["message_id"] == "dm-42"
+    assert "update_id" not in data
+
+
 @pytest.mark.asyncio
 async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_path, monkeypatch):
     """Missing marker + just booted from a /restart + young process → treat as stale.
@@ -161,3 +302,47 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     assert runner._booted_from_restart is False
 
 
+@pytest.mark.asyncio
+async def test_int_message_id_coerced_to_str_matches_on_replay(tmp_path, monkeypatch):
+    """An int message_id is str()-coerced in the marker and matches an int replay (#121325)."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    discord_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="discord-chan",
+        chat_type="dm",
+        user_id="u1",
+    )
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=discord_source,
+        message_id=9876543210123,  # int, not str — adapters may pass raw ints
+        platform_update_id=None,
+    )
+    await runner._handle_restart_command(event)
+
+    data = json.loads((tmp_path / ".restart_last_processed.json").read_text(encoding="utf-8"))
+    assert data["message_id"] == "9876543210123"
+    assert isinstance(data["message_id"], str)
+
+    # Replay with the same int message_id — guard matches across int→str coercion.
+    runner.request_restart = MagicMock()
+    replay = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=discord_source,
+        message_id=9876543210123,
+        platform_update_id=None,
+    )
+    result = await runner._handle_restart_command(replay)
+
+    assert result == ""
+    runner.request_restart.assert_not_called()

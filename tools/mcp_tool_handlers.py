@@ -176,6 +176,12 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     return srv if ok else None
 
 
+def _is_stdio_server(server) -> bool:
+    """callable()/``is False`` because MagicMock attributes are truthy."""
+    _is_http = getattr(server, "_is_http", None)
+    return callable(_is_http) and _is_http() is False
+
+
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
     (an application error is still the tool's real answer, and still a breaker strike per #10447);
@@ -230,7 +236,7 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     healed but the call is never re-run; the model gets an ``outcome_uncertain`` error instead (same
     contract as the mid-call stdio death path). Callers pass True unless the tool is positively read-only.
     """
-    if not _is_session_expired_error(exc):
+    if not _is_session_expired_error(exc, stdio=_is_stdio_server(_lookup_reconnectable_server(server_name))):
         return None
     srv = _lookup_reconnectable_server(server_name, require_loop=True)
     if call_may_have_side_effects:
@@ -414,8 +420,7 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             # The SDK usually sees the closed pipe before the 250 ms watcher poll does. On a stdio
             # server a transport-closure error after dispatch is the same ambiguous mid-call death;
             # it must not fall through to the session-expired recoverer, which replays the call.
-            _is_http = getattr(server, "_is_http", None)
-            if callable(_is_http) and _is_http() is False and _is_session_expired_error(exc):
+            if _is_stdio_server(server) and _is_session_expired_error(exc, stdio=True):
                 raise _StdioChildExited(
                     f"MCP stdio subprocess for '{server_name}' closed its transport mid-call",
                     in_flight=True,

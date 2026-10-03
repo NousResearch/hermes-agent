@@ -18,6 +18,8 @@ logger = logging.getLogger("tools.mcp_tool")
 
 # Stateless (2026-07-28) servers reject a legacy ``initialize`` with this or plain method-not-found.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
+# The SDK's own code for a pending request whose transport closed (it synthesizes this; the peer never sent it).
+_JSONRPC_CONNECTION_CLOSED = -32000
 
 
 def _jsonrpc_matches(exc: BaseException, codes: tuple, markers: tuple, code=None) -> bool:
@@ -499,17 +501,24 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
 
-def _is_session_expired_error(exc: BaseException) -> bool:
+def _is_session_expired_error(exc: BaseException, *, stdio: bool = False) -> bool:
     """True if ``exc`` looks like a transport session expiry (Streamable-HTTP servers GC session state on idle TTL /
     restart / pod rotation while the OAuth token stays valid) — the fix is a transport reconnect, not an OAuth
     refresh. Every node ``_iter_exception_nodes`` reaches is inspected so an InterruptedError anywhere overrides
     transport markers; the chain walk matters because SDK wrappers raise a generic RuntimeError *from* a
-    message-less ClosedResourceError."""
+    message-less ClosedResourceError.
+
+    ``stdio``: a stdio child has no server-side session, so a JSON-RPC error it answered with is the tool's
+    real error however it reads ("Browser session not found", "unexpected end of file") and proves the pipe
+    is alive; only the SDK's synthesized connection-closed code still counts as a closure."""
     # AnyIO stream exceptions are often message-less, so type checks complement marker matching.
     transport_error_types = tuple(_optional_types("anyio", "BrokenResourceError", "ClosedResourceError", "EndOfStream"))
     found = False
     for current in _iter_exception_nodes(exc):
         if isinstance(current, InterruptedError):
+            return False
+        code = getattr(getattr(current, "error", None), "code", None)
+        if stdio and code is not None and code != _JSONRPC_CONNECTION_CLOSED:
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()

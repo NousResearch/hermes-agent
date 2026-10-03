@@ -23,14 +23,15 @@ Cells (one machine, in order; each publishes a fresh commit to update to):
   update finished (dependency sync, launcher refresh, completion stamp);
 * ``desktop_handoff``: the Desktop hand-off script's whole tree killed while its
   ``hermes update`` child runs;
-* ``orphaned_update``: ONLY the hand-off script killed (its ``hermes update`` child keeps
-  running, the shape of a closed progress window or an ended PowerShell). The update must
+* ``orphaned_update``: ONLY the hand-off script killed, once its ``hermes update`` child
+  holds its place under the script's claim (that child keeps running: the shape of an
+  ended PowerShell). The update must
   finish, ``.hermes-update-in-progress`` must read LIVE for as long as it runs (contract
   C1: the owner or its line-4 delegate is alive) and be gone once it exits.
 
 Kill points are observed states, never timings: a git child of the update in the
 process tree, HEAD read straight from the ref files, the hand-off's ``hermes update``
-child plus its claimed marker. Each waits with a bounded timeout and an update that
+child past its lock acquisition (its banner in update.log) plus the claimed marker. Each waits with a bounded timeout and an update that
 exits before its kill point is a harness verdict, never a pass.
 
 The crash-cell matrix (cell -> file -> fixing lane) is in
@@ -279,6 +280,20 @@ def _direct_update_child(proc) -> psutil.Process | None:
     return None
 
 
+# Printed by ``_cmd_update_impl``, which hermes_cli/main.py enters only after
+# ``UpdateLock.acquire()`` returned: once update.log gains one, the update child has
+# taken its place under the script's claim (and named itself in it, where it does).
+UPDATE_BANNER = "Updating Hermes Agent..."
+
+
+def _update_banners(machine) -> int:
+    try:
+        return (machine.hermes_home / "logs" / "update.log").read_text(
+            encoding="utf-8-sig", errors="replace").count(UPDATE_BANNER)
+    except OSError:
+        return 0
+
+
 def _orphan(machine, srv, label: str) -> dict:
     """Start the hand-off script, kill ONLY its powershell once its ``hermes update``
     child runs under the claimed marker, and watch that orphaned update to its end."""
@@ -286,12 +301,15 @@ def _orphan(machine, srv, label: str) -> dict:
     target = machine.mint(pre, label)
     machine.publish(target)
     with machine.gateway_phase():
+        banners = _update_banners(machine)
         proc = _handoff(machine, f"{label}-script")()
         deadline = time.monotonic() + UPDATE_TIMEOUT
         child = None
         while time.monotonic() < deadline:
+            # Kill point: the script's own `hermes update` child is past its lock
+            # acquisition (a fresh banner in update.log) and the marker exists.
             child = _direct_update_child(proc)
-            if child is not None and _read_marker(machine) is not None:
+            if child is not None and _read_marker(machine) is not None and _update_banners(machine) > banners:
                 break
             child = None
             if proc.poll() is not None:

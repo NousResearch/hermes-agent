@@ -1281,16 +1281,11 @@ export function newBotChat(bot: RosterRow) {
     return
   }
 
-  const route = botConnectionRoute(bot)
-
-  if (!route) {
-    host.notify?.({
-      kind: 'error',
-      message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
-    })
-
-    return
+  const route = botConnectionRoute(bot) || {
+    connectionId: 'local',
+    mode: 'local' as const,
+    profile: bot.name,
+    targetProfile: bot.name
   }
 
   const ownerKey = botWorkspaceOwnerKey(bot)

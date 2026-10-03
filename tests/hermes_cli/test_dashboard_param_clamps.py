@@ -18,11 +18,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "clamp-test-token")
     from hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
-        c.headers["Authorization"] = "Bearer clamp-test-token"
+        # Another test may import the server before this fixture runs, making
+        # an environment token set here ineffective. Use its live test token.
+        c.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
         yield c
 
 

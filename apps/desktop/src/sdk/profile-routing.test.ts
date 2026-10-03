@@ -353,6 +353,30 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('lets callers choose creation order without changing the recent default', async () => {
+    vi.mocked(hermesApi).mockResolvedValue({ sessions: [] })
+
+    await host.listPersistedSessions(null, { profile: 'worker', limit: 200, order: 'created' })
+    await host.listPersistedSessions(null, { profile: 'worker', limit: 200 })
+
+    const paths = vi.mocked(hermesApi).mock.calls.map(([request]) => new URL(request.path!, 'http://localhost').searchParams)
+    expect(paths[0].get('order')).toBe('created')
+    expect(paths[0].get('offset')).toBe('0')
+    expect(paths[1].get('order')).toBe('recent')
+    expect(paths[1].get('offset')).toBe('0')
+  })
+
+  it('forwards a persisted-session page offset beyond the first backend window', async () => {
+    vi.mocked(hermesApi).mockResolvedValue({ sessions: [], total: 620 })
+
+    await host.listPersistedSessions(null, { profile: 'worker', limit: 200, offset: 600, order: 'created' })
+
+    const params = new URL(vi.mocked(hermesApi).mock.lastCall![0].path!, 'http://localhost').searchParams
+    expect(params.get('offset')).toBe('600')
+    expect(params.get('limit')).toBe('200')
+    expect(params.get('order')).toBe('created')
+  })
+
   it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
     // #93911: bot_relay.deliver's backend contract tolerates ~1320s (120s turn
     // lock + a 600s turn, doubled by the bounded retry). Without a way to pass

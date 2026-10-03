@@ -1560,7 +1560,7 @@ export const host = {
    *  that profile's gateway. The source primary opens state.db directly. */
   listPersistedSessions: async (
     route: PluginProfileRoute | null,
-    options: { profile: string; limit?: number }
+    options: { profile: string; limit?: number; offset?: number; order?: 'created' | 'recent' }
   ): Promise<PaginatedSessions> => {
     if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
@@ -1576,10 +1576,10 @@ export const host = {
 
     const query = new URLSearchParams({
       limit: String(limit),
-      offset: '0',
+      offset: String(Math.max(0, Math.trunc(options.offset ?? 0))),
       min_messages: '0',
       archived: 'exclude',
-      order: 'created',
+      order: options.order ?? 'recent',
       profile
     })
 

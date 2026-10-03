@@ -6029,6 +6029,7 @@ describe('openNewSessionTile workspace target', () => {
     }
 
     expect(createParams).toMatchObject({ profile: 'writer' })
+    expect(createParams).not.toHaveProperty('hidden')
     expect(createParams).not.toHaveProperty('model')
     expect(createParams).not.toHaveProperty('provider')
     expect(createParams).not.toHaveProperty('reasoning_effort')

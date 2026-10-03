@@ -284,8 +284,8 @@ interface ProfilesListResult {
  *  plugin recorded ($botMeta canonical chats, $groupChats member sids), but
  *  Bot Mode sessions are ALSO minted outside the plugin — bot-to-bot CLI
  *  handoffs ("Agent Inbox" / extra "Bot Chat" rows born visible in a bot's
- *  profile) — and those ids the plugin never learns. So: enumerate each
- *  roster bot's OWN profile sessions (only bot profiles — a non-bot profile
+ *  profile) — and those ids the plugin never learns. So: inspect each
+ *  roster bot's OWN profile session window (only bot profiles — a non-bot profile
  *  is never listed, so its sessions are never touched) and hide any VISIBLE
  *  row whose title is Bot Mode plumbing and whose creation grace period has
  *  elapsed. The grace period protects a new desktop draft while its first-turn
@@ -333,16 +333,40 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
         const route = botConnectionRoute(bot)
         const profile = backendTargetProfile(route, name)
 
-        const res = await host.listPersistedSessions(route, {
-          profile,
-          limit: PROFILE_SESSION_LIST_LIMIT
-        })
+        // The backend pages one concrete profile directly. Collect IDs before
+        // hiding anything: hidden rows vanish from later offset-based pages.
+        const candidates = new Set<string>()
+        let offset = 0
 
-        const rows = Array.isArray(res?.sessions) ? res.sessions : []
+        while (true) {
+          const res = await host.listPersistedSessions(route, {
+            profile,
+            limit: PROFILE_SESSION_LIST_LIMIT,
+            order: 'created',
+            ...(offset ? { offset } : {})
+          })
+
+          const rows = Array.isArray(res?.sessions) ? res.sessions : []
+
+          for (const row of rows) {
+            if (isBotModeSweepCandidate(row, nowSeconds)) {
+              candidates.add(row.id)
+            }
+          }
+
+          offset += PROFILE_SESSION_LIST_LIMIT
+          const total = Number(res?.total)
+
+          // Pinned sessions can be appended outside the page; advance by the
+          // requested size, not rows.length, and dedupe their IDs above.
+          if (!rows.length || (Number.isFinite(total) && offset >= total) ||
+              (!Number.isFinite(total) && rows.length < PROFILE_SESSION_LIST_LIMIT)) {
+            break
+          }
+        }
+
         await Promise.all(
-          rows
-            .filter(row => isBotModeSweepCandidate(row, nowSeconds))
-            .map(row => Promise.resolve(hidePersistedBotSession(bot, row.id, profile)).catch(() => undefined))
+          [...candidates].map(id => Promise.resolve(hidePersistedBotSession(bot, id, profile)).catch(() => undefined))
         )
       } catch {
         /* older gateway / unreachable source — leave this profile alone */

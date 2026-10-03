@@ -475,9 +475,12 @@ def get_profiles_sessions(
         source=source or None, sources=_csv_list(sources) or None,
         exclude_sources=_csv_list(exclude_sources) or None, min_message_count=max(0, min_messages),
         include_archived=archived == "include", archived_only=archived == "only")
-    # Over-fetch per profile so the merged+sorted window is correct for the requested page.
-    # Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    # Aggregate pages over-fetch each profile to merge correctly, with a 500-row
+    # cap. A concrete profile has no merge step: page its DB directly so offset
+    # 500+ can still reach old sessions without an unbounded read.
+    single_profile = bool(profile and profile != "all")
+    per_profile = limit if single_profile else min(limit + offset, 500)
+    query_offset = offset if single_profile else 0
 
     merged: List[Dict[str, Any]] = []
     totals: Dict[str, int] = {}
@@ -490,7 +493,7 @@ def get_profiles_sessions(
                 exclude_sources=filters["exclude_sources"])
             scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
             rows = db.list_sessions_rich(
-                limit=per_profile, offset=0, order_by_last_active=order == "recent",
+                limit=per_profile, offset=query_offset, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
                 compact_rows=not full, include_pinned=True, **scoped)
             totals[name] = db.session_count(exclude_children=True, **scoped)
@@ -499,7 +502,7 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    window = merged if single_profile else _pinned_window(merged, offset, limit)
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,

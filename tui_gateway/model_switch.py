@@ -15,6 +15,89 @@ _registry = HandlerRegistry()
 _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 
+class ProfileContextError(ValueError):
+    """An account-scoped RPC has no single profile owner it can safely use."""
+
+    def __init__(self, message: str, *, code: str = "profile_context_required") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _register_served_profile_home(home: "str | Path | None") -> str | None:
+    """Canonical runtime form of a profile home, registering foreign homes before use.
+
+    ``None`` means the launch profile. Registering a foreign home flips secret resolution to the
+    fail-closed multiplex policy before any provider/config code can run.
+    """
+    if not home:
+        return None
+    path = Path(home)
+    if hermes_home_key(path) == hermes_home_key(_launch_home()):
+        return None
+    if path not in _served_profile_homes:
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+        activate_multi_profile_hosting()
+    _served_profile_homes.add(path)
+    return str(path)
+
+
+def _transport_profile_home() -> str | None:
+    """The sole profile represented by live sessions attached to this request's transport.
+
+    A Desktop/WebSocket can multiplex several sessions. One profile is safe to infer; zero or
+    several require the caller to name ``profile`` or ``session_id`` instead of falling back to the
+    process launch account.
+    """
+    transport = current_transport()
+    if transport is None:
+        raise ProfileContextError("profile context required (pass profile or session_id)")
+    homes: dict[str, str | None] = {}
+    with _sessions_lock:
+        sessions = list(_sessions.values())
+    for session in sessions:
+        owner = session.get("transport") if isinstance(session, dict) else None
+        owns = owner is transport
+        if not owns and owner is not None:
+            contains = getattr(owner, "contains", None)
+            owns = bool(callable(contains) and contains(transport))
+        if not owns:
+            continue
+        raw_home = session.get("profile_home") or None
+        homes[hermes_home_key(raw_home or _launch_home())] = raw_home
+    if len(homes) != 1:
+        reason = "ambiguous" if homes else "required"
+        raise ProfileContextError(f"profile context {reason} (pass profile or session_id)")
+    return _register_served_profile_home(next(iter(homes.values())))
+
+
+def _rpc_profile_home(params: dict, *, require_context: bool = False) -> str | None:
+    """Resolve one RPC's canonical profile home from explicit, session, then transport context."""
+    p = params if isinstance(params, dict) else {}
+    profile = str(p.get("profile") or "").strip()
+    session_id = str(p.get("session_id") or "")
+    session = _sessions.get(session_id)
+    if profile:
+        home = _profile_home(profile)
+        profile_home = str(home) if home else None
+        if isinstance(session, dict):
+            session_home = _register_served_profile_home(session.get("profile_home") or None)
+            explicit_key = hermes_home_key(profile_home or _launch_home())
+            session_key = hermes_home_key(session_home or _launch_home())
+            if explicit_key != session_key:
+                raise ProfileContextError(
+                    f"profile '{profile}' does not own session '{session_id}'",
+                    code="profile_context_mismatch",
+                )
+        return profile_home
+    if isinstance(session, dict):
+        return _register_served_profile_home(session.get("profile_home") or None)
+    if not require_context:
+        return None
+    if session_id:
+        raise ProfileContextError(f"session '{session_id}' is not live; pass its profile explicitly")
+    return _transport_profile_home()
+
+
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},

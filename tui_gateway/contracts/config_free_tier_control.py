@@ -474,7 +474,11 @@ method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
 # ── image.generate ────────────────────────────────────────────────────────────────────────────
 
 
-class ImageGenerateParams(Params):
+class ImageGenerateParams(ProfileParams):
+    """``profile`` / ``session_id`` identify the provider-account and cache owner. A client may omit
+    both only when its transport has live sessions from exactly one profile."""
+
+    session_id: str | None = None
     prompt: str | None = None
     aspect_ratio: str | None = None
     probe: JsonValue | None = None  # truthy word/flag: availability check only

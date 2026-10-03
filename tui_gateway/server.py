@@ -24,7 +24,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
+    get_hermes_home, get_hermes_home_override, get_process_hermes_home, hermes_home_key, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
@@ -574,17 +574,8 @@ def _profile_home(profile: str | None) -> Path | None:
         home = None
     if home is None or not home.is_dir():
         raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
-    if home.resolve() == Path(_hermes_home).resolve():
-        return None  # already the launch profile (no override needed)
-    if home not in _served_profile_homes:
-        # This process now hosts a second profile home: freeze the launch env as the launch
-        # profile's own and flip get_secret() to fail closed, so an unscoped read for a
-        # secondary raises instead of returning the launch profile's os.environ value
-        # (tui_gateway/launch_profile_policy.py). Must run before any secondary code.
-        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
-        activate_multi_profile_hosting()
-    _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
-    return home
+    registered = _register_served_profile_home(home)
+    return Path(registered) if registered else None
 
 
 # Profile homes served besides the launch home — the only extra stores the sessions watcher
@@ -592,7 +583,7 @@ def _profile_home(profile: str | None) -> Path | None:
 _served_profile_homes: set[Path] = set()
 
 
-def _profile_scoped(handler):
+def _profile_scoped(handler=None, *, require_context: bool = False):
     """Bind ``params['profile']``'s full runtime scope (HERMES_HOME + secrets + terminal policy) around a
     handler, so config.yaml ``${VAR}`` refs, provider credential checks and ``.env`` writes resolve to
     THAT profile (app-global remote mode hits the focused profile). Home alone left ``get_secret`` on the
@@ -608,15 +599,19 @@ def _profile_scoped(handler):
     is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
     session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
     LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
+
+    ``require_context=True`` additionally refuses the launch fallback. It resolves a sole profile
+    attached to the request transport for legacy/sessionless clients, but an empty or multiplexed
+    transport must name ``profile`` or ``session_id`` explicitly.
     """
+    if handler is None:
+        return lambda fn: _profile_scoped(fn, require_context=require_context)
+
     def wrapper(rid, params):
-        p = params if isinstance(params, dict) else {}
-        if str(p.get("profile") or "").strip():
-            home = _profile_home(p.get("profile"))
-            profile_home = str(home) if home else None
-        else:
-            session = _sessions.get(str(p.get("session_id") or ""))
-            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+        try:
+            profile_home = _rpc_profile_home(params, require_context=require_context)
+        except ProfileContextError as exc:
+            return _err(rid, 4065, str(exc), data={"code": exc.code})
         with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper

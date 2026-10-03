@@ -74,6 +74,24 @@ export function cronJobHasExecutionContent(
   return Boolean(asString(job.prompt).trim() || asString(job.script).trim() || skills.length);
 }
 
+export type CronModelDisplay =
+  | { kind: "not-needed" }
+  | { kind: "default" }
+  | { kind: "pinned"; model: string };
+
+/** Describe whether a cron job needs its own model or inherits the configured default. */
+export function cronModelDisplay(
+  job: Pick<CronJob, "no_agent" | "provider" | "model">,
+): CronModelDisplay {
+  if (job.no_agent) return { kind: "not-needed" };
+
+  const provider = asString(job.provider).trim();
+  const model = asString(job.model).trim();
+  if (!provider && !model) return { kind: "default" };
+  const display = provider && model ? `${provider}/${model}` : model || provider;
+  return { kind: "pinned", model: display };
+}
+
 /** Focus a cron editor input by id (the editor renders `${idPrefix}-script`, etc.). */
 export function focusCronField(id: string): void {
   if (typeof document === "undefined") return;

@@ -393,11 +393,9 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
     """Return the container-side Hermes mirror prefix for persistent Docker file tools."""
     try:
-        from tools.terminal_tool import (
-            _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
-        container_key = _resolve_container_task_id(task_id)
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        from tools.terminal_tool import _get_env_config
+        from tools.terminal_tool_lifecycle import get_active_env
+        env = get_active_env(task_id)
         if env is not None:
             persistent_docker = (env.__class__.__name__ == "DockerEnvironment"
                                  and bool(getattr(env, "_persistent", False)))

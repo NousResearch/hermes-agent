@@ -174,11 +174,26 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
 
 
 def get_active_env(task_id: str):
-    """Return the active BaseEnvironment for *task_id*, or None."""
-    from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
-    lookup = _resolve_container_task_id(task_id)
+    """Return the active BaseEnvironment for the RAW *task_id*, or None.
+
+    Reads only the keys that task may own (:func:`~tools.terminal_tool._own_env_keys`): under a
+    routed profile the bare id is the launch profile's environment, never a candidate. A caller
+    that already holds a resolved key uses :func:`_get_env_exact`."""
+    from tools.terminal_tool import _active_environments, _env_lock, _own_env_keys
+    keys = _own_env_keys(task_id)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        for key in keys:
+            env = _active_environments.get(key)
+            if env is not None:
+                return env
+    return None
+
+
+def _get_env_exact(key: str):
+    """Return the environment cached under the EXACT resolved *key*, or None."""
+    from tools.terminal_tool import _active_environments, _env_lock
+    with _env_lock:
+        return _active_environments.get(key)
 
 
 def ensure_task_env(task_id: Optional[str] = None):
@@ -207,7 +222,7 @@ def ensure_task_env(task_id: Optional[str] = None):
 
     effective_task_id = _resolve_container_task_id(task_id)
 
-    existing = get_active_env(effective_task_id)
+    existing = _get_env_exact(effective_task_id)
     if existing is not None:
         with _env_lock:
             _last_activity[effective_task_id] = time.time()
@@ -221,7 +236,7 @@ def ensure_task_env(task_id: Optional[str] = None):
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
 
     with task_lock:
-        existing = get_active_env(effective_task_id)
+        existing = _get_env_exact(effective_task_id)
         if existing is not None:
             return existing
         try:
@@ -271,7 +286,9 @@ def cleanup_all_environments():
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:
-            cleanup_vm(task_id)
+            # Resolved cache keys, not raw ids: tear each one down exactly. ``cleanup_vm`` qualifies
+            # a raw id under the caller's routed scope, which would double-qualify these and miss them.
+            _cleanup_env_key(task_id)
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
@@ -300,25 +317,30 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
     """
-    env = _unregister_env(task_id)
-    _clear_file_ops_cache(task_id)
+    from tools.terminal_tool import _qualify_task_key
+    # The session's own slot only: under a routed profile the bare id is the launch profile's
+    # environment, and a routed session closing must not tear that one down.
+    _cleanup_env_key(_qualify_task_key(task_id), force_remove=force_remove)
+
+
+def _cleanup_env_key(key: str, *, force_remove: bool = False) -> None:
+    """Unregister and tear down the environment cached under the EXACT resolved *key*."""
+    env = _unregister_env(key)
+    _clear_file_ops_cache(key)
     if env is None:
         return
     _teardown_env(
-        env, task_id, force_remove=force_remove,
+        env, key, force_remove=force_remove,
         done_msg="Manually cleaned up environment for task: %s",
     )
 
 
 def _evict_environment_for_task(task_id: Optional[str]) -> None:
-    """Drop any cached env for *task_id* (and its collapsed key) after an
-    infrastructure failure, so later calls don't reuse a dead connection."""
-    from tools.terminal_tool import (
-        _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
-    )
-    keys = {_resolve_container_task_id(task_id)}
-    if task_id:
-        keys.add(task_id)
+    """Drop the cached env a RAW *task_id* owns (its collapsed key and its own qualified key) after
+    an infrastructure failure, so later calls don't reuse a dead connection. Never the bare id
+    under a routed profile: that slot belongs to the launch profile, whose backend is healthy."""
+    from tools.terminal_tool import _active_environments, _env_lock, _last_activity, _own_env_keys
+    keys = set(_own_env_keys(task_id))
     evicted = []
     with _env_lock:
         for key in keys:

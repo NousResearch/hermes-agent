@@ -132,16 +132,19 @@ def _build_local_env(*, cwd, timeout, **_):
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
-    from tools.terminal_tool import (_docker_session_isolation_enabled, _has_isolation_overrides,
+    from tools.terminal_tool import (_docker_session_isolation_enabled, _isolation_overrides_registered,
                                      _maybe_reap_docker_orphans)
     # One-shot reaper for labeled containers orphaned by prior Hermes processes that died before
     # atexit (SIGKILL / OOM / closed terminal); ``terminal.docker_orphan_reaper: false`` disables it.
     _maybe_reap_docker_orphans(cc)
     # A session-keyed container must not outlive its session, so cross-process reuse/persist is
     # disabled for it (cleanup_vm()/idle reaper stop+rm it). The shared "default" container and
-    # RL/benchmark override sandboxes keep their existing lifecycle.
+    # RL/benchmark override sandboxes keep their existing lifecycle. ``task_id`` is the RESOLVED
+    # environment key (every creator passes the key it cached under), so the rollout question is
+    # asked of that exact registry key: it already carries the routed profile and a child→parent
+    # alias, so neither re-qualifying it nor asking about the initiating child's own id is right.
     session_scoped = (_docker_session_isolation_enabled() and task_id != "default"
-                      and not _has_isolation_overrides(task_id))
+                      and not _isolation_overrides_registered(task_id))
     kwargs = {out: cc.get(key, default) for out, key, default in _DOCKER_KWARGS}
     if session_scoped:
         kwargs["persist_across_processes"] = False

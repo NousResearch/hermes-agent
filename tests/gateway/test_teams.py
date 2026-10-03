@@ -466,6 +466,33 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
+        assert event.source.parent_chat_id is None
+
+    @pytest.mark.anyio
+    async def test_channel_post_exposes_bare_channel_as_parent(self):
+        # Teams suffixes every channel post's conversation id with ";messageid=<root>", so a
+        # profile route keyed on the channel id must match through parent_chat_id.
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        channel = "19:abc@thread.tacv2"
+        activity = self._make_activity(
+            conversation_type="channel", conversation_id=channel + ";messageid=1788359763811")
+        await adapter._on_message(self._make_ctx(activity))
+
+        source = adapter.handle_message.call_args[0][0].source
+        assert source.chat_id == channel + ";messageid=1788359763811"
+        assert source.parent_chat_id == channel
+
+        from gateway.profile_routing import ProfileRoute, match_profile_route
+        route = ProfileRoute(name="web-channel", platform="teams", profile="web", chat_id=channel)
+        matched = match_profile_route(
+            [route], "teams", chat_id=source.chat_id, parent_chat_id=source.parent_chat_id)
+        assert matched is route
 
     @pytest.mark.anyio
     async def test_aad_user_route_survives_conversation_changes(self, monkeypatch):

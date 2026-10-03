@@ -413,6 +413,8 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        delivery_obligation_id: Optional[str] = None,
+        attachment_snapshot: Optional[Any] = None,
     ) -> bool:
         """Deliver a queued response using the normal text+attachment split.
 
@@ -425,68 +427,165 @@ class GatewayNotificationsMixin:
         already delivered it, the reconcile edit landed, the send succeeded, or there was nothing
         textual to send. False: the send was REFUSED (flood control, dead transport) — the caller
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
-        DECLINE returns True: that destination is not approved and must not be re-sent."""
-        from gateway.run import _strip_response_attachments_for_direct_send
-        if not text_already_delivered:
-            text_content = _strip_response_attachments_for_direct_send(response, adapter)
-            if text_content:
-                # Reconcile-by-edit first: a stream-sealed message already carries most of the answer;
-                # a plain send here would duplicate it.
-                _reconciled = False
-                _sc_msg_id = getattr(stream_consumer, "message_id", None)
-                if (
-                    _sc_msg_id
-                    and _sc_msg_id != "__no_edit__"
-                    and not getattr(stream_consumer, "_turn_split_delivery", False)
-                ):
-                    try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
-                        )
-                        if getattr(_edit_res, "success", False):
-                            _reconciled = True
-                            logger.info(
-                                "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
-                                _sc_msg_id,
-                            )
-                        else:
-                            # P5(b): a DECLINE is not "editing unavailable". The
-                            # send below re-delivers the whole response to the
-                            # chat the connector just refused.
-                            from gateway.relay.egress import declined_send
+        DECLINE returns True: that destination is not approved and must not be re-sent.
 
-                            if declined_send(_edit_res):
-                                logger.warning(
-                                    "Queued-lane reconcile edit DECLINED by the "
-                                    "connector's egress guard; not falling back "
-                                    "to a send (the destination is not approved)."
-                                )
-                                return True
-                    except Exception as _qe:
-                        logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
-                if not _reconciled:
-                    _sent = await self._send_queued_final_text(
-                        adapter, source, text_content, metadata, event_message_id, session_key,
-                        inbound_message_id)
-                    if not getattr(_sent, "success", False):
-                        # The text never landed. Report it undelivered and skip the attachments too:
-                        # the caller's normal completion send replays the whole response (text and
-                        # its MEDIA: tags), so uploading here would duplicate every file.
-                        return False
-        # Failed turns deliver their (normalized failure) text but must not upload attachments as if
-        # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
-        if not deliver_media:
-            return True
-        await self._deliver_media_from_response(
-            response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
-            thread_metadata=metadata,
+        A claimed goal-continuation result (``delivery_obligation_id``) is owned by its durable
+        ledger row instead: a refused or declined send raises ``GoalContinuationPublicationError``
+        after marking the row failed, so the claim retries rather than the completion fallback."""
+        from gateway.run import (
+            GoalContinuationPublicationError,
+            _strip_response_attachments_for_direct_send,
         )
+        if delivery_obligation_id:
+            from gateway.claimed_result_publication import (
+                snapshot_claimed_response_parts,
+            )
+            from gateway.delivery_ledger import prepare_claimed_result_delivery
+
+            routed_session_key = str(
+                session_key
+                or getattr(source, "session_key", "")
+                or self._session_key_for_source(source)
+            )
+            snapshot = attachment_snapshot or snapshot_claimed_response_parts(
+                response,
+                adapter,
+            )
+            visible_text = snapshot.visible_text
+            if deliver_media:
+                media_files = snapshot.media_files
+                images = snapshot.images
+                local_files = snapshot.local_files
+                force_document_attachments = (
+                    snapshot.force_document_attachments
+                )
+            else:
+                visible_text = _strip_response_attachments_for_direct_send(
+                    response,
+                    adapter,
+                )
+                media_files = []
+                images = []
+                local_files = []
+                force_document_attachments = False
+
+            should_send = await asyncio.to_thread(
+                prepare_claimed_result_delivery,
+                delivery_obligation_id,
+                session_key=routed_session_key,
+                platform=str(getattr(source.platform, "value", source.platform)),
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                content=visible_text,
+                adapter_profile=getattr(adapter, "_owner_profile", None),
+            )
+            if not should_send:
+                return True  # the durable row is already delivered
+            claimed_part_delivery = getattr(
+                adapter, "_deliver_claimed_response_parts", None
+            )
+            if callable(claimed_part_delivery):
+                await claimed_part_delivery(
+                    obligation_id=delivery_obligation_id,
+                    chat_id=source.chat_id,
+                    text_content=visible_text,
+                    images=images,
+                    media_files=media_files,
+                    local_files=local_files,
+                    force_document_attachments=force_document_attachments,
+                    metadata=metadata,
+                    reply_to=event_message_id,
+                    text_already_delivered=text_already_delivered,
+                    attachment_session_key=routed_session_key,
+                )
+                return True
+        try:
+            if not text_already_delivered:
+                text_content = _strip_response_attachments_for_direct_send(response, adapter)
+                if text_content:
+                    # Reconcile-by-edit first: a stream-sealed message already carries most of the answer;
+                    # a plain send here would duplicate it.
+                    _reconciled = False
+                    _sc_msg_id = getattr(stream_consumer, "message_id", None)
+                    if (
+                        _sc_msg_id
+                        and _sc_msg_id != "__no_edit__"
+                        and not getattr(stream_consumer, "_turn_split_delivery", False)
+                    ):
+                        try:
+                            _edit_res = await adapter.edit_message(
+                                chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
+                            )
+                            if getattr(_edit_res, "success", False):
+                                _reconciled = True
+                                logger.info(
+                                    "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
+                                    _sc_msg_id,
+                                )
+                            else:
+                                # P5(b): a DECLINE is not "editing unavailable". The
+                                # send below re-delivers the whole response to the
+                                # chat the connector just refused.
+                                from gateway.relay.egress import declined_send
+
+                                if declined_send(_edit_res):
+                                    logger.warning(
+                                        "Queued-lane reconcile edit DECLINED by the "
+                                        "connector's egress guard; not falling back "
+                                        "to a send (the destination is not approved)."
+                                    )
+                                    if delivery_obligation_id:
+                                        raise GoalContinuationPublicationError(
+                                            "claimed continuation delivery failed"
+                                        )
+                                    return True
+                        except GoalContinuationPublicationError:
+                            raise
+                        except Exception as _qe:
+                            logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
+                    if not _reconciled:
+                        _sent = await self._send_queued_final_text(
+                            adapter, source, text_content, metadata, event_message_id, session_key,
+                            inbound_message_id, delivery_obligation_id)
+                        if not getattr(_sent, "success", False):
+                            if delivery_obligation_id:
+                                raise GoalContinuationPublicationError(
+                                    "claimed continuation delivery failed"
+                                )
+                            # The text never landed. Report it undelivered and skip the attachments too:
+                            # the caller's normal completion send replays the whole response (text and
+                            # its MEDIA: tags), so uploading here would duplicate every file.
+                            return False
+            # Failed turns deliver their (normalized failure) text but must not upload attachments as if
+            # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
+            if deliver_media:
+                await self._deliver_media_from_response(
+                    response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
+                    thread_metadata=metadata,
+                )
+        except BaseException as exc:
+            if delivery_obligation_id and isinstance(exc, Exception):
+                from gateway.delivery_ledger import mark_claimed_result_failed
+                try:
+                    await asyncio.to_thread(
+                        mark_claimed_result_failed,
+                        delivery_obligation_id,
+                        "platform_delivery_failed",
+                    )
+                except Exception:
+                    logger.debug("claimed-result ledger failure update failed", exc_info=True)
+            raise
+        if delivery_obligation_id:
+            from gateway.delivery_ledger import mark_claimed_result_delivered
+            await asyncio.to_thread(
+                mark_claimed_result_delivered, delivery_obligation_id)
         return True
 
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
         inbound_message_id: Optional[str] = None,
+        delivery_obligation_id: Optional[str] = None,
     ):
         """Send a queued-lane final through the same ledger bracket as the normal final
         (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
@@ -499,7 +598,8 @@ class GatewayNotificationsMixin:
         if session_key and isinstance(adapter, BasePlatformAdapter):
             result, _ = await adapter.send_final_ledgered(
                 MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
-                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id,
+                delivery_obligation_id=delivery_obligation_id)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

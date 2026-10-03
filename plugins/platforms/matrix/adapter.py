@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import array
+import hashlib
 import inspect
 from contextlib import suppress
 import logging
@@ -87,6 +88,19 @@ _MATRIX_VOICE_WAVEFORM_BINS = 30
 def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
     """Run ffmpeg/ffprobe with captured output and no stdin."""
     return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, stdin=subprocess.DEVNULL)
+
+
+def _claimed_delivery_txn_id(
+    metadata: Optional[Dict[str, Any]], component: str
+) -> Optional[str]:
+    """Return a stable Matrix transaction ID for one durable response part."""
+    if not metadata:
+        return None
+    part_id = metadata.get("_hermes_delivery_part_id")
+    if not isinstance(part_id, str) or not re.fullmatch(r"[0-9a-f]{24}", part_id):
+        return None
+    digest = hashlib.sha256(f"{part_id}\0{component}".encode("utf-8")).hexdigest()
+    return f"hermes_{digest[:32]}"
 
 
 def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
@@ -1408,11 +1422,16 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        for i, chunk in enumerate(
+            self.truncate_message(self.format_message(content), self.max_message_length)
+        ):
             msg_content = self._build_text_message_content(chunk)
+            txn_id = _claimed_delivery_txn_id(metadata, f"text:{i}")
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
-                last_event_id = await self._send_room_message(chat_id, msg_content)
+                last_event_id = await self._send_room_message(
+                    chat_id, msg_content, txn_id=txn_id
+                )
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 if not (self._encryption and getattr(self._client, "crypto", None)):
@@ -1420,17 +1439,30 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(exc))
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
-                    last_event_id = await self._send_room_message(chat_id, msg_content)
+                    last_event_id = await self._send_room_message(
+                        chat_id, msg_content, txn_id=txn_id
+                    )
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
-    async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
+    async def _send_room_message(
+        self,
+        chat_id: str,
+        msg_content: Dict[str, Any],
+        *,
+        txn_id: Optional[str] = None,
+    ) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
+        txn_kwargs = {"txn_id": txn_id} if txn_id else {}
         event_id = await asyncio.wait_for(
-            self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+            self._client.send_message_event(
+                RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content, **txn_kwargs
+            ),
+            timeout=45,
+        )
         return str(event_id)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -1809,7 +1841,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
-        return await self._send_content_event(room_id, msg_content)
+        return await self._send_content_event(room_id, msg_content, metadata=metadata)
 
     async def _room_needs_encrypted_upload(self, room_id: str) -> bool:
         """E2EE on, Olm machine loaded, and the state store says the room is encrypted."""
@@ -1827,10 +1859,23 @@ class MatrixAdapter(BasePlatformAdapter):
         return SendResult(
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
 
-    async def _send_content_event(self, room_id: str, msg_content: Dict[str, Any]) -> SendResult:
+    async def _send_content_event(
+        self,
+        room_id: str,
+        msg_content: Dict[str, Any],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
-            event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            txn_id = _claimed_delivery_txn_id(metadata, "media")
+            txn_kwargs = {"txn_id": txn_id} if txn_id else {}
+            event_id = await self._client.send_message_event(
+                RoomID(room_id),
+                EventType.ROOM_MESSAGE,
+                msg_content,
+                **txn_kwargs,
+            )
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -1844,7 +1889,12 @@ class MatrixAdapter(BasePlatformAdapter):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = t("platform.shared.media.attachment_failed")
-            return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
+            warning_result = await self.emit_media_warning(
+                room_id, text, caption=caption, reply_to=reply_to, metadata=metadata
+            )
+            if _claimed_delivery_txn_id(metadata, "media"):
+                return SendResult(success=False, error="Matrix attachment source is unavailable")
+            return warning_result
         try:
             file_size = p.stat().st_size
         except OSError:

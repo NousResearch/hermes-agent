@@ -364,9 +364,21 @@ class GatewayAgentCacheMixin:
         from gateway.run import _CONVERSATION_SCOPED_STATE
         if not session_key:
             return
+        retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        if retry is not None and not retry.dropped:
+            if not self._drop_goal_continuation_retry(session_key):
+                raise RuntimeError("durable goal continuation retirement is unavailable")
         state = self._peek_session_state(session_key)
         if state is not None:
+            from gateway.goal_continuation_claims import event_claim_identity
+
+            durable_successors = [
+                event
+                for event in state.conversation.queued_events
+                if event_claim_identity(event) is not None
+            ]
             state.conversation.clear()
+            state.conversation.queued_events.extend(durable_successors)
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
         # views (not dict), so the isinstance(dict) guard skips them — already handled above.

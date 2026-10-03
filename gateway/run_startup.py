@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import faulthandler
+import json
 import logging
 import os
 import signal
@@ -76,10 +77,98 @@ class GatewayStartupMixin:
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
 
-    def _queue_startup_restore_event(self, event: MessageEvent) -> None:
+    def _queue_startup_restore_event(self, event: MessageEvent) -> bool:
+        """Admit one startup-gated event without overtaking a durable claim."""
+        try:
+            session_key = self._session_key_for_source(event.source)
+        except Exception:
+            logger.warning("Rejecting startup-gated message with no stable session route")
+            return False
+
+        from gateway.goal_continuation_claims import append_claim_event, load_claims
+
+        retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        adapter = self._delivery_adapter_for(event.source)
+        if retry is not None and retry.claim_id and not retry.dropped:
+            if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+                logger.warning(
+                    "Dropping startup-gated follow-up for session %s — pending queue at cap (%d).",
+                    session_key, self._BUSY_QUEUE_MAX_PENDING,
+                )
+                return False
+            try:
+                append_claim_event(
+                    session_key,
+                    retry.claim_id,
+                    event,
+                    home=getattr(self, "_goal_continuation_claim_home", None),
+                )
+            except Exception:
+                logger.warning(
+                    "goal continuation: durable startup successor publication failed for session %s",
+                    session_key,
+                )
+                raise RuntimeError("durable startup successor publication failed") from None
+            self._enqueue_fifo(session_key, event, adapter)
+            retry.wake.set()
+            return True
+
+        try:
+            durable_claim = next(
+                (
+                    claim
+                    for claim in load_claims(
+                        home=getattr(self, "_goal_continuation_claim_home", None)
+                    )
+                    if claim.session_key == session_key
+                ),
+                None,
+            )
+        except Exception:
+            logger.warning(
+                "goal continuation: durable startup claim lookup failed for session %s",
+                session_key,
+            )
+            raise RuntimeError("durable startup successor publication failed") from None
+
+        if durable_claim is not None:
+            if len(durable_claim.events) >= self._BUSY_QUEUE_MAX_PENDING:
+                logger.warning(
+                    "Dropping startup-gated follow-up for session %s — pending queue at cap (%d).",
+                    session_key, self._BUSY_QUEUE_MAX_PENDING,
+                )
+                return False
+            try:
+                append_claim_event(
+                    session_key,
+                    durable_claim.claim_id,
+                    event,
+                    home=getattr(self, "_goal_continuation_claim_home", None),
+                )
+            except Exception:
+                logger.warning(
+                    "goal continuation: durable startup successor publication failed for session %s",
+                    session_key,
+                )
+                raise RuntimeError("durable startup successor publication failed") from None
+            return True
+
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
             queue = self._startup_restore_queue = []
+        queued_for_session = 0
+        for queued_event in queue:
+            try:
+                if self._session_key_for_source(queued_event.source) == session_key:
+                    queued_for_session += 1
+            except Exception:
+                continue
+        if queued_for_session >= self._BUSY_QUEUE_MAX_PENDING:
+            logger.warning(
+                "Dropping startup-gated message for session %s — pending queue at cap (%d).",
+                session_key, self._BUSY_QUEUE_MAX_PENDING,
+            )
+            return False
         queue.append(event)
         with suppress(Exception):
             source = event.source
@@ -88,6 +177,7 @@ class GatewayStartupMixin:
                 source.platform.value if source and source.platform else "unknown",
                 source.chat_id if source else "unknown",
             )
+        return True
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
@@ -439,6 +529,39 @@ class GatewayStartupMixin:
             adapter = await self._obligation_adapter(row)
             if adapter is None:
                 continue
+            if (
+                row.get("claim_id")
+                and row.get("claim_event_id")
+                and row.get("source_json")
+                and row.get("raw_content") is not None
+                and not row.get("runtime_recovery")
+            ):
+                try:
+                    replay_event = self._claimed_result_replay_event(row)
+                    await adapter._process_message_background(
+                        replay_event, row["session_key"])
+                    from gateway.delivery_ledger import get_claimed_result
+
+                    replay_state = await asyncio.to_thread(
+                        get_claimed_result,
+                        row["claim_id"],
+                        row["claim_event_id"],
+                    )
+                    if replay_state and replay_state["state"] == "delivered":
+                        redelivered += 1
+                except Exception:
+                    from gateway.delivery_ledger import mark_claimed_result_failed
+
+                    await asyncio.to_thread(
+                        mark_claimed_result_failed,
+                        row["obligation_id"],
+                        "replay_pipeline_failed",
+                    )
+                    logger.warning(
+                        "Claimed-result replay pipeline failed for obligation %s",
+                        row["obligation_id"],
+                    )
+                continue
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
@@ -465,6 +588,51 @@ class GatewayStartupMixin:
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
             await self._arm_flood_timers_for_waiting_rows()
         return redelivered
+
+    @staticmethod
+    def _claimed_result_replay_event(row: Dict[str, Any]) -> MessageEvent:
+        """Rebuild only the non-authoritative routing needed for output replay."""
+        from gateway.delivery_ledger import RECOVERED_MARKER
+
+        source_payload = json.loads(row["source_json"])
+        if not isinstance(source_payload, dict):
+            raise ValueError("invalid claimed-result replay source")
+        source_data = dict(source_payload)
+        is_bot = source_data.pop("is_bot", False)
+        role_authorized = source_data.pop("role_authorized", False)
+        if not isinstance(is_bot, bool) or role_authorized is not False:
+            raise ValueError("invalid claimed-result replay trust state")
+        source = SessionSource.from_dict(source_data)
+        source.is_bot = is_bot
+        source.role_authorized = False
+        if (
+            source.platform.value != row["platform"]
+            or str(source.chat_id) != str(row["chat_id"])
+            or (str(source.thread_id) if source.thread_id else None)
+            != (str(row["thread_id"]) if row.get("thread_id") else None)
+            or (source.profile or "default") != (row.get("profile") or "default")
+        ):
+            raise ValueError("claimed-result replay route mismatch")
+        raw_content = row.get("raw_content")
+        if not isinstance(raw_content, str):
+            raise ValueError("claimed-result replay payload is unavailable")
+        event = MessageEvent(
+            text="",
+            source=source,
+            message_id=row.get("message_ref"),
+            internal=True,
+            allow_gateway_control=False,
+            goal_continuation=True,
+        )
+        setattr(event, "_hermes_precomputed_response", raw_content)
+        if row.get("needs_marker"):
+            setattr(
+                event,
+                "_hermes_recovery_marker",
+                row.get("marker", RECOVERED_MARKER),
+            )
+        setattr(event, "_hermes_precomputed_obligation_id", row["obligation_id"])
+        return event
 
     async def _obligation_adapter(self, row: dict):
         """Resolve the adapter for a claimed ledger row, or None when it cannot be delivered now."""
@@ -717,19 +885,35 @@ class GatewayStartupMixin:
         the old 120 s recency sweep re-answered every recently active chat. Returns (resumed,
         ledgered)."""
         from gateway.run import _float_env
+        from gateway.delivery_ledger import completed_active_turn_tokens
+
         resumed = ledgered = 0
         max_age = max(60 * 60, int(max(1.0, _float_env("HERMES_AGENT_TIMEOUT", 1800)) * 2))
+        # Turns whose claimed goal-continuation result owns publication are neither re-ledgered nor
+        # resumed. Fail closed: without this set a completed claimed turn could be answered twice.
+        try:
+            completed_tokens = await asyncio.to_thread(
+                completed_active_turn_tokens,
+                home=getattr(self, "_goal_continuation_claim_home", None),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "completed-result ownership recovery is unavailable"
+            ) from exc
         with _log_suppressed(logging.WARNING, "Crash-left reply recovery on startup failed: %s"):
-            ledgered = await self._ledger_crash_left_replies(max_age)
+            ledgered = await self._ledger_crash_left_replies(max_age, completed_tokens)
         with _log_suppressed(logging.WARNING, "Exact active-turn recovery on startup failed: %s"):
-            resumed = await self.async_session_store.recover_interrupted_turns(max_age_seconds=max_age)
+            resumed = await self.async_session_store.recover_interrupted_turns(
+                max_age_seconds=max_age, completed_turn_tokens=completed_tokens)
         return resumed, ledgered
 
-    async def _ledger_crash_left_replies(self, max_age_seconds: int) -> int:
+    async def _ledger_crash_left_replies(
+            self, max_age_seconds: int, completed_turn_tokens: Optional[dict] = None) -> int:
         """Settle every marked turn whose final reply was persisted and clear its marker, so
         auto-resume does not regenerate it: a reply live delivery would have suppressed is owed
         nothing, any other goes to the delivery ledger for the boot sweep. Without the ledger a
-        presentable reply stays marked and resumes."""
+        presentable reply stays marked and resumes. A turn in ``completed_turn_tokens`` is skipped: its
+        claimed goal-continuation result already owns publication, and recovery clears its marker."""
         from gateway.delivery_ledger import compute_obligation_id, ledger_enabled, record_crash_left_reply
         ledger_on = await asyncio.to_thread(ledger_enabled)
         cutoff = time.time() - max_age_seconds  # older markers are cleared, never acted on
@@ -743,6 +927,8 @@ class GatewayStartupMixin:
             ]
         ledgered = 0
         for key, session_id, token, started_at, origin, profile in marked:
+            if token in (completed_turn_tokens or {}).get(key, ()):
+                continue  # the claimed result owns publication
             started = started_at.timestamp()  # aware UTC marker; a pre-upgrade naive one reads as local
             if started < cutoff:
                 continue
@@ -1129,6 +1315,7 @@ class GatewayStartupMixin:
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
+        await asyncio.to_thread(self._reconcile_completed_goal_continuation_claims)
         # Recover the turns the last process left marked (in flight, or reply not yet ledgered).
         # SKIP after a clean exit — the previous process already drained.
         _clean_marker = _hermes_home / ".clean_shutdown"
@@ -1487,6 +1674,12 @@ class GatewayStartupMixin:
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )
+        recovered_claims = self._recover_goal_continuation_claims()
+        if recovered_claims:
+            logger.info(
+                "Scheduled crash-safe recovery for %d goal continuation claim(s)",
+                recovered_claims,
+            )
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()

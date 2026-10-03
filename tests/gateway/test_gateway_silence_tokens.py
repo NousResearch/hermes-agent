@@ -201,6 +201,7 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
         event_message_id=None,
         inbound_message_id="msg-42",
         run_generation=1,
+        claimed_event=None,  # TurnContext field: no claimed goal-continuation event
     )
     result = {"final_response": "NO_REPLY", "failed": False}
 

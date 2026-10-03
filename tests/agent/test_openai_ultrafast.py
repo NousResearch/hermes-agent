@@ -60,8 +60,8 @@ def test_desktop_surfaces_carry_the_exact_tier_ultrafast_is_never_plain_fast():
     caps = {m: c for row in rows for m, c in row["capabilities"].items()}
     assert caps["gpt-6-astra-900k"]["fast"] and caps["gpt-6-astra-900k"].get("ultrafast")
     assert caps["gpt-6-sol"]["fast"] and not caps["gpt-6-sol"].get("ultrafast")
-    for model in ("gpt-daybreak-blue-latest-900k", "openai/gpt-6-astra"):  # ignored alias / proxy route
-        assert not caps[model]["fast"] and not caps[model].get("ultrafast"), model
+    assert caps["gpt-daybreak-blue-latest-900k"]["fast"] and not caps["gpt-daybreak-blue-latest-900k"].get("ultrafast")
+    assert not caps["openai/gpt-6-astra"]["fast"] and not caps["openai/gpt-6-astra"].get("ultrafast")  # proxy route
     for params, tier in (({"fast": True, "service_tier": "ultrafast"}, "ultrafast"),
                          ({"fast": True, "service_tier": "normal"}, ""), ({"fast": True}, "priority"), ({}, None)):
         assert create_overrides(params)[2] == tier, params

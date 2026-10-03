@@ -1140,10 +1140,10 @@ def provider_label(provider: Optional[str]) -> str:
 
 
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
-    """OpenAI flagship eligible for Priority Processing; Codex-series and Daybreak/cyber aliases ignore ``service_tier``."""
+    """OpenAI flagship eligible for Priority Processing. Codex-series excluded — the Codex Responses
+    API doesn't accept ``service_tier``."""
     base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
-    return (bool(base) and "codex" not in base and not base.startswith(("gpt-daybreak-", "gpt-5.6-cyber"))
-            and base.startswith(tuple(_OPENAI_FAST_MODE_PREFIXES)))
+    return bool(base) and "codex" not in base and base.startswith(tuple(_OPENAI_FAST_MODE_PREFIXES))
 
 
 def _strip_vendor_prefix(model_id: str) -> str:

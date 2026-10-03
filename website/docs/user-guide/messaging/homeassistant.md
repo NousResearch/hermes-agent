@@ -27,9 +27,9 @@ hermes -p <profile> plugins install homeassistant
 The plugin declares its own Python dependency (`aiohttp`), so there is no pip extra to install. The old `hermes-agent[homeassistant]` extra has been removed.
 
 :::info Upgrading from a release that bundled Home Assistant
-Nothing to do. Every profile that was already using Home Assistant — `HASS_TOKEN` in its `.env`, `platforms.homeassistant` enabled or configured in `config.yaml`, or the `homeassistant` toolset listed in `platform_toolsets` — gets the plugin installed automatically from the catalog by `hermes update` (for all profiles sharing the install). If that step could not run, Hermes installs it the first time the profile starts (agent or gateway start; this honours `security.allow_lazy_installs`). The outcome is reported in the terminal, the Desktop app and chat.
+Nothing to do. Every profile that was already using Home Assistant — `HASS_TOKEN` in its `.env`, `platforms.homeassistant` enabled (or given a `token`) in `config.yaml`, or the `homeassistant` toolset listed in `platform_toolsets` — gets the plugin installed automatically from the catalog by `hermes update` (for all profiles sharing the install). If that step could not run, Hermes installs it the first time the profile starts (agent or gateway start; this honours `security.allow_lazy_installs`). The outcome is reported in the terminal, the Desktop app and chat.
 
-Your configuration carries over unchanged: the same `HASS_TOKEN` / `HASS_URL` variables, the same `homeassistant` platform name and `platforms.homeassistant` keys, the same `homeassistant` toolset and tool names, and the same cron `deliver: homeassistant:<notify target>` syntax.
+Your configuration carries over unchanged: the same `HASS_TOKEN` / `HASS_URL` variables, the same `homeassistant` platform name and `platforms.homeassistant` keys, the same `homeassistant` toolset and tool names, and the same cron `deliver: homeassistant:<notify target>` syntax. One difference: like every plugin tool, the `ha_*` tools sit behind [Tool Search](../features/tools.md) (`tool_search` / `tool_call`) when it is on, instead of being listed directly.
 :::
 
 ## Setup

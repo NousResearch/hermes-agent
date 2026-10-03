@@ -94,7 +94,7 @@ class TestRunningJobGuard:
         result = callback()
         future.set_result(result)
 
-        assert claim_calls == [("queued-job", {"return_job": True})]
+        assert claim_calls == [("queued-job", {"return_job": True, "advance_schedule": False})]
         assert sched._inflight_key("queued-job") not in sched._running_job_ids
 
     def test_create_execution_failure_does_not_wedge_running_set(self, tmp_path, monkeypatch):

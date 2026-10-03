@@ -870,3 +870,83 @@ async def test_refresh_400_recovery_rejects_disk_pair_from_another_issuer(tmp_pa
     assert recovered is False
     assert provider.context.current_tokens is None
     assert (await storage.get_tokens()).refresh_token is None, "foreign refresh token must not survive on disk"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_index", [0, 1])
+async def test_cancelling_401_waiter_keeps_peer_recovery_alive(monkeypatch, cancel_index):
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    manager = MCPOAuthManager()
+    entry = _ProviderEntry(
+        server_url="https://example.test/mcp", oauth_config=None,
+        provider=SimpleNamespace(context=SimpleNamespace(can_refresh_token=lambda: True)),
+    )
+    manager._entries[manager._key("srv")] = entry
+    entered, release, peer_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    recoveries = 0
+
+    async def delayed_disk_check(name):
+        nonlocal recoveries
+        recoveries += 1
+        entered.set()
+        await release.wait()
+        return False
+
+    monkeypatch.setattr(manager, "invalidate_if_disk_changed", delayed_disk_check)
+
+    async def peer():
+        peer_started.set()
+        return await manager.handle_401("srv", "expired-token")
+
+    first = asyncio.create_task(manager.handle_401("srv", "expired-token"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    second = asyncio.create_task(peer())
+    await asyncio.wait_for(peer_started.wait(), timeout=5)
+    tasks = [first, second]
+    try:
+        tasks[cancel_index].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tasks[cancel_index]
+        release.set()
+        assert await asyncio.wait_for(tasks[1 - cancel_index], timeout=5) is True
+        assert recoveries == 1
+        assert entry.pending_401 == {}
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, *manager._inflight_tasks, return_exceptions=True)
+
+
+def test_mcp_loop_shutdown_drains_shared_401_recovery(monkeypatch):
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+    from tools.mcp_tool_lifecycle import _drain_mcp_loop_tasks
+
+    async def run():
+        manager = MCPOAuthManager()
+        entry = _ProviderEntry(
+            server_url="https://example.test/mcp", oauth_config=None,
+            provider=SimpleNamespace(context=SimpleNamespace(can_refresh_token=lambda: True)),
+        )
+        manager._entries[manager._key("srv")] = entry
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed_disk_check(name):
+            entered.set()
+            await release.wait()
+            return False
+
+        monkeypatch.setattr(manager, "invalidate_if_disk_changed", delayed_disk_check)
+        waiter = asyncio.create_task(manager.handle_401("srv", "expired-token"))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        recovery_tasks = set(manager._inflight_tasks)
+        assert len(recovery_tasks) == 1
+
+        await _drain_mcp_loop_tasks(timeout=5)
+
+        assert waiter.cancelled()
+        assert all(task.cancelled() for task in recovery_tasks)
+        assert manager._inflight_tasks == set()
+        assert entry.pending_401 == {}
+
+    # Drain a dedicated loop so the real shutdown helper cannot cancel the test runner.
+    asyncio.run(run())

@@ -402,7 +402,8 @@ class MCPOAuthManager:
                 self._inflight_tasks.add(task)
                 task.add_done_callback(self._inflight_tasks.discard)
         try:
-            return await pending
+            # A caller owns only its wait, not the recovery shared with other calls.
+            return await asyncio.shield(pending)
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("MCP OAuth '%s': awaiting 401 handler failed: %s", server_name, exc)
             return False

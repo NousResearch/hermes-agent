@@ -4193,6 +4193,11 @@ class GatewayRunner(
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+        elif getattr(source, "platform", None) == Platform.DISCORD:
+            user_id = getattr(source, "user_id", None)
+            if user_id:
+                metadata = dict(metadata or {})
+                metadata.setdefault("user_id", str(user_id))
         from gateway.session_context import source_route_metadata
         metadata = source_route_metadata(source, metadata)
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's

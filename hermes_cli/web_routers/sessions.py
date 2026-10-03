@@ -665,6 +665,9 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
                 steer_text := _extract_steer_text_from_message(message)):
             message = {**message, "display_content": steer_text}
         if not is_compaction_summary_message(message):
+            if project_compaction_message_for_display(message) is None:
+                # A re-stated in-flight request: its original row is the visible copy (#131104).
+                message = {**message, "display_kind": "hidden"}
             projected_messages.append(message)
             continue
         display_view = project_compaction_message_for_display(message)

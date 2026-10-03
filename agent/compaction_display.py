@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import ContextCompressor, is_compaction_summary_message
+from agent.context_compressor import (
+    ContextCompressor,
+    _INFLIGHT_TASK_REPLAY_HEADER,
+    _content_text_for_contains,
+    is_compaction_summary_message,
+)
 
 
 _COMPACTION_INTERNAL_FIELDS = (
@@ -30,21 +35,32 @@ _COMPACTION_INTERNAL_FIELDS = (
 )
 
 
+def _is_inflight_restatement(message: Dict[str, Any]) -> bool:
+    """A copy of an unfinished request that compaction re-stated after its handoff (#131104).
+
+    The original user row stays in the display lineage as an archived row, so painting the
+    restatement too shows the request twice, the second copy wrapped in a model-only frame.
+    """
+    text = _content_text_for_contains(message.get("content")).lstrip()
+    return message.get("role") == "user" and text.startswith(_INFLIGHT_TASK_REPLAY_HEADER)
+
+
 def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return authentic transcript content, or ``None`` for a pure handoff.
 
     Model-facing recovery history retains the complete carrier. Display
     projections instead remove the handoff, inherited tool state, and internal
     reasoning while preserving any real prior-tail content or live user ask
-    embedded in the carrier.
+    embedded in the carrier. A re-stated in-flight request (standalone, or the
+    only live content of a carrier) is hidden: its original row is displayed.
     """
     if not isinstance(message, dict):
         return None
     if not is_compaction_summary_message(message):
-        return message.copy()
+        return None if _is_inflight_restatement(message) else message.copy()
 
     projected = ContextCompressor._strip_context_summary_handoff_message(message)
-    if projected is None:
+    if projected is None or _is_inflight_restatement({**projected, "role": "user"}):
         return None
 
     projected = projected.copy()

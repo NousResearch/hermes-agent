@@ -205,11 +205,51 @@ class TestSessionOps:
             "openai-codex:gpt-5.4",
             "openai-codex:gpt-5.4-mini",
         ]
+        assert [model.name for model in resp.models.available_models] == [
+            "claude-sonnet-4-6 · Anthropic",
+            "gpt-5.4 · OpenAI Codex",
+            "gpt-5.4-mini · OpenAI Codex",
+        ]
         picker_context.with_overrides.assert_called_once_with(
             current_provider="openai-codex",
             current_model="gpt-5.4",
             current_base_url="https://api.openai.com/v1",
         )
+
+    @pytest.mark.asyncio
+    async def test_current_model_fallback_keeps_model_name_first(self):
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6"],
+                }
+            ]
+        }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        current = next(
+            model
+            for model in resp.models.available_models
+            if model.model_id == "openai-codex:gpt-5.4"
+        )
+        assert current.name == "gpt-5.4 · ChatGPT or Codex Subscription"
 
 
 

@@ -3821,7 +3821,7 @@ export interface CronJobRow {
   last_run_at?: string | null
   last_status?: string | null
   last_delivery_error?: string | null
-  last_delivery_unverified?: boolean | null
+  last_delivery_unverified?: string[] | null
   last_fire_error?: string | null
   last_error?: string | null
   enabled?: boolean

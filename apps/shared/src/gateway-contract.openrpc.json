@@ -11391,7 +11391,10 @@
           "last_delivery_unverified": {
             "anyOf": [
               {
-                "type": "boolean"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"

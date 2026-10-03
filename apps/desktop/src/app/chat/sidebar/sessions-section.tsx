@@ -109,7 +109,7 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  onResumeSession: (sessionId: string, session?: SessionInfo) => void
+  onResumeSession: (sessionId: string, session?: SessionInfo, intent?: 'tab' | 'window') => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
@@ -287,7 +287,7 @@ export function SidebarSessionsSection({
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),
-        onResume: () => onResumeSession(session.id, session),
+        onResume: (intent?: 'tab' | 'window') => onResumeSession(session.id, session, intent),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
@@ -617,14 +617,17 @@ export function SidebarSessionsSection({
     inner = visibleRows.map(row => renderListRow(row, false, dividerAction))
   }
 
-  // The virtualizer owns its own scroller, so suppress the wrapper's overflow
-  // to avoid a double scroll container. Both axes: `overflow-y-visible` next
-  // to the inherited `overflow-x-hidden` computes to `auto` (CSS spec), which
-  // kept a phantom 4px scrollbar gutter and cut every row short on the right.
-  const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-visible')
+  // Ordinary sections are content inside the sidebar's one outer scroller.
+  // The virtualizer still receives the original contentClassName and owns its
+  // bounded viewport, while its wrapper stays visible to avoid a double scroll
+  // container and gutter. Non-virtual roots must also release the old flex/clip
+  // constraints or their content expands behind an inert hidden viewport.
+  const resolvedContentClassName = cn(contentClassName, 'max-h-none overflow-visible')
+
+  const resolvedRootClassName = cn(rootClassName, !flatVirtualized && 'min-h-0 flex-none shrink-0 overflow-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={resolvedRootClassName}>
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}
@@ -653,7 +656,7 @@ interface SortableSessionRowProps {
   onDelete: () => void
   onPin: () => void
   onToggleUnread: () => void
-  onResume: () => void
+  onResume: (intent?: 'tab' | 'window') => void
 }
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {

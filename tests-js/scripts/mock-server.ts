@@ -43,18 +43,20 @@ export interface MockServerOptions {
 
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
-/** Pause the first completion whose request JSON contains this text. */
-holdFirstCompletionContaining?: string
-/** Absolute sandbox path written by the verify-on-stop scripted tool call. */
-verificationWritePath?: string
-/**
- * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
- *
- * Without it that process is a bare `sleep 5`, which races the agent turn and
- * the 4s auto-dismiss linger — see `createBackgroundReleaseHandle`. Pass a
- * handle's `path` to let the test decide when the process exits.
- */
-backgroundReleasePath?: string
+  /** Pause the first completion whose request JSON contains this text. */
+  holdFirstCompletionContaining?: string
+  /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
+  verificationWritePath?: string
+  /**
+   * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
+   *
+   * Without it that process is a bare `sleep 5`, which races the agent turn and
+   * the 4s auto-dismiss linger — see `createBackgroundReleaseHandle`. Pass a
+   * handle's `path` to let the test decide when the process exits.
+   */
+  backgroundReleasePath?: string
+  /** Enable the delegate-card ownership script for its controlled A/B/C requests. */
+  delegateCardScenario?: boolean
 }
 
 export interface MockServer {
@@ -63,6 +65,7 @@ export interface MockServer {
   receivedPrompts: string[]
   /** The `model` field of every chat completion request, in arrival order. */
   receivedModels: string[]
+  receivedRequestSummaries: MockRequestSummary[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -90,9 +93,102 @@ export interface ScriptedTurn {
   text: string
   /** Tool calls to emit. Empty array = final turn (finish_reason: stop). */
   toolCalls?: Array<{
+    id?: string
     name: string
     args: Record<string, unknown>
   }>
+}
+
+export interface MockRequestSummary {
+  selectedBranch: string
+  toolResultIds: string[]
+}
+
+export const DELEGATE_CARD_TRIGGERS = {
+  a: 'E2E_DELEGATE_CARD_A',
+  b: 'E2E_DELEGATE_CARD_B',
+  c: 'E2E_DELEGATE_CARD_C',
+} as const
+
+export const DELEGATE_CARD_GOALS = {
+  a: 'Inspect historical delegate card A',
+  b: 'Inspect historical delegate card B',
+  c: 'Inspect live delegate card C',
+} as const
+
+export const DELEGATE_CARD_PARENT_DONE = {
+  a: 'E2E_DELEGATE_A_PARENT_DONE',
+  b: 'E2E_DELEGATE_B_PARENT_DONE',
+  c: 'E2E_DELEGATE_C_PARENT_DONE',
+} as const
+
+export const DELEGATE_CARD_COMPLETION_MARKERS = {
+  a: 'E2E_DELEGATE_A_COMPLETION_MARKER',
+  b: 'E2E_DELEGATE_B_COMPLETION_MARKER',
+  c: 'E2E_DELEGATE_C_COMPLETION_MARKER',
+} as const
+
+export const DELEGATE_CARD_COMPLETION_ACKS = {
+  a: 'Recorded the first delegated completion.',
+  b: 'Recorded the second delegated completion.',
+  c: 'Recorded the third delegated completion.',
+} as const
+
+const DELEGATE_CARD_CHILD_SUMMARIES = {
+  a: `Completed delegate A. ${DELEGATE_CARD_COMPLETION_MARKERS.a}`,
+  b: `Completed delegate B. ${DELEGATE_CARD_COMPLETION_MARKERS.b}`,
+  c: `Completed delegate C. ${DELEGATE_CARD_COMPLETION_MARKERS.c}`,
+} as const
+
+export const DELEGATE_CARD_TURNS: readonly ScriptedTurn[] = [
+  {
+    text: '',
+    toolCalls: [{
+      id: 'call_e2e_delegate_a',
+      name: 'delegate_task',
+      args: {
+        tasks: [{
+          goal: DELEGATE_CARD_GOALS.a,
+          context: `Historical delegate card A context. ${DELEGATE_CARD_COMPLETION_MARKERS.a}`,
+        }],
+      },
+    }],
+  },
+  {
+    text: '',
+    toolCalls: [{
+      id: 'call_e2e_delegate_b',
+      name: 'delegate_task',
+      args: {
+        tasks: [{
+          goal: DELEGATE_CARD_GOALS.b,
+          context: `Historical delegate card B context. ${DELEGATE_CARD_COMPLETION_MARKERS.b}`,
+        }],
+      },
+    }],
+  },
+  {
+    text: '',
+    toolCalls: [{
+      id: 'call_e2e_delegate_c',
+      name: 'delegate_task',
+      args: {
+        tasks: [{
+          goal: DELEGATE_CARD_GOALS.c,
+          context: `HOLD_DELEGATE_C_CHILD ${DELEGATE_CARD_COMPLETION_MARKERS.c}`,
+        }],
+      },
+    }],
+  },
+] as const
+
+const DELEGATE_C_TERMINAL_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{
+    id: 'e2e-c-terminal',
+    name: 'terminal',
+    args: { command: "printf 'C-terminal-activity\\n'" },
+  }],
 }
 
 const INTERIM_SCRIPT: ScriptedTurn[] = [
@@ -144,6 +240,7 @@ let _taskPanelResumeIndex = 0
 
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
+const _receivedRequestSummaries: MockRequestSummary[] = []
 
 /** Reset the script indices (called between tests via restartMockServer). */
 function resetScriptIndex(): void {
@@ -155,6 +252,7 @@ function resetScriptIndex(): void {
   _verificationStopIndex = 0
   _taskPanelResumeIndex = 0
   _receivedUserTexts.length = 0
+  _receivedRequestSummaries.length = 0
 }
 
 /** Return the user prompts the real backend submitted to this mock server. */
@@ -732,6 +830,88 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isCorrectionSwitchTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
           )
+          const controlledToolResultIds = new Set([
+            ...DELEGATE_CARD_TURNS.map(turn => turn.toolCalls?.[0]?.id).filter((id): id is string => Boolean(id)),
+            'e2e-c-terminal',
+          ])
+          const toolResultIds = messages
+            .filter(message => message?.role === 'tool')
+            .map(message => typeof message?.tool_call_id === 'string' ? message.tool_call_id : '')
+            .filter(id => controlledToolResultIds.has(id))
+          const hasToolResult = (id: string) => toolResultIds.includes(id)
+          const summarizeDelegateRequest = (selectedBranch: string) => {
+            _receivedRequestSummaries.push({ selectedBranch, toolResultIds })
+          }
+          const respondWithTurn = (turn: ScriptedTurn) => {
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+          }
+          const delegateKeys = ['a', 'b', 'c'] as const
+          const isAsyncCompletion = /^\[ASYNC DELEGATION BATCH COMPLETE — [^\]\r\n]+\](?:\r?\n|$)/.test(userText)
+          let delegateReply: string | undefined
+
+          // Classify producer-formatted async completions before parent, child,
+          // and hold routes. Exactly one child summary marker must be present.
+          if (options.delegateCardScenario && isAsyncCompletion) {
+            const completionKeys = delegateKeys.filter(key =>
+              userText.includes(DELEGATE_CARD_COMPLETION_MARKERS[key]),
+            )
+            const completionKey = completionKeys.length === 1 ? completionKeys[0] : undefined
+
+            if (completionKey) {
+              summarizeDelegateRequest(`delegate-${completionKey}-completion`)
+              respondWithTurn({ text: DELEGATE_CARD_COMPLETION_ACKS[completionKey] })
+
+              return
+            }
+          }
+
+          for (const [index, key] of options.delegateCardScenario ? delegateKeys.entries() : []) {
+            if (userText !== DELEGATE_CARD_TRIGGERS[key]) {
+              continue
+            }
+
+            const turn = DELEGATE_CARD_TURNS[index]!
+            const id = turn.toolCalls![0]!.id!
+            const hasResult = hasToolResult(id)
+            const selected = hasResult ? { text: DELEGATE_CARD_PARENT_DONE[key] } : turn
+
+            summarizeDelegateRequest(hasResult ? `delegate-${key}-parent-done` : `delegate-${key}-parent-call`)
+            respondWithTurn(selected)
+
+            return
+          }
+
+          for (const key of options.delegateCardScenario ? delegateKeys : []) {
+            if (userText !== DELEGATE_CARD_GOALS[key]) {
+              continue
+            }
+
+            if (key !== 'c') {
+              summarizeDelegateRequest(`delegate-${key}-child`)
+              respondWithTurn({ text: DELEGATE_CARD_CHILD_SUMMARIES[key] })
+
+              return
+            }
+
+            if (!hasToolResult('e2e-c-terminal')) {
+              summarizeDelegateRequest('delegate-c-terminal')
+              respondWithTurn(DELEGATE_C_TERMINAL_TURN)
+
+              return
+            }
+
+            summarizeDelegateRequest('held-text')
+            delegateReply = DELEGATE_CARD_CHILD_SUMMARIES.c
+            break
+          }
+
+          // The C child must execute one real terminal call before its text
+          // stream reaches the generic exact-goal hold matcher below. Private
+          // task context remains system-only and never participates in routing.
 
           if (isTaskPanelResumeTrigger) {
             const turn =
@@ -950,14 +1130,13 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          const reply = options.replyForPrompt?.(userText) ?? MOCK_REPLY
+          const reply = delegateReply ?? options.replyForPrompt?.(userText) ?? MOCK_REPLY
 
           if (stream) {
             const holdThisStream = Boolean(
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
-
             streamTextResponse(res, model, reply, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
@@ -1011,6 +1190,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         url,
         receivedPrompts,
         receivedModels,
+        receivedRequestSummaries: _receivedRequestSummaries,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),
@@ -1138,7 +1318,7 @@ function streamScriptedTurn(
         sseChunk(model, {
           tool_calls: turn.toolCalls!.map((tc, idx) => ({
             index: idx,
-            id: `call_e2e_${_scriptIndex}_${idx}`,
+            id: tc.id ?? `call_e2e_${_scriptIndex}_${idx}`,
             type: 'function',
             function: { name: tc.name, arguments: JSON.stringify(tc.args) },
           })),
@@ -1166,7 +1346,7 @@ function streamScriptedTurn(
           sseChunk(model, {
             tool_calls: turn.toolCalls!.map((tc, idx) => ({
               index: idx,
-              id: `call_e2e_${_scriptIndex}_${idx}`,
+              id: tc.id ?? `call_e2e_${_scriptIndex}_${idx}`,
               type: 'function',
               function: { name: tc.name, arguments: JSON.stringify(tc.args) },
             })),
@@ -1208,7 +1388,7 @@ function nonStreamingScriptedTurn(
 
   if (hasToolCalls) {
     message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
-      id: `call_e2e_${_scriptIndex}_${idx}`,
+      id: tc.id ?? `call_e2e_${_scriptIndex}_${idx}`,
       type: 'function',
       function: { name: tc.name, arguments: JSON.stringify(tc.args) },
     }))

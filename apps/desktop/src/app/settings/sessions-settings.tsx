@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
@@ -24,6 +25,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -56,6 +58,7 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
 function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const sidebarSessionsOpenInNewTab = useStore($sidebarSessionsOpenInNewTab)
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -150,6 +153,17 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
       {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
       <AutoArchiveSetting />
+
+      <div className="mb-6">
+        <ToggleRow
+          checked={sidebarSessionsOpenInNewTab}
+          description={s.sidebarOpenInNewTabDesc}
+          label={s.sidebarOpenInNewTabTitle}
+          onChange={on => {
+            $sidebarSessionsOpenInNewTab.set(on)
+          }}
+        />
+      </div>
 
       <SectionHeading
         icon={Archive}

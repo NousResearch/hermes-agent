@@ -2079,16 +2079,27 @@ function upsertResolvedSession(
     return
   }
 
-  const prepend = (prev: SessionInfo[]) => [
-    session,
-    ...prev.filter(existing => {
-      if (sessionMatchesStoredId(existing, storedSessionId)) {
-        return false
-      }
+  const prepend = (prev: SessionInfo[]) => {
+    const connectionId = session.connection_id?.trim()
+    const existing = connectionId
+      ? prev.find(
+          candidate =>
+            candidate.id === session.id &&
+            candidate.connection_id?.trim() === connectionId &&
+            normalizeProfileKey(candidate.profile) === normalizeProfileKey(session.profile)
+        )
+      : undefined
+    return [
+      existing ? { ...existing, ...session } : session,
+      ...prev.filter(existing => {
+        if (sessionMatchesStoredId(existing, storedSessionId)) {
+          return false
+        }
 
-      return (existing._lineage_root_id ?? existing.id) !== lineage
-    })
-  ]
+        return (existing._lineage_root_id ?? existing.id) !== lineage
+      })
+    ]
+  }
 
   // A resolve can observe a source move (cross-room /resume rewrites the row to
   // source='matrix', #113827): the row belongs to its current slice, and the

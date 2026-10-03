@@ -67,16 +67,43 @@ function chatWindowWebPreferences(preloadPath: string) {
 // onboarding overlays and the global session sidebar. `watch=1` marks a
 // spectator window (e.g. a running subagent's session): the renderer resumes it
 // lazily so the gateway never builds an agent just to stream into it.
-// `profile` names the backend the window must boot against (same carry as the
-// HUD's buildHudWindowUrl): without it a pop-out/watch window adopts the
-// PRIMARY profile and resolves the session id against the wrong backend
-// (#82768, #61286). Absent → unchanged primary adoption.
+// `profile` preserves the legacy/profile-only backend fallback. `ownerRoute`
+// carries exact source identity when the clicked row names one; it outranks the
+// fallback during renderer boot and keeps same-id sessions on distinct sources
+// in distinct native windows.
 function buildSessionWindowUrl(
   sessionId: string,
-  { connectionId, devServer, profile, rendererIndexPath, watch }: any = {}
+  { connectionId, devServer, ownerRoute, profile, rendererIndexPath, watch }: any = {}
 ) {
+  const params = new URLSearchParams({ win: 'secondary' })
+
+  if (watch) {
+    params.set('watch', '1')
+  }
+
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
-  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${connectionId !== undefined ? `&connectionId=${encodeURIComponent(connectionId ?? '')}` : ''}`
+
+  if (profileKey) {
+    params.set('profile', profileKey)
+  }
+
+  if (ownerRoute?.connectionId) {
+    params.set('ownerConnectionId', ownerRoute.connectionId)
+  }
+
+  if (ownerRoute?.profile) {
+    params.set('ownerProfile', ownerRoute.profile)
+  }
+
+  if (ownerRoute?.targetProfile) {
+    params.set('ownerTargetProfile', ownerRoute.targetProfile)
+  }
+
+  if (connectionId !== undefined) {
+    params.set('connectionId', connectionId ?? '')
+  }
+
+  const query = `?${params.toString()}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -152,17 +179,60 @@ function instanceWindowBounds(
 // spawning a duplicate, and a window removes itself from the registry when it
 // closes. The actual BrowserWindow construction is injected (the `factory`) so
 // this module stays free of Electron and is unit-testable.
-function createSessionWindowRegistry() {
-  const windows = new Map()
+export interface SessionWindowOwnerRoute {
+  connectionId: string
+  profile: string
+  targetProfile?: string
+}
 
-  function openOrFocus(sessionId, factory) {
+export function normalizeSessionWindowOwnerRoute(value: unknown): SessionWindowOwnerRoute | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+
+  const route = value as Record<string, unknown>
+  const connectionId = typeof route.connectionId === 'string' ? route.connectionId.trim() : ''
+  const profile = typeof route.profile === 'string' ? route.profile.trim() : ''
+
+  if (!connectionId || !profile) {
+    return undefined
+  }
+
+  const targetProfile = typeof route.targetProfile === 'string' ? route.targetProfile.trim() : ''
+
+  return {
+    connectionId,
+    profile,
+    ...(targetProfile ? { targetProfile } : {})
+  }
+}
+
+function sessionWindowKey(sessionId: string, ownerRoute?: SessionWindowOwnerRoute): string {
+  const id = sessionId.trim()
+
+  if (!ownerRoute) {
+    return id
+  }
+
+  const normalized = normalizeSessionWindowOwnerRoute(ownerRoute)
+
+  return normalized
+    ? JSON.stringify([id, normalized.connectionId, normalized.profile, normalized.targetProfile ?? normalized.profile])
+    : id
+}
+
+function createSessionWindowRegistry() {
+  const windows = new Map<string, any>()
+
+  function openOrFocus(sessionId: unknown, factory: (sessionId: string) => any, ownerRoute?: SessionWindowOwnerRoute) {
     const key = typeof sessionId === 'string' ? sessionId.trim() : ''
 
     if (!key) {
       return null
     }
 
-    const existing = windows.get(key)
+    const registryKey = sessionWindowKey(key, ownerRoute)
+    const existing = windows.get(registryKey)
 
     if (existing && !existing.isDestroyed()) {
       // Focus-or-create: never duplicate a window for the same chat.
@@ -185,12 +255,12 @@ function createSessionWindowRegistry() {
       return null
     }
 
-    windows.set(key, win)
+    windows.set(registryKey, win)
 
     // Self-cleanup on close so the registry never holds a destroyed window.
     win.on?.('closed', () => {
-      if (windows.get(key) === win) {
-        windows.delete(key)
+      if (windows.get(registryKey) === win) {
+        windows.delete(registryKey)
       }
     })
 
@@ -199,8 +269,10 @@ function createSessionWindowRegistry() {
 
   return {
     openOrFocus,
-    get: key => windows.get(key),
-    has: key => windows.has(key),
+    get: (sessionId: string, ownerRoute?: SessionWindowOwnerRoute) =>
+      windows.get(sessionWindowKey(sessionId, ownerRoute)),
+    has: (sessionId: string, ownerRoute?: SessionWindowOwnerRoute) =>
+      windows.has(sessionWindowKey(sessionId, ownerRoute)),
     get size() {
       return windows.size
     }

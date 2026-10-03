@@ -1,11 +1,13 @@
 """Verified-transition marks: an authority change is accepted only with its own mark.
 
-Exclusive-authority recovery verifies its proof (the owner's attested decision to continue, or later a
-lease witness), then marks the transition in the transaction that makes it. These tests drive the storage primitives and raw SQL writers; they do
-not certify any recovery protocol.
+Exclusive-authority recovery verifies its proof (the owner's attested decision to continue, a majority
+certificate, or the old host's signed handover), then marks the transition in the transaction that makes
+it. These tests drive the storage primitives and raw SQL writers; they do not certify any recovery
+protocol.
 """
 
 from contextlib import closing
+import copy
 import json
 import sqlite3
 
@@ -26,6 +28,13 @@ SYSTEM = json.dumps({"kind": "system", "id": "authority-control"}, separators=("
 def _proof(room_id="room-1", from_epoch=1, to_epoch=2, successor=AUTH_B, **extra):
     return {"room_id": room_id, "from_epoch": from_epoch, "to_epoch": to_epoch,
             "successor_gateway_id": successor, "configuration_seq": 1, "promises": [], **extra}
+
+
+def _handover(room_id="room-1", from_epoch=1, to_epoch=2, successor=AUTH_B, last_seq=3, **changes):
+    """The old authority's handover: its statement and signature (the caller verifies the signature)."""
+    statement = {"room_id": room_id, "from_epoch": from_epoch, "to_epoch": to_epoch, "successor": successor,
+                 "last_seq": last_seq, "last_hash": "a" * 64, **changes}
+    return {"statement": statement, "signature": "ed25519-v1." + "S" * 86}
 
 
 def _transition(proof=None, kind="certified"):
@@ -148,18 +157,19 @@ def test_a_transition_notice_is_shown_and_never_verified(tmp_path, monkeypatch):
 def test_transition_display_names_are_shown_and_never_verified(tmp_path, monkeypatch):
     monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
     db, _ = _copy(tmp_path)
-    display = {"from_name": "Mac mini", "to_name": "Home VPS", "offline_since": 1700000000.5}
+    display = {"from_name": "Mac mini", "to_name": "Home VPS", "offline_since": 1700000000.5, "reason": "automatic",
+               "at_risk": 0}
     replicas.promote_replica(db, room_id="room-1", transition=_transition(), text="Continues here.", display=display)
     payload = rooms.read_events(db, room_id="room-1")["events"][-1]["payload"]
-    assert {key: payload[key] for key in ("from_name", "to_name", "offline_since", "text")} == {
-        **display, "text": "Continues here."}
+    assert {key: payload[key] for key in (*display, "text")} == {**display, "text": "Continues here."}
     assert payload["proof_digest"] == safety.transition_proof_digest(_proof()) and _quarantine(db) == {}
     (tmp_path / "refused").mkdir()
     db, _ = _copy(tmp_path / "refused")
     with pytest.raises(replicas.ReplicaError, match="display accompanies"):
         replicas.promote_replica(db, room_id="room-1", display={"to_name": "Home VPS"})
     for refused in ({"to_name": "Home\nVPS"}, {"to_name": "x" * 201}, {"offline_since": -1},
-                    {"offline_since": "yesterday"}, {"host": "Mac mini"}, ["Mac mini"]):
+                    {"offline_since": "yesterday"}, {"host": "Mac mini"}, ["Mac mini"], {"reason": "vote"},
+                    {"at_risk": -1}, {"at_risk": True}):
         with pytest.raises(replicas.ReplicaError, match="display"):
             replicas.promote_replica(db, room_id="room-1", transition=_transition(), display=refused)
     assert _marks(db) == ([], [])
@@ -306,6 +316,85 @@ def test_a_marked_demotion_fences_without_quarantine(tmp_path, monkeypatch):
         rooms.append_event(
             db, room_id="room-1", event_id="stale", kind="message.user", actor=USER, payload={"text": "x"},
             authority_gateway_id=AUTH_A, authority_epoch=1)
+
+
+@pytest.mark.parametrize("kind", sorted(safety.PROOF_KINDS))
+def test_each_proof_kind_continues_the_room_with_its_mark(tmp_path, monkeypatch, kind):
+    db, _ = _copy(tmp_path)
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    proof = _handover() if kind == "handover" else _proof()
+    replicas.promote_replica(db, room_id="room-1", transition=_transition(proof, kind=kind))
+    transition = rooms.read_events(db, room_id="room-1")["events"][-1]
+    assert (transition["seq"], transition["payload"]["proof_kind"], transition["payload"]["proof"]) == (4, kind, proof)
+    assert _marks(db)[0] == [("room-1", 1, 2, AUTH_B, kind)] and _quarantine(db) == {}
+
+
+@pytest.mark.parametrize("replayed, error", [
+    ({"room_id": "room-2"}, "another room, epoch or successor"),  # another group's handover
+    ({"from_epoch": 2, "to_epoch": 3}, "another room, epoch or successor"),  # a later handover of this group
+    ({"successor": AUTH_C}, "another room, epoch or successor"),  # handed to another computer
+    ({"last_seq": 2}, "another last event"),  # an older handover: this copy holds more than it names
+    ({"last_seq": 4}, "another last event"),  # this copy has not caught up with what was handed over
+])
+def test_a_replayed_handover_statement_is_refused(tmp_path, monkeypatch, replayed, error):
+    """A handover hands exactly this history, in this group, from this epoch, to this computer."""
+    db, _ = _copy(tmp_path)
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    with pytest.raises(replicas.ReplicaError, match=error):
+        replicas.promote_replica(db, room_id="room-1", transition=_transition(_handover(**replayed), kind="handover"),
+                                 to_epoch=replayed.get("to_epoch", 2))
+    assert replicas.replica_state(db, room_id="room-1")["authority"] == {"gateway_id": AUTH_A, "epoch": 1}
+    assert _marks(db) == ([], [])
+
+
+def test_a_forged_or_malformed_handover_statement_is_refused(tmp_path, monkeypatch):
+    """The caller checks the signature and last_hash against the old host's key and the room's history.
+
+    Here, a statement changed after its digest was taken, or not in its exact shape, is refused, and a
+    statement used once can't verify a second change.
+    """
+    db, _ = _copy(tmp_path)
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
+    tampered = _transition(_handover(), kind="handover")
+    tampered["proof"]["statement"]["successor"] = AUTH_C
+    with pytest.raises(replicas.ReplicaError, match="does not match its proof"):
+        replicas.promote_replica(db, room_id="room-1", transition=tampered)
+    statement = _handover()["statement"]
+    for proof, error in (
+            ({**_handover(), "signer": AUTH_A}, "unknown fields"),
+            ({"statement": statement}, "missing fields"),
+            ({"statement": {**statement, "note": "x"}, "signature": _handover()["signature"]}, "unknown fields"),
+            ({**_handover(), "signature": "hmac-v1." + "S" * 86}, "ed25519-v1"),
+            (_handover(last_hash="A" * 64), "last_hash"),
+            (_handover(last_seq=-1), "last_seq"),
+            (_handover(from_epoch=True), "from_epoch"),
+            (_handover(successor=""), "successor"),
+            (_proof(), "missing fields")):  # another kind's proof is no handover
+        with pytest.raises(replicas.ReplicaError, match=error):
+            replicas.promote_replica(db, room_id="room-1", transition=_transition(proof, kind="handover"))
+    assert _marks(db) == ([], [])
+    signed = _transition(_handover(), kind="handover")
+    replicas.promote_replica(db, room_id="room-1", transition=copy.deepcopy(signed))
+    with rooms._transaction(db, immediate=True) as conn:
+        _insert_transition(conn, "room-1", 5, event_id="replayed", payload={
+            "from_epoch": 1, "to_epoch": 2, "successor_gateway_id": AUTH_B, **signed})
+    assert _quarantine(db) == {"room-1": "unverified_authority_transition"}
+
+
+def test_the_old_authority_marks_its_own_handover(tmp_path, monkeypatch):
+    db = _hosted(tmp_path)
+    monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_A)
+    for stale in (1, 3):
+        with pytest.raises(replicas.ReplicaError, match="another last event"):
+            replicas.demote_room(db, room_id="room-1", observed_gateway_id=AUTH_B, observed_epoch=2,
+                                 transition=_transition(_handover(last_seq=stale), kind="handover"))
+    proof = _handover(last_seq=2)
+    replicas.demote_room(db, room_id="room-1", observed_gateway_id=AUTH_B, observed_epoch=2,
+                         transition=_transition(proof, kind="handover"), display={"reason": "handover"})
+    lost = rooms.read_events(db, room_id="room-1")["events"][-1]
+    assert (lost["seq"], lost["kind"], lost["payload"]["proof_kind"], lost["payload"]["reason"]) == (
+        3, "authority.lost", "handover", "handover")
+    assert _marks(db)[0] == [("room-1", 1, 2, AUTH_B, "handover")] and _quarantine(db) == {}
 
 
 def test_a_transition_may_skip_an_epoch_nobody_certified(tmp_path, monkeypatch):

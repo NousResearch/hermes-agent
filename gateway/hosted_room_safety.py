@@ -75,7 +75,10 @@ _BRANCH_TRANSITION_SCHEMA_COLUMNS = frozenset({
     "marked_at", "seq", "event_id", "archived_at",
 })
 
-PROOF_KINDS = frozenset({"certified", "attested"})
+PROOF_KINDS = frozenset({"attested", "certified", "handover"})
+# A handover proof is ``{statement, signature}``: the old authority's statement, signed with its room
+# identity key, that it hands this room to ``successor`` after its event ``last_seq``.
+HANDOVER_STATEMENT_FIELDS = frozenset({"room_id", "from_epoch", "to_epoch", "successor", "last_seq", "last_hash"})
 
 _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_rooms_reject_reserved_insert",
@@ -145,10 +148,16 @@ def mark_verified_transition(
 ) -> None:
     """Mark one verified authority change, inside the transaction that makes it.
 
-    The caller has verified the proof whose digest this records. ``attested``: the room owner, or the
-    owner of a consented successor the owner designated, explicitly continued the group on this
-    machine. ``certified`` is reserved for exclusivity a lease witness grants; it is never a vote. The
-    mark lets the lineage triggers accept exactly one authority-change event (``authority.transition``,
+    The caller has verified the proof whose digest this records:
+
+    - ``attested``: the room owner, or the owner of a consented successor the owner designated,
+      explicitly continued the group on this machine;
+    - ``certified``: a certificate of signed promises from a majority of the room's voters, each
+      given only once its lease to the old authority had expired;
+    - ``handover``: the old authority's own signed statement handing the room to this successor
+      directly after its last event (``HANDOVER_STATEMENT_FIELDS``).
+
+    The mark lets the lineage triggers accept exactly one authority-change event (``authority.transition``,
     or a verified ``authority.lost``): in this room, at ``to_epoch`` directly after an event at
     ``from_epoch``, naming this successor, proof kind and digest. Written in any other way, the change
     is quarantined like any unproven takeover. ``to_epoch`` is any later epoch: an attempt that fenced
@@ -170,7 +179,7 @@ def mark_verified_transition(
     if to_epoch <= from_epoch:
         raise VerifiedTransitionError("a verified transition moves authority to a later epoch")
     if proof_kind not in PROOF_KINDS:
-        raise VerifiedTransitionError("proof_kind must be 'certified' or 'attested'")
+        raise VerifiedTransitionError("proof_kind must be 'attested', 'certified' or 'handover'")
     if not isinstance(proof_digest, str) or re.fullmatch(r"[0-9a-f]{64}", proof_digest) is None:
         raise VerifiedTransitionError("proof_digest must be a lowercase sha256 hex digest")
     if not conn.in_transaction:
@@ -288,7 +297,7 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
             from_epoch INTEGER NOT NULL CHECK (from_epoch >= 1),
             to_epoch INTEGER NOT NULL CHECK (to_epoch > from_epoch),
             successor_gateway_id TEXT NOT NULL,
-            proof_kind TEXT NOT NULL CHECK (proof_kind IN ('certified', 'attested')),
+            proof_kind TEXT NOT NULL CHECK (proof_kind IN ('attested', 'certified', 'handover')),
             proof_digest TEXT NOT NULL,
             created_at REAL NOT NULL,
             PRIMARY KEY (room_id, to_epoch),

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from contextlib import contextmanager
 from functools import partial
@@ -27,9 +28,9 @@ from gateway.hosted_rooms import (
     _prune_disbanded_rooms_locked, _room_id, _transaction, _validate_actor, _validate_event_kind,
     _validate_identifier, _validate_members, _validate_room_name, local_authority_gateway_id)
 from gateway.hosted_room_safety import (
-    PROOF_KINDS, _prune_disbanded_replicas_locked, _raise_if_quarantined, mark_verified_transition,
-    transition_proof_digest)
-from gateway.hosted_rooms_common import DbPath, bounded_int, clock, table_columns, utf8_len
+    HANDOVER_STATEMENT_FIELDS, PROOF_KINDS, _prune_disbanded_replicas_locked, _raise_if_quarantined,
+    mark_verified_transition, transition_proof_digest)
+from gateway.hosted_rooms_common import DbPath, bounded_int, clock, exact_fields, table_columns, utf8_len
 from gateway.hosted_rooms_common import display_label
 from gateway.hosted_rooms_common import text as bounded_text
 
@@ -93,7 +94,8 @@ def takeover_enabled() -> bool:
     Opening it is not enough on its own either. The triggers in ``gateway/hosted_room_safety.py``
     accept an authority change only together with a verified-transition mark written in the same
     transaction: ``promote_replica()`` and ``demote_room()`` write one when their caller passes a
-    ``transition`` it verified (the owner's attested decision to continue). Without one, as from these RPCs,
+    ``transition`` it verified (an owner's attested decision, a certificate or the old host's handover). Without
+    one, as from these RPCs,
     a takeover through an open gate still leaves the room read-only
     (``test_open_gate_quarantines_an_unmarked_promotion_but_not_a_marked_one`` pins both).
     """
@@ -311,16 +313,20 @@ def _append_control_event(
 def _verified_transition(value: Any) -> dict[str, Any]:
     """The caller's verified ``transition``: ``{proof_kind, proof_digest, proof}``.
 
-    The caller checked the proof itself (``attested``: the owner explicitly continued the group here;
-    ``certified``: reserved for a lease witness); here its digest must bind the proof the lineage
-    event records.
+    The caller checked the proof itself: ``attested``, the owner explicitly continued the group here;
+    ``certified``, a majority of the room's voters promised; ``handover``, the old authority signed
+    the handover statement (its signature and ``last_hash`` are checked against that authority's room
+    identity key and the room's history). Here its digest must bind the proof the lineage event
+    records, and a handover statement must have its exact shape.
     """
     if not isinstance(value, dict) or set(value) != {"proof_kind", "proof_digest", "proof"}:
         raise ReplicaError("transition must carry exactly proof_kind, proof_digest and proof")
     if value["proof_kind"] not in PROOF_KINDS:
-        raise ReplicaError("transition proof_kind must be 'certified' or 'attested'")
+        raise ReplicaError("transition proof_kind must be 'attested', 'certified' or 'handover'")
     if not isinstance(value["proof"], dict):
         raise ReplicaError("transition proof must be an object")
+    if value["proof_kind"] == "handover":
+        _handover_statement(value["proof"])
     try:
         digest = transition_proof_digest(value["proof"])
     except (TypeError, ValueError, RecursionError) as exc:
@@ -328,6 +334,28 @@ def _verified_transition(value: Any) -> dict[str, Any]:
     if value["proof_digest"] != digest:
         raise ReplicaError("transition proof_digest does not match its proof")
     return dict(value)
+
+
+_HANDOVER_SIGNATURE_RE = re.compile(r"ed25519-v1\.[A-Za-z0-9_-]{86}")
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _handover_statement(proof: dict[str, Any]) -> dict[str, Any]:
+    """The statement of a ``handover`` proof ``{statement, signature}``, in its exact shape."""
+    exact_fields(proof, label="handover proof", required={"statement", "signature"}, error=ReplicaError)
+    statement = exact_fields(proof["statement"], label="handover statement", required=HANDOVER_STATEMENT_FIELDS,
+                             error=ReplicaError)
+    if not isinstance(proof["signature"], str) or _HANDOVER_SIGNATURE_RE.fullmatch(proof["signature"]) is None:
+        raise ReplicaError("handover signature must be an ed25519-v1 signature")
+    for field in ("room_id", "successor"):
+        if not isinstance(statement[field], str) or not statement[field]:
+            raise ReplicaError(f"handover statement {field} must be a string")
+    for field, low in (("from_epoch", 1), ("to_epoch", 1), ("last_seq", 0)):
+        bounded_int(statement[field], error=ReplicaError, low=low, high=2**63 - 1,
+                    message=f"handover statement {field} must be an integer of at least {low}")
+    if not isinstance(statement["last_hash"], str) or _SHA256_HEX_RE.fullmatch(statement["last_hash"]) is None:
+        raise ReplicaError("handover statement last_hash must be a lowercase sha256 hex digest")
+    return dict(statement)
 
 
 def _transition_text(text: Any, verified: dict[str, Any] | None) -> dict[str, str]:
@@ -340,20 +368,23 @@ def _transition_text(text: Any, verified: dict[str, Any] | None) -> dict[str, st
     return {"text": bounded_text(text, error=ReplicaError, label="text", max_bytes=MAX_USER_TEXT_BYTES)}
 
 
-_DISPLAY_FIELDS = frozenset({"from_name", "to_name", "offline_since"})
+_DISPLAY_FIELDS = frozenset({"from_name", "to_name", "offline_since", "reason", "at_risk"})
+_DISPLAY_REASONS = frozenset({"automatic", "handover", "manual"})
 
 
 def _transition_display(display: Any, verified: dict[str, Any] | None) -> dict[str, Any]:
-    """Names and the time the old host went offline, for the event's notice; never verified.
+    """Names, the time the old host went offline, why it moved and what was at risk; never verified.
 
-    ``from_name`` and ``to_name`` are clean display labels, ``offline_since`` a unix time.
+    ``from_name`` and ``to_name`` are clean display labels, ``offline_since`` a unix time, ``reason``
+    one of ``automatic``, ``handover`` or ``manual``, and ``at_risk`` the number of events that no
+    successor was known to hold when the room moved.
     """
     if display is None:
         return {}
     if verified is None:
         raise ReplicaError("display accompanies a verified transition")
     if not isinstance(display, dict) or not set(display) <= _DISPLAY_FIELDS:
-        raise ReplicaError("display carries only from_name, to_name and offline_since")
+        raise ReplicaError("display carries only from_name, to_name, offline_since, reason and at_risk")
     shown: dict[str, Any] = {}
     for field in ("from_name", "to_name"):
         value = display.get(field)
@@ -365,11 +396,32 @@ def _transition_display(display: Any, verified: dict[str, Any] | None) -> dict[s
                               or not math.isfinite(since) or since < 0):
         raise ReplicaError("display offline_since must be a unix time")
     shown["offline_since"] = since
+    reason = display.get("reason")
+    if reason is not None and reason not in _DISPLAY_REASONS:
+        raise ReplicaError("display reason must be automatic, handover or manual")
+    shown["reason"] = reason
+    at_risk = display.get("at_risk")
+    if at_risk is not None:
+        bounded_int(at_risk, error=ReplicaError, message="display at_risk must be a non-negative integer")
+    shown["at_risk"] = at_risk
     return shown
 
 
-def _require_transition_scope(verified: dict[str, Any], **scope: Any) -> None:
-    """A proof that names its room, epochs or successor must name this transition's."""
+def _require_transition_scope(verified: dict[str, Any], *, last_seq: int, **scope: Any) -> None:
+    """A proof that names its room, epochs or successor must name this transition's.
+
+    A handover statement names all of them, and ``last_seq`` is the event this transition directly
+    follows: the old authority handed over exactly this history, no more and no less.
+    """
+    if verified["proof_kind"] == "handover":
+        statement = verified["proof"]["statement"]
+        named = {"room_id": statement["room_id"], "from_epoch": statement["from_epoch"],
+                 "to_epoch": statement["to_epoch"], "successor_gateway_id": statement["successor"]}
+        if any(named[key] != value for key, value in scope.items()):
+            raise ReplicaError("handover statement names another room, epoch or successor")
+        if statement["last_seq"] != last_seq:
+            raise ReplicaError("handover statement names another last event")
+        return
     if any(key in verified["proof"] and verified["proof"][key] != value for key, value in scope.items()):
         raise ReplicaError("transition proof names another room or epoch")
 
@@ -575,9 +627,11 @@ def promote_replica(
     safe; this makes it atomic. Without a ``transition`` the event is an ``authority.claimed`` the room store
     quarantines: readable, but closed to new events. With one the caller verified (``{proof_kind,
     proof_digest, proof}``), it is an ``authority.transition`` carrying that proof, marked verified in the
-    same transaction, and the room stays writable. A verified transition may skip epochs nobody
-    certified (``to_epoch``, any later epoch). Its optional ``text`` and ``display`` names are shown to
-    readers as the event's notice; they are outside the proof and its digest.
+    same transaction, and the room stays writable. A verified transition may skip epochs no authority
+    held (``to_epoch``, any later epoch). A ``handover`` statement must name this copy's last event: the
+    transition directly follows exactly the history the old authority handed over. Its optional ``text``
+    and ``display`` (names, reason, events at risk) are shown to readers as the event's notice; they are
+    outside the proof and its digest.
     """
     room_id = _room_id(room_id)
     if not isinstance(reason, str) or not reason or len(reason) > 200:
@@ -615,7 +669,7 @@ def promote_replica(
         else:
             _require_transition_scope(
                 verified, room_id=room_id, from_epoch=previous_epoch, to_epoch=target_epoch,
-                successor_gateway_id=local_gateway)
+                successor_gateway_id=local_gateway, last_seq=claim_seq - 1)
             claim = _control_event("transition", target_epoch, {
                 "from_epoch": previous_epoch, "to_epoch": target_epoch, "successor_gateway_id": local_gateway,
                 **verified, **notice})
@@ -659,7 +713,8 @@ def demote_room(
     then quarantines the room, since its history may have diverged: it stays readable but accepts no new
     events. With the verified transition to that epoch (``{proof_kind, proof_digest, proof}``), the
     demotion is marked in the same transaction and records that proof's kind and digest, and its
-    optional ``text`` and ``display`` notice.
+    optional ``text`` and ``display`` notice. The old authority marks its own ``handover`` this way: the
+    statement names its last event, which ``authority.lost`` directly follows.
     """
     room_id = _room_id(room_id)
     observed_gateway_id = _validate_identifier(
@@ -690,7 +745,7 @@ def demote_room(
         if verified is not None:
             _require_transition_scope(
                 verified, room_id=room_id, from_epoch=current_epoch, to_epoch=observed_epoch,
-                successor_gateway_id=observed_gateway_id)
+                successor_gateway_id=observed_gateway_id, last_seq=int(row["next_seq"]) - 1)
             payload.update(proof_kind=verified["proof_kind"], proof_digest=verified["proof_digest"], **notice)
             mark_verified_transition(
                 conn, room_id=room_id, from_epoch=current_epoch, to_epoch=observed_epoch,

@@ -1596,9 +1596,25 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         # electron-builder packs in place; only the verified staging tree may
         # replace the running app, never a failed or incomplete build.
 
+        # Never stop a Desktop that is one of our ancestors: on Windows the
+        # launch-time completion tail (venv_sync._finish_source_update) is
+        # spawned by the Desktop's own backend, making the Desktop an ancestor
+        # of this process. Stopping it terminates our parent chain before
+        # clear_completion() runs, the marker survives, and every subsequent
+        # launch re-enters the same tail -- a silent ~60 s crash loop (#127283).
+        # Skip the desktop build; it completes outside the Desktop process tree
+        # (`hermes desktop` from a terminal, or Update now in Settings -> About).
+        if _desktop_ancestor_in(desktop_dir) is not None:
+            print("  ? Skipped rebuilding the desktop app: this completion tail is")
+            print("    running inside the Desktop process (Windows exe lock). Quit")
+            print("    Hermes Desktop and run `hermes desktop` from a terminal, or")
+            print("    use Update now in Settings -> About, to finish the rebuild.")
+            return None
         stopped = _stop_desktop_processes_locking_build(desktop_dir)
         if stopped:
-            print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+            print(f"  ? Stopped running desktop app to free the build output (pid {
+', '.join(map(str, stopped))
+})")
     try:
         run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:

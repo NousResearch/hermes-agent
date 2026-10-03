@@ -1943,21 +1943,38 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
-def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
-    """True when every credential the candidate would use sits in an exhaustion cooldown longer
-    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
-    turn the same way the primary just did (#89401). A short throttle still gets its chance."""
+def _pool_exhaustion_detail(agent, fb_provider: str, fb_model: str) -> "Optional[str]":
+    """None when the candidate's credential pool is usable. Otherwise a short reason
+    token distinguishing the two ways the pool can be unusable: "cooldown" when every
+    entry sits in an exhaustion cooldown longer than the retry loop's longest wait
+    (the 600s Retry-After cap), versus "no-wait-info" when nothing reports a recovery
+    time at all — an unfilled borrowed row or empty-looking pool, where no entry is
+    actually in cooldown (#131993). The skip decision is the same either way; only
+    the log message differs."""
     pool = getattr(agent, "_credential_pool", None)
     if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
         try:
             from agent.credential_pool import load_pool
             pool = load_pool(fb_provider)
         except Exception:
-            return False
+            return None
     if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
-        return False
+        return None
     until = pool.next_available_at(model=fb_model)
-    return until is None or until - time.time() > 600
+    if until is None:
+        return "no-wait-info"
+    if until - time.time() > 600:
+        return "cooldown"
+    return None
+
+
+def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
+    """True when every credential the candidate would use sits in an exhaustion cooldown longer
+    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
+    turn the same way the primary just did (#89401). A short throttle still gets its chance.
+    An unusable pool with no wait information (unfilled borrowed row) also counts — see
+    _pool_exhaustion_detail for the distinction the log message needs (#131993)."""
+    return _pool_exhaustion_detail(agent, fb_provider, fb_model) is not None
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
@@ -1972,8 +1989,12 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
-    if _candidate_pool_exhausted(agent, fb_provider, fb_model):
+    pool_detail = _pool_exhaustion_detail(agent, fb_provider, fb_model)
+    if pool_detail == "cooldown":
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
+        return True
+    if pool_detail is not None:
+        logger.warning("Fallback skip: %s/%s credential pool is exhausted (no wait information — unfilled borrowed row or empty pool)", fb_provider, fb_model)
         return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:

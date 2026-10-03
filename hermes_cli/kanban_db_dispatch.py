@@ -141,6 +141,13 @@ class DispatchResult:
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    live_worker_deferred: list[str] = field(default_factory=list)
+    """Task ids whose dispatch was deferred because a LIVE worker process for
+    the same task id still exists (pre-claim guard, ``dispatch_deferred_live_worker``
+    event). No claim is taken and no worker spawns, so the tick simply retries
+    once the predecessor is gone. Never a spawn failure — the auto-block
+    circuit breaker must not see it (two live workers on one task id is the
+    failure this deferral prevents)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -157,8 +164,8 @@ class DispatchResult:
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
+    ``active_pr=1, recent_success=2, rate_limited=1, live_worker_deferred=1,
+    skipped_locked=1, memory_pressure=critical`` — the respawn-guard reasons counted per task
     plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
     CLI daemon and the embedded gateway dispatcher, which otherwise report a
     bare zero-spawn count while ``hermes kanban tail`` is the only place the
@@ -173,6 +180,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.live_worker_deferred:
+            counts["live_worker_deferred"] = counts.get("live_worker_deferred", 0) + len(res.live_worker_deferred)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -2022,6 +2031,59 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _live_worker_processes(conn: sqlite3.Connection, task_id: str) -> list[dict[str, Any]]:
+    """Live worker processes still recorded for ``task_id``, newest run first.
+
+    Consumed by the pre-claim guard in :func:`_dispatch_lane_task`: a NEW run
+    must never spawn for a task whose predecessor worker process is still
+    alive, so the dispatch is deferred instead. Evidence sources:
+
+    - closed-or-open ``task_runs`` rows that kept their pid + spawn
+      fingerprint (the same evidence :func:`reap_terminal_workers` consumes
+      and clears once the worker is gone), and
+    - a fingerprinted ``tasks.worker_pid`` on the card itself (a ready card
+      should have none — any fingerprint-verified hit is an anomaly worth
+      blocking on).
+
+    Runs still inside ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` are excluded: a
+    worker finalising after its own terminal transition is owned (and, if it
+    hangs, reaped) by :func:`reap_terminal_workers`, and the review lane must
+    keep dispatching while it exits. Non-local ``claim_lock`` rows are skipped
+    (a remote pid means nothing on this host) as are legacy rows without a
+    fingerprint (bare existence is never enough — PID recycling). Liveness is
+    :func:`_worker_alive`, so a recycled pid never blocks a successor.
+    Returns ``[{"pid", "run_id", "source", "worker_started_at"}, ...]``.
+    """
+    now = int(time.time())
+    host_prefix = _kb._host_prefix()
+    found: dict[int, dict[str, Any]] = {}
+    for run_id, pid, started_at, claim_lock in conn.execute(
+        "SELECT id, worker_pid, worker_started_at, claim_lock FROM task_runs "
+        "WHERE task_id = ? AND worker_pid IS NOT NULL "
+        "AND (ended_at IS NULL OR ended_at <= ?) "
+        "ORDER BY id DESC",
+        (task_id, now - TERMINAL_WORKER_REAP_GRACE_SECONDS),
+    ):
+        if not claim_lock or not str(claim_lock).startswith(host_prefix):
+            continue
+        if _worker_alive(int(pid), started_at):
+            found[int(pid)] = {
+                "pid": int(pid), "run_id": int(run_id), "source": "task_runs",
+                "worker_started_at": started_at,
+            }
+    row = conn.execute(
+        "SELECT worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row and row["worker_pid"] and row["worker_started_at"] is not None:
+        pid = int(row["worker_pid"])
+        if pid not in found and _worker_alive(pid, row["worker_started_at"]):
+            found[pid] = {
+                "pid": pid, "run_id": _kb._current_run_id(conn, task_id),
+                "source": "tasks", "worker_started_at": row["worker_started_at"],
+            }
+    return sorted(found.values(), key=lambda entry: entry["run_id"] or 0, reverse=True)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2083,6 +2145,25 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+    # Pre-claim live-worker guard: refuse to claim while a worker process for
+    # THIS task id is still alive, so two workers for one task are never alive
+    # simultaneously (the reclaim path defers/terminates first; this is the
+    # last-line check at claim time). Deferred, not failed: no claim, no run
+    # row, no breaker charge — the next tick retries once it is gone.
+    live_workers = _live_worker_processes(conn, task_id)
+    if live_workers:
+        result.live_worker_deferred.append(task_id)
+        if not dry_run:
+            payload = {"pids": live_workers, "lane": lane}
+            with _kb.write_txn(conn):
+                last = conn.execute(
+                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+                ).fetchone()
+                if (last is None or last["kind"] != "dispatch_deferred_live_worker"
+                        or last["payload"] != _kb._json_or_null(payload)):
+                    _kb._append_event(conn, task_id, "dispatch_deferred_live_worker", payload)
         return False
 
     def _count_spawn(name: str) -> None:

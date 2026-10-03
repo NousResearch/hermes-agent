@@ -75,6 +75,20 @@ _RESETS_IN_RE = re.compile(
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
 )
 _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
+# OpenAI's TPM/RPM 429 grammar: "Please try again in 6.123s." — the unit is mandatory so a
+# unit-less "try again in a moment" (or a bare number) never invents a window. Without this the
+# same 429 reads as "no declared reset": the cooldown falls back to 60s exponential and
+# ``fallback.min_switch_reset_seconds`` can never defer the model switch it exists to defer.
+_TRY_AGAIN_IN_RE = re.compile(
+    r"try\s+again\s+in\s+(\d+(?:\.\d+)?)\s*"
+    r"(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\b",
+    re.IGNORECASE,
+)
+_TRY_AGAIN_UNIT_SECONDS = {
+    "ms": 0.001, "s": 1.0, "sec": 1.0, "secs": 1.0, "second": 1.0, "seconds": 1.0,
+    "m": 60.0, "min": 60.0, "mins": 60.0, "minute": 60.0, "minutes": 60.0,
+    "h": 3600.0, "hr": 3600.0, "hrs": 3600.0, "hour": 3600.0, "hours": 3600.0,
+}
 # The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
 
@@ -90,12 +104,17 @@ def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
 
 
+def _try_again_seconds(m: "re.Match[str]") -> float:
+    return float(m.group(1)) * _TRY_AGAIN_UNIT_SECONDS[m.group(2).lower()]
+
+
 # An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):
 # a body carrying both describes a short throttle inside a long quota window, and the
 # shorter explicit wait is the one the provider actually asks for.
 RETRY_DELAY_PATTERNS = (
     (_QUOTA_RESET_DELAY_RE, _quota_reset_seconds),
     (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
+    (_TRY_AGAIN_IN_RE, _try_again_seconds),
     (_RESETS_IN_SECONDS_FIELD_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_RE, _resets_in_seconds),
 )

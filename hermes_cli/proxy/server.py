@@ -8,6 +8,8 @@ The one shim: after a *clean* upstream EOF, a ``text/event-stream`` response tha
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import logging
 import signal
 from typing import Optional
@@ -40,6 +42,48 @@ DEFAULT_HOST = "127.0.0.1"
 # Mirrors api_server's MAX_REQUEST_BYTES (10 MB); client_max_size bounds every read path,
 # including chunked bodies.
 MAX_REQUEST_BYTES = 10_000_000
+
+# Optional bearer-token gate for the proxy itself (NOT the upstream credential).
+# Read once at create_app() time so a rotating env var can't half-apply mid-request.
+# Empty string = gate disabled (loopback-only default posture: any local bearer works).
+PROXY_TOKEN_ENV = "HERMES_PROXY_TOKEN"
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True when the bind address can only be reached from this machine."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return host in ("localhost",)
+    return addr.is_loopback
+
+
+def _request_is_authorized(request: "web.Request", proxy_token: str) -> bool:
+    """Constant-time bearer check against the configured proxy token.
+
+    With no token configured (loopback-only default), every request is accepted —
+    matching the documented "use any bearer token in the client" UX for local
+    apps. A configured token must match exactly; anything else is a 401.
+    """
+    if not proxy_token:
+        return True
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(header[len("Bearer "):].strip(), proxy_token)
+
+
+def _request_origin_blocked(request: "web.Request") -> bool:
+    """True when the request carries an Origin header (i.e. it came from a browser).
+
+    Non-browser HTTP clients (curl, SDKs, Open WebUI, Karakeep) never send Origin.
+    A browser page can only reach the proxy via CORS-simple cross-site requests
+    (no preflight for text/plain bodies); since the proxy attaches the operator's
+    real upstream credential, a web page must not be able to spend it — reject
+    all browser-originated requests outright rather than playing CORS whack-a-mole.
+    """
+    return bool(request.headers.get("Origin"))
+
 
 
 def _require_aiohttp() -> None:
@@ -123,7 +167,7 @@ async def _stream_back(request: "web.Request", session, upstream_resp) -> "web.S
     return resp
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def create_app(adapter: UpstreamAdapter, proxy_token: str = "") -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter.
 
     Every adapter method is synchronous and blocking (the Nous adapter takes the 15s cross-process
@@ -135,12 +179,18 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     app = web.Application(client_max_size=MAX_REQUEST_BYTES)
     # AppKey: forward-compat with aiohttp versions that strip bare-string keys.
     app[web.AppKey("adapter", UpstreamAdapter)] = adapter
+    app[web.AppKey("proxy_token", str)] = proxy_token
 
     async def handle_health(request: "web.Request") -> "web.Response":
         authenticated = await asyncio.to_thread(adapter.is_authenticated)
         return web.json_response({"status": "ok", "upstream": adapter.display_name, "authenticated": authenticated})
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
+        if _request_origin_blocked(request):
+            # A browser page must never spend the operator's upstream credential.
+            return _json_error(403, "browser-originated requests are not accepted by this proxy", code="origin_blocked")
+        if not _request_is_authorized(request, proxy_token):
+            return _json_error(401, "invalid or missing proxy bearer token", code="unauthorized")
         rel_path = "/" + request.match_info.get("tail", "").lstrip("/")
         if rel_path not in adapter.allowed_paths:
             allowed = ", ".join(sorted(adapter.allowed_paths))
@@ -186,10 +236,19 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    proxy_token: str = "",
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set."""
     _require_aiohttp()
-    app = create_app(adapter)
+    if not proxy_token and not _is_loopback_host(host):
+        # An off-loopback bind without a token is an open credential proxy: anyone
+        # who can reach the port spends the operator's upstream subscription.
+        raise ValueError(
+            f"refusing to bind {host} without an auth token: the proxy attaches your real "
+            f"upstream credential to every forwarded request. Set --token or "
+            f"{PROXY_TOKEN_ENV} to expose it beyond loopback."
+        )
+    app = create_app(adapter, proxy_token=proxy_token)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

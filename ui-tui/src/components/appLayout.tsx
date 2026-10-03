@@ -275,7 +275,7 @@ const TranscriptPane = memo(function TranscriptPane({
         </ScrollBox>
       )}
 
-      {!nativeMode && (
+      {!nativeMode && ui.scrollbar && (
         <NoSelect flexShrink={0} marginLeft={1}>
           <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
         </NoSelect>

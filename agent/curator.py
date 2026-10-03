@@ -113,7 +113,27 @@ def get_interval_hours() -> int:
 
 
 def get_min_idle_hours() -> float:
-    return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
+    """``curator.min_idle_hours``, floored at 0 — a value below that falls back to the default.
+
+    maybe_run_curator() gates on ``idle_for_seconds < get_min_idle_hours() * 3600.0``, so a negative
+    value makes that comparison false at every idle measurement and the "let the agent settle" guard
+    stops existing: the review pass can fork while the agent is mid-turn. Floored at 0 rather than at
+    1 like the day/hour counts in ``_bounded_count`` — ``0`` is a coherent "no idle requirement" and
+    is honoured; a negative number cannot describe an elapsed duration. Shares that function's
+    warn-once set, for the same reason: the dashboard status endpoint polls these getters."""
+    value = _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
+    # `not (value >= 0)` rather than `value < 0`: it also catches NaN, which YAML can express
+    # (`min_idle_hours: .nan`) and which makes every comparison in the gate false in the same way.
+    if not (value >= 0):
+        # Keyed on repr(), not the float: NaN never equals itself, so a NaN marker would miss the
+        # set on every call and turn warn-once into a warning per poll.
+        marker = ("min_idle_hours", repr(value))
+        if marker not in _warned_bad_values:
+            _warned_bad_values.add(marker)
+            logger.warning("curator.min_idle_hours must be >= 0 (got %s); using the default of %s",
+                           value, DEFAULT_MIN_IDLE_HOURS)
+        return float(DEFAULT_MIN_IDLE_HOURS)
+    return value
 
 
 _warned_bad_values: set = set()

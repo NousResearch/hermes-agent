@@ -6,8 +6,8 @@ import pytest
 
 import tools.environments.base as base_mod
 import tools.terminal_tool as terminal_mod
-from tools.environments.base import AmbiguousExecutionError, BaseEnvironment
-from tools.terminal_tool import _ExecPlan, _run_foreground
+from tools.environments.base import BaseEnvironment
+from tools.environments.local import LocalEnvironment
 
 
 class _PostSpawnFailureEnv(BaseEnvironment):
@@ -30,98 +30,68 @@ class _PostSpawnFailureEnv(BaseEnvironment):
         return None
 
 
-def _plan(tmp_path):
-    return _ExecPlan(
-        config={},
-        env_type="local",
-        effective_task_id="ambiguous-execution-test",
-        image="",
-        cwd=str(tmp_path),
-        host_cwd=None,
-        effective_timeout=5,
-    )
-
-
 def test_environment_exception_after_spawn_is_ambiguous(tmp_path, monkeypatch):
     """A process handle is the point after which failure cannot prove no effect."""
     env = _PostSpawnFailureEnv(str(tmp_path))
     monkeypatch.setattr(base_mod, "_new_output_collector", lambda *args, **kwargs: object())
 
-    with pytest.raises(AmbiguousExecutionError, match="outcome is unknown"):
+    with pytest.raises(RuntimeError, match="outcome is unknown") as exc:
         env.execute("printf mutation")
 
+    assert isinstance(exc.value, base_mod.AmbiguousExecutionError)
     assert env.spawn_count == 1
     assert env.kill_count == 1
 
 
-def test_foreground_does_not_auto_retry_ambiguous_outcome(tmp_path):
-    class EffectThenLostAck:
-        host_cwd = None
+@pytest.mark.parametrize("pre_spawn_failures", [0, 1])
+def test_foreground_does_not_replay_landed_effect(tmp_path, monkeypatch, pre_spawn_failures):
+    """Real shell effects survive lost completion; only pre-spawn setup may retry."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=5)
+    run_bash = env._run_bash
+    wait_for_process = env._wait_for_process
+    kill_process = env._kill_process
+    attempts = []
+    spawned = []
+    killed = []
 
-        def __init__(self):
-            self.calls = 0
-            self.effects = 0
+    def spawn(command, **kwargs):
+        attempts.append(command)
+        if len(attempts) <= pre_spawn_failures:
+            raise RuntimeError("temporary pre-spawn setup failure")
+        proc = run_bash(command, **kwargs)
+        spawned.append(proc)
+        return proc
 
-        def execute(self, command, **kwargs):
-            self.calls += 1
-            self.effects += 1
-            raise AmbiguousExecutionError("acknowledgement lost")
+    def lose_completion(proc, **kwargs):
+        result = wait_for_process(proc, **kwargs)
+        assert result["returncode"] == 0
+        raise RuntimeError("lost completion channel after spawn")
 
-    env = EffectThenLostAck()
-    result = json.loads(
-        _run_foreground(
-            "mutate once",
-            env,
-            _plan(tmp_path),
-            task_id=None,
-            session_id=None,
-            session_key="ambiguous-execution-test",
-            workdir=None,
-            approval_note=None,
-            clear_interrupt=False,
-            metered=False,
-        )
-    )
+    def kill(proc):
+        killed.append(proc)
+        kill_process(proc)
 
-    assert env.calls == 1
-    assert env.effects == 1
-    assert result["status"] == "ambiguous"
-    assert result["outcome_unknown"] is True
-    assert "verify the target state before resending" in result["error"]
-
-
-def test_pre_spawn_error_can_retry_but_ambiguity_stops_the_loop(tmp_path, monkeypatch):
-    """Keep setup retries, but stop once an attempt may have landed."""
-    class SetupThenAmbiguous:
-        host_cwd = None
-
-        def __init__(self):
-            self.calls = 0
-
-        def execute(self, command, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                raise RuntimeError("temporary pre-spawn setup failure")
-            raise AmbiguousExecutionError("process spawned; completion channel lost")
-
-    env = SetupThenAmbiguous()
-    monkeypatch.setattr(terminal_mod.time, "sleep", lambda _: None)
-
-    result = json.loads(
-        _run_foreground(
-            "mutate once",
-            env,
-            _plan(tmp_path),
-            task_id=None,
-            session_id=None,
-            session_key="ambiguous-execution-test",
-            workdir=None,
-            approval_note=None,
-            clear_interrupt=False,
-            metered=False,
-        )
-    )
-
-    assert env.calls == 2
-    assert result["status"] == "ambiguous"
-    assert result["outcome_unknown"] is True
+    monkeypatch.setattr(env, "_run_bash", spawn)
+    monkeypatch.setattr(env, "_wait_for_process", lose_completion)
+    monkeypatch.setattr(env, "_kill_process", kill)
+    monkeypatch.setattr(terminal_mod, "_acquire_env", lambda plan, task_id: env)
+    monkeypatch.setattr(terminal_mod, "_start_cleanup_thread", lambda: None)
+    try:
+        raw = terminal_mod.registry.dispatch("terminal", {
+            "command": "printf 'effect\\n' >> effect.txt",
+            "timeout": 5,
+            "workdir": str(tmp_path),
+        })
+        assert isinstance(raw, str)
+        result = json.loads(raw)
+        assert (tmp_path / "effect.txt").read_text(encoding="utf-8-sig") == "effect\n"
+        assert len(attempts) == pre_spawn_failures + 1
+        assert len(spawned) == 1
+        assert killed == spawned
+        assert result["status"] == "ambiguous"
+        assert result["outcome_unknown"] is True
+        assert "verify the target state before resending" in result["error"]
+    finally:
+        env.cleanup()

@@ -821,8 +821,20 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 # Missing messages/sessions tables = brand new file mid-init, not corruption. "no such tokenizer":
                 # this process lacks the cjk extension the DB's index needs — capability gap; a tokenizer-less
                 # SessionDB drops the triggers itself.
-                if _schema_not_built(exc) or "no such tokenizer: cjk_unicode61" in str(exc).lower():
+                if "no such tokenizer: cjk_unicode61" in str(exc).lower():
                     return None
+                if _schema_not_built(exc):
+                    base_tables = {
+                        row[0] for row in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table' "
+                            "AND name IN ('sessions', 'messages')"
+                        ).fetchall()
+                    }
+                    if {"sessions", "messages"} - base_tables:
+                        return None
+                    # Existing canonical tables distinguish an orphaned FTS
+                    # trigger from a new database whose schema is still building.
+                    return f"incomplete FTS schema — message writes fail: {exc}"
                 return f"fts5 write probe failed: {exc}"
             finally:
                 with contextlib.suppress(sqlite3.Error):

@@ -319,16 +319,32 @@ class TestAnnotationCaptureAtDiscovery:
         assert not hints.get("no_annotations")
 
     def test_dict_annotations_supported(self):
-        """Cached/JSON annotations arrive as plain dicts."""
+        """Cached/JSON annotations arrive as plain dicts; SDK annotations arrive as objects."""
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations={"readOnlyHint": True})
         ) is True
         assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(readOnlyHint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+        assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations={"readOnlyHint": "yes"})
         ) is False  # non-bool truthy → NOT read-only (hint must be True)
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": "yes"})
+        ) is False
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations=None)
         ) is False
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+

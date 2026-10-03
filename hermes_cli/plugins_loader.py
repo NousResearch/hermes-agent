@@ -116,7 +116,10 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     scope = _IN_PLUGIN_LOAD.get()
     if scope is not None:
         scope.append(ctx)
-        return fn()
+        try:
+            return fn()
+        finally:
+            scope.remove(ctx)
     timeout = _resolve_plugin_load_timeout()
     if timeout <= 0:
         return fn()

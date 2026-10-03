@@ -26,6 +26,7 @@ import contextvars
 import hashlib
 import hmac
 import itertools
+import contextlib
 import json
 import logging
 import mimetypes
@@ -230,7 +231,7 @@ _RICH_BLOCK_TAGS = {
     "date_picker",
 }
 _SKIP_TEXT_KEYS = {
-    "tag", "type", "msg_type", "message_type", "chat_id", "open_chat_id", "share_chat_id", "file_key", "image_key",
+    "tag", "tag_type", "element_type", "type", "msg_type", "message_type", "chat_id", "open_chat_id", "share_chat_id", "file_key", "image_key",
     "user_id", "open_id", "union_id", "url", "href", "link", "token", "template", "locale",
 }
 
@@ -735,7 +736,11 @@ def _normalize_share_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMe
 
 
 def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -> FeishuNormalizedMessage:
-    card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+    card = payload.get("card")
+    if isinstance(card, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            card = json.loads(card)
+    card_payload = card if isinstance(card, dict) else payload
     title = _first_non_empty_text(
         _find_header_title(card_payload), payload.get("title"),
         _find_first_text(card_payload, keys=("title", "summary", "subtitle")),
@@ -743,10 +748,12 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     actions = _collect_action_labels(card_payload)
     lines = ([title] if title else []) + [line for line in _collect_card_lines(card_payload) if line != title]
     if actions:
-        lines.append(f"Actions: {', '.join(actions)}")
+        new_actions = [action for action in actions if action not in lines]
+        if new_actions:
+            lines.append(f"Actions: {', '.join(new_actions)}")
     return FeishuNormalizedMessage(
         raw_type=message_type,
-        text_content="\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT,
+        text_content="\n".join(lines[:50]).strip() or FALLBACK_INTERACTIVE_TEXT,
         relation_kind="interactive", metadata={"title": title, "actions": actions},
     )
 
@@ -793,7 +800,8 @@ def _collect_action_labels(payload: Any) -> List[str]:
     for item in _walk_nodes(payload):
         if not isinstance(item, dict):
             continue
-        tag = str(item.get("tag", "") or item.get("type", "")).strip().lower()
+        tag = str(item.get("tag", "") or item.get("tag_type", "") or item.get("element_type", "")
+                  or item.get("type", "")).strip().lower()
         if tag not in {"button", "select_static", "overflow", "date_picker", "picker"}:
             continue
         label = _first_text_field(item, "text", "name", "value", deep=("text", "content", "name", "value"))
@@ -809,8 +817,10 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
         return [seg for item in value for seg in _collect_text_segments(item, in_rich_block=in_rich_block)]
     if not isinstance(value, dict):
         return []
-    tag = str(value.get("tag", "") or value.get("type", "")).strip().lower()
-    next_in_rich_block = in_rich_block or tag in _RICH_BLOCK_TAGS
+    tag = str(value.get("tag", "") or value.get("tag_type", "") or value.get("element_type", "")
+              or value.get("type", "")).strip().lower()
+    has_v2_element_kind = "tag_type" in value or "element_type" in value
+    next_in_rich_block = in_rich_block or has_v2_element_kind or tag in _RICH_BLOCK_TAGS
     segments: List[str] = []
     if next_in_rich_block:
         for key in _SUPPORTED_CARD_TEXT_KEYS:

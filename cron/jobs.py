@@ -2053,8 +2053,17 @@ def _rederive_repeat_for_schedule_change(
     path must honour the same contract, otherwise a one-shot turned recurring keeps its ``times=1``
     budget and retires after one fire, while a recurring job turned one-shot never completes. An
     explicit ``repeat`` in the same update wins; a same-kind schedule edit leaves ``repeat`` alone.
+
+    A kind flip also RESETS ``completed``: the new schedule is a fresh budget, so a job
+    that already ran and is re-armed under the new kind must start at zero in either
+    direction — a recurring job re-armed as a one-shot must fire once, not be deleted as
+    over-budget (#124222), and a one-shot re-armed as recurring must not have its first
+    runs already spent. This applies even when the same update carries an explicit
+    ``repeat``: the cronjob tool and ``hermes cron edit --repeat`` copy the STORED counter
+    into the update (``repeat_state = dict(job.repeat)``), so an explicit dict that
+    "carries its own completed" is precisely the path that must NOT be trusted on a flip.
     """
-    if "schedule" not in updates or "repeat" in updates:
+    if "schedule" not in updates:
         return
     new_schedule = updates["schedule"]
     if isinstance(new_schedule, str):
@@ -2064,6 +2073,19 @@ def _rederive_repeat_for_schedule_change(
     new_kind = new_schedule.get("kind")
     if old_kind == new_kind:
         return
+    explicit_repeat = updates.get("repeat")
+    if explicit_repeat is not None:
+        repeat = dict(job.get("repeat") or {})
+        if isinstance(explicit_repeat, dict):
+            repeat.update(explicit_repeat)
+        else:
+            repeat["times"] = explicit_repeat
+        # The stored counter counted the OLD schedule's runs; whatever the flip
+        # direction, the tool/CLI copied it here verbatim, so honoring it would
+        # spend the new budget before it starts.
+        repeat["completed"] = 0
+        updates["repeat"] = repeat
+        return
     repeat = dict(job.get("repeat") or {})
     times = repeat.get("times")
     if new_kind == "once" and times is None:
@@ -2072,7 +2094,7 @@ def _rederive_repeat_for_schedule_change(
         repeat["times"] = None
     else:
         return
-    repeat.setdefault("completed", 0)
+    repeat["completed"] = 0
     updates["repeat"] = repeat
 
 

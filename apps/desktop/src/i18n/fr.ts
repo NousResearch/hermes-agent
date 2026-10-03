@@ -4306,7 +4306,7 @@ export const frOverrides = {
       '/init': 'Générer ou mettre à jour les instructions de projet AGENTS.md à partir d’une analyse du dépôt',
       '/suggestions': 'Examiner les automatisations suggérées (accepter/ignorer)',
       '/blueprint': 'Configurer une automatisation à partir d’un modèle',
-      '/browser': 'Gérer la connexion CDP du navigateur [connect|disconnect|status] (gateway local uniquement)',
+      '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status|use]',
       '/palette': 'Ouvrir la palette de commandes floue (aussi Ctrl+P)',
       '/usage':
         'Afficher l’utilisation des jetons et les limites de débit ; `reset` utilise une réinitialisation de limite Codex en réserve',

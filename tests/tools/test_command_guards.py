@@ -139,10 +139,12 @@ class TestTirithBlock:
 class TestTirithAllowDangerous:
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
-    def test_dangerous_only_cli_deny(self, mock_tirith):
+    def test_dangerous_only_cli_deny(self, mock_tirith, tmp_path):
         os.environ["HERMES_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="deny")
-        result = check_all_command_guards("rm -rf /tmp", "local", approval_callback=cb)
+        result = check_all_command_guards(
+            f"rm -rf {tmp_path / 'delete-me'}", "local", approval_callback=cb
+        )
         assert result["approved"] is False
         cb.assert_called_once()
         # allow_permanent should be True (no tirith warning)

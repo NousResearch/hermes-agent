@@ -132,6 +132,39 @@ def _aux_task_cfg(cfg: dict, task: str) -> dict:
     return aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
 
 
+def _aux_task_cfg_for_display(cfg: dict, task: str) -> dict:
+    """The routing dict to *display* for *task*, with an inherited base resolved.
+
+    The stored block is authoritative for built-in tasks, but a plugin task registered with
+    ``inherit_from`` may inherit its provider/model from a base task while storing only the fields
+    the operator actually set. Rendering the raw block would then report "auto" while the task
+    actually runs on the base's provider. Falls back to the stored block if the runtime resolver is
+    unavailable, so the menu never depends on importing the agent package.
+    """
+    stored = _aux_task_cfg(cfg, task)
+    if task == _DELEGATION_TASK_KEY:
+        return stored
+    try:
+        from agent.auxiliary_client import _get_auxiliary_task_config
+    except Exception:
+        return stored
+    try:
+        resolved = _get_auxiliary_task_config(task)
+    except Exception:
+        return stored
+    # Only adopt the resolved view when the task really inherits; otherwise keep showing exactly
+    # what is stored, so display behaviour for existing tasks is unchanged.
+    if not resolved:
+        return stored
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        inherits = any(e.get("key") == task and e.get("inherit_from")
+                       for e in get_plugin_auxiliary_tasks())
+    except Exception:
+        return stored
+    return resolved if inherits else stored
+
+
 def _aux_task_display_name(task: str) -> str:
     """Display name for a task key, covering the special delegation entry."""
     if task == _DELEGATION_TASK_KEY:
@@ -227,7 +260,7 @@ def _aux_config_menu() -> None:
         desc_col = max(len(desc) for _, _, desc in menu_tasks) + 4
         entries = [
             (task_key, f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}"
-                       f"{_format_aux_current(_aux_task_cfg(cfg, task_key))}")
+                       f"{_format_aux_current(_aux_task_cfg_for_display(cfg, task_key))}")
             for task_key, name, desc in menu_tasks]
         entries.append(("__reset__", "Reset all to auto"))
         entries.append(("__back__", "Back"))
@@ -251,7 +284,8 @@ def _aux_select_for_task(task: str) -> None:
     ``build_aux_picker_rows()`` (shared substrate): only already-configured providers appear."""
     from hermes_cli.config import load_config
     from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
-    task_cfg = _aux_task_cfg(load_config(), task)
+    cfg = load_config()
+    task_cfg = _aux_task_cfg(cfg, task)
     current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
@@ -274,7 +308,7 @@ def _aux_select_for_task(task: str) -> None:
     entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
     entries.append(("__back__", "Back", []))
 
-    _say("", f"  Configure {display_name} — current: {_format_aux_current(task_cfg)}", "")
+    _say("", f"  Configure {display_name} — current: {_format_aux_current(_aux_task_cfg_for_display(cfg, task))}", "")
     idx = _prompt_provider_choice([label for _, label, _ in entries], default=0)
     if idx is None:
         return

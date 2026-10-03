@@ -273,6 +273,8 @@ class GatewayInboundMixin:
         source = event.source
 
         if not self._is_user_authorized_for_source(source):
+            # The base turn wrapper scores a None reply as a silent success; a refusal is not one.
+            event._hermes_refused = True
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.

@@ -1073,6 +1073,8 @@ gateway:
 
 **What you'll see in DMs with `auto` or `draft`** — Telegram shows an animated draft preview that updates token-by-token. When the reply finishes, it's delivered as a regular message and the draft preview clears naturally on the client. Drafts have no message id, so the final answer is what stays in your chat history.
 
+**Activity in private-chat topics.** Some Telegram clients display `sendChatAction` typing only in **All Messages**, even when Hermes supplies the active topic ID. With `auto` or `draft`, Hermes first sends an empty, topic-scoped draft: [Telegram's native “Thinking…” placeholder](https://core.telegram.org/bots/api#sendmessagedraft). It refreshes while waiting for visible reply text, then the same draft becomes the answer preview. The final reply clears it without adding a separate progress message to history. This needs a Bot API server supporting empty drafts (10.0 or newer); a rejected frame falls back to edit-based streaming. With `edit` or streaming disabled, [processing reactions](#message-reactions) provide feedback on the incoming message in its topic.
+
 **What about groups, supergroups, forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for everything else — same UX as before.
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.

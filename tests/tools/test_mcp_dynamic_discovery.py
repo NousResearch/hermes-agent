@@ -181,6 +181,51 @@ class TestRefreshTools:
             assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
             assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
 
+class TestReconnectResync:
+    """Reconnect without parking resyncs the registry (#126978)."""
+
+    @pytest.mark.asyncio
+    async def test_discover_tools_resyncs_when_already_registered(self):
+        """Freshly discovered tools replace stale registry entries on reconnect."""
+        def _props_tool(name, props):
+            return SimpleNamespace(
+                name=name,
+                description=f"{name} desc",
+                inputSchema={
+                    "type": "object",
+                    "properties": {p: {"type": "string"} for p in props},
+                },
+            )
+
+        reg = ToolRegistry()
+        server = MCPServerTask("demo")
+        server._config = {}
+        with patch("tools.registry.registry", reg):
+            server._tools = [_props_tool("old_tool", ["a"]), _props_tool("keep", ["x"])]
+            server._registered_tool_names = _register_server_tools("demo", server, {})
+            assert "mcp__demo__old_tool" in reg.get_all_tool_names()
+
+            # Reconnect: server now serves keep(x, y) + new_tool.
+            server.session = SimpleNamespace(
+                list_tools=AsyncMock(
+                    return_value=SimpleNamespace(
+                        tools=[_props_tool("keep", ["x", "y"]), _props_tool("new_tool", ["n"])]
+                    )
+                )
+            )
+            await server._discover_tools()
+
+            names = reg.get_all_tool_names()
+            assert "mcp__demo__old_tool" not in names
+            assert "mcp__demo__new_tool" in names
+            assert sorted(server._registered_tool_names) == sorted(
+                ["mcp__demo__keep", "mcp__demo__new_tool"]
+            )
+            keep_schema = reg.get_schema("mcp__demo__keep") or {}
+            params = keep_schema.get("parameters", {})
+            assert sorted(params.get("properties", {}).keys()) == ["x", "y"]
+
+
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""
 

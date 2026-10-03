@@ -683,6 +683,10 @@ class MCPServerTransportMixin:
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
         if self._registered_tool_names:
+            # Reconnect without parking: discovery refreshed self._tools but the registry still
+            # reflects the pre-reconnect server. Resync (the same diff/replace as list_changed) so
+            # removed tools drop, new tools appear, and schemas/handlers update (#126978).
+            self._sync_registry_with_discovered_tools()
             return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]

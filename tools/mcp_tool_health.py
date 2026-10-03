@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Set
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.mcp_tool_common import _core
@@ -147,24 +147,39 @@ class MCPServerHealthMixin:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
                 new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
-            # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
-            # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
-            self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})
-            # Re-register; a raw name can become ambiguous after normalization without changing
-            # its normalized name, so also drop old entries the final registration no longer owns.
             self._tools = new_mcp_tools
-            registered_names = _registration._register_server_tools(self.name, self, self._config)
-            self._deregister_owned(old_tool_names - set(registered_names))
-            self._registered_tool_names = registered_names
-            new_tool_names = set(registered_names)
-            changes = [f"{label}: {', '.join(sorted(names))}" for label, names in
-                       (("added", new_tool_names - old_tool_names), ("removed", old_tool_names - new_tool_names)) if names]
-            if changes:
-                logger.warning("MCP server '%s': tools changed dynamically — %s. "
-                               "Verify these changes are expected.", self.name, "; ".join(changes))
-            else:
-                logger.info("MCP server '%s': dynamically refreshed %d tool(s) (no changes)",
-                            self.name, len(self._registered_tool_names))
+            # Diff against the registry and resync (shared with the reconnect path — see
+            # _sync_registry_with_discovered_tools).
+            self._sync_registry_with_discovered_tools(old_tool_names)
+
+    def _sync_registry_with_discovered_tools(self, old_tool_names: Optional[Set[str]] = None) -> None:
+        """Diff ``self._tools`` against the registry and resync it.
+
+        Synchronous core shared by ``_refresh_tools`` (``tools/list_changed``) and the reconnect
+        path (``_register_discovered_tools_if_needed``): drop stale names, re-register (refreshing
+        schemas/handlers), then drop the old entries the final, collision-checked registration no
+        longer owns. Takes no lock itself: callers hold ``_refresh_lock`` (refresh) or run
+        post-discovery (reconnect). Runs synchronously after an ``await`` — atomic on the event loop.
+        """
+        if old_tool_names is None:
+            old_tool_names = set(self._registered_tool_names)
+        # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
+        # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
+        self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in self._tools})
+        # Re-register; a raw name can become ambiguous after normalization without changing
+        # its normalized name, so also drop old entries the final registration no longer owns.
+        registered_names = _registration._register_server_tools(self.name, self, self._config)
+        self._deregister_owned(old_tool_names - set(registered_names))
+        self._registered_tool_names = registered_names
+        new_tool_names = set(registered_names)
+        changes = [f"{label}: {', '.join(sorted(names))}" for label, names in
+                   (("added", new_tool_names - old_tool_names), ("removed", old_tool_names - new_tool_names)) if names]
+        if changes:
+            logger.warning("MCP server '%s': tools changed dynamically — %s. "
+                           "Verify these changes are expected.", self.name, "; ".join(changes))
+        else:
+            logger.info("MCP server '%s': dynamically refreshed %d tool(s) (no changes)",
+                        self.name, len(self._registered_tool_names))
 
     async def _keepalive_probe(self) -> None:
         """Exercise the session; raise on a genuine connection failure. ``ping`` first (cheap,

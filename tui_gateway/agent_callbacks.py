@@ -578,6 +578,9 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # other resources after ownership has moved to the replacement.  Closing before the transfer
     # would let the old agent close the shared session DB out from under the new one.
     if old_agent is not None and old_agent is not agent and hasattr(old_agent, "close"):
+        # The replacement continues the same live conversation; do not mark its session row ended.
+        with contextlib.suppress(Exception):
+            old_agent._end_session_on_close = False
         with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
             old_agent.close()
     return agent

@@ -121,7 +121,8 @@ def test_rebuild_closes_replaced_agent_after_transferring_session_db(monkeypatch
     from tui_gateway import server
     closed = []
 
-    old = SimpleNamespace(_session_db=None, _owns_session_db=False, close=lambda: closed.append("old"))
+    old = SimpleNamespace(_session_db=None, _owns_session_db=False, _end_session_on_close=True,
+                          close=lambda: closed.append("old"))
     new = SimpleNamespace(_session_db=None, _owns_session_db=False)
     monkeypatch.setattr(server, "_config_model_target", lambda: "model")
     monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: new)
@@ -131,3 +132,4 @@ def test_rebuild_closes_replaced_agent_after_transferring_session_db(monkeypatch
 
     assert session["agent"] is new
     assert closed == ["old"]
+    assert old._end_session_on_close is False

@@ -28,8 +28,12 @@ from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
+    checkout_lock_fds,
+    checkout_lock_path,
     describe_holder,
+    process_create_time,
     read_live_update,
+    update_in_progress,
     update_marker_path,
 )
 
@@ -58,17 +62,26 @@ def other_pid():
 
 
 def _claim(marker, pid, started_at=None):
+    """A v1 (legacy, pid-only) claim."""
     marker.write_text(f"{pid}\n{int(time.time() if started_at is None else started_at)}\n", encoding="utf-8")
 
 
-def test_marker_path_follows_process_hermes_home(tmp_path, monkeypatch):
-    """The lock must land where the Rust updater and Electron gate look.
+def _claim_v2(marker, pid, started_at=None, ct_offset=0.0):
+    started = int(time.time() if started_at is None else started_at)
+    marker.write_text(f"{pid}\n{started}\nct:{process_create_time(pid) + ct_offset:.3f}\n", encoding="utf-8")
 
-    All three resolve the *process* HERMES_HOME; a profile-scoped path would
-    put the lock somewhere the other two owners never read.
+
+def test_marker_path_is_the_profile_tree_root(tmp_path, monkeypatch):
+    """The lock must land where the Rust updater, Electron gate and hand-off scripts look.
+
+    They all read the ROOT home; a sticky/`-p` profile re-homes HERMES_HOME to
+    ``<root>/profiles/<p>``, and a marker there is invisible to every other owner (V9c).
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    assert update_marker_path() == tmp_path / ".hermes-update-in-progress"
+    root = tmp_path / "root"
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "work"))
+    assert update_marker_path() == root / ".hermes-update-in-progress"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    assert update_marker_path() == root / ".hermes-update-in-progress"
 
 
 def test_acquire_writes_pid_and_start_time(marker):
@@ -82,7 +95,10 @@ def test_acquire_writes_pid_and_start_time(marker):
         "the Electron gate probes this pid for liveness"
     )
     assert int(lines[1]) == pytest.approx(time.time(), abs=5)
-    assert len(lines) == 2, "wire format is exactly pid + started_at"
+    assert float(lines[2].removeprefix("ct:")) == pytest.approx(process_create_time(), abs=0.01), (
+        "line 3 is our creation time: readers tell a reused pid from us by it"
+    )
+    assert len(lines) == 3
 
 
 def test_second_acquire_is_refused_while_the_first_is_live(marker, other_pid):
@@ -184,13 +200,54 @@ def test_dead_owner_is_reclaimed_not_honored(marker):
     assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
 
 
-def test_owner_past_the_age_ceiling_is_reclaimed(marker):
-    """A live-but-wedged updater must not hold the lock forever."""
-    long_ago = int(time.time()) - UPDATE_MARKER_MAX_AGE_SECONDS - 60
-    marker.write_text(f"{os.getpid()}\n{long_ago}\n", encoding="utf-8")
+def test_v1_owner_past_the_age_ceiling_is_reclaimed(marker, other_pid):
+    """A legacy pid-only marker carries no creation time: only the ceiling exposes a reused pid."""
+    _claim(marker, other_pid, int(time.time()) - UPDATE_MARKER_MAX_AGE_SECONDS - 60)
 
     lock = UpdateLock(path=marker)
-    assert lock.acquire() is True
+    assert lock.acquire() is True and lock.acquired is True
+
+
+def test_v2_live_owner_is_live_regardless_of_age(marker, other_pid):
+    """An update running 25 minutes (Windows builds, long drains) still owns the lock (V3/V10/V11)."""
+    _claim_v2(marker, other_pid, time.time() - 25 * 60)
+    before = marker.read_bytes()
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is False
+    assert lock.holder is not None and lock.holder.pid == other_pid
+    assert read_live_update(path=marker) is not None
+    assert marker.read_bytes() == before, "a refused claimant never rewrites the owner's marker"
+
+
+def test_v2_marker_whose_pid_was_reused_is_reclaimed(marker, other_pid):
+    """A live pid whose creation time does not match the record is a recycled pid (V22)."""
+    _claim_v2(marker, other_pid, ct_offset=-100.0)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True and lock.acquired is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+
+def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatch, other_pid):
+    """Rule 6: `hermes update` adopting a hand-off claim names itself on line 4, restores
+    lines 1-3 byte-identical on exit, and is what keeps the claim visible if the partner dies."""
+    _claim_v2(marker, other_pid)
+    base = marker.read_bytes()
+    monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid))
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True and lock.acquired is False
+    lines = marker.read_text(encoding="utf-8").splitlines()
+    assert marker.read_bytes().startswith(base) and lines[3].startswith(f"delegate:{os.getpid()} ct:")
+
+    dead_partner = f"{DEAD_PID}\n{int(time.time())}\nct:1.000\n{lines[3]}\n"
+    marker.write_text(dead_partner, encoding="utf-8")
+    holder = read_live_update(path=marker)
+    assert holder is not None and holder.pid == os.getpid(), "the running delegate keeps the update visible"
+    marker.write_bytes(base + f"{lines[3]}\n".encode())
+    lock.release()
+    assert marker.read_bytes() == base, "the live partner gets its own claim back, byte-identical"
 
 
 @pytest.mark.parametrize(
@@ -239,19 +296,81 @@ def test_describe_holder_names_the_pid_and_elapsed_time(marker):
     assert "already running" in message
 
 
-def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
-    """Degrade to pre-lock behavior rather than refusing to update at all.
-
-    An unwritable marker path is a worse reason to block an update than the
-    race the lock prevents.
-    """
+def test_unwritable_marker_location_refuses_instead_of_running_unlocked(tmp_path):
+    """No "proceed unlocked": an update that cannot claim the lock cannot exclude another."""
     lock = UpdateLock(path=tmp_path / "nonexistent-file" / "marker")
     (tmp_path / "nonexistent-file").write_text(
         "i am a file, not a dir", encoding="utf-8"
     )
 
+    assert lock.acquire() is False
+    assert lock.holder is not None and lock.holder.reason
+    assert "Cannot lock this install" in describe_holder(lock.holder)
+
+
+_HOLD_CHECKOUT = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.update_lock import UpdateLock
+lock = UpdateLock(path=__import__("pathlib").Path(sys.argv[3]), install_root=sys.argv[2])
+assert lock.acquire()
+print("held", flush=True)
+time.sleep(120)
+"""
+
+
+@pytest.mark.platforms("posix")
+def test_checkout_lock_excludes_an_update_from_another_home(tmp_path):
+    """Two `hermes update` runs on one checkout from different homes exclude each other (V3)."""
+    install = tmp_path / "checkout"
+    install.mkdir()
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD_CHECKOUT, str(REPO_ROOT), str(install), str(tmp_path / "homeA" / "m")],
+        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        lock = UpdateLock(path=tmp_path / "homeB-marker", install_root=install)
+        assert lock.acquire() is False
+        assert lock.holder is not None and lock.holder.pid == holder.pid
+        assert not (tmp_path / "homeB-marker").exists()
+        assert update_in_progress(install)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert not update_in_progress(install), "the kernel frees the lock with its holder"
+    lock = UpdateLock(path=tmp_path / "homeB-marker", install_root=install)
     assert lock.acquire() is True
-    assert lock.acquired is False, "nothing was written, so there is nothing to release"
+    lock.release()
+
+
+@pytest.mark.platforms("posix")
+def test_checkout_lock_outlives_its_owner_while_an_inheriting_child_runs(tmp_path):
+    """Invariant: lock free => no process of the update tree alive (pass_fds children)."""
+    install = tmp_path / "checkout"
+    install.mkdir()
+    lock = UpdateLock(path=tmp_path / "marker", install_root=install)
+    assert lock.acquire() is True
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                             pass_fds=checkout_lock_fds(install), stdin=subprocess.DEVNULL)
+    try:
+        lock.release()
+        assert update_in_progress(install), "the owner's exit must not free a lock its child holds"
+    finally:
+        child.kill()
+        child.wait()
+    assert not update_in_progress(install)
+    assert checkout_lock_path(install).name == ".hermes-update.lock"
+
+
+def test_unwritable_install_root_refuses(tmp_path):
+    """A checkout we cannot write is refused through the exit-2 path, never updated unlocked."""
+    install = tmp_path / "not-a-dir"
+    install.write_text("file", encoding="utf-8")
+    lock = UpdateLock(path=tmp_path / "marker", install_root=install)
+    assert lock.acquire() is False
+    assert lock.holder is not None and lock.holder.reason
+    assert not (tmp_path / "marker").exists()
 
 
 class TestHandoffFromOrchestratingUpdater:

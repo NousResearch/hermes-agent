@@ -59,10 +59,15 @@ def run_completion(request: dict) -> dict:
         command = [sys.executable, "-I", "-S", "-u", "-X", "utf8", "-X", f"pycache_prefix={request['bytecode_cache']}",
                    str(root / "hermes_cli/update_completion.py"),
                    str(request_path), str(result_path)]
+        from hermes_cli.update_lock import bind_child_to_update_tree, checkout_lock_fds
+
+        # The child joins the update tree's checkout lock: it inherits the locked fd (POSIX)
+        # or dies with us (Windows job), so the lock is never free while it runs.
         proc = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            **({"start_new_session": True} if os.name == "posix" else
+            **({"start_new_session": True, "pass_fds": checkout_lock_fds(root)} if os.name == "posix" else
                {"creationflags": subprocess.CREATE_NO_WINDOW}))
+        bind_child_to_update_tree(proc)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             while True:
@@ -314,7 +319,10 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
                str(request_path), str(result_path), "--prepared"]
     # A second interpreter is mandatory: PM may have selected a different Python
     # and dependency graph. No application maintenance runs in this bootstrap.
-    code = _exit_status(subprocess.call(command, cwd=root, env=activation_environment(root)))
+    from hermes_cli.update_lock import checkout_lock_fds
+
+    code = _exit_status(subprocess.call(command, cwd=root, env=activation_environment(root),
+                                        pass_fds=checkout_lock_fds(root)))
     if not result_path.exists():
         return _settle_after_commit(request, result_path, "completion",
                                     f"the completion process exited {code} without a result")

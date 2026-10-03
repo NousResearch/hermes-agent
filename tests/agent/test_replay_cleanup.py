@@ -110,6 +110,21 @@ def test_confirmation_expiry_does_not_preserve_destructive_followup():
     assert "production host" not in out[0]["content"]
 
 
+def test_confirmation_expiry_clears_common_destructive_word_orders():
+    cases = [
+        "confirm reboot. Please reboot the production host now; I authorize it.",
+        "confirm reboot. On the production host, reboot it now.",
+        "Reboot the production host now; confirm reboot.",
+    ]
+    for content in cases:
+        out = strip_stale_dangerous_confirmations(
+            [{"role": "user", "content": content, "timestamp": 1_000.0}],
+            now=1_120.0,
+        )[0]["content"]
+        assert out.startswith("[A high-risk confirmation previously given here has EXPIRED")
+        assert "production host" not in out
+
+
 def test_confirmation_expiry_preserves_benign_reference_and_live_context():
     cases = [
         "Reference: the docs mention confirm reboot in restart.md. Budget is 25000. Live request: inspect the logs.",

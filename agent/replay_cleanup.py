@@ -247,17 +247,18 @@ def strip_stale_dangerous_confirmations(
         # Never leave a surviving destructive authorization in a user row after
         # its confirmation expires. A bare keyword is not enough: summaries
         # legitimately quote action names in documentation, filenames, key
-        # names, or negative instructions. Reset only when the action is an
-        # immediate follow-up to the expired confirmation or is explicitly
-        # authorized, preserving unrelated mixed-carrier context otherwise.
+        # names, or negative instructions. Look for an action-shaped request
+        # in either side of the expired phrase, including polite/locative lead-
+        # ins and authorization after the verb; preserve unrelated context.
         action = r"(?:reboot|restart|shutdown|power\s+off|wipe|delete|factory\s+reset)"
-        # Only inspect text that followed the expired confirmation.  A summary
-        # may mention an action elsewhere as documentation or a negated request.
-        suffix = redacted_content.split(_EXPIRED_CONFIRMATION_SENTINEL, 1)[-1]
-        immediate_followup = rf"^\s*(?:[.!?]\s*)*(?:{action})\b[^.?!\n]*(?:[.!?]|$)"
-        explicit_authorization = rf"\b(?:i|we)\s+(?:authorize|approved?|confirm(?:ed)?)\b[^.?!\n]*\b{action}\b"
-        if re.search(immediate_followup, suffix, re.IGNORECASE) or re.search(
-            explicit_authorization, suffix, re.IGNORECASE
+        without_marker = redacted_content.replace(_EXPIRED_CONFIRMATION_SENTINEL, " ")
+        destructive_target = rf"\b(?:production|host|server|machine|system)\b[^.?!\n]*\b{action}\b|\b{action}\b[^.?!\n]*\b(?:production|host|server|machine|system)\b"
+        request_qualifier = rf"(?:please\s+|on\s+[^.?!\n,]+,\s*)\b{action}\b[^.?!\n]*(?:\bnow\b|\bauthori[sz](?:e|ed|ation)\b|\bapproved?\b)"
+        action_then_authorization = rf"\b{action}\b[^.?!\n]*\b(?:authorize|authorise|approved?|confirm(?:ed)?)\b"
+        if (
+            re.search(destructive_target, without_marker, re.IGNORECASE)
+            or re.search(request_qualifier, without_marker, re.IGNORECASE)
+            or re.search(action_then_authorization, without_marker, re.IGNORECASE)
         ):
             redacted_content = _EXPIRED_CONFIRMATION_SENTINEL
         redacted["content"] = redacted_content

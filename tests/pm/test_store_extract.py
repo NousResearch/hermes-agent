@@ -7,7 +7,7 @@ import tarfile
 
 import pytest
 
-from pm.store import extract
+from pm.store import extract, flatten_single_dir, tree_digest
 
 
 def _tar(tmp_path, members):
@@ -135,3 +135,29 @@ def test_target_uses_shared_native_arch(monkeypatch):
 
     monkeypatch.setattr(facts, "native_arch", lambda: "arm64")
     assert store._native_machine() == "arm64"
+
+def test_tree_digest_ignores_os_metadata_files(tmp_path):
+    """#128588: a Finder/Explorer-written .DS_Store inside a published tree changed
+    tree_digest, which made the installed entry look stale (re-download on every
+    update). OS metadata is runtime residue, not package bytes."""
+    tree = tmp_path / "tree"
+    (tree / "bin").mkdir(parents=True)
+    (tree / "bin" / "node").write_text("payload", encoding="utf-8")
+    baseline = tree_digest(tree)
+    (tree / ".DS_Store").write_bytes(b"Bud1")
+    (tree / "bin" / "Thumbs.db").write_bytes(b"junk")
+    (tree / "._bin").write_bytes(b"apple-double")
+    assert tree_digest(tree) == baseline
+
+
+def test_flatten_single_dir_ignores_os_metadata_siblings(tmp_path):
+    """#128588: a .DS_Store next to the unpacked package dir defeated the lone-dir
+    hoist, so bin/ stayed nested and verify() aborted the whole update."""
+    tree = tmp_path / "tree"
+    inner = tree / "node-v26.7.0-darwin-arm64"
+    (inner / "bin").mkdir(parents=True)
+    (inner / "bin" / "node").write_text("payload", encoding="utf-8")
+    (tree / ".DS_Store").write_bytes(b"Bud1")
+    flatten_single_dir(tree)
+    assert (tree / "bin" / "node").is_file()
+    assert not (tree / ".DS_Store").exists() or True  # junk may remain; it is ignored

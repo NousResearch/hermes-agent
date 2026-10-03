@@ -270,11 +270,23 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+# OS/cloud metadata written into a published tree by Finder/Explorer/sync tooling
+# AFTER pm staged it: not package bytes, and users cannot reliably prevent them.
+# tree_digest skips them (same class as __pycache__) so a stray file does not make
+# an installed entry look stale, and flatten_single_dir ignores them when deciding
+# whether a lone top-level dir must be hoisted (#128588).
+JUNK_NAMES = (".DS_Store", "Thumbs.db", "desktop.ini", ".localized")
+
+
+def is_junk_name(name: str) -> bool:
+    return name in JUNK_NAMES or name.startswith("._")
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
     (bin/, cmd/, lib/...). Refuses on name collisions."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
-    entries = list(dest.iterdir())
+    entries = [e for e in dest.iterdir() if not (e.is_file() and is_junk_name(e.name))]
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
@@ -311,7 +323,11 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+    OS/cloud metadata names (``.DS_Store``, ``Thumbs.db``, ...) are skipped
+    for the same reason: Finder/Explorer/sync tooling writes them into a
+    published tree after the fact, and treating them as package bytes made
+    an installed entry look permanently stale and aborted updates (#128588)."""
     import hashlib
 
     files: list[tuple[str, Path]] = []
@@ -325,6 +341,8 @@ def tree_digest(root: Path) -> str:
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:
+            if is_junk_name(fname):
+                continue
             path = Path(dirpath) / fname
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])

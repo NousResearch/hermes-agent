@@ -2,7 +2,9 @@
 # The existing test_install_ps1_script_suites.py runs this under 5.1 and 7.
 # Native fixtures write raw bytes to a pipe: a PowerShell function returning
 # a .NET string would bypass the decoder and silently miss this regression.
+param([switch]$HiddenChild)
 $ErrorActionPreference = 'Stop'
+$suitePath = $PSCommandPath
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $installer = Join-Path $repoRoot 'scripts/install.ps1'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('hermes-utf8-' + [guid]::NewGuid())
@@ -16,9 +18,59 @@ function Assert-Equal($Expected, $Actual, [string]$Label) {
 }
 
 try {
+    if (-not $HiddenChild) {
+        # Match Desktop's CREATE_NO_WINDOW + piped stdout/stderr, with stdin
+        # closed. Run this same behavioral suite in a genuinely console-less host.
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = (Get-Process -Id $PID).Path
+        $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $suitePath + '" -HiddenChild'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $psi.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
+        $child = New-Object System.Diagnostics.Process
+        $child.StartInfo = $psi
+        try {
+            if (-not $child.Start()) { throw 'could not start hidden PowerShell host' }
+            $child.StandardInput.Close()
+            $stdoutTask = $child.StandardOutput.ReadToEndAsync()
+            $stderrTask = $child.StandardError.ReadToEndAsync()
+            if (-not $child.WaitForExit(120000)) {
+                $child.Kill()
+                throw 'hidden PowerShell regression timed out'
+            }
+            $stdout = $stdoutTask.Result
+            $stderr = $stderrTask.Result
+            if ($child.ExitCode -ne 0) { throw "hidden PowerShell regression failed: $stdout $stderr" }
+            Assert-Equal $true ($stdout.Contains('Hidden host boundary verified:')) 'hidden boundary checks executed'
+            Assert-Equal $true ($stdout.Contains('UTF-8 native capture and dependency-stage regression tests passed.')) 'hidden suite completed'
+            Write-Host 'Desktop hidden-host regression passed under all three code pages.'
+        } finally {
+            $child.Dispose()
+        }
+    }
+    if ($HiddenChild) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class HermesUtf8Host {
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+}
+'@
+        Assert-Equal ([IntPtr]::Zero) ([HermesUtf8Host]::GetConsoleWindow()) 'hidden host has no attached console'
+        Assert-Equal $true ([Console]::IsInputRedirected) 'hidden host stdin is redirected'
+        Assert-Equal $true ([Console]::IsOutputRedirected) 'hidden host stdout is redirected'
+        Assert-Equal $true ([Console]::IsErrorRedirected) 'hidden host stderr is redirected'
+        Write-Host 'Hidden host boundary verified: no console, redirected stdin/stdout/stderr.'
+    }
+
     # ASCII source works when PS 5.1 reads this BOM-less test from a checkout.
-    # The actual on-disk path includes CJK, an accent, a space and an apostrophe.
-    $profileName = ([string][char]0x5F20) + [char]0x4E09 + ' Ren' + [char]0xE9 + " O'Brien"
+    # Include the Polish U+0142 from #128326 alongside CJK, accent and quoting.
+    $profileName = ([string][char]0x5F20) + [char]0x4E09 + ' Ren' + [char]0xE9 + " O'Brien Pawe" + [char]0x142
     $profileDir = Join-Path $testRoot $profileName
     New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
     $env:HERMES_HOME = Join-Path $profileDir 'hermes-home'

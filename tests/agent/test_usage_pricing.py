@@ -183,6 +183,54 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal("2")
 
 
+def test_openrouter_metadata_uses_highest_applicable_prompt_tier(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "openai/tiered": {
+                "pricing": {
+                    "prompt": "0.000002",
+                    "completion": "0.000010",
+                    "input_cache_read": "0.0000002",
+                    "input_cache_write": "0.0000025",
+                    "overrides": [
+                        {
+                            "min_prompt_tokens": 128_000,
+                            "prompt": "0.00000195",
+                            "input_cache_read": "0.0000003",
+                        },
+                        {
+                            "min_prompt_tokens": 32_000,
+                            "prompt": "0.00000156",
+                            "completion": "0.000012",
+                            "input_cache_read": "0.00000025",
+                            "input_cache_write": "0.000003",
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    def estimate(input_tokens, cache_read_tokens, cache_write_tokens):
+        return estimate_usage_cost(
+            "openai/tiered",
+            CanonicalUsage(
+                input_tokens=input_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                output_tokens=1_000,
+            ),
+            provider="openrouter",
+        ).amount_usd
+
+    assert estimate(4_000, 3_000, 3_000) == Decimal("0.0261")
+    assert estimate(20_000, 10_000, 10_000) == Decimal("0.0757")
+    # The 128k row omits completion and cache-write, so those components
+    # inherit the 32k rates while input and cache-read use the highest tier.
+    assert estimate(100_000, 50_000, 50_000) == Decimal("0.3720")
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

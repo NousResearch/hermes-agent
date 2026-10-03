@@ -2,7 +2,7 @@
 
 ## The problem updaters solve
 
-Normal animations are discrete: `self.play()` goes from state A to state B. But what if you need continuous relationships — a label that always hovers above a moving dot, or a line that always connects two points?
+Normal animations are discrete: `self.play()` goes from state A to state B. But what if you need continuous relationships, a label that always hovers above a moving dot, or a line that always connects two points?
 
 Without updaters, you'd manually reposition every dependent object before every `self.play()`. Five animations that move a dot means five manual repositioning calls for the label. Miss one and it freezes in the wrong spot.
 
@@ -27,7 +27,7 @@ Every ValueTracker usage follows this:
 
 1. **Create the tracker** (the invisible slider)
 2. **Create visible objects that READ the tracker** via updaters
-3. **Animate the tracker** — all dependents update automatically
+3. **Animate the tracker**: all dependents update automatically
 
 ```python
 # Step 1: Create tracker
@@ -102,8 +102,8 @@ counter = always_redraw(lambda: Text(
 ```
 
 **When to use which:**
-- `add_updater` — position, color, opacity changes (cheap, preferred)
-- `always_redraw` — when the shape/structure itself changes (expensive, use sparingly)
+- `add_updater`: position, color, opacity changes (cheap, preferred)
+- `always_redraw`: when the shape/structure itself changes (expensive, use sparingly)
 
 ## DecimalNumber: showing live values
 
@@ -253,7 +253,7 @@ self.play(a_tracker.animate.set_value(1), run_time=1)
 
 1. **Updater fights animation:** If a mobject has an updater that sets its position, and you try to animate it elsewhere, the updater wins every frame. Suspend updating first.
 
-2. **always_redraw for simple moves:** If you only need to reposition, use `add_updater`. `always_redraw` reconstructs the entire mobject every frame — expensive and unnecessary for position tracking.
+2. **always_redraw for simple moves:** If you only need to reposition, use `add_updater`. `always_redraw` reconstructs the entire mobject every frame, expensive and unnecessary for position tracking.
 
 3. **Forgetting to add to scene:** Updaters only run on mobjects that are in the scene. `always_redraw` creates the mobject but you still need `self.add()`.
 

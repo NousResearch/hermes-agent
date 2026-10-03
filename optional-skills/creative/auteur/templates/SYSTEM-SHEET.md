@@ -1,7 +1,7 @@
-# SYSTEM-SHEET — <product>
+# SYSTEM-SHEET, <product>
 
 > Filled BEFORE any markup. The route map says what exists; the inventory says what it is built from
-> and — critically — **how many variants of each thing are allowed**. That number is the budget
+> and, critically, **how many variants of each thing are allowed**. That number is the budget
 > `systemscan` enforces after the build. Declaring four button variants and shipping nine is the
 > disease this file exists to prevent.
 
@@ -9,7 +9,7 @@
 - **What it does:**
 - **Who uses it, how often:** <!-- daily tools want less personality than monthly ones -->
 - **Stack / where the markup lands:** <!-- static, React, Vue, Rails views… and who plugs it in -->
-- **The moment of care:** <!-- the ONE place this product is more than correct. Not a wow moment — an empty state that genuinely helps, a table that does something smart, a keyboard flow that feels designed. There is no peak in this register. -->
+- **The moment of care:** <!-- the ONE place this product is more than correct. Not a wow moment, an empty state that genuinely helps, a table that does something smart, a keyboard flow that feels designed. There is no peak in this register. -->
 
 ## Route map
 
@@ -32,7 +32,7 @@
 ## Component inventory
 
 <!-- Every control the product needs, with its variant count DECLARED. Add a row only when a screen
-     genuinely needs it — a component nobody has a route for is speculative work. -->
+     genuinely needs it, a component nobody has a route for is speculative work. -->
 
 <!-- `systemscan` counts a variant as a PAINTED SIGNATURE: background | colour | border-colour |
      border-width | radius | font-size/weight | padding | shadow. A disabled button and a small
@@ -48,7 +48,7 @@
 | table |  |  |  |
 | … |  |  |  |
 
-**Non-control components** — pills, badges, banners, skeletons, avatars, tags. `systemscan` does not
+**Non-control components**: pills, badges, banners, skeletons, avatars, tags. `systemscan` does not
 count these (no focus, no interaction), which makes them exactly where drift breeds unseen. Declare
 them here anyway and police them by eye against `components.png`:
 
@@ -57,7 +57,7 @@ them here anyway and police them by eye against `components.png`:
 | status pill |  |  |
 
 **Rule:** a variant not on this list does not get built. If a screen needs one, that is a design
-decision — edit this file first, then build it.
+decision, edit this file first, then build it.
 
 ## State matrix
 
@@ -70,7 +70,7 @@ decision — edit this file first, then build it.
 |  |  |  |  |  |  |  |  |  |  |
 
 **Contrast survives every state.** A degraded, stale or disabled view usually dims something, and
-dimming is how a designed state quietly becomes unreadable — text at `opacity: .5` on a coloured
+dimming is how a designed state quietly becomes unreadable, text at `opacity: .5` on a coloured
 surface can fall from 6.9:1 to under 3:1 while every linter stays silent, because they all read the
 undimmed computed colour. State the consequence for each state that changes opacity or colour:
 
@@ -80,7 +80,7 @@ undimmed computed colour. State the consequence for each state that changes opac
 | disabled |  |  |
 
 **How each state is reachable.** Five beautiful empty states nobody can open are five states nobody
-reviewed. Name the mechanism — a `:target` fragment, a query param, a fixture flag — preferring one
+reviewed. Name the mechanism, a `:target` fragment, a query param, a fixture flag, preferring one
 that survives with JS off, and list the URLs:
 
 - mechanism:
@@ -96,13 +96,13 @@ screen that can be empty, write the actual words:
 ## Density
 
 - **Tables:** rows per screen · sticky header? · sort affordance · `tabular-nums` on numerals
-- **Charts:** route to the `dataviz` skill — do not improvise a series palette here
+- **Charts:** route to the `dataviz` skill, do not improvise a series palette here
 - **What gets truncated, and how the full value is reachable:**
 
 ## Gate checklist
 - [ ] every route has a one-line job and a layout family
 - [ ] the shell is described, including its mobile collapse and its current-route indicator
-- [ ] every component has a named, justified variant count — not "a few"
+- [ ] every component has a named, justified variant count, not "a few"
 - [ ] every interactive component's `focus-visible` is designed, not defaulted
 - [ ] empty / loading / error are written as real copy for every screen that can hit them
 - [ ] build order is by traffic

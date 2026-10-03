@@ -26,13 +26,13 @@ George Pólya, *How to Solve It* (Princeton UP, 1945). Four-phase problem-solvin
 - State in your own words.
 - Draw a figure. Introduce notation.
 
-This phase is most often skipped. **Most problem-solving failures are upstream of method** — they're failures to understand the problem precisely.
+This phase is most often skipped. **Most problem-solving failures are upstream of method**: they're failures to understand the problem precisely.
 
 ### 2. Devise a plan
 Find the connection between data and unknown. Heuristic moves:
 - **Have you seen this problem before?** Or in slightly different form?
 - **Do you know a related problem?**
-- **Look at the unknown** — find a familiar problem with the same or similar unknown.
+- **Look at the unknown**: find a familiar problem with the same or similar unknown.
 - **Could you use a related problem's result? Its method?**
 - **Restate.**
 - If you can't solve the proposed problem, solve a related one:
@@ -52,7 +52,7 @@ Find the connection between data and unknown. Heuristic moves:
 - Can you derive it differently? See it at a glance?
 - Can you use the result, or the method, for some other problem?
 
-The looking-back phase is the *learning* phase — what makes Pólya's method an *educational* method, not just a problem-solving one.
+The looking-back phase is the *learning* phase, what makes Pólya's method an *educational* method, not just a problem-solving one.
 
 ## Key heuristics from the dictionary
 

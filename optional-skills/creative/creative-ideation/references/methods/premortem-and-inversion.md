@@ -1,8 +1,8 @@
 # Premortem and Inversion
 
 Two methods for failure-oriented ideation:
-- **Premortem** — Gary Klein, *HBR* September 2007. Imagine the project has already failed catastrophically; work backwards to causes.
-- **Inversion** — Charlie Munger via Carl Jacobi: *"Tell me where I'm going to die so I'll never go there."* Solve problems by figuring out how to fail and avoiding that.
+- **Premortem**: Gary Klein, *HBR* September 2007. Imagine the project has already failed catastrophically; work backwards to causes.
+- **Inversion**: Charlie Munger via Carl Jacobi: *"Tell me where I'm going to die so I'll never go there."* Solve problems by figuring out how to fail and avoiding that.
 
 Both exploit prospective hindsight (Mitchell, Russo, Pennington 1989): people generate more concrete reasons for an event when imagining it has *already happened* than when imagining it might.
 
@@ -22,7 +22,7 @@ Both exploit prospective hindsight (Mitchell, Russo, Pennington 1989): people ge
 
 ## Don't use when
 
-- Early generative phase — corrosive to fragile ideas
+- Early generative phase, corrosive to fragile ideas
 - You can't act on the failure modes (anxiety, not planning)
 - Group lacks psychological safety to articulate fears about the leader's project
 - Decisions that need urgency (premortem takes 60–90 minutes done well)
@@ -30,7 +30,7 @@ Both exploit prospective hindsight (Mitchell, Russo, Pennington 1989): people ge
 ## Premortem procedure
 
 1. **State the project as if it's complete and failed.** "It is [date 6 months from now]. We launched. The result was a complete disaster."
-2. **Generate failure narratives independently.** Each member writes a paragraph describing what happened, in concrete terms. *Independence is essential* — group brainstorming surfaces socially safe concerns; independent writing surfaces uncomfortable ones.
+2. **Generate failure narratives independently.** Each member writes a paragraph describing what happened, in concrete terms. *Independence is essential*, group brainstorming surfaces socially safe concerns; independent writing surfaces uncomfortable ones.
 3. **Round-robin failure causes.** Each shares one cause; no comment. Continue until exhausted.
 4. **Cluster and assess.** Group similar; estimate probability and severity.
 5. **Generate mitigations for the top 3.** Update the plan.
@@ -64,7 +64,7 @@ Both exploit prospective hindsight (Mitchell, Russo, Pennington 1989): people ge
 ## Anti-slop notes
 
 - Premortem slop = generic risk lists ("execution risk", "market risk"). Real premortem narrative says *specifically* what went wrong.
-- Inversion slop = "do the opposite of successful people" — that's contrarianism. Real inversion identifies *specific* failure-guaranteeing actions in *your* situation.
+- Inversion slop = "do the opposite of successful people", that's contrarianism. Real inversion identifies *specific* failure-guaranteeing actions in *your* situation.
 - Don't generate fake fears. If there are no real concerns, the premortem is short.
 - Don't use these to talk users out of pursuing things they should pursue. Premortem and inversion are pressure tests, not vetoes.
 

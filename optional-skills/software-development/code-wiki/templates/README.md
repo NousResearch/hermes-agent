@@ -4,14 +4,14 @@
 
 ## Key Concepts
 
-- **{{CONCEPT_1}}** — {{ONE_LINE}}
-- **{{CONCEPT_2}}** — {{ONE_LINE}}
-- **{{CONCEPT_3}}** — {{ONE_LINE}}
+- **{{CONCEPT_1}}**: {{ONE_LINE}}
+- **{{CONCEPT_2}}**: {{ONE_LINE}}
+- **{{CONCEPT_3}}**: {{ONE_LINE}}
 
 ## Entry Points
 
-- [`{{PATH_1}}`]({{LINK_1}}) — {{WHAT_IT_DOES}}
-- [`{{PATH_2}}`]({{LINK_2}}) — {{WHAT_IT_DOES}}
+- [`{{PATH_1}}`]({{LINK_1}}), {{WHAT_IT_DOES}}
+- [`{{PATH_2}}`]({{LINK_2}}), {{WHAT_IT_DOES}}
 
 ## High-Level Architecture
 

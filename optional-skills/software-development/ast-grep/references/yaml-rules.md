@@ -1,4 +1,4 @@
-# YAML rule reference — atomic, relational, composite, transform, fix
+# YAML rule reference: atomic, relational, composite, transform, fix
 
 Use this when you outgrow inline `sg run -p ...` patterns and need a reusable, testable rule. A YAML rule is the unit of work for `sg scan`. Drop one or more files in `ruleDirs/` (configured via `sgconfig.yml`) and they get loaded automatically.
 
@@ -68,7 +68,7 @@ metadata:
 
 ---
 
-## Atomic rules — match a single node
+## Atomic rules: match a single node
 
 ### `pattern`
 
@@ -159,11 +159,11 @@ rule:
 
 ---
 
-## Relational rules — match by relation to other nodes
+## Relational rules: match by relation to other nodes
 
 All four take a sub-rule object plus optional `stopBy` and (for `inside`/`has`) `field`.
 
-### `inside` — target is inside parent/ancestor matching sub-rule
+### `inside`: target is inside parent/ancestor matching sub-rule
 
 ```yaml
 rule:
@@ -173,7 +173,7 @@ rule:
     stopBy: end                # walk up to file root, default: neighbor
 ```
 
-### `has` — target has child/descendant matching sub-rule
+### `has`: target has child/descendant matching sub-rule
 
 ```yaml
 rule:
@@ -183,7 +183,7 @@ rule:
     stopBy: end
 ```
 
-### `precedes` — target appears before sibling matching sub-rule
+### `precedes`: target appears before sibling matching sub-rule
 
 ```yaml
 rule:
@@ -192,7 +192,7 @@ rule:
     kind: function_declaration
 ```
 
-### `follows` — target appears after sibling matching sub-rule
+### `follows`: target appears after sibling matching sub-rule
 
 ```yaml
 rule:
@@ -223,7 +223,7 @@ rule:
 
 ---
 
-## Composite rules — combine sub-rules
+## Composite rules: combine sub-rules
 
 | Rule | Meaning |
 |---|---|
@@ -265,7 +265,7 @@ rule:
 
 ---
 
-## Implicit `all` — multiple rule fields
+## Implicit `all`: multiple rule fields
 
 A rule object with multiple fields is treated as an implicit `all`:
 
@@ -285,7 +285,7 @@ Use the explicit `all` array when capture order matters (rare, but possible with
 
 ---
 
-## `constraints` — post-match metavariable filtering
+## `constraints`: post-match metavariable filtering
 
 After the main `rule` matches, additional checks on captured single metavariables:
 
@@ -304,7 +304,7 @@ Constraints **only apply to single metavars** (`$VAR`), not multi (`$$$VAR`).
 
 ---
 
-## `utils` — local reusable sub-rules
+## `utils`: local reusable sub-rules
 
 ```yaml
 utils:
@@ -326,11 +326,11 @@ For utils accessible across multiple rule files, use `utilDirs` in `sgconfig.yml
 
 ---
 
-## `transform` — manipulate captures before `fix`
+## `transform`: manipulate captures before `fix`
 
 Operations: `replace`, `substring`, `convert`, `rewrite`.
 
-### `replace` — regex search/replace on a captured string
+### `replace`: regex search/replace on a captured string
 
 ```yaml
 rule:
@@ -347,7 +347,7 @@ transform:
 fix: $NEW_FN($$$A)
 ```
 
-### `substring` — character slicing (negative indices supported)
+### `substring`: character slicing (negative indices supported)
 
 ```yaml
 transform:
@@ -358,7 +358,7 @@ transform:
       endChar: -1
 ```
 
-### `convert` — case conversion
+### `convert`: case conversion
 
 ```yaml
 transform:
@@ -369,7 +369,7 @@ transform:
       separatedBy: [underscore]   # optional: dash | dot | space | slash | underscore | caseChange
 ```
 
-### `rewrite` — apply other rewriter rules (experimental)
+### `rewrite`: apply other rewriter rules (experimental)
 
 ```yaml
 rewriters:
@@ -406,7 +406,7 @@ fix: $PREFIXED
 
 ---
 
-## `fix` — auto-rewrite
+## `fix`: auto-rewrite
 
 ### String form
 
@@ -438,7 +438,7 @@ fix:
 
 ---
 
-## `rewriters` — sub-rule library for `rewrite` transform
+## `rewriters`: sub-rule library for `rewrite` transform
 
 Top-level field defining one or more named rewriters:
 
@@ -457,7 +457,7 @@ Used inside `transform` via the `rewrite` operation (see above).
 
 ---
 
-## `labels` — custom diagnostic highlighting
+## `labels`: custom diagnostic highlighting
 
 ```yaml
 rule:
@@ -476,7 +476,7 @@ Editor extensions render the diagnostic with these labels. Defaults are usually 
 
 ---
 
-## `files` and `ignores` — file selection per-rule
+## `files` and `ignores`: file selection per-rule
 
 ```yaml
 files:
@@ -502,8 +502,8 @@ files:
 
 ## See also
 
-- `references/recipes.md` — copy-paste rules by language.
-- `references/cli.md` — `sg scan`, `sg test`.
-- `references/sgconfig.md` — project-level configuration.
+- `references/recipes.md`: copy-paste rules by language.
+- `references/cli.md`, `sg scan`, `sg test`.
+- `references/sgconfig.md`: project-level configuration.
 - Official rule reference: <https://ast-grep.github.io/reference/rule.html>
 - Cheat sheets: <https://ast-grep.github.io/cheatsheet/rule.html>, <https://ast-grep.github.io/cheatsheet/yaml.html>

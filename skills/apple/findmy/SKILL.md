@@ -117,7 +117,7 @@ Analyze each screenshot with vision to extract coordinates, then compile a route
 
 ## Limitations
 
-- FindMy has **no CLI or API** — must use UI automation
+- FindMy has **no CLI or API**: must use UI automation
 - AirTags only update location while the FindMy page is actively displayed
 - Location accuracy depends on nearby Apple devices in the FindMy network
 - Screen Recording permission required for screenshots
@@ -126,6 +126,6 @@ Analyze each screenshot with vision to extract coordinates, then compile a route
 ## Rules
 
 1. Keep FindMy app in the foreground when tracking AirTags (updates stop when minimized)
-2. Use `vision_analyze` to read screenshot content — don't try to parse pixels
+2. Use `vision_analyze` to read screenshot content: don't try to parse pixels
 3. For ongoing tracking, use a cronjob to periodically capture and log locations
-4. Respect privacy — only track devices/items the user owns
+4. Respect privacy: only track devices/items the user owns

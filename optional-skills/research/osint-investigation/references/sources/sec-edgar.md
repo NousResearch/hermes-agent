@@ -1,4 +1,4 @@
-# SEC EDGAR — Corporate Filings
+# SEC EDGAR, Corporate Filings
 
 ## 1. Summary
 
@@ -11,7 +11,7 @@ events), DEF 14A (proxy), Form 4 (insider trading), 13F (institutional holdings)
 - **API:** `https://data.sec.gov/submissions/CIK<10-digit-padded>.json` (no auth)
 - **Filing index:** `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=...`
 - **Full-text search:** `https://efts.sec.gov/LATEST/search-index?q=...`
-- **Auth:** None — requires `User-Agent` header with contact info per SEC policy
+- **Auth:** None, requires `User-Agent` header with contact info per SEC policy
 - **Rate limit:** 10 requests/second per IP (enforced)
 
 ## 3. Data Schema
@@ -46,9 +46,9 @@ Join key: company name OR CIK if you have it. CIK is canonical and stable.
 
 ## 6. Data Quality
 
-- Subsidiaries often filed under parent CIK — be careful with name matches
-- Name changes over time (rebrands, acquisitions) — CIK remains constant
-- 10-K Item 1A Risk Factors are free-form text — useful for `web_extract`-style
+- Subsidiaries often filed under parent CIK, be careful with name matches
+- Name changes over time (rebrands, acquisitions), CIK remains constant
+- 10-K Item 1A Risk Factors are free-form text, useful for `web_extract`-style
   parsing, not structured queries
 - Foreign private issuers file 20-F instead of 10-K
 
@@ -74,7 +74,7 @@ Example: `SEC_USER_AGENT="Research example@example.com"`.
 - Public record under SEC Rule 24b-2 / 17 CFR § 230.401
 - No commercial use restrictions on filing content
 - SEC asks all bulk users to include a `User-Agent` with contact info and to
-  respect 10 req/s — failure to do so can result in IP blocking
+  respect 10 req/s, failure to do so can result in IP blocking
 
 ## 9. References
 

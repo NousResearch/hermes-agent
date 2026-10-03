@@ -13,9 +13,9 @@ metadata:
 
 # Adversarial UX Test
 
-Roleplay the worst-case user for your product — the person who hates technology, doesn't want your software, and will find every reason to complain. Then filter their feedback through a pragmatism layer to separate real UX problems from "I hate computers" noise.
+Roleplay the worst-case user for your product, the person who hates technology, doesn't want your software, and will find every reason to complain. Then filter their feedback through a pragmatism layer to separate real UX problems from "I hate computers" noise.
 
-Think of it as an automated "mom test" — but angry.
+Think of it as an automated "mom test", but angry.
 
 ## Why This Works
 
@@ -45,23 +45,23 @@ You can provide a persona or let the agent generate one based on your product's 
 If no persona is provided, generate one by answering:
 
 1. **Who is the HARDEST user for this product?** (age 50+, non-technical role, decades of experience doing it "the old way")
-2. **What is their tech comfort level?** (the lower the better — WhatsApp-only, paper notebooks, wife set up their email)
+2. **What is their tech comfort level?** (the lower the better, WhatsApp-only, paper notebooks, wife set up their email)
 3. **What is the ONE thing they need to accomplish?** (their core job, not your feature list)
 4. **What would make them give up?** (too many clicks, jargon, slow, confusing)
 5. **How do they talk when frustrated?** (blunt, sweary, dismissive, sighing)
 
 ### Good Persona Example
-> **"Big Mick" McAllister** — 58-year-old S&C coach. Uses WhatsApp and that's it. His "spreadsheet" is a paper notebook. "If I can't figure it out in 10 seconds I'm going back to my notebook." Needs to log session results for 25 players. Hates small text, jargon, and passwords.
+> **"Big Mick" McAllister**, 58-year-old S&C coach. Uses WhatsApp and that's it. His "spreadsheet" is a paper notebook. "If I can't figure it out in 10 seconds I'm going back to my notebook." Needs to log session results for 25 players. Hates small text, jargon, and passwords.
 
 ### Bad Persona Example
-> "A user who doesn't like the app" — too vague, no constraints, no voice.
+> "A user who doesn't like the app", too vague, no constraints, no voice.
 
 The persona must be **specific enough to stay in character** for 20 minutes of testing.
 
 ## Step 2: Become the Asshole (Browse as the Persona)
 
 1. Read any available project docs for app context and URLs
-2. **Fully inhabit the persona** — their frustrations, limitations, goals
+2. **Fully inhabit the persona**: their frustrations, limitations, goals
 3. Navigate to the app using browser tools
 4. **Attempt the persona's ACTUAL TASKS** (not a feature tour):
    - Can they do what they came to do?
@@ -72,20 +72,20 @@ The persona must be **specific enough to stay in character** for 20 minutes of t
    - What would make them give up and go back to their old way?
 
 5. Test these friction categories:
-   - **First impression** — would they even bother past the landing page?
-   - **Core workflow** — the ONE thing they need to do most often
-   - **Error recovery** — what happens when they do something wrong?
-   - **Readability** — text size, contrast, information density
-   - **Speed** — does it feel faster than their current method?
-   - **Terminology** — any jargon they wouldn't understand?
-   - **Navigation** — can they find their way back? do they know where they are?
+   - **First impression**: would they even bother past the landing page?
+   - **Core workflow**: the ONE thing they need to do most often
+   - **Error recovery**: what happens when they do something wrong?
+   - **Readability**: text size, contrast, information density
+   - **Speed**: does it feel faster than their current method?
+   - **Terminology**: any jargon they wouldn't understand?
+   - **Navigation**: can they find their way back? do they know where they are?
 
 6. Take screenshots of every pain point
 7. Check browser console for JS errors on every page
 
 ## Step 3: The Rant (Write Feedback in Character)
 
-Write the feedback AS THE PERSONA — in their voice, with their frustrations. This is not a bug report. This is a real human venting.
+Write the feedback AS THE PERSONA, in their voice, with their frustrations. This is not a bug report. This is a real human venting.
 
 ```
 [PERSONA NAME]'s Review of [PRODUCT]
@@ -108,14 +108,14 @@ SPECIFIC COMPLAINTS:
 VERDICT: "[one-line persona quote summarizing their experience]"
 ```
 
-## Step 4: The Pragmatism Filter (Critical — Do Not Skip)
+## Step 4: The Pragmatism Filter (Critical, Do Not Skip)
 
 Step OUT of the persona. Evaluate each complaint as a product person:
 
-- **RED: REAL UX BUG** — Any user would have this problem, not just grumpy ones. Fix it.
-- **YELLOW: VALID BUT LOW PRIORITY** — Real issue but only for extreme users. Note it.
-- **WHITE: PERSONA NOISE** — "I hate computers" talking, not a product problem. Skip it.
-- **GREEN: FEATURE REQUEST** — Good idea hidden in the complaint. Consider it.
+- **RED: REAL UX BUG**: Any user would have this problem, not just grumpy ones. Fix it.
+- **YELLOW: VALID BUT LOW PRIORITY**: Real issue but only for extreme users. Note it.
+- **WHITE: PERSONA NOISE**: "I hate computers" talking, not a product problem. Skip it.
+- **GREEN: FEATURE REQUEST**: Good idea hidden in the complaint. Consider it.
 
 ### Filter Criteria
 1. Would a 35-year-old competent-but-busy user have the same complaint? → RED
@@ -140,14 +140,14 @@ For **YELLOW** items: one catch-all ticket with all notes.
 
 **WHITE** items appear in the report only. No tickets.
 
-**Max 10 tickets per session** — focus on the worst issues.
+**Max 10 tickets per session**: focus on the worst issues.
 
 ## Step 6: Report
 
 Deliver:
-1. The persona rant (Step 3) — entertaining and visceral
-2. The filtered assessment (Step 4) — pragmatic and actionable
-3. Tickets created (Step 5) — with links
+1. The persona rant (Step 3), entertaining and visceral
+2. The filtered assessment (Step 4), pragmatic and actionable
+3. Tickets created (Step 5), with links
 4. Screenshots of key issues
 
 ## Tips
@@ -159,15 +159,15 @@ Deliver:
 - **The best findings are RED items the persona found accidentally** while trying to do something else.
 - **If the persona has zero complaints, your persona is too tech-savvy.** Make them older, less patient, more set in their ways.
 - **Run this before demos, launches, or after shipping a batch of features.**
-- **Register as a NEW user when possible.** Don't use pre-seeded admin accounts — the cold start experience is where most friction lives.
+- **Register as a NEW user when possible.** Don't use pre-seeded admin accounts, the cold start experience is where most friction lives.
 - **Zero WHITE items is a signal, not a failure.** If the pragmatism filter finds no noise, your product has real UX problems, not just a grumpy persona.
-- **Check known issues in project docs AFTER the test.** If the persona found a bug that's already in the known issues list, that's actually the most damning finding — it means the team knew about it but never felt the user's pain.
+- **Check known issues in project docs AFTER the test.** If the persona found a bug that's already in the known issues list, that's actually the most damning finding, it means the team knew about it but never felt the user's pain.
 - **Subscription/paywall testing is critical.** Test with expired accounts, not just active ones. The "what happens when you can't pay" experience reveals whether the product respects users or holds their data hostage.
 - **Count the clicks to accomplish the persona's ONE task.** If it's more than 5, that's almost always a RED finding regardless of persona tech level.
 
 ## Example Personas by Industry
 
-These are starting points — customize for your specific product:
+These are starting points, customize for your specific product:
 
 | Product Type | Persona | Age | Key Trait |
 |-------------|---------|-----|-----------|
@@ -183,7 +183,7 @@ These are starting points — customize for your specific product:
 ## Rules
 
 - Stay in character during Steps 2-3
-- Be genuinely mean but fair — find real problems, not manufactured ones
+- Be genuinely mean but fair, find real problems, not manufactured ones
 - The pragmatism filter (Step 4) is **MANDATORY**
 - Screenshots required for every complaint
 - Max 10 tickets per session

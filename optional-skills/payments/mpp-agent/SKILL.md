@@ -19,9 +19,9 @@ Three client options, all distributed via npm. Pick the lightest one that solves
 
 ## When to Use
 
-- A merchant API returns `HTTP 402` with a `www-authenticate` header — and the user wants to actually pay it, not just log the response.
+- A merchant API returns `HTTP 402` with a `www-authenticate` header, and the user wants to actually pay it, not just log the response.
 - The user asks to "pay per request", "set up an agent wallet", "use Tempo / Privy / AgentCash", or wants to discover MPP-priced services.
-- A Stripe Link spend has produced a Shared Payment Token (SPT) and the agent needs to attach it to the 402 challenge — in that flow, prefer `link-cli mpp pay` (see the `stripe-link-cli` skill).
+- A Stripe Link spend has produced a Shared Payment Token (SPT) and the agent needs to attach it to the 402 challenge, in that flow, prefer `link-cli mpp pay` (see the `stripe-link-cli` skill).
 
 ## Choosing a client
 
@@ -57,7 +57,7 @@ npm install -g mppx
 mppx account create
 ```
 
-Store the resulting account credentials wherever the CLI tells you (the CLI writes them under its own config — do not paste them into the agent transcript).
+Store the resulting account credentials wherever the CLI tells you (the CLI writes them under its own config, do not paste them into the agent transcript).
 
 ### 2. Inspect the merchant's 402 challenge
 
@@ -109,11 +109,11 @@ Spend controls and service discovery live in the wallet UI at https://wallet.tem
 
 ## Pitfalls
 
-- **`HTTP 402` without `method="stripe"` cannot be paid by Stripe Link.** If the challenge advertises only Tempo / other methods, use `mppx` (or whichever wallet matches) — Link will reject it. Conversely, if it advertises `method="stripe"`, prefer Link via the `stripe-link-cli` skill so the spend goes through the user's approved card.
-- **Multiple challenges in one header.** `www-authenticate` may list several methods (e.g. `tempo, stripe`). The Link CLI's `mpp decode` will pick the Stripe one; `mppx` will pick Tempo. There's no single "right" client — pick by which wallet the user has funded.
+- **`HTTP 402` without `method="stripe"` cannot be paid by Stripe Link.** If the challenge advertises only Tempo / other methods, use `mppx` (or whichever wallet matches), Link will reject it. Conversely, if it advertises `method="stripe"`: prefer Link via the `stripe-link-cli` skill so the spend goes through the user's approved card.
+- **Multiple challenges in one header.** `www-authenticate` may list several methods (e.g. `tempo, stripe`). The Link CLI's `mpp decode` will pick the Stripe one; `mppx` will pick Tempo. There's no single "right" client, pick by which wallet the user has funded.
 - **Zero-amount challenges.** Some MPP endpoints charge `$0.00` and just want a proof credential. These work without a funded wallet. Don't refuse them as "broken."
 - **Wallet keys never enter agent context.** All four clients store keys under their own config dirs (or generate per-session ephemeral keypairs, in Privy's case). Do not `cat`/`read_file` them.
-- **Server-side MPP is a different skill.** If the user wants to ADD 402 to their own API, this skill is wrong — point them at https://mpp.dev/quickstart/server and the `mppx/nextjs` / `mppx/hono` / `mppx/express` / `mppx/elysia` middlewares. A dedicated `mpp-server` skill may land later.
+- **Server-side MPP is a different skill.** If the user wants to ADD 402 to their own API, this skill is wrong, point them at https://mpp.dev/quickstart/server and the `mppx/nextjs` / `mppx/hono` / `mppx/express` / `mppx/elysia` middlewares. A dedicated `mpp-server` skill may land later.
 
 ## Verification
 

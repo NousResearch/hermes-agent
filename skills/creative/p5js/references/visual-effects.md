@@ -19,11 +19,11 @@ let v = noise(x * 0.005, y * 0.005, frameCount * 0.005);
 ```
 
 The scale factor (0.005 etc.) is critical:
-- `0.001` — very smooth, large features
-- `0.005` — smooth, medium features
-- `0.01` — standard generative art scale
-- `0.05` — detailed, small features
-- `0.1` — near-random, grainy
+- `0.001`: very smooth, large features
+- `0.005`: smooth, medium features
+- `0.01`: standard generative art scale
+- `0.05`: detailed, small features
+- `0.1`: near-random, grainy
 
 ### Fractal Brownian Motion (fBM)
 
@@ -65,7 +65,7 @@ function domainWarp(x, y, scale, strength, time) {
 
 ### Curl Noise
 
-Divergence-free noise field. Particles following curl noise never converge or diverge — they flow in smooth, swirling patterns.
+Divergence-free noise field. Particles following curl noise never converge or diverge: they flow in smooth, swirling patterns.
 
 ```javascript
 function curlNoise(x, y, scale, time) {
@@ -450,7 +450,7 @@ function draw() {
 - Tint alpha (40-120, controls glow intensity)
 - Update bloom every N frames to save perf: `if (frameCount % 2 === 0) { ... }`
 
-**Common mistake:** Forgetting `blendMode(BLEND)` after the ADD pass — everything drawn after will be additive.
+**Common mistake:** Forgetting `blendMode(BLEND)` after the ADD pass, everything drawn after will be additive.
 
 ### Trail Buffer Brightness
 
@@ -754,7 +754,7 @@ function deJongAttractor(a, b, c, d, iterations) {
 
 ### Poisson Disk Sampling
 
-Even distribution that looks natural — better than pure random for placing elements.
+Even distribution that looks natural: better than pure random for placing elements.
 
 ```javascript
 function poissonDiskSampling(r, k = 30) {
@@ -817,7 +817,7 @@ function poissonDiskSampling(r, k = 30) {
 
 ## Addon Libraries
 
-### p5.brush — Natural Media
+### p5.brush: Natural Media
 
 Hand-drawn, organic aesthetics. Watercolor, charcoal, pen, marker. Requires **p5.js 2.x + WEBGL**.
 
@@ -843,7 +843,7 @@ function setup() {
 Built-in brushes: `2B`, `HB`, `2H`, `cpencil`, `pen`, `rotring`, `spray`, `marker`, `charcoal`, `hatch_brush`.
 Built-in vector fields: `hand`, `curved`, `zigzag`, `waves`, `seabed`, `spiral`, `columns`.
 
-### p5.grain — Film Grain & Texture
+### p5.grain: Film Grain & Texture
 
 ```html
 <script src="https://cdn.jsdelivr.net/npm/p5.grain@0.7.0/p5.grain.min.js"></script>
@@ -857,7 +857,7 @@ function draw() {
 }
 ```
 
-### CCapture.js — Deterministic Video Capture
+### CCapture.js: Deterministic Video Capture
 
 Records canvas at fixed framerate regardless of actual render speed. Essential for complex generative art.
 

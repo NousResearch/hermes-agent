@@ -13,7 +13,7 @@ metadata:
 
 # Social Media Content Calendar
 
-Plan a concrete calendar across selected social platforms. This skill owns campaign structure, post briefs, channel adaptation, approvals, and publishing verification; platform skills such as `xurl` own API commands. For platforms without a connector, the verified handoff ends at approved drafts for the user's scheduler — say so rather than claiming publication.
+Plan a concrete calendar across selected social platforms. This skill owns campaign structure, post briefs, channel adaptation, approvals, and publishing verification; platform skills such as `xurl` own API commands. For platforms without a connector, the verified handoff ends at approved drafts for the user's scheduler, say so rather than claiming publication.
 
 ## When to Use
 

@@ -1,8 +1,8 @@
 # Gates Taxonomy
 
-Canonical gate types for validation checkpoints across any workflow that spawns subagents, runs review loops, or has human-approval pauses. Every validation checkpoint maps to one of these four types — naming them explicitly makes the workflow legible and prevents "what happens when this check fails?" confusion.
+Canonical gate types for validation checkpoints across any workflow that spawns subagents, runs review loops, or has human-approval pauses. Every validation checkpoint maps to one of these four types, naming them explicitly makes the workflow legible and prevents "what happens when this check fails?" confusion.
 
-Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)).
+Adapted from the GSD (Get Shit Done) project's gates reference, MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)).
 
 ## The four gate types
 
@@ -10,7 +10,7 @@ Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 L
 
 **Purpose:** Validates preconditions before starting an operation.
 
-**Behavior:** Blocks entry if conditions unmet. No partial work created — bail before anything changes.
+**Behavior:** Blocks entry if conditions unmet. No partial work created, bail before anything changes.
 
 **Recovery:** Fix the missing precondition, then retry.
 
@@ -25,7 +25,7 @@ Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 L
 
 **Behavior:** Loops back to the producer with specific feedback. Bounded by an iteration cap (typically 3).
 
-**Recovery:** Producer addresses feedback; checker re-evaluates. The loop escalates early if issue count does not decrease between consecutive iterations (stall detection). After max iterations, escalates to the user unconditionally — never loop forever.
+**Recovery:** Producer addresses feedback; checker re-evaluates. The loop escalates early if issue count does not decrease between consecutive iterations (stall detection). After max iterations, escalates to the user unconditionally, never loop forever.
 
 **Examples:**
 - Plan reviewer reads a draft plan, returns specific issues, planner revises, reviewer re-reads (max 3 cycles).
@@ -43,8 +43,8 @@ Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 L
 **Examples:**
 - Revision loop exhausted after 3 iterations.
 - Merge conflict during automated worktree cleanup.
-- Ambiguous requirement — two reasonable interpretations and the choice changes the approach.
-- Subagent reports "the plan says X but the codebase actually does Y" — human decides which is right.
+- Ambiguous requirement, two reasonable interpretations and the choice changes the approach.
+- Subagent reports "the plan says X but the codebase actually does Y", human decides which is right.
 
 ### 4. Abort gate
 
@@ -55,7 +55,7 @@ Adapted from the GSD (Get Shit Done) project's gates reference — MIT © 2025 L
 **Recovery:** Human investigates root cause, fixes, restarts from checkpoint.
 
 **Examples:**
-- Context window critically low during execution (POOR tier, >70%) — abort cleanly rather than produce truncated output.
+- Context window critically low during execution (POOR tier, >70%), abort cleanly rather than produce truncated output.
 - Critical dependency unavailable mid-run (network down, API key revoked).
 - Unrecoverable filesystem state (disk full, permissions lost).
 - Safety invariant violated (agent attempted an irreversible destructive action outside approved scope).
@@ -70,7 +70,7 @@ When you write an orchestration skill that has validation checkpoints, **name ea
 
 Answering these three up front means your skill never hits "what do we do now?" at runtime.
 
-## Example — a review loop with all four gate types
+## Example: a review loop with all four gate types
 
 ```
 [Pre-flight] plan.md exists and is non-empty?   → no: bail, ask user to write a plan first

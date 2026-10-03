@@ -445,7 +445,7 @@ Appendix: Human Evaluation Details
 | Studying annotator behavior/cognition | **Yes** (they become the subject) |
 | Using existing annotated data | **Usually no** (secondary data analysis) |
 
-**Check your institution's policy.** The definition of "human subjects research" varies. When in doubt, submit an IRB protocol — the review is often fast for minimal-risk studies.
+**Check your institution's policy.** The definition of "human subjects research" varies. When in doubt, submit an IRB protocol, the review is often fast for minimal-risk studies.
 
 ### Ethics Checklist for Human Evaluation
 

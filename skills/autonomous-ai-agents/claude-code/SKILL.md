@@ -11,7 +11,7 @@ metadata:
     related_skills: [codex, hermes-agent, opencode]
 ---
 
-# Claude Code — Hermes Orchestration Guide
+# Claude Code: Hermes Orchestration Guide
 
 Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-reference) (Anthropic's autonomous coding agent CLI) via the Hermes terminal. Claude Code v2.x can read files, write code, run shell commands, spawn subagents, and manage git workflows autonomously.
 
@@ -22,7 +22,7 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 - **Console auth:** `claude auth login --console` for API key billing
 - **SSO auth:** `claude auth login --sso` for Enterprise
 - **Check status:** `claude auth status` (JSON) or `claude auth status --text` (human-readable)
-- **Health check:** `claude doctor` — checks auto-updater and installation health
+- **Health check:** `claude doctor`, checks auto-updater and installation health
 - **Version check:** `claude --version` (requires v2.x+)
 - **Update:** `claude update` or `claude upgrade`
 
@@ -30,7 +30,7 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 
 Hermes interacts with Claude Code in two fundamentally different ways. Choose based on the task.
 
-### Mode 1: Print Mode (`-p`) — Non-Interactive (PREFERRED for most tasks)
+### Mode 1: Print Mode (`-p`): Non-Interactive (PREFERRED for most tasks)
 
 Print mode runs a one-shot task, returns the result, and exits. No PTY needed. No interactive prompts. This is the cleanest integration path.
 
@@ -45,9 +45,9 @@ terminal(command="claude -p 'Add error handling to all API calls in src/' --allo
 - Piped input processing (`cat file | claude -p "analyze this"`)
 - Any task where you don't need multi-turn conversation
 
-**Print mode skips ALL interactive dialogs** — no workspace trust prompt, no permission confirmations. This makes it ideal for automation.
+**Print mode skips ALL interactive dialogs**: no workspace trust prompt, no permission confirmations. This makes it ideal for automation.
 
-### Mode 2: Interactive PTY via tmux — Multi-Turn Sessions
+### Mode 2: Interactive PTY via tmux: Multi-Turn Sessions
 
 Interactive mode gives you a full conversational REPL where you can send follow-up prompts, use slash commands, and watch Claude work in real time. **Requires tmux orchestration.**
 
@@ -87,18 +87,18 @@ Claude Code presents up to two confirmation dialogs on first launch. You MUST ha
 ❯ 1. Yes, I trust this folder    ← DEFAULT (just press Enter)
   2. No, exit
 ```
-**Handling:** `tmux send-keys -t <session> Enter` — default selection is correct.
+**Handling:** `tmux send-keys -t <session> Enter`, default selection is correct.
 
 ### Dialog 2: Individual Permission Prompts (normal flow)
 
-Each tool use that needs approval (file write, shell command, network) shows a prompt. Answer that one prompt — this is different from disabling prompts for the whole run:
+Each tool use that needs approval (file write, shell command, network) shows a prompt. Answer that one prompt: this is different from disabling prompts for the whole run:
 ```
 # Read the prompt before answering it
 terminal(command="tmux capture-pane -t <session> -p -S -30")
 # Allow this one action (Enter = default "Yes"); Esc declines it
 terminal(command="tmux send-keys -t <session> Enter")
 ```
-Never send a blind `Enter` on a timer to approve prompts you have not read — that is the bypass flag with extra steps.
+Never send a blind `Enter` on a timer to approve prompts you have not read: that is the bypass flag with extra steps.
 
 A narrower opt-in than the full bypass is `--permission-mode acceptEdits`: file edits in the working directory are accepted, shell and other tool calls still prompt. Use it only in a dedicated worktree after reviewing the task.
 
@@ -118,7 +118,7 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 
 ### Opt-in: --dangerously-skip-permissions (isolated environments only)
 
-This disables permission prompts for the whole run — grants filesystem, shell, and network access with no prompts. Acceptable only in a throwaway worktree or isolated container.
+This disables permission prompts for the whole run: grants filesystem, shell, and network access with no prompts. Acceptable only in a throwaway worktree or isolated container.
 ```
 ❯ 1. No, exit                    ← DEFAULT (safe choice)
   2. Yes, I accept
@@ -283,7 +283,7 @@ Automatically falls back to the specified model when the default is overloaded (
 ### Permission & Safety
 | Flag | Effect |
 |------|--------|
-| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Throwaway worktree / isolated container only — see "Opt-in" above |
+| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Throwaway worktree / isolated container only, see "Opt-in" above |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
 | `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
 | `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
@@ -345,7 +345,7 @@ mcp__<server>__<tool>   # Specific MCP tool
 ## Settings & Configuration
 
 ### Settings Hierarchy (highest to lowest priority)
-1. **CLI flags** — override everything
+1. **CLI flags**: override everything
 2. **Local project:** `.claude/settings.local.json` (personal, gitignored)
 3. **Project:** `.claude/settings.json` (shared, git-tracked)
 4. **User:** `~/.claude/settings.json` (global)
@@ -362,9 +362,9 @@ mcp__<server>__<tool>   # Specific MCP tool
 ```
 
 ### Memory Files (CLAUDE.md) Hierarchy
-1. **Global:** `~/.claude/CLAUDE.md` — applies to all projects
-2. **Project:** `./CLAUDE.md` — project-specific context (git-tracked)
-3. **Local:** `.claude/CLAUDE.local.md` — personal project overrides (gitignored)
+1. **Global:** `~/.claude/CLAUDE.md`, applies to all projects
+2. **Project:** `./CLAUDE.md`, project-specific context (git-tracked)
+3. **Local:** `.claude/CLAUDE.local.md`, personal project overrides (gitignored)
 
 Use the `#` prefix in interactive mode to quickly add to memory: `# Always use 2-space indentation`.
 
@@ -422,7 +422,7 @@ Run the deploy pipeline:
 4. Update the $ARGUMENTS environment (default: staging)
 ```
 
-Usage: `/deploy production` — `$ARGUMENTS` is replaced with the user's input.
+Usage: `/deploy production`, `$ARGUMENTS` is replaced with the user's input.
 
 ### Skills (Natural Language Invocation)
 Unlike slash commands (manually invoked), skills in `.claude/skills/` are markdown guides that Claude invokes automatically via natural language when the task matches:
@@ -445,7 +445,7 @@ When asked to create or modify database migrations:
 | `Ctrl+R` | Reverse search command history |
 | `Ctrl+B` | Background a running task |
 | `Ctrl+V` | Paste image into conversation |
-| `Ctrl+O` | Transcript mode — see Claude's thinking process |
+| `Ctrl+O` | Transcript mode: see Claude's thinking process |
 | `Ctrl+G` or `Ctrl+X Ctrl+E` | Open prompt in external editor |
 | `Esc Esc` | Rewind conversation or code state / summarize |
 
@@ -520,7 +520,7 @@ terminal(command="tmux new-session -d -s task3 -x 140 -y 40 && tmux send-keys -t
 terminal(command="sleep 30 && for s in task1 task2 task3; do echo '=== '$s' ==='; tmux capture-pane -t $s -p -S -5 2>/dev/null; done")
 ```
 
-## CLAUDE.md — Project Context File
+## CLAUDE.md: Project Context File
 
 Claude Code auto-loads `CLAUDE.md` from the project root. Use it to persist project context:
 
@@ -548,24 +548,24 @@ Claude Code auto-loads `CLAUDE.md` from the project root. Use it to persist proj
 
 ### Rules Directory (Modular CLAUDE.md)
 For projects with many rules, use the rules directory instead of one massive CLAUDE.md:
-- **Project rules:** `.claude/rules/*.md` — team-shared, git-tracked
-- **User rules:** `~/.claude/rules/*.md` — personal, global
+- **Project rules:** `.claude/rules/*.md`, team-shared, git-tracked
+- **User rules:** `~/.claude/rules/*.md`, personal, global
 
 Each `.md` file in the rules directory is loaded as additional context. This is cleaner than cramming everything into a single CLAUDE.md.
 
 ### Auto-Memory
 Claude automatically stores learned project context in `~/.claude/projects/<project>/memory/`.
 - **Limit:** 25KB or 200 lines per project
-- This is separate from CLAUDE.md — it's Claude's own notes about the project, accumulated across sessions
+- This is separate from CLAUDE.md: it's Claude's own notes about the project, accumulated across sessions
 
 ## Custom Subagents
 
 Define specialized agents in `.claude/agents/` (project), `~/.claude/agents/` (personal), or via `--agents` CLI flag (session):
 
 ### Agent Location Priority
-1. `.claude/agents/` — project-level, team-shared
-2. `--agents` CLI flag — session-specific, dynamic
-3. `~/.claude/agents/` — user-level, personal
+1. `.claude/agents/`: project-level, team-shared
+2. `--agents` CLI flag: session-specific, dynamic
+3. `~/.claude/agents/`: user-level, personal
 
 ### Creating an Agent
 ```markdown
@@ -592,7 +592,7 @@ terminal(command="claude --agents '{\"reviewer\": {\"description\": \"Reviews co
 
 Claude can orchestrate multiple agents: "Use @db-expert to optimize queries, then @security to audit the changes."
 
-## Hooks — Automation on Events
+## Hooks: Automation on Events
 
 Configure in `.claude/settings.json` (project) or `~/.claude/settings.json` (global):
 
@@ -676,7 +676,7 @@ Reference MCP resources in chat: `@github:issue://123`
 ### MCP Limits & Tuning
 - **Tool descriptions:** 2KB cap per server for tool descriptions and server instructions
 - **Result size:** Default capped; use `maxResultSizeChars` annotation to allow up to **500K** characters for large outputs
-- **Output tokens:** `export MAX_MCP_OUTPUT_TOKENS=50000` — cap output from MCP servers to prevent context flooding
+- **Output tokens:** `export MAX_MCP_OUTPUT_TOKENS=50000`, cap output from MCP servers to prevent context flooding
 - **Transports:** `stdio` (local process), `http` (remote), `sse` (server-sent events)
 
 ## Monitoring Interactive Sessions
@@ -696,9 +696,9 @@ Look for these indicators:
 
 ### Context Window Health
 Use `/context` in interactive mode to see a colored grid of context usage. Key thresholds:
-- **< 70%** — Normal operation, full precision
-- **70-85%** — Precision starts dropping, consider `/compact`
-- **> 85%** — Hallucination risk spikes significantly, use `/compact` or `/clear`
+- **< 70%**: Normal operation, full precision
+- **70-85%**: Precision starts dropping, consider `/compact`
+- **> 85%**: Hallucination risk spikes significantly, use `/compact` or `/clear`
 
 ## Environment Variables
 
@@ -722,33 +722,33 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 7. **Pipe input** instead of having Claude read files when you just need analysis of known content.
 8. **Use `--model haiku`** for simple tasks (cheaper) and `--model opus` for complex multi-step work.
 9. **Use `--fallback-model haiku`** in print mode to gracefully handle model overload.
-10. **Start new sessions for distinct tasks** — sessions last 5 hours; fresh context is more efficient.
+10. **Start new sessions for distinct tasks**: sessions last 5 hours; fresh context is more efficient.
 11. **Use `--no-session-persistence`** in CI to avoid accumulating saved sessions on disk.
 
 ## Pitfalls & Gotchas
 
-1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
-2. **The `--dangerously-skip-permissions` warning dialog defaults to "No, exit"** — that default is the safe answer; only send Down then Enter when you deliberately opted into the bypass in an isolated environment. Print mode (`-p`) skips the dialog entirely.
-3. **`--max-budget-usd` minimum is ~$0.05** — system prompt cache creation alone costs this much. Setting lower will error immediately.
-4. **`--max-turns` is print-mode only** — ignored in interactive sessions.
-5. **Claude may use `python` instead of `python`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
-6. **Session resumption requires same directory** — `--continue` finds the most recent session for the current working directory.
-7. **`--json-schema` needs enough `--max-turns`** — Claude must read files before producing structured output, which takes multiple turns.
-8. **Trust dialog only appears once per directory** — first-time only, then cached.
-9. **Background tmux sessions persist** — always clean up with `tmux kill-session -t <name>` when done.
-10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
-11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
-12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
+1. **Interactive mode REQUIRES tmux**. Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
+2. **The `--dangerously-skip-permissions` warning dialog defaults to "No, exit"**: that default is the safe answer; only send Down then Enter when you deliberately opted into the bypass in an isolated environment. Print mode (`-p`) skips the dialog entirely.
+3. **`--max-budget-usd` minimum is ~$0.05**: system prompt cache creation alone costs this much. Setting lower will error immediately.
+4. **`--max-turns` is print-mode only**: ignored in interactive sessions.
+5. **Claude may use `python` instead of `python`**: on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
+6. **Session resumption requires same directory**: `--continue` finds the most recent session for the current working directory.
+7. **`--json-schema` needs enough `--max-turns`**. Claude must read files before producing structured output, which takes multiple turns.
+8. **Trust dialog only appears once per directory**: first-time only, then cached.
+9. **Background tmux sessions persist**: always clean up with `tmux kill-session -t <name>` when done.
+10. **Slash commands (like `/commit`) only work in interactive mode**: in `-p` mode, describe the task in natural language instead.
+11. **`--bare` skips OAuth**: requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
+12. **Context degradation is real**. AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
 
 ## Rules for Hermes Agents
 
-1. **Prefer print mode (`-p`) for single tasks** — cleaner, no dialog handling, structured output
-2. **Use tmux for multi-turn interactive work** — the only reliable way to orchestrate the TUI
-3. **Always set `workdir`** — keep Claude focused on the right project directory
-4. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
-5. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
-6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
-7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
-8. **Report results to user** — after completion, summarize what Claude did and what changed
-9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
-10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+1. **Prefer print mode (`-p`) for single tasks**: cleaner, no dialog handling, structured output
+2. **Use tmux for multi-turn interactive work**: the only reliable way to orchestrate the TUI
+3. **Always set `workdir`**: keep Claude focused on the right project directory
+4. **Set `--max-turns` in print mode**: prevents infinite loops and runaway costs
+5. **Monitor tmux sessions**: use `tmux capture-pane -t <session> -p -S -50` to check progress
+6. **Look for the `❯` prompt**: indicates Claude is waiting for input (done or asking a question)
+7. **Clean up tmux sessions**: kill them when done to avoid resource leaks
+8. **Report results to user**: after completion, summarize what Claude did and what changed
+9. **Don't kill slow sessions**: Claude may be doing multi-step work; check progress instead
+10. **Use `--allowedTools`**: restrict capabilities to what the task actually needs

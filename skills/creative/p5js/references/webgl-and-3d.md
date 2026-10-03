@@ -292,7 +292,7 @@ function draw() {
 
 ### createFilterShader (Post-Processing)
 
-Simpler — only needs a fragment shader. Automatically gets the canvas as a texture.
+Simpler: only needs a fragment shader. Automatically gets the canvas as a texture.
 
 ```javascript
 let blurShader;

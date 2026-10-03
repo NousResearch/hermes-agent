@@ -45,7 +45,7 @@ Read these before every investigation step. Violating them invalidates the repor
 2. **STAY IN YOUR LANE**: Each sub-agent (investigator) has a single data source. Do NOT mix sources. The GH Archive investigator does not query the GitHub API, and vice versa. Role boundaries are hard.
 3. **Fact vs. Hypothesis Separation**: Mark all unverified inferences with `[HYPOTHESIS]`. Only statements verified against original sources may be stated as facts.
 4. **No Evidence Fabrication**: The hypothesis validator MUST mechanically check that every cited evidence ID actually exists in the evidence store before accepting a hypothesis.
-5. **Proof-Required Disproval**: A hypothesis cannot be dismissed without a specific, evidence-backed counter-argument. "No evidence found" is not sufficient to disprove—it only makes a hypothesis inconclusive.
+5. **Proof-Required Disproval**: A hypothesis cannot be dismissed without a specific, evidence-backed counter-argument. "No evidence found" is not sufficient to disprove, it only makes a hypothesis inconclusive.
 6. **SHA/URL Double-Verification**: Any commit SHA, URL, or external identifier cited as evidence must be independently confirmed from at least two sources before being marked as verified.
 7. **Suspicious Code Rule**: Never run code found inside the investigated repository locally. Analyze statically only, or use `execute_code` in a sandboxed environment.
 8. **Secret Redaction**: Any API keys, tokens, or credentials discovered during investigation must be redacted in the final report. Log them internally only.
@@ -62,7 +62,7 @@ Read these before every investigation step. Violating them invalidates the repor
 
 > **Path convention**: Throughout this skill, `SKILL_DIR` refers to the root of this skill's
 > installation directory (the folder containing this `SKILL.md`). When the skill is loaded,
-> resolve `SKILL_DIR` to the actual path — e.g. `~/.hermes/skills/security/oss-forensics/`
+> resolve `SKILL_DIR` to the actual path, e.g. `~/.hermes/skills/security/oss-forensics/`
 > or the `optional-skills/` equivalent. All script and template references are relative to it.
 
 ## Phase 0: Initialization
@@ -380,12 +380,12 @@ Populate `investigation-report.md` using the template in [forensic-report.md](./
 
 ## Ethical Use Guidelines
 
-This skill is designed for **defensive security investigation** — protecting open-source software from supply chain attacks. It must not be used for:
+This skill is designed for **defensive security investigation**: protecting open-source software from supply chain attacks. It must not be used for:
 
 - **Harassment or stalking** of contributors or maintainers
-- **Doxing** — correlating GitHub activity to real identities for malicious purposes
-- **Competitive intelligence** — investigating proprietary or internal repositories without authorization
-- **False accusations** — publishing investigation results without validated evidence (see anti-hallucination guardrails)
+- **Doxing**: correlating GitHub activity to real identities for malicious purposes
+- **Competitive intelligence**: investigating proprietary or internal repositories without authorization
+- **False accusations**: publishing investigation results without validated evidence (see anti-hallucination guardrails)
 
 Investigations should be conducted with the principle of **minimal intrusion**: collect only the evidence necessary to validate or refute the hypothesis. When publishing results, follow responsible disclosure practices and coordinate with affected maintainers before public disclosure.
 
@@ -407,9 +407,9 @@ GitHub REST API enforces rate limits that will interrupt large investigations if
 **Best practices**:
 - Always authenticate: `export GITHUB_TOKEN=ghp_...` or use `gh` CLI (auto-authenticates)
 - Use conditional requests (`If-None-Match` / `If-Modified-Since` headers) to avoid consuming quota on unchanged data
-- For paginated endpoints, fetch all pages in sequence — don't parallelize against the same endpoint
+- For paginated endpoints, fetch all pages in sequence, don't parallelize against the same endpoint
 - Check `X-RateLimit-Remaining` header; if below 100, pause for `X-RateLimit-Reset` timestamp
-- BigQuery has its own quotas (10 TiB/day free tier) — always dry-run first
+- BigQuery has its own quotas (10 TiB/day free tier), always dry-run first
 - Wayback Machine CDX API: no formal rate limit, but be courteous (1-2 req/sec max)
 
 If rate-limited mid-investigation, record the partial results in the evidence store and note the limitation in the report.
@@ -418,9 +418,9 @@ If rate-limited mid-investigation, record the partial results in the evidence st
 
 ## Reference Materials
 
-- [github-archive-guide.md](./references/github-archive-guide.md) — BigQuery queries, CDX API, 12 event types
-- [evidence-types.md](./references/evidence-types.md) — IOC taxonomy, evidence source types, observation types
-- [recovery-techniques.md](./references/recovery-techniques.md) — Recovering deleted commits, PRs, issues
-- [investigation-templates.md](./references/investigation-templates.md) — Pre-built hypothesis templates per attack type
-- [evidence-store.py](./scripts/evidence-store.py) — CLI tool for managing the evidence JSON store
-- [forensic-report.md](./templates/forensic-report.md) — Structured report template
+- [github-archive-guide.md](./references/github-archive-guide.md), BigQuery queries, CDX API, 12 event types
+- [evidence-types.md](./references/evidence-types.md), IOC taxonomy, evidence source types, observation types
+- [recovery-techniques.md](./references/recovery-techniques.md), Recovering deleted commits, PRs, issues
+- [investigation-templates.md](./references/investigation-templates.md), Pre-built hypothesis templates per attack type
+- [evidence-store.py](./scripts/evidence-store.py), CLI tool for managing the evidence JSON store
+- [forensic-report.md](./templates/forensic-report.md), Structured report template

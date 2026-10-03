@@ -9,7 +9,7 @@ OpenCode auto-injects a credential when the provider **id** in `opencode.json`
 matches a credential **id** in `~/.local/share/opencode/auth.json`. So put the
 key in auth.json and NOTHING sensitive goes in opencode.json. This is more robust
 than `options.apiKey: "{env:...}"` with the var name, because `{env:...}` only resolves
-if the var is exported in the shell OpenCode launches from — and the Actual key
+if the var is exported in the shell OpenCode launches from, and the Actual key
 is typically only in `~/.hermes/.env`, not a shell profile, so the env form
 breaks outside an inheriting terminal.
 
@@ -23,12 +23,12 @@ File: `~/.local/share/opencode/auth.json`. Shape (preserve existing entries):
 }
 ```
 Do this with a read-modify-write (json load, add the `actual` key, dump) so the
-other credentials stay intact — don't overwrite the file.
+other credentials stay intact, don't overwrite the file.
 
 ### 2. Add the provider to opencode.json
 
 File: `~/.config/opencode/opencode.json` (or `~/.opencode.json`). Add under
-`provider` alongside anything already there. NO `apiKey` field — it comes from
+`provider` alongside anything already there. NO `apiKey` field, it comes from
 auth.json by id match.
 ```json
 {

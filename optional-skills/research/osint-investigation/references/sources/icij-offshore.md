@@ -40,7 +40,7 @@ Key fields emitted by `fetch_icij_offshore.py`:
 
 - Worldwide offshore entity records
 - Earliest records: 1970s (Bahamas Leaks). Most data 1990–2018.
-- NOT updated in real-time — new leaks added when ICIJ publishes them
+- NOT updated in real-time, new leaks added when ICIJ publishes them
 - ~810,000 offshore entities + ~750,000 officers + ~150,000 intermediaries
 
 ## 5. Cross-Reference Potential
@@ -58,7 +58,7 @@ referencing within ICIJ. Connections graph traversal is in-script (BFS over
 - Offshore entity names sometimes appear in multiple leaks with slight variations
 - Officers may be nominees (front persons), not beneficial owners
 - Some entries have minimal info (just a name + jurisdiction)
-- The connections graph is incomplete — some relationships are documented in
+- The connections graph is incomplete, some relationships are documented in
   source materials but not in the structured database
 - Inactive/struck-off entities are still included with `inactivation_date`
 

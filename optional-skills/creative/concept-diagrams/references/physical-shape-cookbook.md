@@ -1,6 +1,6 @@
 # Physical Shape Cookbook
 
-Guidance for drawing physical objects (vehicles, buildings, hardware, mechanical systems, anatomy) — when rectangles aren't enough.
+Guidance for drawing physical objects (vehicles, buildings, hardware, mechanical systems, anatomy), when rectangles aren't enough.
 
 ## Shape selection
 
@@ -30,13 +30,13 @@ For physical diagrams, define component-specific classes directly rather than ap
 .engine   { fill: #FAECE7; stroke: #993C1D; stroke-width: 1; }
 ```
 
-Add these to a local `<style>` inside the SVG (or extend the host page's `<style>` block). The light-mode/dark-mode pattern still works — use the CSS variables from the template (`var(--bg-secondary)`, `var(--border)`, `var(--text-primary)`) if you want dark-mode awareness.
+Add these to a local `<style>` inside the SVG (or extend the host page's `<style>` block). The light-mode/dark-mode pattern still works, use the CSS variables from the template (`var(--bg-secondary)`, `var(--border)`, `var(--text-primary)`) if you want dark-mode awareness.
 
 ## Reference examples
 
 Look at these example files for working physical-diagram patterns:
 
-- `examples/commercial-aircraft-structure.md` — fuselage curves + tapered wings + ellipse engines
-- `examples/wind-turbine-structure.md` — underground foundation, tubular tower, nacelle cutaway
-- `examples/smartphone-layer-anatomy.md` — exploded-view stack with alternating labels
-- `examples/apartment-floor-plan-conversion.md` — walls, doors, windows, proposed changes
+- `examples/commercial-aircraft-structure.md`: fuselage curves + tapered wings + ellipse engines
+- `examples/wind-turbine-structure.md`: underground foundation, tubular tower, nacelle cutaway
+- `examples/smartphone-layer-anatomy.md`: exploded-view stack with alternating labels
+- `examples/apartment-floor-plan-conversion.md`: walls, doors, windows, proposed changes

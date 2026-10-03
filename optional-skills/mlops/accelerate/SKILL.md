@@ -174,7 +174,7 @@ deepspeed_plugin = DeepSpeedPlugin(hf_ds_config="ds_config.json")
 accelerator = Accelerator(mixed_precision='bf16', deepspeed_plugin=deepspeed_plugin)
 ```
 
-**ds_config.json** (a raw DeepSpeed config — passed via the plugin, NOT via `--config_file`):
+**ds_config.json** (a raw DeepSpeed config, passed via the plugin, NOT via `--config_file`):
 ```json
 {
     "fp16": {"enabled": false},

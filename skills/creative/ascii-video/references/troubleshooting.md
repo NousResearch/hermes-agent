@@ -15,7 +15,7 @@
 | Audio-visual desync | Frame timing accumulation | Use integer frame counter, compute t fresh each frame |
 | Single-color flat output | Hue field shape mismatch | Ensure h,s,v arrays all (rows,cols) before hsv2rgb |
 | Text unreadable over busy bg | No contrast between text and background | Use `apply_text_backdrop()` (composition.md) + `reverse_vignette` shader (shaders.md) |
-| Text garbled/mirrored | Kaleidoscope or mirror shader applied to text scene | **Never apply kaleidoscope, mirror_h/v/quad/diag to scenes with readable text** — radial folding destroys legibility. Apply these only to background layers or text-free scenes |
+| Text garbled/mirrored | Kaleidoscope or mirror shader applied to text scene | **Never apply kaleidoscope, mirror_h/v/quad/diag to scenes with readable text**: radial folding destroys legibility. Apply these only to background layers or text-free scenes |
 
 Common bugs, gotchas, and platform-specific issues encountered during ASCII video development.
 
@@ -23,7 +23,7 @@ Common bugs, gotchas, and platform-specific issues encountered during ASCII vide
 
 ### The `broadcast_to().copy()` Trap
 
-Hue field generators often return arrays that are broadcast views — they have shape `(1, cols)` or `(rows, 1)` that numpy broadcasts to `(rows, cols)`. These views are **read-only**. If any downstream code tries to modify them in-place (e.g., `h %= 1.0`), numpy raises:
+Hue field generators often return arrays that are broadcast views: they have shape `(1, cols)` or `(rows, 1)` that numpy broadcasts to `(rows, cols)`. These views are **read-only**. If any downstream code tries to modify them in-place (e.g., `h %= 1.0`), numpy raises:
 
 ```
 ValueError: output array is read-only
@@ -83,7 +83,7 @@ The `vf_plasma()` function had this bug. Use `+` instead of `+=` when mixing dif
 
 ### Multiply Always Darkens
 
-`multiply(a, b) = a * b`. Since both operands are [0,1], the result is always <= min(a,b). Never use multiply as a feedback blend mode — the frame goes black within a few frames.
+`multiply(a, b) = a * b`. Since both operands are [0,1], the result is always <= min(a,b). Never use multiply as a feedback blend mode: the frame goes black within a few frames.
 
 **Fix**: Use `screen` for feedback, or `add` with low opacity.
 
@@ -108,7 +108,7 @@ The `vf_plasma()` function had this bug. Use `+` instead of `+=` when mixing dif
 _pickle.PicklingError: Can't pickle <function <lambda> at 0x...>
 ```
 
-**Fix**: Define all scene functions at module top level. Lambdas used inside `_render_vf()` as val_fn/hue_fn are fine because they execute within the worker process — they're not pickled across process boundaries.
+**Fix**: Define all scene functions at module top level. Lambdas used inside `_render_vf()` as val_fn/hue_fn are fine because they execute within the worker process, they're not pickled across process boundaries.
 
 ### macOS spawn vs Linux fork
 
@@ -129,7 +129,7 @@ Each worker creates its own:
 This means:
 - Particle state doesn't carry between scenes (expected)
 - Feedback trails reset at scene cuts (expected)
-- `np.random` state is NOT seeded by `random.seed()` — they use separate RNGs
+- `np.random` state is NOT seeded by `random.seed()`: they use separate RNGs
 
 **Fix for deterministic noise**: Use `np.random.RandomState(seed)` explicitly:
 
@@ -174,8 +174,8 @@ canvas = np.clip(canvas.astype(np.float32) * 2.0, 0, 255).astype(np.uint8)
 ```
 
 This fails because:
-- Dark scenes (mean 8): `8 * 2.0 = 16` — still dark
-- Bright scenes (mean 130): `130 * 2.0 = 255` — clipped, lost detail
+- Dark scenes (mean 8): `8 * 2.0 = 16`, still dark
+- Bright scenes (mean 130): `130 * 2.0 = 255`, clipped, lost detail
 
 Use `tonemap()` instead. See `composition.md` § Adaptive Tone Mapping.
 
@@ -285,9 +285,9 @@ Some shaders use Python loops and are very slow at 1080p:
 ### Render Time Scaling
 
 If render is taking much longer than expected:
-1. Check grid count — each extra grid adds ~100-150ms/frame for init
-2. Check particle count — cap at quality-appropriate limits
-3. Check shader count — each shader adds 2-25ms
+1. Check grid count: each extra grid adds ~100-150ms/frame for init
+2. Check particle count: cap at quality-appropriate limits
+3. Check shader count: each shader adds 2-25ms
 4. Check for accidental Python loops in effects (should be numpy only)
 
 ---
@@ -296,7 +296,7 @@ If render is taking much longer than expected:
 
 ### Using `r.S` vs the `S` Parameter
 
-The v2 scene protocol passes `S` (the state dict) as an explicit parameter. But `S` IS `r.S` — they're the same object. Both work:
+The v2 scene protocol passes `S` (the state dict) as an explicit parameter. But `S` IS `r.S`: they're the same object. Both work:
 
 ```python
 def fx_scene(r, f, t, S):
@@ -349,11 +349,11 @@ The `_render_vf()` helper clips automatically, but if you're building custom sce
 
 ## Brightness Best Practices
 
-- Dense animated backgrounds — never flat black, always fill the grid
+- Dense animated backgrounds: never flat black, always fill the grid
 - Vignette minimum clamped to 0.15 (not 0.12)
 - Bloom threshold 130 (not 170) so more pixels contribute to glow
-- Use `screen` blend mode (not `overlay`) for dark ASCII layers — overlay squares dark values: `2 * 0.12 * 0.12 = 0.03`
-- FeedbackBuffer decay minimum 0.5 — below that, feedback disappears too fast to see
+- Use `screen` blend mode (not `overlay`) for dark ASCII layers: overlay squares dark values: `2 * 0.12 * 0.12 = 0.03`
+- FeedbackBuffer decay minimum 0.5: below that, feedback disappears too fast to see
 - Value field floor: `vf * 0.8 + 0.05` ensures no cell is truly zero
 - Per-scene gamma overrides: default 0.75, solarize 0.55, posterize 0.50, bright scenes 0.85
 - Test frames early: render single frames at key timestamps before committing to full render

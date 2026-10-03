@@ -19,7 +19,7 @@ Hand-drawn educational infographic with macaron pastel color blocks on warm crea
 - Hand-drawn wavy connection lines and arrows with small text labels
 - Simple stick-figure characters and cartoon icons to humanize concepts
 - Doodle decorations: small stars, underlines, spirals, sparkles
-- Color fills don't completely fill outlines — preserve casual hand-drawn feel
+- Color fills don't completely fill outlines: preserve casual hand-drawn feel
 - Dashed borders for secondary or contained zones
 - Small icon doodles (clipboard, lock, checkmark, lightbulb) to reinforce concepts
 - Bold centered quote or takeaway at the bottom
@@ -42,11 +42,11 @@ Hand-drawn educational infographic with macaron pastel color blocks on warm crea
 
 ## Style Enforcement
 
-- All lines must have slight hand-drawn wobble — no perfect geometry
+- All lines must have slight hand-drawn wobble: no perfect geometry
 - Each information zone uses a distinct macaron color block
 - Maintain consistent wobble quality across all shapes and lines
 - Include at least one simple cartoon character or stick figure
-- Generous white space between zones — each zone should breathe
+- Generous white space between zones: each zone should breathe
 - Maximum 4 macaron colors per infographic
 
 ## Avoid
@@ -55,7 +55,7 @@ Hand-drawn educational infographic with macaron pastel color blocks on warm crea
 - Photorealistic elements or stock illustration style
 - Pure white backgrounds
 - Flat vector icons or digital-precision graphics
-- Overcrowded layouts — let zones breathe
+- Overcrowded layouts: let zones breathe
 - Corporate or clinical aesthetic
 
 ## Best For

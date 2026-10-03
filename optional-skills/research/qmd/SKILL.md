@@ -11,12 +11,12 @@ metadata:
     related_skills: [obsidian, hermes-agent, arxiv]
 ---
 
-# QMD — Query Markup Documents
+# QMD, Query Markup Documents
 
 Local, on-device search engine for personal knowledge bases. Indexes markdown
 notes, meeting transcripts, documentation, and any text-based files, then
 provides hybrid search combining keyword matching, semantic understanding, and
-LLM-powered reranking — all running locally with no cloud dependencies.
+LLM-powered reranking, all running locally with no cloud dependencies.
 
 Created by [Tobi Lütke](https://github.com/tobi/qmd). MIT licensed.
 
@@ -145,7 +145,7 @@ qmd status   # shows index health, collection stats, model info
 ### Fast Keyword Search (BM25)
 
 Best for: exact terms, code identifiers, names, known phrases.
-No models loaded — near-instant results.
+No models loaded, near-instant results.
 
 ```bash
 qmd search "authentication middleware"
@@ -165,7 +165,7 @@ qmd vsearch "ideas for improving onboarding flow"
 ### Hybrid Search with Reranking (Best Quality)
 
 Best for: important queries where quality matters most.
-Uses all 3 models — query expansion, parallel BM25+vector, reranking.
+Uses all 3 models, query expansion, parallel BM25+vector, reranking.
 
 ```bash
 qmd query "what decisions were made about the database migration"
@@ -221,7 +221,7 @@ qmd multi-get "journals/*.md" --json  # Batch retrieve by glob
 
 qmd exposes an MCP server that provides search tools directly to
 Hermes Agent via the native MCP client. This is the preferred
-integration — once configured, the agent gets qmd tools automatically
+integration, once configured, the agent gets qmd tools automatically
 without needing to load this skill.
 
 ### Option A: Stdio Mode (Simple)
@@ -245,7 +245,7 @@ then stay warm for the session. Acceptable for occasional use.
 
 ### Option B: HTTP Daemon Mode (Fast, Recommended for Heavy Use)
 
-Start the qmd daemon separately — it keeps models warm in memory:
+Start the qmd daemon separately, it keeps models warm in memory:
 
 ```bash
 # Start daemon (persists across agent restarts)
@@ -372,14 +372,14 @@ terminal(command="qmd status")
 
 Understanding the internals helps choose the right search mode:
 
-1. **Query Expansion** — A fine-tuned 1.7B model generates 2 alternative
+1. **Query Expansion**: A fine-tuned 1.7B model generates 2 alternative
    queries. The original gets 2x weight in fusion.
-2. **Parallel Retrieval** — BM25 (SQLite FTS5) and vector search run
+2. **Parallel Retrieval**: BM25 (SQLite FTS5) and vector search run
    simultaneously across all query variants.
-3. **RRF Fusion** — Reciprocal Rank Fusion (k=60) merges results.
+3. **RRF Fusion**: Reciprocal Rank Fusion (k=60) merges results.
    Top-rank bonus: #1 gets +0.05, #2-3 get +0.02.
-4. **LLM Reranking** — qwen3-reranker scores top 30 candidates (0.0-1.0).
-5. **Position-Aware Blending** — Ranks 1-3: 75% retrieval / 25% reranker.
+4. **LLM Reranking**: qwen3-reranker scores top 30 candidates (0.0-1.0).
+5. **Position-Aware Blending**: Ranks 1-3: 75% retrieval / 25% reranker.
    Ranks 4-10: 60/40. Ranks 11+: 40/60 (trusts reranker more for long tail).
 
 **Smart Chunking:** Documents are split at natural break points (headings,
@@ -388,25 +388,25 @@ blocks are never split mid-block.
 
 ## Best Practices
 
-1. **Always add context descriptions** — `qmd context add` dramatically
+1. **Always add context descriptions**: `qmd context add` dramatically
    improves retrieval accuracy. Describe what each collection contains.
-2. **Re-embed after adding documents** — `qmd embed` must be re-run when
+2. **Re-embed after adding documents**: `qmd embed` must be re-run when
    new files are added to collections.
-3. **Use `qmd search` for speed** — when you need fast keyword lookup
+3. **Use `qmd search` for speed**: when you need fast keyword lookup
    (code identifiers, exact names), BM25 is instant and needs no models.
-4. **Use `qmd query` for quality** — when the question is conceptual or
+4. **Use `qmd query` for quality**: when the question is conceptual or
    the user needs the best possible results, use hybrid search.
-5. **Prefer MCP integration** — once configured, the agent gets native
+5. **Prefer MCP integration**: once configured, the agent gets native
    tools without needing to load this skill each time.
-6. **Daemon mode for frequent users** — if the user searches their
+6. **Daemon mode for frequent users**: if the user searches their
    knowledge base regularly, recommend the HTTP daemon setup.
-7. **First query in structured search gets 2x weight** — put the most
+7. **First query in structured search gets 2x weight**: put the most
    important/certain query first when combining lex and vec.
 
 ## Troubleshooting
 
 ### "Models downloading on first run"
-Normal — qmd auto-downloads ~2GB of GGUF models on first use.
+Normal, qmd auto-downloads ~2GB of GGUF models on first use.
 This is a one-time operation.
 
 ### Cold start latency (~19s)
@@ -433,7 +433,7 @@ export QMD_EMBED_MODEL="your-multilingual-model"
 
 - **Index & vectors:** `~/.cache/qmd/index.sqlite`
 - **Models:** Auto-downloaded to local cache on first run
-- **No cloud dependencies** — everything runs locally
+- **No cloud dependencies**: everything runs locally
 
 ## References
 

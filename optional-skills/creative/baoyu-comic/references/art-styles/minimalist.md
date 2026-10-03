@@ -10,7 +10,7 @@ Minimalist cartoon illustration characterized by clean black line art on white b
 
 - Clean, uniform black lines (1.5-2px)
 - No hatching, cross-hatching, or shading techniques
-- Minimal detail — every line serves a purpose
+- Minimal detail, every line serves a purpose
 - Bold outlines for characters, thinner lines for props/labels
 - No decorative flourishes or ornamental lines
 
@@ -20,12 +20,12 @@ Minimalist cartoon illustration characterized by clean black line art on white b
 - Circle or oval heads with minimal facial features (dot eyes, simple line mouth)
 - Body as simple geometric shapes or line constructions
 - Distinguishing features through props only (tie, hat, briefcase, glasses)
-- No anatomical detail — expressive through posture and gesture
+- No anatomical detail, expressive through posture and gesture
 - 4-5 head height proportions (squat, iconic)
 
 ## Background Treatment
 
-- Mostly blank/white — negative space is a design element
+- Mostly blank/white, negative space is a design element
 - Minimal environmental cues (a line for ground, simple desk outline)
 - Concept labels and text annotations replace detailed environments
 - Icons and symbols over realistic rendering

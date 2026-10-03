@@ -1,33 +1,33 @@
 # Design System: Apple
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `system-ui` | **Mono:** `SF Mono (system)`
 > - **Font stack (CSS):** `font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;`
 > - **Mono stack (CSS):** `font-family: 'SF Mono (system)', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;`
 > ```html
-> <!-- No CDN needed — uses system fonts -->
+> <!-- No CDN needed: uses system fonts -->
 > ```
 > Use `write_file` to create HTML, serve via `generative-widgets` skill (cloudflared tunnel).
 > Verify visual accuracy with `browser_vision` after generating.
 
 ## 1. Visual Theme & Atmosphere
 
-Apple's website is a masterclass in controlled drama — vast expanses of pure black and near-white serve as cinematic backdrops for products that are photographed as if they were sculptures in a gallery. The design philosophy is reductive to its core: every pixel exists in service of the product, and the interface itself retreats until it becomes invisible. This is not minimalism as aesthetic preference; it is minimalism as reverence for the object.
+Apple's website is a masterclass in controlled drama: vast expanses of pure black and near-white serve as cinematic backdrops for products that are photographed as if they were sculptures in a gallery. The design philosophy is reductive to its core: every pixel exists in service of the product, and the interface itself retreats until it becomes invisible. This is not minimalism as aesthetic preference; it is minimalism as reverence for the object.
 
-The typography anchors everything. San Francisco (SF Pro Display for large sizes, SF Pro Text for body) is Apple's proprietary typeface, engineered with optical sizing that automatically adjusts letterforms depending on point size. At display sizes (56px), weight 600 with a tight line-height of 1.07 and subtle negative letter-spacing (-0.28px) creates headlines that feel machined rather than typeset — precise, confident, and unapologetically direct. At body sizes (17px), the tracking loosens slightly (-0.374px) and line-height opens to 1.47, creating a reading rhythm that is comfortable without ever feeling slack.
+The typography anchors everything. San Francisco (SF Pro Display for large sizes, SF Pro Text for body) is Apple's proprietary typeface, engineered with optical sizing that automatically adjusts letterforms depending on point size. At display sizes (56px), weight 600 with a tight line-height of 1.07 and subtle negative letter-spacing (-0.28px) creates headlines that feel machined rather than typeset: precise, confident, and unapologetically direct. At body sizes (17px), the tracking loosens slightly (-0.374px) and line-height opens to 1.47, creating a reading rhythm that is comfortable without ever feeling slack.
 
-The color story is starkly binary. Product sections alternate between pure black (`#000000`) backgrounds with white text and light gray (`#f5f5f7`) backgrounds with near-black text (`#1d1d1f`). This creates a cinematic pacing — dark sections feel immersive and premium, light sections feel open and informational. The only chromatic accent is Apple Blue (`#0071e3`), reserved exclusively for interactive elements: links, buttons, and focus states. This singular accent color in a sea of neutrals gives every clickable element unmistakable visibility.
+The color story is starkly binary. Product sections alternate between pure black (`#000000`) backgrounds with white text and light gray (`#f5f5f7`) backgrounds with near-black text (`#1d1d1f`). This creates a cinematic pacing: dark sections feel immersive and premium, light sections feel open and informational. The only chromatic accent is Apple Blue (`#0071e3`), reserved exclusively for interactive elements: links, buttons, and focus states. This singular accent color in a sea of neutrals gives every clickable element unmistakable visibility.
 
 **Key Characteristics:**
-- SF Pro Display/Text with optical sizing — letterforms adapt automatically to size context
+- SF Pro Display/Text with optical sizing: letterforms adapt automatically to size context
 - Binary light/dark section rhythm: black (`#000000`) alternating with light gray (`#f5f5f7`)
 - Single accent color: Apple Blue (`#0071e3`) reserved exclusively for interactive elements
-- Product-as-hero photography on solid color fields — no gradients, no textures, no distractions
+- Product-as-hero photography on solid color fields: no gradients, no textures, no distractions
 - Extremely tight headline line-heights (1.07-1.14) creating compressed, billboard-like impact
-- Full-width section layout with centered content — the viewport IS the canvas
+- Full-width section layout with centered content: the viewport IS the canvas
 - Pill-shaped CTAs (980px radius) creating soft, approachable action buttons
 - Generous whitespace between sections allowing each product moment to breathe
 
@@ -35,7 +35,7 @@ The color story is starkly binary. Product sections alternate between pure black
 
 ### Primary
 - **Pure Black** (`#000000`): Hero section backgrounds, immersive product showcases. The darkest canvas for the brightest products.
-- **Light Gray** (`#f5f5f7`): Alternate section backgrounds, informational areas. Not white — the slight blue-gray tint prevents sterility.
+- **Light Gray** (`#f5f5f7`): Alternate section backgrounds, informational areas. Not white, the slight blue-gray tint prevents sterility.
 - **Near Black** (`#1d1d1f`): Primary text on light backgrounds, dark button fills. Slightly warmer than pure black for comfortable reading.
 
 ### Interactive
@@ -131,7 +131,7 @@ The color story is starkly binary. Product sections alternate between pure black
 - Border: 1px solid `#0066cc`
 - Font: SF Pro Text, 14px-17px
 - Hover: underline decoration
-- Use: "Learn more" and "Shop" links — the signature Apple inline CTA
+- Use: "Learn more" and "Shop" links, the signature Apple inline CTA
 
 **Filter / Search Button**
 - Background: `#fafafc`
@@ -156,7 +156,7 @@ The color story is starkly binary. Product sections alternate between pure black
 - Radius: 5px-8px
 - Shadow: `rgba(0, 0, 0, 0.22) 3px 5px 30px 0px` for elevated product cards
 - Content: centered, generous padding
-- Hover: no standard hover state — cards are static, links within them are interactive
+- Hover: no standard hover state, cards are static, links within them are interactive
 
 ### Navigation
 - Background: `rgba(0, 0, 0, 0.8)` (translucent dark) with `backdrop-filter: saturate(180%) blur(20px)`
@@ -168,7 +168,7 @@ The color story is starkly binary. Product sections alternate between pure black
 - The nav floats above content, maintaining its dark translucent glass regardless of section background
 
 ### Image Treatment
-- Products on solid-color fields (black or white) — no backgrounds, no context, just the object
+- Products on solid-color fields (black or white): no backgrounds, no context, just the object
 - Full-bleed section images that span the entire viewport width
 - Product photography at extremely high resolution with subtle shadows
 - Lifestyle images confined to rounded-corner containers (12px+ radius)
@@ -190,7 +190,7 @@ The color story is starkly binary. Product sections alternate between pure black
 **Feature Comparison Strip**
 - Horizontal scroll of product variants
 - Each variant as a vertical card with image, name, and key specs
-- Minimal chrome — the products speak for themselves
+- Minimal chrome: the products speak for themselves
 
 ## 5. Layout Principles
 
@@ -203,11 +203,11 @@ The color story is starkly binary. Product sections alternate between pure black
 - Max content width: approximately 980px (the recurring "980px radius" in pill buttons echoes this width)
 - Hero: full-viewport-width sections with centered content block
 - Product grids: 2-3 column layouts within centered container
-- Single-column for hero moments — one product, one message, full attention
-- No visible grid lines or gutters — spacing creates implied structure
+- Single-column for hero moments: one product, one message, full attention
+- No visible grid lines or gutters: spacing creates implied structure
 
 ### Whitespace Philosophy
-- **Cinematic breathing room**: Each product section occupies a full viewport height (or close to it). The whitespace between products is not empty — it is the pause between scenes in a film.
+- **Cinematic breathing room**: Each product section occupies a full viewport height (or close to it). The whitespace between products is not empty. It is the pause between scenes in a film.
 - **Vertical rhythm through color blocks**: Rather than using spacing alone to separate sections, Apple uses alternating background colors (black, `#f5f5f7`, white). Each color change signals a new "scene."
 - **Compression within, expansion between**: Text blocks are tightly set (negative letter-spacing, tight line-heights) while the space surrounding them is vast. This creates a tension between density and openness.
 
@@ -224,12 +224,12 @@ The color story is starkly binary. Product sections alternate between pure black
 | Level | Treatment | Use |
 |-------|-----------|-----|
 | Flat (Level 0) | No shadow, solid background | Standard content sections, text blocks |
-| Navigation Glass | `backdrop-filter: saturate(180%) blur(20px)` on `rgba(0,0,0,0.8)` | Sticky navigation bar — the glass effect |
+| Navigation Glass | `backdrop-filter: saturate(180%) blur(20px)` on `rgba(0,0,0,0.8)` | Sticky navigation bar: the glass effect |
 | Subtle Lift (Level 1) | `rgba(0, 0, 0, 0.22) 3px 5px 30px 0px` | Product cards, floating elements |
 | Media Control | `rgba(210, 210, 215, 0.64)` background with scale transforms | Play/pause buttons, carousel controls |
 | Focus (Accessibility) | `2px solid #0071e3` outline | Keyboard focus on all interactive elements |
 
-**Shadow Philosophy**: Apple uses shadow extremely sparingly. The primary shadow (`3px 5px 30px` with 0.22 opacity) is soft, wide, and offset — mimicking a diffused studio light casting a natural shadow beneath a physical object. This reinforces the "product as physical sculpture" metaphor. Most elements have NO shadow at all; elevation comes from background color contrast (dark card on darker background, or light card on slightly different gray).
+**Shadow Philosophy**: Apple uses shadow extremely sparingly. The primary shadow (`3px 5px 30px` with 0.22 opacity) is soft, wide, and offset, mimicking a diffused studio light casting a natural shadow beneath a physical object. This reinforces the "product as physical sculpture" metaphor. Most elements have NO shadow at all; elevation comes from background color contrast (dark card on darker background, or light card on slightly different gray).
 
 ### Decorative Depth
 - Navigation glass: the translucent, blurred navigation bar is the most recognizable depth element, creating a sense of floating UI above scrolling content
@@ -239,24 +239,24 @@ The color story is starkly binary. Product sections alternate between pure black
 ## 7. Do's and Don'ts
 
 ### Do
-- Use SF Pro Display at 20px+ and SF Pro Text below 20px — respect the optical sizing boundary
-- Apply negative letter-spacing at all text sizes (not just headlines) — Apple tracks tight universally
-- Use Apple Blue (`#0071e3`) ONLY for interactive elements — it must be the singular accent
+- Use SF Pro Display at 20px+ and SF Pro Text below 20px: respect the optical sizing boundary
+- Apply negative letter-spacing at all text sizes (not just headlines): Apple tracks tight universally
+- Use Apple Blue (`#0071e3`) ONLY for interactive elements: it must be the singular accent
 - Alternate between black and light gray (`#f5f5f7`) section backgrounds for cinematic rhythm
-- Use 980px pill radius for CTA links — the signature Apple link shape
+- Use 980px pill radius for CTA links: the signature Apple link shape
 - Keep product imagery on solid-color fields with no competing visual elements
 - Use the translucent dark glass (`rgba(0,0,0,0.8)` + blur) for sticky navigation
-- Compress headline line-heights to 1.07-1.14 — Apple headlines are famously tight
+- Compress headline line-heights to 1.07-1.14: Apple headlines are famously tight
 
 ### Don't
-- Don't introduce additional accent colors — the entire chromatic budget is spent on blue
-- Don't use heavy shadows or multiple shadow layers — Apple's shadow system is one soft diffused shadow or nothing
-- Don't use borders on cards or containers — Apple almost never uses visible borders (except on specific buttons)
-- Don't apply wide letter-spacing to SF Pro — it is designed to run tight at every size
-- Don't use weight 800 or 900 — the maximum is 700 (bold), and even that is rare
-- Don't add textures, patterns, or gradients to backgrounds — solid colors only
-- Don't make the navigation opaque — the glass blur effect is essential to the Apple UI identity
-- Don't center-align body text — Apple body copy is left-aligned; only headlines center
+- Don't introduce additional accent colors: the entire chromatic budget is spent on blue
+- Don't use heavy shadows or multiple shadow layers. Apple's shadow system is one soft diffused shadow or nothing
+- Don't use borders on cards or containers. Apple almost never uses visible borders (except on specific buttons)
+- Don't apply wide letter-spacing to SF Pro: it is designed to run tight at every size
+- Don't use weight 800 or 900: the maximum is 700 (bold), and even that is rare
+- Don't add textures, patterns, or gradients to backgrounds: solid colors only
+- Don't make the navigation opaque: the glass blur effect is essential to the Apple UI identity
+- Don't center-align body text: Apple body copy is left-aligned; only headlines center
 - Don't use rounded corners larger than 12px on rectangular elements (980px is for pills only)
 
 ## 8. Responsive Behavior
@@ -284,8 +284,8 @@ The color story is starkly binary. Product sections alternate between pure black
 - Product grids: 3-column → 2-column → single column stacked
 - Navigation: full horizontal nav → compact mobile menu (hamburger)
 - Product hero modules: full-bleed maintained at all sizes, text scales down
-- Section backgrounds: maintain full-width color blocks at all breakpoints — the cinematic rhythm never breaks
-- Image sizing: products scale proportionally, never crop — the product silhouette is sacred
+- Section backgrounds: maintain full-width color blocks at all breakpoints, the cinematic rhythm never breaks
+- Image sizing: products scale proportionally, never crop, the product silhouette is sacred
 
 ### Image Behavior
 - Product photography maintains aspect ratio at all breakpoints
@@ -316,11 +316,11 @@ The color story is starkly binary. Product sections alternate between pure black
 - "Design a 'Learn more' link: text #0066cc on light bg or #2997ff on dark bg, 14px SF Pro Text, underline on hover. After the text, include a right-arrow chevron character (>). Wrap in a container with 980px border-radius for pill shape when used as a standalone CTA."
 
 ### Iteration Guide
-1. Every interactive element gets Apple Blue (`#0071e3`) — no other accent colors
+1. Every interactive element gets Apple Blue (`#0071e3`): no other accent colors
 2. Section backgrounds alternate: black for immersive moments, `#f5f5f7` for informational moments
-3. Typography optical sizing: SF Pro Display at 20px+, SF Pro Text below — never mix
+3. Typography optical sizing: SF Pro Display at 20px+, SF Pro Text below, never mix
 4. Negative letter-spacing at all sizes: -0.28px at 56px, -0.374px at 17px, -0.224px at 14px, -0.12px at 12px
-5. The navigation glass effect (translucent dark + blur) is non-negotiable — it defines the Apple web experience
-6. Products always appear on solid color fields — never on gradients, textures, or lifestyle backgrounds in hero modules
+5. The navigation glass effect (translucent dark + blur) is non-negotiable: it defines the Apple web experience
+6. Products always appear on solid color fields: never on gradients, textures, or lifestyle backgrounds in hero modules
 7. Shadow is rare and always soft: `3px 5px 30px 0.22 opacity` or nothing at all
-8. Pill CTAs use 980px radius — this creates the signature Apple rounded-rectangle-that-looks-like-a-capsule shape
+8. Pill CTAs use 980px radius: this creates the signature Apple rounded-rectangle-that-looks-like-a-capsule shape

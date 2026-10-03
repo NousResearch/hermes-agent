@@ -1,4 +1,4 @@
-# Unreal MCP — Scene-Craft Cheat Sheet
+# Unreal MCP, Scene-Craft Cheat Sheet
 
 The numbers and conventions that make a scene read as *good* instead of
 merely present. Sources: physical/photographic standards (stable), UE
@@ -6,7 +6,7 @@ conventions (stable), and practical ranges from production use (marked ≈).
 UE-version-specific defaults drift; when a live schema or editor value
 disagrees with this sheet, trust the editor and patch the sheet.
 
-## Units & Conventions (bedrock — memorize)
+## Units & Conventions (bedrock: memorize)
 
 | Thing | Convention |
 |---|---|
@@ -66,7 +66,7 @@ Common actor classes for spawning: `StaticMeshActor`, `PointLight`,
 `ExponentialHeightFog`, `SkyAtmosphere`, `VolumetricCloud`,
 `PostProcessVolume`, `CameraActor`, `CineCameraActor`, `PlayerStart`.
 
-## Lighting — physically based values
+## Lighting: physically based values
 
 UE5 lights default to physical units (directional in lux, point/spot in
 candela or lumens, exposure in EV100). Use real-world values; they
@@ -75,7 +75,7 @@ compose correctly with exposure instead of fighting it.
 ### Sun (DirectionalLight, lux)
 
 **Calibration check first (live-verified):** template levels often ship a
-sun at `intensity: 10` with auto-exposure tuned around it — physical lux
+sun at `intensity: 10` with auto-exposure tuned around it, physical lux
 values below will blow such a scene to white. Read the existing sun's
 intensity; if it's single/double digits, scale moods RELATIVE to it (noon =
 template value, golden hour ≈ 0.5–0.7×, overcast ≈ 0.3×, night ≈ 0.01×)
@@ -98,7 +98,7 @@ angle) and let the sky light dominate.
 ### Sky light
 
 One SkyLight per level, Real-Time Capture (SLS Captured Scene) when using
-SkyAtmosphere — it then tracks the sun automatically. Don't stack multiple
+SkyAtmosphere, it then tracks the sun automatically. Don't stack multiple
 sky lights; don't leave a stale static capture after big lighting changes
 (recapture if not real-time).
 
@@ -119,7 +119,7 @@ Rules of thumb in lumens (candela ≈ lumens/(4π) for a point light):
 | Campfire | 100–300, flicker (1,700–2,000 K) |
 
 Spot cone: inner 20–35°, outer 40–60° for a natural falloff. Attenuation
-radius: keep tight (a few hundred cm for practicals) — giant radii cost
+radius: keep tight (a few hundred cm for practicals), giant radii cost
 performance and flatten the scene. Cast-shadow off for pure fill lights.
 
 ### Color temperature vocabulary (Kelvin)
@@ -130,7 +130,7 @@ performance and flatten the scene. Cast-shadow off for pure fill lights.
 Warm subject + cool ambient (or inverse) is the cheapest way to make a
 shot read "lit" instead of "flat".
 
-### Exposure (PostProcessVolume — the #1 "why is it black/white" knob)
+### Exposure (PostProcessVolume: the #1 "why is it black/white" knob)
 
 Auto-exposure fights deterministic lighting reads. For agent-driven work,
 prefer **manual exposure** in a PPV:
@@ -156,10 +156,10 @@ levels; blown white → EV100 too low.
 
 ### Global illumination & reflections
 
-UE5 defaults: **Lumen** GI + Lumen reflections, no lightmass bake needed —
+UE5 defaults: **Lumen** GI + Lumen reflections, no lightmass bake needed,
 lighting is live; just keep "Allow Static Lighting" defaults alone.
 **Critical: Lumen GI only considers lights with Movable mobility.** Spawned
-lights can default to Stationary/Static and then contribute nothing to GI —
+lights can default to Stationary/Static and then contribute nothing to GI,
 set Mobility = Movable explicitly on every light you place, and check
 mobility first when "GI isn't working". Metal/mirror surfaces read
 correctly only with something to reflect: give the scene a sky and
@@ -190,7 +190,7 @@ surroundings before judging materials.
 
 ## Camera & framing (CineCameraActor)
 
-Use CineCameraActor (not plain Camera) for anything presentational — it has
+Use CineCameraActor (not plain Camera) for anything presentational, it has
 real filmback/lens/DoF controls.
 
 | Intent | Focal length | Aperture |
@@ -222,14 +222,14 @@ real filmback/lens/DoF controls.
   needs a Level Sequence with the camera bound (Camera Cut track); renders
   PNG/EXR sequences or stills at arbitrary resolution with anti-aliasing
   temporal sample counts. First render after opening a project stalls on
-  shader compilation — warn the user, don't declare it hung.
+  shader compilation, warn the user, don't declare it hung.
 - Judge results by looking: read the file back and `vision_analyze` every
   capture against the brief.
 
 ## Editor Python quick reference
 
 Custom toolsets and any shipped Python-execution tool speak the `unreal`
-module. Canonical entry points (verify names against the live editor —
+module. Canonical entry points (verify names against the live editor,
 Epic migrates libraries to subsystems over time):
 
 ```python
@@ -276,5 +276,5 @@ light_comp.set_editor_property("temperature", 2700.0)
 ```
 
 `set_editor_property`/`get_editor_property` with snake_case names is the
-universal fallback when a dedicated setter doesn't exist — property names
+universal fallback when a dedicated setter doesn't exist, property names
 match what the Details panel shows (spaces removed).

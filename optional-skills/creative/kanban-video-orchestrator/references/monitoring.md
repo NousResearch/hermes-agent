@@ -1,4 +1,4 @@
-# Monitoring — Watch the Pipeline + Intervene
+# Monitoring, Watch the Pipeline + Intervene
 
 After `setup.sh` fires the kanban, the work runs autonomously. The role of
 this skill in the execution phase is to help the user (and the AI overseeing
@@ -27,7 +27,7 @@ hermes kanban show <task-id>
 hermes kanban tail <task-id>
 ```
 
-Verify available subcommands with `hermes kanban --help` — the kanban CLI
+Verify available subcommands with `hermes kanban --help`: the kanban CLI
 ships with `init / create / list / show / assign / link / unlink / claim /
 comment / complete / block / unblock / archive / tail / dispatch / watch /
 stats / heartbeat / log / runs / context / gc`.
@@ -51,9 +51,9 @@ deadlocks).
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
-| Task RUNNING but no heartbeat in 2+ min | Worker stuck, infinite loop, blocked on input | `hermes kanban show <id>` — read the worker's last events. The dispatcher SIGTERMs tasks that exceed their `max-runtime`; if you need to stop one earlier, `hermes kanban block <id>` then `hermes kanban archive <id>`, and create a re-run task. |
+| Task RUNNING but no heartbeat in 2+ min | Worker stuck, infinite loop, blocked on input | `hermes kanban show <id>`: read the worker's last events. The dispatcher SIGTERMs tasks that exceed their `max-runtime`; if you need to stop one earlier, `hermes kanban block <id>` then `hermes kanban archive <id>`, and create a re-run task.|
 | Same task retried 2+ times | Reproducible failure (missing key, bad spec, broken tool) | `hermes kanban show <id>` to read failure events. Fix root cause before re-running. |
-| RUNNING longer than max_runtime | Task is slow but progressing OR genuinely stuck | Check heartbeats with `hermes kanban tail <id>`. If progressing, the dispatcher will SIGTERM eventually anyway — raise `max-runtime` on a re-created task. |
+| RUNNING longer than max_runtime | Task is slow but progressing OR genuinely stuck | Check heartbeats with `hermes kanban tail <id>`. If progressing, the dispatcher will SIGTERM eventually anyway, raise `max-runtime` on a re-created task.|
 | Child task READY but parents still RUNNING for >2× expected | Cascade slow, dependency miswired | Check the dependency graph. Inspect the parent: sometimes it completed but its handoff fields (summary, metadata) were empty so the child has nothing to consume. |
 | New tasks not appearing | Director is hung in decomposition | Inspect director task with `kanban show`. Often a malformed `kanban_create` call. |
 | Specialist tasks completing instantly | Decomposition created tasks without bodies | Director didn't pass enough context. Re-create with explicit body content. |
@@ -128,7 +128,7 @@ If during execution the user wants something fundamentally different:
 2. Edit `brief.md` and `TEAM.md`
 3. Re-fire the initial `hermes kanban create` for the director
 
-Don't try to "edit while running" — the kanban's audit trail makes a clean
+Don't try to "edit while running", the kanban's audit trail makes a clean
 pivot more legible than mid-stream changes.
 
 ## Periodic check-in script
@@ -146,7 +146,7 @@ done
 ```
 
 For a live event feed, run `hermes kanban watch --tenant <slug>` in a
-separate terminal — it streams task lifecycle events as they happen.
+separate terminal, it streams task lifecycle events as they happen.
 
 For automated intervention (auto-restart stuck tasks, auto-create re-render on
 review failure), see the `scripts/monitor.py` patterns.
@@ -162,7 +162,7 @@ The pipeline is finished when:
 4. Optional masterer variants exist
 
 At this point, present the final.mp4 path to the user along with any review
-notes. Do NOT delete the workspace — the user may want to iterate on a single
+notes. Do NOT delete the workspace, the user may want to iterate on a single
 scene without re-running the whole pipeline.
 
 ## Common gotchas
@@ -177,4 +177,4 @@ scene without re-running the whole pipeline.
   errors.
 - **Audio/visual sync.** The editor's clip stitching must match the
   renderer's actual output durations. Don't hardcode scene durations in
-  the editor — read from the renderer's handoff metadata.
+  the editor, read from the renderer's handoff metadata.

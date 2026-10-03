@@ -108,7 +108,7 @@ let x = easedValue(100, 700, animStartTime, 2000, easeOutCubic);
 
 ## Spring Physics
 
-More natural than easing — responds to force, overshoots, settles.
+More natural than easing: responds to force, overshoots, settles.
 
 ```javascript
 class Spring {

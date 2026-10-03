@@ -734,7 +734,7 @@ for each frame:
                       transform="zoom", transform_amt=0.015, hue_shift=0.02)
 ```
 
-### Effect Nodes — Uniform Interface
+### Effect Nodes: Uniform Interface
 
 In the v2 protocol, effect nodes are used **inside** scene functions. The scene function itself returns a canvas. Effect nodes produce intermediate `(chars, colors)` that are rendered to canvas via the grid's `.render()` method or `_render_vf()`.
 
@@ -868,7 +868,7 @@ def vf_noise_static(g, f, t, S, density=0.4):
 
 #### Noise-Based Fields (organic, non-periodic)
 
-These produce qualitatively different textures from sine-based fields — organic, non-repeating, without visible axis alignment. They're the foundation of high-end generative art.
+These produce qualitatively different textures from sine-based fields: organic, non-repeating, without visible axis alignment. They're the foundation of high-end generative art.
 
 ```python
 def _hash2d(ix, iy):
@@ -1735,7 +1735,7 @@ def vf_sequence(g, f, t, S, fields, durations, crossfade=1.0,
 
 ### Temporal Noise
 
-3D noise sampled at `(x, y, t)` — patterns evolve smoothly in time without per-frame discontinuities:
+3D noise sampled at `(x, y, t)`: patterns evolve smoothly in time without per-frame discontinuities:
 
 ```python
 def vf_temporal_noise(g, f, t, S, freq=0.06, t_freq=0.3, octaves=4,
@@ -1788,7 +1788,7 @@ combined = vf_rings(g,f,t,S) * (0.3 + 0.7 * vf_plasma(g,f,t,S))
 combined = np.maximum(vf_spiral(g,f,t,S), vf_aurora(g,f,t,S))
 ```
 
-### Full Scene Example (v2 — Canvas Return)
+### Full Scene Example (v2: Canvas Return)
 
 A v2 scene function composes effects internally and returns a pixel canvas:
 
@@ -1829,15 +1829,15 @@ Vary the **value field combo**, **hue field**, **palette**, **blend modes**, **f
 
 ---
 
-## Combining Effects — Creative Guide
+## Combining Effects: Creative Guide
 
 The catalog above is vocabulary. Here's how to compose it into something that looks intentional.
 
 ### Layering for Depth
 Every scene should have at least two layers at different grid densities:
 - **Background** (sm or xs): dense, dim texture that prevents flat black. fBM, smooth noise, or domain warp at low brightness (bri=0.15-0.25).
-- **Content** (md): the main visual — rings, voronoi, spirals, tunnel. Full brightness.
-- **Accent** (lg or xl): sparse highlights — particles, text stencil, glow pulse. Screen-blended on top.
+- **Content** (md): the main visual, rings, voronoi, spirals, tunnel. Full brightness.
+- **Accent** (lg or xl): sparse highlights, particles, text stencil, glow pulse. Screen-blended on top.
 
 ### Interesting Effect Pairs
 | Pair | Blend | Why it works |

@@ -182,7 +182,7 @@ print(f"L0 (avg active features): {trainer.metrics['l0']}")
 print(f"CE Loss Recovered: {trainer.metrics['ce_loss_score']}")
 ```
 
-> **v6 migration note:** For other SAE types swap the `sae=` sub-config —
+> **v6 migration note:** For other SAE types swap the `sae=` sub-config,
 > `GatedTrainingSAEConfig`, `TopKTrainingSAEConfig` (set `k` directly), or
 > `JumpReLUTrainingSAEConfig` (uses `l0_coefficient`). Legacy flat options
 > (`architecture`, `expansion_factor`, `hook_layer`, `activation_fn`/`activation_fn_kwargs`,

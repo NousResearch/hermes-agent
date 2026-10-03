@@ -47,7 +47,7 @@ See `references/authentication.md` for full setup details.
 
 ### 1. Always Search First
 
-Never guess app names — always search to find the correct app ID:
+Never guess app names, always search to find the correct app ID:
 
 ```bash
 infsh app list --search flux
@@ -142,15 +142,15 @@ infsh app list --search twitter
 
 ## Pitfalls
 
-1. **Never guess app IDs** — always run `infsh app list --search <term>` first. App IDs change and new apps are added frequently.
-2. **Always use `--json`** — raw output is hard to parse. The `--json` flag gives structured output with URLs.
-3. **Check authentication** — if commands fail with auth errors, run `infsh login` or verify `INFSH_API_KEY` is set.
-4. **Long-running apps** — video generation can take 30-120 seconds. The terminal tool timeout should be sufficient, but warn the user it may take a moment.
-5. **Input format** — the `--input` flag takes a JSON string. Make sure to properly escape quotes.
+1. **Never guess app IDs**: always run `infsh app list --search <term>` first. App IDs change and new apps are added frequently.
+2. **Always use `--json`**: raw output is hard to parse. The `--json` flag gives structured output with URLs.
+3. **Check authentication**: if commands fail with auth errors, run `infsh login` or verify `INFSH_API_KEY` is set.
+4. **Long-running apps**: video generation can take 30-120 seconds. The terminal tool timeout should be sufficient, but warn the user it may take a moment.
+5. **Input format**: the `--input` flag takes a JSON string. Make sure to properly escape quotes.
 
 ## Reference Docs
 
-- `references/authentication.md` — Setup, login, API keys
-- `references/app-discovery.md` — Searching and browsing the app catalog
-- `references/running-apps.md` — Running apps, input formats, output handling
-- `references/cli-reference.md` — Complete CLI command reference
+- `references/authentication.md`, Setup, login, API keys
+- `references/app-discovery.md`, Searching and browsing the app catalog
+- `references/running-apps.md`, Running apps, input formats, output handling
+- `references/cli-reference.md`, Complete CLI command reference

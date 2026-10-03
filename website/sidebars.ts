@@ -772,6 +772,7 @@ const sidebars: SidebarsConfig = {
         'guides/github-pr-review-agent',
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
+        'guides/github-azure-claude-cloud',
         'guides/aws-bedrock',
         'guides/google-vertex',
         'guides/azure-foundry',

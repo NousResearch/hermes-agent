@@ -28,6 +28,11 @@ from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
+# Per-job floor under the global cap. The ledger is read per job (`hermes cron runs <job>`, the
+# missed-occurrence replay guard), but a newest-N window over ALL jobs is filled by the chattiest
+# ones: three `*/5` watchdogs held 912 of 1000 rows on one install, so a weekly job's only row aged
+# out ~25 h after it ran. Every job keeps its newest rows up to this floor regardless of volume.
+PER_JOB_RETAINED_EXECUTIONS = 30
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
@@ -172,14 +177,24 @@ def _claim_age_seconds(claimed_at: str) -> float:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    # A terminal row survives while it is inside the global newest-N window OR inside its own
+    # job's newest-K window; only rows outside both go. Same (instant, text) recency key as the
+    # readers, so the surviving set is exactly what `hermes cron runs` would show first.
     conn.execute(
         """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
-             WHERE status IN ('completed','failed','unknown')
-             ORDER BY julianday(finished_at) DESC, finished_at DESC,
-                      julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+             SELECT id FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (ORDER BY
+                        julianday(finished_at) DESC, finished_at DESC,
+                        julianday(claimed_at) DESC, claimed_at DESC, id DESC) AS all_rank,
+                      ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY
+                        julianday(finished_at) DESC, finished_at DESC,
+                        julianday(claimed_at) DESC, claimed_at DESC, id DESC) AS job_rank
+               FROM executions
+               WHERE status IN ('completed','failed','unknown'))
+             WHERE all_rank > ? AND job_rank > ?
            )""",
-        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+        (max(0, int(MAX_TERMINAL_EXECUTIONS)), max(0, int(PER_JOB_RETAINED_EXECUTIONS))),
     )
 
 

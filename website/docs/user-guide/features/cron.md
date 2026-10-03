@@ -391,8 +391,11 @@ when the original PID and process-start fingerprint prove that its owner is
 gone. Unknown attempts are audit records and are never automatically rerun.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
-`history`). Terminal history is bounded; active attempts are never pruned. The
-ledger is included in quick backups.
+`history`). Terminal history is bounded to the newest 1,000 attempts overall,
+but every job keeps at least its own newest 30 attempts regardless of how
+chatty its neighbours are, so a `*/5` watchdog cannot age a weekly job's history
+out of the ledger. Active attempts are never pruned. The ledger is included in
+quick backups.
 
 Scheduled attempts also record their exact scheduled instant, separately from
 the time they were claimed. If an old `jobs.json` snapshot re-arms an occurrence

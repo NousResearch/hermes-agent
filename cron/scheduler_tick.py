@@ -61,8 +61,10 @@ def _tick_admitted(
 
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
+        from cron.continuations import pending_jobs
+        continuation_jobs = pending_jobs()
 
-        if not due_jobs:
+        if not due_jobs and not continuation_jobs:
             # Idle tick: skip config load + pool setup, but still reap crashed jobs' MCP orphans.
             if verbose:
                 # Idle tick: skip config load + pool partitioning entirely (#33612 — the gateway ticker
@@ -81,6 +83,7 @@ def _tick_admitted(
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
         _sched.advance_next_runs([job["id"] for job in due_jobs])
+        due_jobs.extend(continuation_jobs)
 
         _max_workers = _sched._resolve_max_parallel_workers()
         if verbose:

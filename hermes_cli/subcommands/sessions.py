@@ -25,6 +25,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
+    _flag(sessions_list, "--archived",
+        help="Show only archived sessions (hidden from the default list)")
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

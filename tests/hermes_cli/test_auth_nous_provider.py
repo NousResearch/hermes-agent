@@ -1078,3 +1078,113 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
+
+
+# =============================================================================
+# Device-code login: the portal-provided inference URL passes the same allowlist as refresh
+# =============================================================================
+
+
+def _run_device_login_with_portal_inference_url(monkeypatch, portal_inference_url):
+    import hermes_cli.auth as auth
+
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    monkeypatch.setattr(auth, "_request_device_code", lambda **kw: {
+        "verification_uri_complete": "https://portal.example/device?code=ABCD",
+        "user_code": "ABCD-1234", "device_code": "dev", "expires_in": 600, "interval": 5})
+    monkeypatch.setattr(auth, "_poll_for_token", lambda **kw: {
+        "access_token": "t", "scope": "inference:invoke", "expires_in": 3600,
+        "inference_base_url": portal_inference_url})
+    monkeypatch.setattr(auth, "refresh_nous_oauth_from_state", lambda state, **kw: state)
+    return auth._nous_device_code_login(open_browser=False, on_verification=lambda url, code: None)
+
+
+def test_device_login_refuses_portal_inference_url_outside_allowlist(monkeypatch):
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    state = _run_device_login_with_portal_inference_url(monkeypatch, "https://attacker.example.com/v1")
+    assert state["inference_base_url"] == PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/")
+
+
+def test_device_login_refuses_non_https_portal_inference_url(monkeypatch):
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    state = _run_device_login_with_portal_inference_url(
+        monkeypatch, "http://inference-api.nousresearch.com/v1")
+    assert state["inference_base_url"] == PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/")
+
+
+def test_device_login_keeps_allowlisted_portal_inference_url(monkeypatch):
+    state = _run_device_login_with_portal_inference_url(
+        monkeypatch, "https://inference-api.nousresearch.com/v2/")
+    assert state["inference_base_url"] == "https://inference-api.nousresearch.com/v2"
+
+
+# =============================================================================
+# A persisted inference URL is healed at hydration, not only at fresh admission
+# =============================================================================
+
+_FOREIGN_INFERENCE_URL = "https://attacker.example.com/v1"
+_OPERATOR_INFERENCE_URL = "https://staging-inference.example.net/v1"
+
+
+def _restart_and_swap_in_nous_pool_row(tmp_path, monkeypatch, persisted_url):
+    """Durable state from an earlier install, then the restart path: ``load_pool("nous")`` and the
+    live client's credential swap. Returns the base URL the rebuilt client would send the bearer to."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from agent.credential_pool import load_pool
+    from run_agent import AIAgent
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    token, expires_at = _invoke_jwt(seconds=3600), _future_iso(3600)
+    state = {
+        "portal_base_url": "https://portal.nousresearch.com",
+        "inference_base_url": persisted_url, "client_id": "hermes-cli",
+        "token_type": "Bearer", "scope": "inference:invoke", "access_token": token,
+        "refresh_token": "refresh-tok", "expires_at": expires_at,
+        "agent_key": token, "agent_key_expires_at": expires_at,
+    }
+    pool_row = {**state, "id": "surviving", "label": "device_code", "auth_type": "oauth",
+                "priority": 0, "source": "device_code"}
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "active_provider": "nous", "providers": {"nous": state},
+        "credential_pool": {"nous": [pool_row]},
+    }))
+
+    entry = load_pool("nous").select()
+    assert entry is not None and entry.runtime_api_key == token
+
+    agent = SimpleNamespace(
+        api_mode="chat_completions", provider="nous", model="Hermes-4-405B", api_key="old",
+        base_url="https://inference-api.nousresearch.com/v1",
+        _client_kwargs={"api_key": "old", "base_url": "https://inference-api.nousresearch.com/v1"},
+        _reapply_route_client_config=MagicMock(), _replace_primary_openai_client=MagicMock(),
+    )
+    assert AIAgent._swap_credential(agent, entry) is True
+    assert agent._client_kwargs["api_key"] == token
+    return agent._client_kwargs["base_url"]
+
+
+def test_restart_heals_persisted_foreign_nous_inference_url(tmp_path, monkeypatch):
+    from hermes_cli.auth import DEFAULT_NOUS_INFERENCE_URL
+
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    base = _restart_and_swap_in_nous_pool_row(tmp_path, monkeypatch, _FOREIGN_INFERENCE_URL)
+    assert base == DEFAULT_NOUS_INFERENCE_URL.rstrip("/")
+
+
+def test_restart_keeps_persisted_allowlisted_portal_inference_url(tmp_path, monkeypatch):
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    base = _restart_and_swap_in_nous_pool_row(
+        tmp_path, monkeypatch, "https://inference-api.nousresearch.com/v2")
+    assert base == "https://inference-api.nousresearch.com/v2"
+
+
+def test_restart_keeps_persisted_url_matching_operator_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", _OPERATOR_INFERENCE_URL)
+    base = _restart_and_swap_in_nous_pool_row(tmp_path, monkeypatch, _OPERATOR_INFERENCE_URL)
+    assert base == _OPERATOR_INFERENCE_URL

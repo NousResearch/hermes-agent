@@ -52,7 +52,8 @@ from hermes_cli.auth_nous import (  # noqa: F401  re-exported
     NOUS_SESSION_TERMINAL, NOUS_SESSION_UNKNOWN, NOUS_SESSION_VALID, _ALLOWED_NOUS_INFERENCE_HOSTS,
     _agent_key_is_usable, _apply_nous_refreshed_tokens, _assert_nous_inference_jwt_usable,
     _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
-    _login_nous, _merge_shared_nous_oauth_state, _migrate_stale_nous_portal_url,
+    _heal_persisted_nous_inference_urls, _login_nous, _merge_shared_nous_oauth_state,
+    _migrate_stale_nous_portal_url,
     _nous_device_code_login, _nous_inference_env_override, _nous_invoke_jwt_is_usable,
     _nous_invoke_jwt_status, _nous_portal_env_override, _nous_shared_store_lock,
     _nous_shared_store_path, _pool_first_oauth_status, _quarantine_nous_oauth_state,
@@ -778,6 +779,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         raw.setdefault("providers", {})
         if isinstance(raw.get("providers"), dict):
             _migrate_stale_nous_portal_url(raw["providers"])
+        _heal_persisted_nous_inference_urls(raw)
         return raw
 
     if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):  # legacy "systems" format

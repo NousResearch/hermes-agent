@@ -28,8 +28,20 @@ def mark_recommended(choices: List[str]) -> List[str]:
 def strip_recommended(text: str) -> str:
     """Remove the recommendation label so presentation never leaks into ``user_response``."""
     stripped = str(text).strip()
-    if stripped.casefold().endswith(RECOMMENDED_LABEL.casefold()):
-        return stripped[: -len(RECOMMENDED_LABEL)].strip()
+    # Recognize model-supplied localized badges as well as our English one.
+    # Exact suffixes only: ordinary prose containing these words is not metadata.
+    labels = (
+        RECOMMENDED_LABEL, "（推荐）", "(推荐)", "（推薦）", "(推薦)",
+        "(рекомендуется)", "(рекомендую)", "(empfohlen)",
+        "(recomendado)", "(recommandé)",
+    )
+    while stripped:
+        for label in labels:
+            if stripped.casefold().endswith(label.casefold()):
+                stripped = stripped[:-len(label)].rstrip()
+                break
+        else:
+            break
     return stripped
 
 

@@ -215,13 +215,14 @@ def _enforce_prompt_length_limit(prompt: Optional[str], provider: str) -> Option
 
 def _apply_pre_transcription_hook(
     *, file_path: str, provider: str, model: Optional[str], language: Optional[str],
-    prompt: Optional[str], source: Optional[str],
+    prompt: Optional[str], source: Optional[str], field_overrides: Optional[Dict[str, str]] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Fire the ``pre_transcription`` plugin hook; returns ``(model, language_override, prompt)``.
     Gated on ``has_hook`` (the no-hook path never builds kwargs) and fail-open: any plumbing error
     leaves the dispatch untouched. Results apply field-by-field in registration order (last hook
     wins). ``language_override`` is None unless a hook explicitly set ``language``, so backends keep
-    their own config/env resolution."""
+    their own config/env resolution. The optional request-local ``field_overrides`` receives
+    accepted fields, preserving prompt presence (including "") without changing the three-value return."""
     try:
         from hermes_cli.plugins import has_hook, invoke_hook
         if not has_hook("pre_transcription"):
@@ -244,6 +245,8 @@ def _apply_pre_transcription_hook(
                     )
                 else:
                     overrides[key] = value
+        if field_overrides is not None:
+            field_overrides.update(overrides)
         # Hooks win over the static ``stt.prompt`` config; "" clears it.
         if "prompt" in overrides:
             prompt = overrides["prompt"] or None

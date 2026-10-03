@@ -31,7 +31,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RosterRow } from './types'
 
 const { hostMock, persistMock, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
-  hostMock: { openSession: vi.fn(), request: vi.fn() },
+  hostMock: {
+    focusOpenWorkspaceSession: undefined as
+      | ((ownerKey: string, isStaleTile: (tile: unknown) => boolean, allowedIds: readonly string[]) => null | string)
+      | undefined,
+    openSession: vi.fn(),
+    request: vi.fn()
+  },
   persistMock: vi.fn(),
   requestForBotMock: vi.fn(),
   saveBotMetaMock: vi.fn()
@@ -158,6 +164,42 @@ describe('the registry row wins, always', () => {
     // The durable registry id names the chat; the tip is what takes focus.
     expect(opened).toEqual({ openedId: 'tip-9', registryId: 'root-1' })
     expect(hostMock.openSession.mock.calls[0][0]).toBe('tip-9')
+    expect(hostMock.openSession.mock.calls[0][1]).toMatchObject({ lineageIds: ['root-1', 'tip-9'] })
+  })
+
+  it('reconciles an intermediate canonical tile before opening the current lineage tip', async () => {
+    respondWith(method =>
+      method === 'session.list'
+        ? {
+            sessions: [
+              { id: 'root-1', message_count: 400, resolved_id: 'tip-2', root_title: 'Bot Chat', title: 'Bot Chat' }
+            ]
+          }
+        : {}
+    )
+
+    const focus = vi.fn((_ownerKey: string, isStaleTile: (tile: unknown) => boolean, allowedIds: readonly string[]) => {
+      expect(allowedIds).toEqual(['root-1', 'tip-2'])
+      expect(isStaleTile({ storedSessionId: 'tip-1', workspaceTabTitle: 'Bot Chat' })).toBe(true)
+      expect(isStaleTile({ storedSessionId: 'root-1', workspaceTabTitle: 'Bot Chat' })).toBe(false)
+      expect(isStaleTile({ storedSessionId: 'tip-2', workspaceTabTitle: 'Bot Chat' })).toBe(false)
+      expect(isStaleTile({ storedSessionId: 'side-1', workspaceTabTitle: 'Another chat' })).toBe(false)
+
+      return null
+    })
+
+    hostMock.focusOpenWorkspaceSession = focus
+
+    try {
+      const { openBotCanonicalChat } = await loadModule()
+      await openBotCanonicalChat('ops')
+
+      expect(focus).toHaveBeenCalledWith('bot:ops', expect.any(Function), ['root-1', 'tip-2'])
+      expect(focus.mock.invocationCallOrder[0]).toBeLessThan(hostMock.openSession.mock.invocationCallOrder[0])
+      expect(hostMock.openSession).toHaveBeenCalledWith('tip-2', expect.objectContaining({ lineageIds: ['root-1', 'tip-2'] }))
+    } finally {
+      hostMock.focusOpenWorkspaceSession = undefined
+    }
   })
 
   it('never reads or writes a stored pointer while opening', async () => {

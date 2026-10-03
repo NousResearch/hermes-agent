@@ -396,6 +396,8 @@ export interface PluginOpenSessionOptions {
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
+  /** Compression aliases for a hidden session absent from $sessions. */
+  lineageIds?: readonly string[]
   /** Refresh an already-on-screen surface IN PLACE — no navigation, no
    *  tile-minting, no focus steal. The canonical-chats re-resume
    *  (session.reclaimed, roster activity) is a BACKGROUND refresh: the user
@@ -1162,6 +1164,7 @@ export const host = {
               ownerRoute: ownerRoute ?? undefined,
               workspaceMode: 'bots',
               workspaceOwnerKey: options.workspaceOwnerKey,
+              lineageIds: options.lineageIds,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
             })
           } else {

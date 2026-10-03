@@ -49,6 +49,26 @@ export const PROFILE_SESSION_LIST_LIMIT = 200
  *  recognize canonical-titled tabs without restating the literal. */
 export const CANONICAL_CHAT_TITLE = 'Bot Chat'
 
+export interface CanonicalChatTile {
+  storedSessionId: null | string | undefined
+  workspaceTabTitle?: null | string | undefined
+}
+
+/** Normalize the durable registry id and current resolved tip into the ids
+ * that may represent the canonical Bot Chat on screen. */
+export function canonicalChatIds(...ids: Array<null | string | undefined>): string[] {
+  return [...new Set(ids.map(id => String(id ?? '').trim()).filter(Boolean))]
+}
+
+/** A bots-workspace tile is stale only when it claims the canonical tab title
+ * but names neither the registry root nor the currently resolved tip. */
+export function isStaleCanonicalChatTile(tile: CanonicalChatTile, canonicalIds: readonly string[]): boolean {
+  return (
+    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
+    !canonicalIds.includes(String(tile.storedSessionId ?? '').trim())
+  )
+}
+
 /** A `session.list` row as the registry lookup reads it. CanonicalSession
  *  models the roster's `canonical_session` field, which carries no
  *  `message_count` — the listing row does. `readonly` because the count is
@@ -161,7 +181,7 @@ async function openStoredBotChat(
   // discard-only (`[]` fronts nothing): a background refresh must never take
   // the tab strip (#121874), and the openSession below fronts explicit opens.
   const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
-  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [])
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), canonicalIds)
 
   await host.openSession(storedId, {
     ...(route
@@ -183,6 +203,7 @@ async function openStoredBotChat(
     forceResume: true,
     hydrationTimeoutMs,
     keepAllProfilesScope: true,
+    lineageIds: canonicalIds,
     ...(background ? { refreshInPlace: true } : {}),
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,

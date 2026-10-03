@@ -816,15 +816,26 @@ class GatewaySlashCommandsMixin(
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    async def _background_reply_route(self, event: MessageEvent):
+        """Route a background reply into a recovered topic without quoting its lobby message."""
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        changed_topic = source.thread_id != event.source.thread_id
+        if changed_topic:
+            source = dataclasses.replace(source, message_id=None)
+        anchor = None if changed_topic else self._reply_anchor_for_event(event)
+        return source, anchor
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /bg <prompt> — run a prompt in a background thread with its own session; the
         result is sent to the same chat without touching the active session's history."""
         prompt = event.get_command_args().strip()
         if not prompt:
             return t("gateway.background.usage")
+        source, reply_anchor = await self._background_reply_route(event)
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
         self._track_background_task(self._run_background_task(
-            prompt, event.source, task_id, event_message_id=self._reply_anchor_for_event(event),
+            prompt, source, task_id,
+            event_message_id=reply_anchor,
             # Forward image/audio attachments so the background agent can see them.
             media_urls=list(event.media_urls or []), media_types=list(event.media_types or [])))
         return t("gateway.background.started", preview=_preview(prompt), task_id=task_id)
@@ -863,7 +874,8 @@ class GatewaySlashCommandsMixin(
             parent_agent = self._cached_agent_for(self._session_key_for_source(source))
         except Exception:
             parent_agent = None
-        _thread_metadata = self._reply_metadata(event)
+        reply_source, reply_anchor = await self._background_reply_route(event)
+        _thread_metadata = self._thread_metadata_for_source(reply_source, reply_anchor)
         adapter = self._delivery_adapter_for(source)
         preview = _preview(question)
 

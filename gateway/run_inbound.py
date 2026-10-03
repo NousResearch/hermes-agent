@@ -145,6 +145,25 @@ class GatewayInboundMixin:
                 break
         return event
 
+    async def _hm_pre_gateway_dispatch_once(
+        self, event: "MessageEvent", source: SessionSource
+    ) -> Optional["MessageEvent"]:
+        """Apply the pre-dispatch hook once to one process-local inbound event."""
+        if getattr(event, "_pre_gateway_dispatch_applied", False):
+            return event
+        event = await self._hm_pre_gateway_dispatch_hook(event, source)
+        if event is not None:
+            event._pre_gateway_dispatch_applied = True
+        return event
+
+    async def _hm_admit_busy_ingress(
+        self, event: "MessageEvent"
+    ) -> Optional["MessageEvent"]:
+        """Run the normal pre-dispatch contract before an active-session diversion."""
+        if getattr(event, "internal", False):
+            return event
+        return await self._hm_pre_gateway_dispatch_once(event, event.source)
+
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
         """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""
         platform_name = source.platform.value if source.platform else "unknown"
@@ -267,7 +286,7 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = await self._hm_pre_gateway_dispatch_hook(event, source)
+        event = await self._hm_pre_gateway_dispatch_once(event, source)
         if event is None:
             return None
         source = event.source

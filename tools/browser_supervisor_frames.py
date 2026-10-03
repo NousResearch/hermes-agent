@@ -121,13 +121,19 @@ class FrameTrackingMixin:
     def _on_target_detached(self, params: Dict[str, Any], session_id: Optional[str] = None) -> None:
         """Clear the session binding of frames on a detached child session. Frames are
         deliberately NOT dropped: Browserbase fires transient detaches during page transitions
-        while the iframe is still visible; ``Page.frameDetached`` cleans up if it truly goes away."""
+        while the iframe is still visible; ``Page.frameDetached`` cleans up if it truly goes away.
+        A detach of the page session itself (its tab closed or replaced) rebinds to a live page."""
         sid = params.get("sessionId")
         if not sid:
             return
         with self._state_lock:
+            lost_page = sid == self._page_session_id
+            if lost_page:
+                self._page_session_id = None
             self._frames.update({fid: replace(f, cdp_session_id=None) for fid, f in self._frames.items()
                                  if f.cdp_session_id == sid})
+        if lost_page:
+            asyncio.create_task(self._reattach_lost_page(params.get("targetId")))
 
     def _build_frame_tree_locked(self) -> Dict[str, Any]:
         """Capped frame_tree payload (must hold state lock). Top frame = one with

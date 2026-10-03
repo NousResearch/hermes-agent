@@ -725,19 +725,30 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name, capability, profile)
-      // Mirror the backend write locally so the Search:/Extract: badges track
-      // the new per-capability backend without a refetch.
-      setCfg(current =>
-        current
-          ? {
-              ...current,
-              ...(capability === 'search'
-                ? { active_search_backend: provider.web_backend ?? provider.name }
-                : { active_extract_backend: provider.web_backend ?? provider.name })
-            }
-          : current
-      )
+      const resp = await selectToolsetProvider(toolset, provider.name, capability, profile)
+
+      if (resp.managed) {
+        // A managed pick promotes the toolset-level selection (web.backend:
+        // nous) instead of writing a per-capability vendor pin — the badge the
+        // row's web_backend would paint (firecrawl) is not what now resolves.
+        // The server is authoritative; refetch rather than mirroring a value
+        // that was not written.
+        void refresh()
+      } else {
+        // Mirror the backend write locally so the Search:/Extract: badges track
+        // the new per-capability backend without a refetch.
+        setCfg(current =>
+          current
+            ? {
+                ...current,
+                ...(capability === 'search'
+                  ? { active_search_backend: provider.web_backend ?? provider.name }
+                  : { active_extract_backend: provider.web_backend ?? provider.name })
+              }
+            : current
+        )
+      }
+
       notify({
         kind: 'success',
         title: copy.selectedTitle,

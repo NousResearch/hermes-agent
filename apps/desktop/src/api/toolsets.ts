@@ -72,6 +72,11 @@ export interface SelectToolsetProviderResponse {
   ok: boolean
   name: string
   provider: string
+  /** Present (true) when the pick was on a managed Nous row: the server
+   *  promoted the toolset-level selection instead of writing a per-capability
+   *  vendor pin, so the optimistic badge mirror would be wrong — refetch
+   *  instead of mirroring. */
+  managed?: boolean
   /** Present when the selection was scoped to one web capability. */
   capability?: string
   /** Present (true) when a managed Nous row was selected but the Portal

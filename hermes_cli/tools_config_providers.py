@@ -708,6 +708,17 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     if provider.get("web_backend"):
         web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
+        if managed_feature:
+            # A managed toolset-level pick governs the whole web toolset, so both
+            # per-capability pins must go: the dispatchers resolve
+            # ``web.search_backend`` / ``web.extract_backend`` FIRST and read them as
+            # DIRECT vendor selections ("a stored vendor selection never is" the managed
+            # route), so a stale pin keeps outranking the ``nous`` selection just
+            # written. Clearing them here also repairs configs corrupted by the
+            # pre-fix dashboard write, whose recovery paths (CLI ``hermes tools`` and
+            # the toolset-level GUI pick) both route through this writer.
+            web_cfg.pop("search_backend", None)
+            web_cfg.pop("extract_backend", None)
         tier = provider.get("web_tier")
         tiers = web_cfg.setdefault("provider_tier", {}) if tier else web_cfg.get("provider_tier")
         if isinstance(tiers, dict):

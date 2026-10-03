@@ -76,6 +76,213 @@ def test_sample_memory_has_expected_keys_on_linux() -> None:
 
 
 # ---------------------------------------------------------------------------
+# sample_memory — cgroup v2 awareness (platform-independent via monkeypatching)
+# ---------------------------------------------------------------------------
+
+# Fake host /proc values — chosen to be clearly distinguishable from cgroup test values.
+_HOST_TOTAL_KIB = 32 * 1024 * 1024    # 32 GiB
+_HOST_AVAIL_KIB = 22 * 1024 * 1024    # 22 GiB (68.7% free → "ok")
+_HOST_RSS_KIB = 4096
+_HOST_SWAP_TOTAL_KIB = 2 * 1024 * 1024
+_HOST_SWAP_FREE_KIB = 1 * 1024 * 1024
+
+_GIB = 1024 * 1024 * 1024  # bytes
+_MIB = 1024 * 1024          # bytes
+
+
+def _fake_proc_fields(path: str, wanted: dict) -> dict:
+    """Stand-in for _proc_fields — returns fake but valid host-shaped values."""
+    if path == "/proc/self/status":
+        return {"rss_kib": _HOST_RSS_KIB}
+    if path == "/proc/meminfo":
+        return {
+            "mem_total_kib": _HOST_TOTAL_KIB,
+            "mem_available_kib": _HOST_AVAIL_KIB,
+            "SwapTotal": _HOST_SWAP_TOTAL_KIB,
+            "SwapFree": _HOST_SWAP_FREE_KIB,
+        }
+    return {}
+
+
+def _write_cgroup_files(
+    root: Path,
+    *,
+    memory_max: str = "max",
+    memory_current: int = 0,
+    file_bytes: int = 0,
+    slab_reclaimable_bytes: int = 0,
+) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "memory.max").write_text(memory_max + "\n", encoding="utf-8")
+    (root / "memory.current").write_text(str(memory_current) + "\n", encoding="utf-8")
+    (root / "memory.stat").write_text(
+        f"file {file_bytes}\nslab_reclaimable {slab_reclaimable_bytes}\nanon 0\n",
+        encoding="utf-8",
+    )
+
+
+def test_cgroup_finite_limit_overrides_proc_meminfo(tmp_path: Path, monkeypatch) -> None:
+    """Finite memory.max → mem_total_kib and mem_available_kib come from the cgroup, not /proc/meminfo."""
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    _write_cgroup_files(cgroup_root, memory_max=str(8 * _GIB), memory_current=4 * _GIB)
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+
+    assert sample["mem_total_kib"] == 8 * 1024 * 1024    # 8 GiB in KiB
+    assert sample["mem_total_kib"] != _HOST_TOTAL_KIB    # differs from host /proc/meminfo
+    assert sample["mem_available_kib"] != _HOST_AVAIL_KIB
+
+
+def test_cgroup_reclaimable_included_exact_kib(tmp_path: Path, monkeypatch) -> None:
+    """available = (max - current + file + slab_reclaimable) // 1024 — exact KiB assertion.
+
+    max=4GiB, current=3GiB, file=1GiB, slab_reclaimable=512MiB
+    available_bytes = 4GiB - 3GiB + 1GiB + 512MiB = 2560MiB → 2621440 KiB
+    """
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    _write_cgroup_files(
+        cgroup_root,
+        memory_max=str(4 * _GIB),
+        memory_current=3 * _GIB,
+        file_bytes=1 * _GIB,
+        slab_reclaimable_bytes=512 * _MIB,
+    )
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+
+    assert sample["mem_total_kib"] == 4 * 1024 * 1024    # 4194304 KiB
+    assert sample["mem_available_kib"] == 2560 * 1024     # 2621440 KiB
+
+
+def test_cgroup_available_clamped_to_zero(tmp_path: Path, monkeypatch) -> None:
+    """available is clamped to 0 when memory.current > memory.max (no negative values)."""
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    _write_cgroup_files(
+        cgroup_root,
+        memory_max=str(4 * _GIB),
+        memory_current=5 * _GIB,    # over-limit — clamp kicks in
+    )
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+    assert sample["mem_available_kib"] == 0
+
+
+def test_cgroup_unlimited_falls_back_to_proc_meminfo(tmp_path: Path, monkeypatch) -> None:
+    """`memory.max == "max"` (no cgroup limit) → host /proc/meminfo values used unchanged."""
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    _write_cgroup_files(cgroup_root, memory_max="max", memory_current=0)
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+
+    assert sample["mem_total_kib"] == _HOST_TOTAL_KIB
+    assert sample["mem_available_kib"] == _HOST_AVAIL_KIB
+
+
+def test_cgroup_files_absent_falls_back_to_proc_meminfo(tmp_path: Path, monkeypatch) -> None:
+    """No cgroup directory (non-container host, cgroup v1, macOS) → /proc/meminfo fallback."""
+    import gateway.lifecycle_ledger as ll
+
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(tmp_path / "no_cgroup_here"))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+
+    assert sample["mem_total_kib"] == _HOST_TOTAL_KIB
+    assert sample["mem_available_kib"] == _HOST_AVAIL_KIB
+
+
+def test_cgroup_garbage_content_falls_back_no_raise(tmp_path: Path, monkeypatch) -> None:
+    """Garbage cgroup content (e.g. memory.current = "abc") → silent fallback, never raises."""
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_root.mkdir()
+    (cgroup_root / "memory.max").write_text("not-a-number\n", encoding="utf-8")
+    (cgroup_root / "memory.current").write_text("abc\n", encoding="utf-8")
+
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()    # must not raise
+
+    assert sample["mem_total_kib"] == _HOST_TOTAL_KIB
+    assert sample["mem_available_kib"] == _HOST_AVAIL_KIB
+
+
+def test_cgroup_rss_and_swap_still_from_proc(tmp_path: Path, monkeypatch) -> None:
+    """rss_kib and swap_used_kib come from /proc, not from cgroup files."""
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    _write_cgroup_files(cgroup_root, memory_max=str(8 * _GIB), memory_current=4 * _GIB)
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+
+    assert sample["rss_kib"] == _HOST_RSS_KIB
+    assert sample["swap_used_kib"] == _HOST_SWAP_TOTAL_KIB - _HOST_SWAP_FREE_KIB
+
+
+def test_cgroup_real_pod_numbers_classify_correctly(tmp_path: Path, monkeypatch) -> None:
+    """Real pod case: 8 GiB limit, ~7.66 GiB used, ~5.90 GiB file, ~0.77 GiB slab_reclaimable.
+
+    Including reclaimable: available ~7.01 GiB (87.7% free) → "ok"  ← our implementation
+    Excluding reclaimable: available ~0.34 GiB  (4.2% free) → "critical"  ← naive wrong fix
+    Host /proc/meminfo: 22 of 32 GiB → "ok".
+
+    The naive-cgroup "critical" disagrees with the host "ok" — a false alarm on a healthy
+    cache-warm pod.  Including reclaimable resolves the disagreement and avoids the false alarm.
+    """
+    from gateway.memory_status import classify_pressure
+    import gateway.lifecycle_ledger as ll
+
+    cgroup_root = tmp_path / "cgroup"
+    _write_cgroup_files(
+        cgroup_root,
+        memory_max=str(8 * _GIB),
+        memory_current=int(7.66 * _GIB),
+        file_bytes=int(5.90 * _GIB),
+        slab_reclaimable_bytes=int(0.77 * _GIB),
+    )
+    monkeypatch.setattr(ll, "_CGROUP_ROOT", str(cgroup_root))
+    monkeypatch.setattr(ll, "_proc_fields", _fake_proc_fields)
+
+    sample = ll.sample_memory()
+
+    # Our implementation (cgroup with reclaimable) → "ok" for the healthy cache-warm pod.
+    cgroup_pressure = classify_pressure(sample["mem_available_kib"], sample["mem_total_kib"])
+    assert cgroup_pressure == "ok"
+
+    # Host-only reading (old code's perspective inside the container) → also "ok".
+    assert classify_pressure(_HOST_AVAIL_KIB, _HOST_TOTAL_KIB) == "ok"
+
+    # Without reclaimable the cgroup reading reports "critical" — the false alarm we avoid.
+    cgroup_total_kib = 8 * 1024 * 1024
+    naive_avail_kib = cgroup_total_kib - (int(7.66 * _GIB) // 1024)
+    assert classify_pressure(naive_avail_kib, cgroup_total_kib) == "critical"
+
+    # The disagreement: naive-cgroup "critical" vs host "ok" — fixing it is this PR's purpose.
+    assert classify_pressure(naive_avail_kib, cgroup_total_kib) != classify_pressure(_HOST_AVAIL_KIB, _HOST_TOTAL_KIB)
+
+
+# ---------------------------------------------------------------------------
 # First boot / clean lifecycle
 # ---------------------------------------------------------------------------
 

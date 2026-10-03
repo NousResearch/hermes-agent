@@ -1320,7 +1320,7 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
     with hermes_applied_write():
-        save_config(config)
+        save_config(config, migration=True)
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:
@@ -2508,14 +2508,18 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    migration: bool = False):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted. ``migration`` is set
+    only by :func:`_persist_migration`: managed mode refuses the user's writes, but a managed
+    install is updated by its package manager and migrates nowhere else, so Hermes' own
+    migration writes still land."""
     with _CONFIG_LOCK:
-        if is_managed():
+        if is_managed() and not migration:
             managed_error("save configuration")
             return
 

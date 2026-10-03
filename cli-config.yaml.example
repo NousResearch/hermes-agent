@@ -1267,6 +1267,14 @@ agent:
   # Set 0 to disable (default 5).
   # auto_recovery_cycles: 5
 
+  # A 503 that carries Retry-After (a gateway draining for a deploy, a
+  # maintenance window) is waited out on the SAME model for up to this many
+  # seconds instead of failing over after one retry; once spent, fallback
+  # skips chain entries on the same endpoint (another model behind the same
+  # 503 only collects it). 120s covers a rolling deploy's connection drain.
+  # Set 0 to disable (default 120).
+  # unavailable_wait_seconds: 120
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive

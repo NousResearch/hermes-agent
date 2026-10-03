@@ -139,6 +139,15 @@ DEFAULT_CONFIG = {
         # visible "retrying automatically" countdown instead of ending the turn. Esc/interrupt stops
         # the wait; auth/format/billing/policy errors never enter. 0 disables.
         "auto_recovery_cycles": 5,
+        # A 503 that carries Retry-After (RFC 9110 15.6.4) names when the endpoint is back: a deploy
+        # drain, maintenance window or restarting backend, which every model behind that endpoint
+        # answers alike. Wait it out on the SAME model for up to this many seconds (waits are not
+        # retry attempts), then fall back, skipping chain entries on the same endpoint. 120 s covers
+        # a rolling deploy's connection drain (Kubernetes' default terminationGracePeriodSeconds is
+        # 30 s) with headroom and matches the auto-recovery ladder's Retry-After cap; a server that
+        # asks for longer is not mid-deploy, so fail over at once. 0 disables (one retry, then any
+        # fallback entry, as before).
+        "unavailable_wait_seconds": 120,
         # Seconds the Codex/Responses stream may keep reading after its terminal frame so the relay
         # finalizer can run. Relays that never close the SSE socket after response.completed would
         # otherwise wedge the turn until the idle watchdog discards the already-billed response

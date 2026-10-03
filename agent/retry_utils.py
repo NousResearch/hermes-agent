@@ -172,3 +172,17 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     because the loop gives up when ``retry_count >= ceiling`` BEFORE computing the attempt's
     backoff (the default ``api_max_retries`` of 3 equals ``short_attempts``)."""
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+def unavailable_retry_wait(retry_after_s: Optional[float], *, waited_s: float, budget_s: float) -> Optional[float]:
+    """Seconds to wait before re-trying the SAME model after a 503 + Retry-After, or None to fail over.
+
+    None when the header carries no usable wait, or when honouring it would overrun the remaining
+    wall-clock budget: a server asking for longer than we are willing to wait is not coming back
+    in time, so the caller moves on now instead of sleeping and retrying once more."""
+    if retry_after_s is None or retry_after_s <= 0:
+        return None
+    remaining = float(budget_s) - float(waited_s)
+    if remaining <= 0 or retry_after_s > remaining:
+        return None
+    return float(retry_after_s)

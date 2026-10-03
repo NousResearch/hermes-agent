@@ -377,6 +377,24 @@ def test_replay_replaces_surviving_user_row_with_same_message_uid():
         [original, carrier], {**original}
     )
 
-    matching = [m for m in out if m.get("message_uid") == uid]
+    def holders(rows):
+        return [m for m in rows if uid == m.get("message_uid") or uid in m.get("_absorbed_message_uids", ())]
+
+    matching = holders(out)
     assert len(matching) == 1
     assert _INFLIGHT_TASK_REPLAY_HEADER in str(matching[0].get("content"))
+
+    # Real compress(): the head-protected original is the head's only user row.
+    # Removing it must not leave the window opening system -> assistant.
+    messages = _cron_transcript()
+    messages[1] = {**messages[1], "message_uid": uid}
+    compressed = _compress(messages)
+    assert len(holders(compressed)) == 1
+    visible = [
+        m["role"]
+        for m in compressed[1:]
+        if not (m["role"] == "tool" or (m["role"] == "assistant" and m.get("tool_calls")))
+    ]
+    assert visible[0] == "user", visible
+    assert all(a != b for a, b in zip(visible, visible[1:])), visible
+    assert JOB_SENTINEL in _text(compressed[_handoff_idx(compressed)]).split(_SUMMARY_END_MARKER)[-1]

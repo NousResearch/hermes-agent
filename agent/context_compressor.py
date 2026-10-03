@@ -5045,6 +5045,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # same message_uid and renders the request twice after reload.
         replay_uid = replay.get("message_uid")
         if isinstance(replay_uid, str) and replay_uid:
+            before = len(compressed)
             compressed[:] = [
                 msg
                 for msg in compressed
@@ -5054,6 +5055,15 @@ Write only the summary body. Do not include any preamble or prefix."""
                     and msg.get("message_uid") == replay_uid
                 )
             ]
+            # The summary role was picked against a head that ended on the row
+            # just removed: an assistant carrier would now open the visible
+            # sequence (or follow an assistant). Use the _force_user_leading
+            # layout instead — carrier role=user, request after its end marker.
+            if len(compressed) != before and _template_visible_role(carrier) == "assistant" and (
+                _last_template_visible_role(compressed[: compressed.index(carrier)]) in {None, "system", "assistant"}
+            ):
+                carrier["role"] = "user"
+                last_visible_role = _last_template_visible_role(compressed)
 
         if last_visible_role == "user":
             # Alternation is judged on template-visible rows only (tool_calls /

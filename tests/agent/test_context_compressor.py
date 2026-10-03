@@ -438,28 +438,33 @@ class TestSummarizeToolResultClarify:
 
 def _refusals():
     """Refused-call results from the real producers: the approval gate messages in their terminal /
-    tool_error envelopes, and a pending gateway approval."""
+    tool_error envelopes, and a pending gateway approval. ``expected`` lists substrings the summary
+    must contain."""
     from tools import approval
     from tools.registry import tool_error
     from tools.terminal_tool import _error_json
 
     gate = approval._COMMAND_GATE
+    no_consent = ["BLOCKED, not run", "did NOT consent"]
     return [
         pytest.param("terminal", {"command": "rm -rf build"},
                      _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked"),
-                     id="cli_denied"),
+                     no_consent, id="cli_denied"),
         pytest.param("terminal", {"command": "rm -rf build"},
                      _error_json(gate.transport_denied.format(breaker=""), status="blocked"),
-                     id="transport_denied"),
+                     no_consent, id="transport_denied"),
         pytest.param("terminal", {"command": "rm -rf build"},
                      _error_json(gate.cli_timeout.format(breaker=""), status="blocked"),
-                     id="cli_timeout"),
+                     no_consent, id="cli_timeout"),
         pytest.param("write_file", {"path": "AGENTS.md", "content": "a\nb"},
                      tool_error("BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was "
                                 "denied by the user. The user has NOT consented to this write. Do NOT "
                                 "retry it or attempt the same edit via another path (terminal, "
                                 "execute_code, etc.)."),
-                     id="write_guard"),
+                     no_consent, id="write_guard"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json("", status="pending_approval"),
+                     ["awaiting the user's approval, not run"], id="pending_approval"),
     ]
 
 
@@ -467,16 +472,16 @@ class TestSummarizeToolResultRefusals:
     """A refused call must not be summarized as done ("ran ...", "wrote to ..."): that turns the
     user's denial into a record of the action and drops the do-not-retry instruction."""
 
-    @pytest.mark.parametrize("tool_name,args,content", _refusals())
-    def test_denial_summary_keeps_not_run_and_no_consent(self, tool_name, args, content):
+    @pytest.mark.parametrize("tool_name,args,content,expected", _refusals())
+    def test_denial_summary_keeps_not_run_and_no_consent(self, tool_name, args, content, expected):
         summary = _summarize_tool_result(tool_name, json.dumps(args), content)
 
-        assert "BLOCKED, not run" in summary and "did NOT consent" in summary
+        assert all(part in summary for part in expected), summary
         assert "ran `" not in summary and "wrote to" not in summary
         assert len(summary) <= _PRUNE_MIN_CHARS - 1
 
     def test_prune_keeps_denial_across_passes(self, compressor):
-        tool_name, args, content = _refusals()[0].values
+        tool_name, args, content, _ = _refusals()[0].values
         assert len(content) > _PRUNE_MIN_CHARS
         messages = [
             {"role": "assistant", "tool_calls": [{"id": "t1", "type": "function",

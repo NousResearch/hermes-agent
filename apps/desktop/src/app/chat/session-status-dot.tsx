@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 
 import { type Translations, useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -13,6 +14,7 @@ import type { SessionInfo } from '@/types/hermes'
 type DotVariant = {
   ariaLabel?: (r: Translations['sidebar']['row']) => string
   className: string
+  glyphClassName: string
   role?: 'status'
   title?: (r: Translations['sidebar']['row']) => string
 }
@@ -32,6 +34,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   'needs-input': {
     ariaLabel: r => r.needsInput,
     className: `${DOT_BASE} bg-amber-500`,
+    glyphClassName: 'text-amber-500',
     role: 'status',
     title: r => r.waitingForAnswer
   },
@@ -39,6 +42,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   working: {
     ariaLabel: r => r.sessionRunning,
     className: `${DOT_BASE} bg-(--ui-accent)`,
+    glyphClassName: 'text-(--ui-accent)',
     role: 'status'
   },
   // Hollow accent — still authoritatively running, but nothing has arrived for
@@ -47,6 +51,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   stalled: {
     ariaLabel: r => r.sessionRunning,
     className: `${DOT_BASE} border border-(--ui-accent)`,
+    glyphClassName: 'text-(--ui-accent) opacity-50',
     role: 'status',
     title: r => r.sessionRunning
   },
@@ -56,6 +61,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   background: {
     ariaLabel: r => r.backgroundRunning,
     className: `${DOT_BASE} border border-(--ui-text-tertiary)`,
+    glyphClassName: 'text-(--ui-text-tertiary) opacity-50',
     role: 'status',
     title: r => r.backgroundRunning
   },
@@ -66,6 +72,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   unread: {
     ariaLabel: r => r.finishedUnread,
     className: `${DOT_BASE} bg-(--ui-success)`,
+    glyphClassName: 'text-(--ui-success)',
     role: 'status',
     title: r => r.finishedUnread
   },
@@ -76,6 +83,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   draft: {
     ariaLabel: r => r.draftSession,
     className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
+    glyphClassName: 'text-(--ui-text-quaternary) opacity-50',
     title: r => r.draftSession
   },
   // Settled: the project color when there is one, else the faintest filled
@@ -83,7 +91,8 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // reads as broken next to its neighbours, so "no color" falls back to the
   // quietest ink rather than to an invisible dot.
   idle: {
-    className: 'size-1 rounded-full bg-(--ui-text-quaternary)'
+    className: 'size-1 rounded-full bg-(--ui-text-quaternary)',
+    glyphClassName: 'text-(--ui-text-quaternary)'
   }
 }
 
@@ -108,6 +117,8 @@ export interface SessionStatusDotProps {
   session?: null | SessionInfo
   /** TUI-style tree stem for a branched session (`└─ ` / `├─ `). */
   branchStem?: string
+  /** Optional mark in the SAME status slot; other surfaces keep their dot. */
+  glyph?: ReactNode
   /** Applied to the OUTER wrapper (stem + dot) — e.g. hover-fade on the
    *  reorder handle. */
   className?: string
@@ -122,7 +133,7 @@ export interface SessionStatusDotProps {
  * An idle session shows its project color; the active states own the dot with
  * their semantic color so an attention cue is never masked by the tint.
  */
-export function SessionStatusDot({ storedSessionId, session, branchStem, className }: SessionStatusDotProps) {
+export function SessionStatusDot({ storedSessionId, session, branchStem, className, glyph }: SessionStatusDotProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
 
@@ -146,7 +157,19 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
           {branchStem}
         </span>
       ) : null}
-      {dotState === 'idle' ? (
+      {glyph ? (
+        <span
+          aria-hidden={dotState === 'idle' ? true : undefined}
+          aria-label={variant.ariaLabel?.(r)}
+          className={cn('inline-flex', variant.glyphClassName)}
+          data-session-state={dotState}
+          role={variant.role}
+          style={dotState === 'idle' && color ? { color } : undefined}
+          title={variant.title?.(r)}
+        >
+          {glyph}
+        </span>
+      ) : dotState === 'idle' ? (
         // Rendered even with no color to paint: an empty dot of the same size
         // keeps every row's title on one left edge, so a session finishing
         // can't shift the list under the pointer.

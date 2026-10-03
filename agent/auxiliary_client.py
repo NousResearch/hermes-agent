@@ -1548,27 +1548,14 @@ class _CodexCompletionsAdapter:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
             resp_kwargs["_wire_aliases"] = wire_aliases
-        # Stable prompt-cache routing: key is content-addressed from the static prefix
-        # (instructions + tool schemas) so it survives across turns, scoped by the owning
-        # conversation (rotation-stable logical scope, else the physical session id). Skip the
-        # key where the main transport does: xAI takes it in extra_body, GitHub opts out.
+        # Cache routing is scoped by the rotation-stable owning conversation and static prefix.
         try:
-            # Reuse the Responses transport's single authoritative hash algorithm and session-scope
-            # normalization so equivalent static prefixes route to the same cache bucket across modes,
-            # without concentrating unrelated sessions into one shared bucket (see #78941).
-            from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
-            from agent.transports.codex import _default_prompt_cache_retention_for_request
-            if not (is_xai or is_github) and "prompt_cache_key" not in resp_kwargs:
-                scope = _cache_scope_from_session_id(
-                    _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
-                )
-                cache_key = _content_cache_key(resp_kwargs["instructions"], resp_kwargs.get("tools"), scope)
-                if cache_key:
-                    resp_kwargs["prompt_cache_key"] = cache_key
-            if "prompt_cache_retention" not in resp_kwargs:
-                cache_retention = _default_prompt_cache_retention_for_request(model, host)
-                if cache_retention:
-                    resp_kwargs["prompt_cache_retention"] = cache_retention
+            from agent.auxiliary_responses_cache import add_responses_cache_kwargs
+            add_responses_cache_kwargs(
+                resp_kwargs, model=model, host=host, is_xai=is_xai, is_github=is_github,
+                scope_id=_runtime_main_value("cache_scope") or _runtime_main_value("session_id"),
+                extra_body=extra_body,
+            )
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
         # Last, like the main transport: caller extra_body must not put a rejected Astra field back.

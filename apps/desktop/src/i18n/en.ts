@@ -4252,6 +4252,8 @@ export const en: Translations = {
     everythingSkipped: 'Skipped',
     everythingRowFailed: 'Update failed',
     everythingFanoutFailedTitle: 'Couldn’t update other instances',
+    updateEverything: 'Update everything',
+    updatingEverything: 'Updating everything…',
     changeLogNew: "What's new",
     changeLogFixed: 'Fixed',
     changeLogFaster: 'Faster',

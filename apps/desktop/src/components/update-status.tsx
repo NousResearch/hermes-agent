@@ -15,9 +15,11 @@ import {
   $backendUpdateStatus,
   $updateApply,
   $updateChecking,
+  $updateEverything,
   $updateStatus,
   checkBackendUpdates,
   checkUpdates,
+  hasMultipleUpdateTargets,
   openUpdateOverlayFor,
   startActiveUpdate,
   type UpdateApplyState,
@@ -226,6 +228,45 @@ export function VersionHero({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * The About page's target-scoped cards each opt out of the fan-out flow by
+ * design (#121209 — a single ambiguous button silently updated remote/fleet
+ * instances). This is the explicit, visible re-entry point for the chained
+ * flow that already exists in `applyEverythingUpdate()` and is otherwise only
+ * reachable from the command palette (#123117): one named action, shown only
+ * when there is more than one target and at least one of them has an update
+ * waiting, that hands off to the same `startActiveUpdate()` path the
+ * multi-connection registry and remote backend already use.
+ */
+export function UpdateEverythingAction(): ReactElement | null {
+  const { t } = useI18n()
+  const u = t.updates
+  const clientStatus = useStore($updateStatus)
+  const backendStatus = useStore($backendUpdateStatus)
+  const everything = useStore($updateEverything)
+
+  if (!hasMultipleUpdateTargets()) {
+    return null
+  }
+
+  const anyBehind =
+    (clientStatus?.behind ?? 0) > 0 ||
+    Boolean(clientStatus?.updateAvailable) ||
+    (backendStatus?.behind ?? 0) > 0 ||
+    Boolean(backendStatus?.updateAvailable)
+
+  if (!anyBehind) {
+    return null
+  }
+
+  return (
+    <Button disabled={everything.running} onClick={() => startActiveUpdate()} size="sm">
+      {everything.running ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+      {everything.running ? u.updatingEverything : u.updateEverything}
+    </Button>
   )
 }
 

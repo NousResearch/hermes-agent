@@ -25,7 +25,8 @@ from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.session import SessionSource
+from gateway.session_identity import replace_source
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -49,14 +50,6 @@ _CARD_DESTINATION_REFUSALS = {
 }
 
 
-def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
-    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
-    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
-    duck types) counts when it defines ``send_exec_approval`` itself."""
-    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
-    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
-        return bool(probe())
-    return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
@@ -65,14 +58,8 @@ def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
 
-class _ExecApprovalDeclined(RuntimeError):
-    """The connector refused the approval card's destination.
 
-    Raised (not returned) so it propagates out of `_approval_notify_sync` to
-    `_await_gateway_decision`, whose notify-failure path drops the central
-    approval queue entry and unblocks the waiting tool. A plain return
-    suppressed the text fallback but left that entry pending.
-    """
+
 
 
 class TurnRunner:
@@ -1453,101 +1440,9 @@ class TurnRunner:
         return response, answered
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
-        """Send the approval request from the agent thread: the adapter's interactive button
-        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
-        from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
-        from gateway.run_turn_runner_approval_settle import register_timeout_notice
-        ctx = self._ctx
-        adapter = ctx._status_adapter
-        # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
-        # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
-        # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: Tirith's findings are already redacted, but the raw
-        # command string still leaks secrets. Both the button and plain-text paths use this value.
-        cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description") or ea_default_reason_text()
-        flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
-        # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if _renders_exec_approval_buttons(type(adapter)):
-            try:
-                fut = self._schedule(
-                    adapter.send_exec_approval(
-                        chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
-                    ),
-                    "send_exec_approval scheduling error",
-                )
-                if fut is None:
-                    raise RuntimeError("send_exec_approval: loop unavailable")
-                outcome = _approval_send_outcome(fut, timeout=15)
-                if outcome == "sent":
-                    # Without this, a card whose timer runs out keeps live buttons and nobody
-                    # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
-                    return
-                if outcome == "ambiguous":
-                    # Timeout ≠ failure: the card may have posted with a late ack. The prompt
-                    # registration stays alive so a tap still resolves; re-sending made duplicate
-                    # cards + orphaned "/approve: nothing pending".
-                    logger.warning(
-                        "Button-based approval send timed out — treating "
-                        "as possibly-delivered (no re-send; the prompt "
-                        "stays armed for a late tap)"
-                    )
-                    return
-                if outcome == "declined":
-                    # P5(b): the connector AUTHORIZED this destination and
-                    # refused it. The text fallback below re-sends the same
-                    # content to the same chat, which would turn a refused
-                    # button card into a delivered plain-text one — the exact
-                    # leak the egress guard exists to stop. A decline is
-                    # definitive, so unlike `ambiguous` the registration is
-                    # torn down; unlike `failed`, nothing is re-sent.
-                    logger.warning(
-                        "Button-based approval DECLINED by the connector's "
-                        "egress guard — not falling back to text (the "
-                        "destination is not approved for this connection)"
-                    )
-                    # RAISE, do not return. This function is the notify_cb for
-                    # `_await_gateway_decision`, which already has a correct
-                    # undeliverable path: a raising notify drops the queue entry
-                    # and returns `notify_failed`, unblocking the tool. Returning
-                    # quietly suppressed the text fallback (right) but left the
-                    # CENTRAL approval entry pending (wrong) — the dangerous
-                    # command then blocked until the approval timeout. My earlier
-                    # comment claimed the registration was torn down; only the
-                    # adapter's private prompt map was.
-                    raise _ExecApprovalDeclined(
-                        "exec approval undeliverable: connector egress declined "
-                        "this destination"
-                    )
-                logger.warning("Button-based approval failed (send returned error), falling back to text")
-            except _ExecApprovalDeclined:
-                # Must escape this handler: the fallback below is a text send to
-                # the destination the connector just refused.
-                raise
-            except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
-        # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
-        # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
-        try:
-            # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-            fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
-            )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        from gateway.run_turn_runner_approval_notify import notify_approval
+
+        notify_approval(self, approval_data)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
@@ -1620,6 +1515,10 @@ class TurnRunner:
             _last_transcript_timestamp, _prepare_resume_pending_message, build_resume_recovery_note,
         )
         ctx = self._ctx
+        if ctx.input_snapshot is not None:
+            ctx.message = ctx.input_snapshot.render(self._runner, timestamps=True)
+            ctx.persist_user_message = ctx.input_snapshot.persist_user_message
+            ctx.persist_user_timestamp = ctx.input_snapshot.persist_user_timestamp
         persist_override: Optional[Any] = ctx.persist_user_message
         self._prepend_pending_note("_pending_model_notes")
         # Auto-continue: history ending with a tool result means the previous turn was cut off
@@ -1668,17 +1567,39 @@ class TurnRunner:
         same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+
+        def revalidate(paths: list[str]) -> tuple[str, list[str]]:
+            if ctx.input_snapshot is None:
+                return ctx.message or "", paths
+            ctx.message, retained = ctx.input_snapshot.revalidate_native_input(
+                self._runner, ctx.message or "", paths
+            )
+            ctx.persist_user_message = ctx.input_snapshot.persist_user_message
+            ctx.persist_user_timestamp = ctx.input_snapshot.persist_user_timestamp
+            return ctx.message or "", retained
+
+        if ctx.input_snapshot is not None:
+            native_imgs = ctx.input_snapshot.retained_image_paths(native_imgs)
         if not native_imgs:
+            revalidate([])
             return ctx.message
         try:
             from agent.image_routing import build_native_content_parts
-            parts, skipped = build_native_content_parts(ctx.message, native_imgs)
+
+            parts, skipped = build_native_content_parts(
+                ctx.message, native_imgs, revalidate=revalidate
+            )
             if skipped:
-                logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
+                logger.warning(
+                    "Native image attachment: skipped %d unreadable path(s): %s",
+                    len(skipped),
+                    skipped,
+                )
             if any(p.get("type") == "image_url" for p in parts):
                 return parts
         except Exception as exc:
             logger.warning("Native image attachment failed, falling back to text: %s", exc)
+            revalidate([])
         return ctx.message
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
@@ -1693,7 +1614,16 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
+            previous_persist = ctx.persist_user_message
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            if ctx.input_snapshot is not None:
+                if persist_user_message_override == previous_persist:
+                    persist_user_message_override = ctx.persist_user_message
+                elif isinstance(persist_user_message_override, str) and previous_persist:
+                    persist_user_message_override = persist_user_message_override.replace(
+                        previous_persist, ctx.persist_user_message or "", 1,
+                    )
+                persist_user_timestamp_override = ctx.persist_user_timestamp
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.

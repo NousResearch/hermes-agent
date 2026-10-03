@@ -1552,6 +1552,29 @@ class TestApprovalTimeoutIsNotConsent:
             lambda: {"mode": "manual", "timeout": seconds},
         )
 
+    @staticmethod
+    def _answer_on_a_still_clock(monkeypatch, notify):
+        """Stop the approval clock until *notify* returns, then let it run at the real rate.
+
+        The deadline starts when the request is queued, so on a loaded machine publishing the request could use up
+        a short timeout before *notify* answers it. With the clock stopped, the answer inside *notify* always
+        arrives before the deadline, and a request that nobody answers still times out."""
+        real = time.monotonic
+        start = real()
+        resumed: list[float] = []
+
+        def clock():
+            return start + (real() - resumed[0] if resumed else 0.0)
+
+        def answer(data):
+            try:
+                notify(data)
+            finally:
+                resumed.append(real())
+
+        monkeypatch.setattr(time, "monotonic", clock)
+        return answer
+
     def test_timeout_blocks_with_no_consent_and_timeout_hook(self, monkeypatch):
         """The reported #24912 scenario — user never responds, agent must see
         BLOCKED, and the post hook must distinguish timeout from deny so audit
@@ -1717,7 +1740,7 @@ class TestApprovalTimeoutIsNotConsent:
                 self.SESSION_KEY, "once", request_id=request_id
             ) == 1
 
-        mod.register_gateway_notify(self.SESSION_KEY, notify)
+        mod.register_gateway_notify(self.SESSION_KEY, self._answer_on_a_still_clock(monkeypatch, notify))
         result = mod.check_all_command_guards("rm -rf .git", "local")
 
         assert len(notified) == 1
@@ -1740,7 +1763,7 @@ class TestApprovalTimeoutIsNotConsent:
                 self.SESSION_KEY, "deny", request_id=data["request_id"]
             ) == 1
 
-        mod.register_gateway_notify(self.SESSION_KEY, notify)
+        mod.register_gateway_notify(self.SESSION_KEY, self._answer_on_a_still_clock(monkeypatch, notify))
         result = mod.check_all_command_guards("rm -rf .git", "local")
 
         assert len(notified) == 1

@@ -92,6 +92,26 @@ def _same_chat_key_slots(
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    if TYPE_CHECKING:
+        def _typed_command_prefix_for(self, platform: Platform) -> str: ...
+
+    async def _strict_session_current(
+        self, event: MessageEvent, session_key: str, *, session_id: str | None = None,
+    ) -> bool:
+        metadata = event.metadata or {}
+        if not metadata.get("gateway_session_strict"):
+            return True
+        expected_key = str(metadata.get("gateway_session_key") or "").strip()
+        expected_id = str(metadata.get("gateway_session_id") or "").strip()
+        if not expected_key or not expected_id or session_key != expected_key:
+            return False
+        if session_id is not None and session_id != expected_id:
+            return False
+        if self._session_key_for_source(event.source) != expected_key:
+            return False
+        entry = await self.async_session_store.lookup_by_session_key(expected_key)
+        return entry is not None and entry.session_id == expected_id
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -107,6 +127,10 @@ class GatewayBusySessionMixin:
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
+        if session_key not in pending_slot:
+            earlier = self._promote_queued_event(session_key, adapter, None)
+            if earlier is not None:
+                pending_slot[session_key] = earlier
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
@@ -722,10 +746,6 @@ class GatewayBusySessionMixin:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
 
-    @property
-    def _BUSY_DEMOTED_TAIL(self) -> str:  # noqa: N802 — long-standing mixin attr name
-        return t("gateway.busy.demoted_tail")
-
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
@@ -737,6 +757,7 @@ class GatewayBusySessionMixin:
         from gateway.display_config import resolve_display_setting
 
         # Terse by default; iteration/tool detail opts in via display.platforms.<p>.busy_ack_detail.
+        prefix = self._typed_command_prefix_for(event.source.platform)
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
@@ -773,9 +794,9 @@ class GatewayBusySessionMixin:
             head, tail = t("gateway.busy.redirected_head"), t("gateway.busy.redirected_tail")
         elif is_queue_mode and demoted_for_subagents:
             # Explain the demotion: the follow-up didn't kill the subagent; /stop is the escape hatch.
-            head, tail = t("gateway.busy.subagent_working_head"), self._BUSY_DEMOTED_TAIL
+            head, tail = t("gateway.busy.subagent_working_head"), t("gateway.busy.demoted_tail", prefix=prefix)
         elif is_queue_mode and demoted_for_compression:
-            head, tail = t("gateway.busy.compressing_head"), self._BUSY_DEMOTED_TAIL
+            head, tail = t("gateway.busy.compressing_head"), t("gateway.busy.demoted_tail", prefix=prefix)
         elif is_queue_mode:
             head, tail = t("gateway.busy.queued_head"), t("gateway.busy.queued_tail")
         else:
@@ -792,7 +813,7 @@ class GatewayBusySessionMixin:
                     else "redirect" if is_redirect_mode
                     else "interrupt"
                 )
-                message = f"{message}\n\n{busy_input_hint_gateway(_hint_mode)}"
+                message = f"{message}\n\n{busy_input_hint_gateway(_hint_mode, prefix)}"
                 mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
@@ -813,6 +834,9 @@ class GatewayBusySessionMixin:
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
             return False  # base adapter queues silently behind the active turn
+
+        if not await self._strict_session_current(event, session_key):
+            return True
 
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
@@ -837,13 +861,14 @@ class GatewayBusySessionMixin:
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True
+        if not await self._strict_session_current(event, session_key):
+            return True
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
-        # Internal synthetic events (delegation / background completions) must never interrupt or
-        # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
-        # queue them through the FIFO (security metadata kept apart).
-        if getattr(event, "internal", False):
+        # Internal completions and external events that request a new turn must not interrupt or
+        # steer. Queue them through the FIFO after the normal external sender checks above.
+        if event.internal or event.defer_until_idle:
             self._queue_or_replace_pending_event(session_key, event)
             return True
         if (
@@ -976,7 +1001,7 @@ class GatewayBusySessionMixin:
                 return await getattr(self, special)(event, quick_key, source)
             reject_key = self._BUSY_REJECT_TEXT.get(handler_key)
             if reject_key is not None:
-                return t(reject_key)
+                return t(reject_key, prefix=self._typed_command_prefix_for(event.source.platform))
         if policy in ("dispatch", "interrupt_then_dispatch"):
             plain = self._gateway_plain_command_handlers().get(name)
             if plain is not None:
@@ -987,7 +1012,8 @@ class GatewayBusySessionMixin:
                 "falling back to busy-reject", policy, name,
             )
 
-        return t("gateway.busy.slash_rejected", command=name)
+        prefix = self._typed_command_prefix_for(event.source.platform)
+        return t("gateway.busy.slash_rejected", command=name, prefix=prefix)
 
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off` lifts it (the estop gate
@@ -1050,9 +1076,12 @@ class GatewayBusySessionMixin:
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
+                _quoted_media_dependencies=event._quoted_media_dependencies,
+                _inbound_context_dependencies=event._inbound_context_dependencies,
                 reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
+                reply_to_author_authorized=event.reply_to_author_authorized,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
@@ -1105,14 +1134,14 @@ class GatewayBusySessionMixin:
 
         if is_goal_control(event.get_command_args() or ""):
             return await self._handle_goal_command(event)
-        return t("gateway.busy.reject_goal")
+        return t("gateway.busy.reject_goal", prefix=self._typed_command_prefix_for(event.source.platform))
 
     async def _busy_loop_command(self, event: MessageEvent, quick_key: str, source):
         # Mirrors /goal: control verbs are safe mid-run; a new loop is rejected.
         _loop_arg = (event.get_command_args() or "").strip().lower()
         if not _loop_arg or _loop_arg in {"status", "pause", "resume", "stop", "clear", "cancel", "help", "--help", "-h"}:
             return await self._handle_loop_command(event)
-        return t("gateway.busy.reject_loop")
+        return t("gateway.busy.reject_loop", prefix=self._typed_command_prefix_for(event.source.platform))
 
     def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths

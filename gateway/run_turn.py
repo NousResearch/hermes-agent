@@ -25,12 +25,14 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.inbound_context import PreparedInboundMessage
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
+from gateway.run_inbound_turn_context import channel_state_metadata
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
-    SessionSource, _session_key_namespace, build_channel_continuity_note,
+    SessionContext, SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
@@ -41,8 +43,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
-if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
+if TYPE_CHECKING:  # Never import the runner at runtime (cycle).
+    from gateway.run import GatewayRunner
     from gateway.run_turn_runner import TurnRunner  # noqa: F401
 
 # Log-record parity with the origin module.
@@ -167,6 +169,11 @@ def hygiene_no_commit_reason(agent) -> str:
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
+
+    if TYPE_CHECKING:
+        _delivery_adapter_for = GatewayRunner._delivery_adapter_for
+        _session_state = GatewayRunner._session_state
+        _session_env_scope = GatewayRunner._session_env_scope
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -1756,7 +1763,7 @@ class GatewayTurnMixin:
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
     async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+        self, agent_result, response, session_entry, session_key, source, *, internal: bool,
     ):
         """Auto-reset a permanently oversized session so the next message starts fresh instead of
         replaying the oversized context forever. Never on a lock-contended defer — that is the
@@ -1774,7 +1781,11 @@ class GatewayTurnMixin:
             )
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
+            # An internal event's source has routing fields only, so its empty chat and user names
+            # must not replace the origin's.
+            new_entry = await self.async_session_store.reset_session(
+                session_key, source=None if internal else source,
+            )
             self._evict_cached_agent(session_key)
             # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
@@ -1813,8 +1824,11 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        display_metadata = channel_state_metadata(event)
         if prepared.persistence_owner:
-            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+            display_metadata["gateway_input_owner"] = prepared.persistence_owner
+        if display_metadata:
+            _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2064,7 +2078,8 @@ class GatewayTurnMixin:
         if event.internal and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            self._prompt_session_context(context, session_entry), _redact_pii, session_key,
+            internal=event.internal,
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2204,11 +2219,16 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner,
+                    "gateway_input_owner": prepared.persistence_owner, **channel_state_metadata(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                input_snapshot=getattr(event, "_prepared_inbound", None),
             )
+            if getattr(event, "_prepared_inbound", None) is not None:
+                prepared.message_text = event._prepared_inbound.message_text
+                prepared.persist_user_message = event._prepared_inbound.persist_user_message
+                prepared.persist_user_timestamp = event._prepared_inbound.persist_user_timestamp
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -2249,7 +2269,7 @@ class GatewayTurnMixin:
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
-                agent_result, response, session_entry, session_key, source,
+                agent_result, response, session_entry, session_key, source, internal=event.internal,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -2753,6 +2773,7 @@ class GatewayTurnMixin:
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
+        input_snapshot: Optional[PreparedInboundMessage] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2851,6 +2872,10 @@ class GatewayTurnMixin:
             # (DNS fail, firewall, remote down) fails fast instead of hanging on the OS default.
             _timeout = ClientTimeout(total=0, sock_read=1800, sock_connect=30)
             async with _AioClientSession(timeout=_timeout) as session:
+                if input_snapshot is not None:
+                    await input_snapshot.snapshot.refresh()
+                    message = input_snapshot.render(self, timestamps=True)
+                    api_messages[-1]["content"] = message
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
@@ -3639,10 +3664,26 @@ class GatewayTurnMixin:
         pending_event = None
         pending = None
         if result and adapter and session_key:
-            pending_event = _dequeue_pending_event(adapter, session_key)
+            live_adapter = self._delivery_adapter_for(source)
+            if (live_adapter is not None and live_adapter is not adapter
+                    and isinstance(getattr(live_adapter, "_pending_messages", None), dict)):
+                earlier = _dequeue_pending_event(adapter, session_key)
+                if earlier is not None:
+                    newer = _dequeue_pending_event(live_adapter, session_key)
+                    if newer is not None:
+                        self._session_state(session_key).conversation.queued_events.insert(0, newer)
+                    pending_event = earlier
+                adapter = live_adapter
+            if pending_event is None:
+                pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            while pending_event is not None and not await self._strict_session_current(
+                pending_event, session_key,
+            ):
+                pending_event = _dequeue_pending_event(adapter, session_key)
+                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):
@@ -3799,6 +3840,9 @@ class GatewayTurnMixin:
                 # the completion send stays the fallback so the user is not left with nothing.
                 if _text_delivered and isinstance(result, dict):
                     result["already_sent"] = True
+                    if _already_streamed:
+                        await self._run_agent_notify_streamed_final_delivery(
+                            adapter, turn_ctx.source, session_key, _sc, first_response)
                     # The queued lane already uploaded this response's MEDIA: attachments; without
                     # this the completion path's already_sent rescan uploads every file twice.
                     result["media_already_delivered"] = _deliver_media
@@ -3847,6 +3891,11 @@ class GatewayTurnMixin:
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+
+        if pending_event is not None and not await self._strict_session_current(
+            pending_event, session_key, session_id=session_id,
+        ):
+            return result
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
@@ -3937,18 +3986,35 @@ class GatewayTurnMixin:
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
 
-            followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-                source=next_source, session_id=session_id, session_key=next_session_key,
-                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_message=next_persist_message,
-                persist_user_display_kind=next_display_kind,
-                reply_expected=next_reply_expected,
-                persist_user_display_metadata={
-                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+            if pending_event is not None and not await self._strict_session_current(
+                pending_event, next_session_key, session_id=session_id,
+            ):
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.CANCELLED,
+                )
+                return result
+
+            from gateway.session_identity import replace_source
+            tool_context = SessionContext(
+                source=replace_source(next_source, message_id=next_inbound_id),
+                connected_platforms=[], home_channels={},
+                session_key=next_session_key or "", session_id=session_id or "",
             )
+            with self._session_env_scope(tool_context):
+                followup_result = await self._run_agent(
+                    message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                    source=next_source, session_id=session_id, session_key=next_session_key,
+                    run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                    event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                    channel_prompt=next_channel_prompt, message_type=next_message_type,
+                    persist_user_message=next_persist_message,
+                    persist_user_display_kind=next_display_kind,
+                    reply_expected=next_reply_expected,
+                    input_snapshot=getattr(pending_event, "_prepared_inbound", None),
+                    persist_user_display_metadata={
+                        **channel_state_metadata(pending_event),
+                        **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
@@ -4129,6 +4195,17 @@ class GatewayTurnMixin:
                 "possible duplicate send (see wecom ack-timeout RCA).",
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
+        if response.get("already_sent") and _sc is not None:
+            await self._run_agent_notify_streamed_final_delivery(
+                getattr(_sc, "adapter", None), source, session_key, _sc, _final)
+
+    @staticmethod
+    async def _run_agent_notify_streamed_final_delivery(adapter, source, session_key, consumer, final_text) -> None:
+        callback = getattr(adapter, "on_streamed_final_delivery", None)
+        if callable(callback):
+            result = callback(source, session_key, getattr(consumer, "final_message_ids", ()), final_text)
+            if inspect.isawaitable(result):
+                await result
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.
@@ -4275,20 +4352,28 @@ class GatewayTurnMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        input_snapshot: Optional[PreparedInboundMessage] = None,
         title_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
+        if input_snapshot is not None:
+            await input_snapshot.snapshot.refresh()
+            message = input_snapshot.render(self, timestamps=True)
+            persist_user_message = input_snapshot.persist_user_message
+            persist_user_timestamp = input_snapshot.persist_user_timestamp
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                input_snapshot=input_snapshot,
             )
 
         from run_agent import AIAgent
 
+        queue_adapter = self._delivery_adapter_for(source)
         disp = self._run_agent_display_settings(source)
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
@@ -4315,6 +4400,7 @@ class GatewayTurnMixin:
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
+            input_snapshot=input_snapshot,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
@@ -4354,7 +4440,7 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            pending_event, pending = await self._run_agent_drain_pending(result, queue_adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

@@ -33,6 +33,12 @@ def register_timeout_notice(
     """
     from tools.approval import register_gateway_settle
 
+    # The core keeps one settle hook per request. A card that manages its own lifecycle has
+    # already registered one, and registering this notice would replace it.
+    adapter = getattr(runner._ctx, "_status_adapter", None)
+    if card_message_id and getattr(type(adapter), "manages_exec_approval_lifecycle", False):
+        return
+
     request_id = approval_data.get("request_id")
     session_key = runner._ctx.session_key or ""
     if not request_id or not session_key:

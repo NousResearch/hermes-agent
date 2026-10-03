@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from gateway.config import Platform
+from gateway.session import SessionSource
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 
@@ -55,7 +57,7 @@ def _make_runner(agent):
     return runner
 
 class _Event:
-    source = object()  # any non-None sentinel
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
 
     def __init__(self, args=""):
         self._args = args

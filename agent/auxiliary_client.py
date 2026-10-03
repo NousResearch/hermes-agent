@@ -4682,16 +4682,46 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
     return None, None, ""
 
 
+def _try_explicit_auxiliary_override(task: Optional[str]) -> Optional[Tuple[Any, str, str]]:
+    """Step 0: an explicit ``auxiliary.<task>.provider`` beats a healthy main model.
+
+    ``auto`` and an empty provider keep the old meaning (use the main model).
+    A named provider that cannot build a client returns None so the chain
+    continues. See #125707.
+    """
+    if not task:
+        return None
+    cfg = _get_auxiliary_task_config(task)
+    provider = str(cfg.get("provider") or "").strip()
+    if not provider or provider.lower() == "auto":
+        return None
+    model = str(cfg.get("model") or "").strip() or None
+    base_url = str(cfg.get("base_url") or "").strip() or None
+    api_key = cfg.get("api_key") or None
+    api_mode = str(cfg.get("api_mode") or "").strip() or None
+    client, resolved_model = resolve_provider_client(
+        provider, model, explicit_base_url=base_url, explicit_api_key=api_key,
+        api_mode=api_mode, task=task,
+    )
+    if client is None or not resolved_model:
+        return None
+    return client, resolved_model, _effective_provider_for_client(client, provider)
+
+
 def _resolve_auto_route(
     main_runtime: Optional[Dict[str, Any]] = None, task: Optional[str] = None
 ) -> Tuple[Optional[OpenAI], Optional[str], str]:
-    """Full auto-detection chain, including the selected provider identity. Priority: (1) main provider +
+    """Full auto-detection chain, including the selected provider identity. Priority: (0) explicit
+    ``auxiliary.<task>.provider`` when it is set and not ``auto``; (1) main provider +
     main model, regardless of provider type ("auto" means "my main model for side tasks too"; explicit
     per-task overrides still win); (2) configured fallback policy — task chain, then the main agent's
     top-level chain; (3) OpenRouter → Nous → custom → Codex → API-key providers, only with no policy
     and no working main client."""
     global auxiliary_is_nous
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+    explicit = _try_explicit_auxiliary_override(task)
+    if explicit is not None:
+        return explicit
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)

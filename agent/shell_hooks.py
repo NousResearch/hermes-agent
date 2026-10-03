@@ -569,13 +569,37 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
+def _stdin_can_answer() -> bool:
+    """True only when a human can actually answer the consent prompt.
+
+    ``isatty()`` alone is not enough: a gateway launched by a generated service (systemd, launchd,
+    s6, or a Windows Scheduled Task through a console-attached wrapper) holds a console handle, so
+    ``isatty()`` is True with nobody to read it. The process then blocks in ``input()`` until the
+    startup watchdog kills it and the supervisor restarts it into the same block — the platform
+    stays dead indefinitely (#127822). A supervised launch is non-interactive by construction.
+    """
+    try:
+        from gateway.restart import is_supervised_gateway_launch
+
+        if is_supervised_gateway_launch():
+            return False
+    except Exception:  # marker probe unavailable — fall back to the tty test
+        logger.debug("supervised-launch probe failed; falling back to the tty test", exc_info=True)
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
 def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
     """Approve an unseen ``(event, command)`` pair; True iff granted and recorded."""
     if accept_hooks:
         _record_approval(event, command)
         logger.info("shell hook auto-approved via --accept-hooks / env / config: %s -> %s", event, command)
         return True
-    if not sys.stdin.isatty():
+    if not _stdin_can_answer():
+        logger.info("shell hook consent prompt skipped — no interactive stdin (supervised/detached "
+                    "launch): %s -> %s", event, command)
         return False
     print(
         f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"

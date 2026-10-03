@@ -348,13 +348,14 @@ def _device_pool_view() -> "tuple[int, bool | None] | None":
 _accelerator_cache: "dict[str, tuple[float, dict | None]]" = {}
 
 
-def _accelerator_device() -> "dict | None":
+def _accelerator_device(*, fresh: bool = False) -> "dict | None":
     """The device a Vulkan/HIP engine will place layers on, or None (no such engine, probe miss).
 
     Mirrors llama.cpp's own placement: discrete devices whenever one exists, an integrated one only
     otherwise; among discrete devices the largest. Cached per engine binary like
     ``_device_pool_view`` (a hit lasts the process, a miss retries after the TTL): the hardware
-    endpoint polls this every few seconds and each probe initializes the GPU driver.
+    endpoint polls this every few seconds and each probe initializes the GPU driver. ``fresh`` skips
+    the cache read for a launch-time free-memory answer.
     """
     with suppress(Exception):  # a probe miss must never block budgeting
         from hermes_cli.local_runtime.devices import probe_devices
@@ -364,7 +365,7 @@ def _accelerator_device() -> "dict | None":
             return None
         key, now = str(engine.binary), time.monotonic()
         cached = _accelerator_cache.get(key)
-        if cached is not None and (cached[1] is not None or now - cached[0] < _POOL_NEGATIVE_TTL_S):
+        if not fresh and cached is not None and (cached[1] is not None or now - cached[0] < _POOL_NEGATIVE_TTL_S):
             return cached[1]
         devices = probe_devices(engine.binary.parent, engine.backend)
         device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
@@ -437,7 +438,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         device = _accelerator_device()
         if device is not None and device["type"] == GGML_DEVICE_GPU:
             # Discrete AMD/Intel card behind a Vulkan/HIP engine: its own memory, with system RAM
-            # as spill. Capacity serves the live view too; no per-poll free query exists here.
+            # as spill. Capacity serves the polled live view; launch_budget reads free memory.
             total = device["total"]
             margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
             return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
@@ -471,9 +472,14 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
     if capacity.uma:
         return None
     vram = _nvidia_vram()
-    if vram is None:
-        return None
-    total, free, _name, _pci_id = vram
+    if vram is not None:
+        total, free = vram[0], vram[1]
+    else:
+        # A discrete card behind Vulkan/HIP: the driver's free count includes other programs.
+        device = _accelerator_device(fresh=True)
+        if device is None or device["type"] != GGML_DEVICE_GPU:
+            return None
+        total, free = device["total"], device["free"]
     others = max(0, total - free - max(0, own_bytes))
     usable = min(capacity.usable_vram_bytes, max(0, total - others - _LAUNCH_HEADROOM))
     return replace(capacity, usable_vram_bytes=usable)

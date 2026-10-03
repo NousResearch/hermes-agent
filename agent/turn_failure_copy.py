@@ -199,10 +199,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "with /model."
     ),
     FailoverReason.provider_policy_blocked.value: (
-        "{label} refused this request because of a policy on your account (its data/privacy "
-        "settings, or a block the model's upstream provider placed on the account), so the model "
-        "didn't answer and retrying won't help. Check the account with the provider, or switch "
-        "models with /model."
+        "{label} refused this request because of a policy (the account's data/privacy "
+        "settings, a block placed on the account, or a rule a gateway in front of the "
+        "endpoint enforced on this request), so the model didn't answer and retrying won't "
+        "help. Check the account or gateway policy, or switch models with /model."
     ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
@@ -247,7 +247,7 @@ FAILURE_CAUSE_GLOSS: Dict[str, str] = {
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
-        "the AI model service refused the request because of a policy on the account"
+        "the AI model service refused the request because of a policy"
     ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",

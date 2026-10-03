@@ -480,16 +480,17 @@ class SessionManager:
         base_url = meta.get("base_url") or row.get("billing_base_url")
         if str(provider or "").strip().lower() == "custom":
             # A named custom provider resolves to the bare "custom" label, which carries no
-            # credentials of its own; recover ``custom:<name>`` from the endpoint or model.
+            # credentials of its own; recover ``custom:<name>``. A saved endpoint heals only to the
+            # entry registered at that endpoint, so the resumed conversation and its credentials
+            # never move elsewhere; without one, fall back to the model or configured provider.
             try:
-                from hermes_cli.runtime_provider import canonical_custom_identity
-                healed = canonical_custom_identity(base_url=base_url or None, model=model)
+                from hermes_cli.runtime_provider import canonical_custom_identity, find_custom_provider_identity
+                healed = (find_custom_provider_identity(base_url) if base_url
+                          else canonical_custom_identity(model=model))
             except Exception:
                 logger.debug("custom provider identity recovery failed", exc_info=True)
                 healed = None
-            if healed:
-                # The healed identity owns a registered endpoint; the snapshot URL must not override it.
-                provider, base_url = healed, None
+            provider = healed or provider
 
         try:
             agent = self._make_agent(

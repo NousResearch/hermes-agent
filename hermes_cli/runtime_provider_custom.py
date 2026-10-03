@@ -31,7 +31,15 @@ def _normalize_custom_provider_name(value: str) -> str:
 
 
 def _normalize_base_url_for_match(value) -> str:
-    return str(value or "").strip().rstrip("/").lower()
+    """Endpoint identity key. Scheme and host compare case-insensitively; path and query keep
+    their case, since ``/TenantA/v1`` and ``/tenanta/v1`` may be distinct entries with distinct
+    credentials. A trailing slash is ignored."""
+    text = str(value or "").strip().rstrip("/")
+    scheme, sep, rest = text.partition("://")
+    prefix, rest = (scheme.lower() + sep, rest) if sep else ("", text)
+    cut = min((i for i in map(rest.find, "/?#") if i >= 0), default=len(rest))
+    userinfo, at, hostport = rest[:cut].rpartition("@")
+    return prefix + userinfo + at + hostport.lower() + rest[cut:]
 
 
 def _clean(value: Any) -> str:

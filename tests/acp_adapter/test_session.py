@@ -427,15 +427,28 @@ class TestPersistence:
 
 
 
-    @pytest.mark.parametrize("model_config, billing", [
+    _CLIPROXY = ("custom", "http://cliproxy.example:8317/v1", "sk-cliproxy-test")
+
+    @pytest.mark.parametrize("model_config, billing, env, expected", [
         ({"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
-          "api_mode": "chat_completions"}, {}),
-        ({"cwd": "/work"}, {"billing_provider": "custom", "billing_base_url": "http://cliproxy.example:8317/v1"}),
-    ], ids=["model_config", "billing_only"])
-    def test_restore_heals_bare_custom_to_named_provider(self, tmp_path, monkeypatch, model_config, billing):
+          "api_mode": "chat_completions"}, {}, {}, _CLIPROXY),
+        ({"cwd": "/work"}, {"billing_provider": "custom", "billing_base_url": "http://cliproxy.example:8317/v1"},
+         {}, _CLIPROXY),
+        # Endpoint paths are case-sensitive: tenant-b's session must not pick up tenant-a's key.
+        ({"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/tenanta/v1"}, {}, {},
+         ("custom", "https://proxy.example/tenanta/v1", "sk-tenant-b")),
+        # No entry owns the saved endpoint: the model match must not move the conversation (and the
+        # cliproxyapi key) to another endpoint. Resolution fails as before and the agent gets nothing.
+        ({"cwd": "/work", "provider": "custom", "base_url": "http://retired.example:9000/v1"}, {}, {},
+         (None, None, None)),
+        # Only the bare label heals; a real provider passes through even when the model is a custom entry's.
+        ({"cwd": "/work", "provider": "openrouter"}, {}, {"OPENROUTER_API_KEY": "sk-or-test"},
+         ("openrouter", "https://openrouter.ai/api/v1", "sk-or-test")),
+    ], ids=["model_config", "billing_only", "case_distinct_endpoint", "unmatched_endpoint", "openrouter"])
+    def test_restore_resolves_stored_provider(self, tmp_path, monkeypatch, model_config, billing, env, expected):
         """A row whose stored provider is the bare ``custom`` label (what a named custom provider
-        resolves to at runtime) must restore through that named entry, not fail credential
-        resolution and fall back to OpenRouter with no key."""
+        resolves to at runtime) must restore through the named entry registered at its saved endpoint,
+        not fail credential resolution and fall back to OpenRouter with no key."""
         from hermes_constants import get_hermes_home
 
         (get_hermes_home() / "config.yaml").write_text(
@@ -450,7 +463,15 @@ class TestPersistence:
             "    api_key: sk-cliproxy-test\n"
             "    api_mode: chat_completions\n"
             "    models: [proxy-model]\n"
+            "  tenant-a:\n"
+            "    base_url: https://proxy.example/TenantA/v1\n"
+            "    api_key: sk-tenant-a\n"
+            "  tenant-b:\n"
+            "    base_url: https://proxy.example/tenanta/v1\n"
+            "    api_key: sk-tenant-b\n"
         )
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -468,8 +489,7 @@ class TestPersistence:
 
         assert restored is not None
         kwargs = restored.agent.kwargs
-        assert (kwargs.get("provider"), kwargs.get("base_url"), kwargs.get("api_key")) == (
-            "custom", "http://cliproxy.example:8317/v1", "sk-cliproxy-test")
+        assert (kwargs.get("provider"), kwargs.get("base_url"), kwargs.get("api_key")) == expected
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

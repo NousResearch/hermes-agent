@@ -74,8 +74,60 @@ def test_resume_waits_for_a_whole_tree(tmp_path):
     marker.unlink()
 
     _git(root, "commit", "-qam", "v2")  # HEAD moved: only a dependency sync for it makes it whole
+    (root / "b.py").write_text("rewritten by a build step\n", encoding="utf-8")
     whole, why = pause_record.tree_is_whole(token, root)
-    assert not whole and "dependencies" in why
+    # A committed update is judged on its dependencies alone; a tracked file the build rewrote
+    # must not keep the gateways stopped on every later launch.
+    assert not whole and "dependencies" in why, why
+
+
+def _orphan(tmp_path: Path, profiles: dict) -> None:
+    """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
+    owner = _child("""
+        import time
+        from hermes_cli import update_pause_record as r
+        r.write(r.stamp_tree({"resume_needed": True, "profiles": %r}), owner=r.identity())
+        print("written", flush=True)
+        time.sleep(120)
+    """ % profiles, env={"HERMES_HOME": str(tmp_path)})
+    assert owner.stdout.readline().strip() == "written"
+    owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
+    owner.wait(timeout=10)
+
+
+# The Windows resume cannot run here: the stand-in for it prints the set it was handed and
+# (mode "hang") parks like a resume waiting on relaunch verification.
+_RECOVER = """
+    import sys, time
+    import hermes_cli.update_cmd_windows as w
+    def resume(token):
+        print("resume", sorted(token.get("profiles") or {}), flush=True)
+        if sys.argv[1] == "hang":
+            time.sleep(120)
+        token["resume_needed"] = False
+    w._resume_windows_gateways_after_update = resume
+    from hermes_cli import update_pause_record as r
+    r.recover(["status"])
+    print("done", flush=True)
+"""
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_launch_killed_mid_recovery_leaves_the_set_to_the_next_launch(tmp_path):
+    _orphan(tmp_path, {"default": 4242})
+    env = {"HERMES_HOME": str(tmp_path)}
+    first = _child(_RECOVER, "hang", env=env)
+    try:
+        assert first.stdout.readline().strip() == "resume ['default']"
+    finally:
+        first.send_signal(signal.SIGKILL)  # windows-footgun: ok — taskkill / console close mid-resume
+        first.wait(timeout=10)
+    second = _child(_RECOVER, "ok", env=env)
+    out, _ = second.communicate(timeout=60)
+    assert out.splitlines()[:1] == ["resume ['default']"], out
+    third = _child(_RECOVER, "ok", env=env)
+    out, _ = third.communicate(timeout=60)
+    assert out.strip() == "done", f"a resumed set was resumed again: {out}"
 
 
 _HOLDER = """
@@ -83,7 +135,7 @@ _HOLDER = """
     from hermes_cli.update_lock import UpdateLock
     lock = UpdateLock()
     assert lock.acquire() and lock.acquired
-    host = subprocess.Popen([sys.executable, sys.argv[1], "hermes_cli.main", *sys.argv[2:]], stdout=subprocess.PIPE, text=True)
+    host = subprocess.Popen([sys.executable, *sys.argv[1:]], stdout=subprocess.PIPE, text=True)
     print(host.stdout.read().strip(), flush=True)
     host.wait()
 """
@@ -98,7 +150,13 @@ print(subprocess.run([sys.executable, "-c", probe], capture_output=True, text=Tr
 
 # The intermediate is a stand-in script, not a real gateway/update: nothing touches the checkout.
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.parametrize("host_argv, adopts", [(("gateway", "run"), False), (("status",), True)])
+@pytest.mark.parametrize("host_argv, adopts", [
+    (("hermes_cli.main", "gateway", "run"), False),
+    (("hermes_cli.main", "--profile", "work", "gateway", "run"), False),
+    (("/opt/hermes/hermes_cli/main.py", "-p", "work", "gateway", "run"), False),
+    (("-m", "hermes_cli.main", "--profile", "work", "dashboard"), False),
+    (("hermes_cli.main", "status"), True),
+])
 def test_update_started_from_a_relaunched_gateway_does_not_share_the_claim(tmp_path, host_argv, adopts):
     script = tmp_path / "host.py"
     script.write_text(_HOST, encoding="utf-8")

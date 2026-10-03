@@ -314,7 +314,7 @@
     },
     {
       "name": "browser.manage",
-      "summary": "Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.",
+      "summary": "Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect.",
       "params": [
         {
           "name": "params",
@@ -7120,7 +7120,8 @@
         "enum": [
           "status",
           "connect",
-          "disconnect"
+          "disconnect",
+          "use"
         ],
         "title": "BrowserAction",
         "type": "string"
@@ -7397,6 +7398,18 @@
             "default": null,
             "title": "Url"
           },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -7458,6 +7471,18 @@
             ],
             "default": null,
             "title": "Messages"
+          },
+          "browser_use": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Use"
           }
         },
         "required": [
@@ -7907,6 +7932,21 @@
             ],
             "default": null,
             "title": "Desktop"
+          },
+          "desktop_subcommands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Subcommands"
           }
         },
         "title": "CommandCatalogMeta",
@@ -23291,6 +23331,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -23592,6 +23644,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -28610,6 +28674,18 @@
             ],
             "default": null,
             "title": "Count"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28719,6 +28795,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28790,6 +28878,18 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -29680,6 +29780,18 @@
             "default": false,
             "title": "Follow Profile Config",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "title": "SessionCreateParams",
@@ -30594,6 +30706,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           },
           "source": {
             "default": "",

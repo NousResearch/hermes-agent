@@ -329,7 +329,9 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, is_internal: bool
     ) -> Optional[str]:
         """Global emergency-stop (`hermes pause`) notice when this turn must be blocked, else None.
-        Placed after auth so unauthorized senders can't probe pause state."""
+        Placed after auth so unauthorized senders can't probe pause state. A synthetic heartbeat that
+        slipped past the poller's pause check gets "" (blocked, nothing sent): nobody typed it, and
+        settle_heartbeat_attempt leaves its tick due for after resume."""
         if is_internal:
             return None
         try:
@@ -339,6 +341,9 @@ class GatewayInboundMixin:
         _paused_notice = _estop_paused_reply()
         if _paused_notice is None or self._hm_estop_turn_allowed(event, source):
             return None
+        if getattr(event, "_heartbeat_session_id", None):
+            logger.debug("Heartbeat turn dropped by global emergency stop")
+            return ""
         logger.info(
             "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
             getattr(getattr(source, "platform", None), "value", "unknown"),
@@ -941,7 +946,13 @@ class GatewayInboundMixin:
         from hermes_cli.init_command import build_init_prompt_for_cwd
 
         try:
-            _init_prompt = build_init_prompt_for_cwd(extra=event.get_command_args().strip())
+            # The SESSION's active directory, not this process's launch dir: the desktop app
+            # launches the backend from the home directory, so a bare os.getcwd() scanned and
+            # updated the HOME's AGENTS.md instead of the workspace attached to the session.
+            _init_prompt = build_init_prompt_for_cwd(
+                extra=event.get_command_args().strip(),
+                session_key=_quick_key or self._session_key_for_source(source),
+            )
         except Exception:
             return True, t("gateway.init.start_failed")
         _ack = (

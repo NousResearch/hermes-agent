@@ -1866,6 +1866,9 @@ def cmd_chat(args):
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
+    from hermes_cli.observability.shared_metrics_consent import offer_consent_before_chat
+
+    offer_consent_before_chat(args)
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
@@ -2359,14 +2362,14 @@ def cmd_uninstall(args):
         return
 
     if getattr(args, "gui", False):
-        if not getattr(args, "yes", False):
+        if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
             _require_tty("uninstall --gui")
         from hermes_cli.uninstall import run_gui_uninstall
 
         run_gui_uninstall(args)
         return
 
-    if not getattr(args, "yes", False):
+    if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
         _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 

@@ -379,6 +379,87 @@ def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path)
     assert json.loads(result.stdout) == [["arg with spaces"], True, 1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-shim launchers need exec")
+def test_relaunch_execs_shell_shim_directly(tmp_path):
+    import shlex
+    probe = tmp_path / "probe.py"
+    probe.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    shim = tmp_path / "hermes"
+    shim.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(probe)]) + " " + chr(34) + chr(36) + chr(64) + chr(34) + "\n")
+    shim.chmod(0o755)
+    original = [sys.executable, str(shim), "arg with spaces"]
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), tmp_path, [str(shim), "arg with spaces"], original, None
+    )
+    assert command[0] == str(shim), command
+    assert "runpy" not in " ".join(command), command
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["arg with spaces"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-shim launchers need exec")
+def test_relaunch_routes_bom_prefixed_shell_shim_to_direct_exec(tmp_path):
+    import codecs
+    import shlex
+    probe = tmp_path / "probe.py"
+    probe.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    shim = tmp_path / "hermes"
+    shim.write_bytes(
+        codecs.BOM_UTF8 + b"#!/bin/sh\nexec "
+        + shlex.join([sys.executable, str(probe)]).encode() + b' "$@"\n'
+    )
+    shim.chmod(0o755)
+    # Without a BOM strip the classifier misses the shebang and runpy parses shell.
+    assert venv_sync._is_python_launcher(shim) is False
+    original = [sys.executable, str(shim), "arg with spaces"]
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), tmp_path, [str(shim), "arg with spaces"], original, None
+    )
+    assert command[0] == str(shim), command
+    assert "runpy" not in " ".join(command), command
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bootstrap execs the relaunch command itself")
+def test_bootstrap_execs_shell_shim_command_itself(tmp_path, monkeypatch):
+    """Pin the hermes_bootstrap execv switch through the real relaunch_command.
+
+    Goes red if the bootstrap hunk is reverted while relaunch_command still
+    returns the direct-exec shape: execv would target the sync interpreter.
+    """
+    import shlex
+    probe = tmp_path / "probe.py"
+    probe.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    shim = tmp_path / "hermes"
+    shim.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(probe)]) + ' "$@"\n')
+    shim.chmod(0o755)
+    monkeypatch.setattr(venv_sync, "prepare_launch", lambda root, argv: Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", [str(shim), "arg with spaces"])
+    # A shim launch runs a script by path, so __main__.__spec__ is None;
+    # without this the ambient pytest spec takes the run_module branch.
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", None, raising=False)
+    execed: dict = {}
+
+    # BaseException: the bootstrap degrade handler swallows Exception siblings.
+    class _ExecCalled(BaseException):
+        pass
+
+    def _capture_execv(path, argv):
+        execed["path"] = path
+        execed["argv"] = argv
+        raise _ExecCalled
+
+    monkeypatch.setattr(os, "execv", _capture_execv)
+    bootstrap = Path(venv_sync.__file__).resolve().parent.parent / "hermes_bootstrap.py"
+    # exec, not runpy.run_path: run_path rewrites sys.argv[0] to the
+    # bootstrap path, which would hide the shim under test.
+    namespace = {"__file__": str(bootstrap), "__name__": "hermes_bootstrap_relaunch_probe"}
+    with pytest.raises(_ExecCalled):
+        exec(compile(bootstrap.read_text(), str(bootstrap), "exec"), namespace)
+    assert execed["path"] == str(shim), execed
+    assert execed["argv"][0] == str(shim), execed
+
+
 def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     import pm
     root = tmp_path / "checkout"

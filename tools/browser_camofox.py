@@ -127,17 +127,17 @@ def check_camofox_available() -> bool:
     if not url:
         return False
     try:
-        resp = requests.get(f"{url}/health", timeout=5)
+        with requests.get(f"{url}/health", timeout=5) as resp:
+            if resp.status_code == 200:
+                if get_hermes_home_override() is not None:
+                    if url not in _vnc_url_by_camofox_url:
+                        _vnc_url_by_camofox_url[url] = _vnc_url_from_health(url, resp)
+                elif not _vnc_url_checked:
+                    _vnc_url = _vnc_url_from_health(url, resp) or _vnc_url
+                    _vnc_url_checked = True
+            return resp.status_code == 200
     except Exception:
         return False
-    if resp.status_code == 200:
-        if get_hermes_home_override() is not None:
-            if url not in _vnc_url_by_camofox_url:
-                _vnc_url_by_camofox_url[url] = _vnc_url_from_health(url, resp)
-        elif not _vnc_url_checked:
-            _vnc_url = _vnc_url_from_health(url, resp) or _vnc_url
-            _vnc_url_checked = True
-    return resp.status_code == 200
 
 
 def get_vnc_url() -> Optional[str]:

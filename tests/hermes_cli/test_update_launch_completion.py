@@ -194,6 +194,46 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     assert len(completion_tail) == 3, "a finished tail was run again"
 
 
+def test_plugin_update_syncs_runtime_without_building_products(tmp_path, monkeypatch, completion_tail):
+    """Plugin maintenance can run after a runtime change while product completion stays owed."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    desktop = root / "apps" / "desktop" / "dist"
+    desktop.mkdir(parents=True)
+    (desktop / "index.html").write_text("desktop installed")
+    current = False
+    syncs = []
+    launches = []
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: current)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda _: launches.append(True))
+
+    def sync(*args, **kwargs):
+        nonlocal current
+        syncs.append((args, kwargs))
+        current = True
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    command = ["--profile", "work", "plugins", "update", "hindsight"]
+    assert venv_sync.prepare_launch(root, command) == Path(sys.executable)
+    assert len(syncs) == 1
+    assert launches == [True]
+    assert completion_tail == []
+    assert venv_sync.completion_pending_path(root).is_file()
+
+    # The relaunched plugin command uses the current interpreter without a
+    # second sync or a Desktop tail. A later product launch still repays it.
+    assert venv_sync.prepare_launch(root, command) is None
+    assert len(syncs) == 1 and completion_tail == []
+    assert venv_sync.completion_pending_path(root).is_file()
+    assert venv_sync.prepare_launch(root, ["chat"]) is None
+    assert len(completion_tail) == 1
+    assert "--desktop" in completion_tail[0]
+    assert not venv_sync.completion_pending_path(root).exists()
+
+
 @pytest.mark.parametrize("script", ["source_completion.py", "update_completion.py"])
 def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkeypatch, completion_tail, script):
     """Maintenance imports the CLI while its own completion marker is still present."""

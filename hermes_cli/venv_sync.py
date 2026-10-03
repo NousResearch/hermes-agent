@@ -359,7 +359,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    if (command_argv(argv)[:1] == ["pm"]
+    command = command_argv(argv)
+    if (command[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists()
@@ -380,9 +381,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
+    # Plugin management needs the selected Python and current PM dependencies,
+    # but it must not turn an ordinary plugin operation into a product build.
+    # Keep the completion marker for the next product launch or explicit update.
+    defer_completion = command[:1] == ["plugins"]
     owed_to_cli = current and pending.is_file() and _supervised_child()
     _may_retry, _attempts, _backoff = completion_retry_state(root)
-    if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+    if not defer_completion and not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
         # The tail has failed often enough that every relaunch re-running it
         # does more harm than good (#122206: "every launch burns ~4 minutes").
         # Leave the marker for an explicit `hermes update`; say so once.
@@ -391,11 +396,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
             f"({_attempts} attempts); run `hermes update` from a shell to finish it",
             file=sys.stderr, flush=True,
         )
-    elif not _may_retry:
+    elif not defer_completion and not _may_retry:
         # Backoff window not yet elapsed: skip this launch's retry without
         # noise (the record's age tracks the wait), leaving the marker armed.
         pass
-    elif not owed_to_cli and (not current or pending.is_file()):
+    elif not owed_to_cli and (not current or (pending.is_file() and not defer_completion)):
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
@@ -413,7 +418,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                     # Relaunching would land back here and sync again, forever.
                     raise RuntimeError("dependency sync left this install out of date")
             else:
-                _finish_source_update(root, current=current, pending=pending)
+                _finish_source_update(root, current=current, pending=pending,
+                                      defer_completion=defer_completion)
         finally:
             lock.release()
     python = resolve_store_python(root)
@@ -436,8 +442,9 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
-def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
-    """Sync dependencies when they are stale, then run the tail the marker still owes."""
+def _finish_source_update(root: Path, *, current: bool, pending: Path,
+                          defer_completion: bool = False) -> None:
+    """Sync stale dependencies; run the owed tail unless this is plugin maintenance."""
     import sys
     from hermes_cli._early_recovery import _marker_owner_is_live
     from pm.environments import activation_environment
@@ -464,6 +471,8 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         return
     else:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
+    if defer_completion:
+        return
     # Sync commits the dependency generation, but a source update also owes
     # the product builds and the post-build maintenance -- the tail every
     # install and finished update shares (hermes_cli/source_completion.py).

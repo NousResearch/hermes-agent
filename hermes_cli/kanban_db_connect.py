@@ -928,6 +928,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     "WHERE platform != 'tui'"
                 )
 
+    # task_attachments gained a sha256 column after a fabricated inline
+    # attachment was stored silently: every stored blob now records its
+    # digest so verifiers can compare the on-disk file against the row.
+    # NULL for historical rows (their bytes were never hashed at attach
+    # time). Legacy boards that created task_attachments before this column
+    # must get it additively — SCHEMA_SQL only covers fresh DBs.
+    if _table_exists(conn, "task_attachments"):
+        att_cols = _column_names(conn, "task_attachments")
+        if att_cols and "sha256" not in att_cols:
+            _add_column_if_missing(conn, "task_attachments", "sha256", "sha256 TEXT")
+
     if _table_exists(conn, "task_runs"):
         run_cols = _column_names(conn, "task_runs")
         for name, ddl in _TASK_RUN_COLUMNS:

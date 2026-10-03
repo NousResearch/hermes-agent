@@ -211,11 +211,18 @@ class CLILoopsMixin:
                 provider=getattr(self, "provider", None), model=getattr(self, "model", None), turns=turns)
 
     def _cmd_retry(self, cmd_original: str):
+        from hermes_cli.maintenance_input import AuthoredInput, latest_retry_source_info
+        reuse, blocked = latest_retry_source_info(self)
+        if blocked:
+            from cli import _cprint
+            _cprint(f"  {t('gateway.retry.unsafe', error='latest source belongs to another author')}")
+            return
         retry_msg = self.retry_last()
         if retry_msg:
             self._record_model_friction("retry")
         if retry_msg and hasattr(self, '_pending_input'):
-            self._pending_input.put(retry_msg)  # process_loop sends it to the agent
+            raw = reuse.raw if reuse is not None else retry_msg
+            self._pending_input.put(AuthoredInput(retry_msg, raw=raw, source=reuse))
 
     def _cmd_undo(self, cmd_original: str):
         # "/undo" → 1, "/undo 3" → 3.
@@ -342,8 +349,10 @@ class CLILoopsMixin:
 
     def _queue_enqueue(self, text: str) -> None:
         from cli import _cprint
+        from hermes_cli.maintenance_input import AuthoredInput, commit_control, remember_steer
         payload = self._expand_paste_references(text)
-        self._pending_input.put(payload)
+        control = commit_control(self, "slash_queue", text, extraction=payload)
+        self._pending_input.put(AuthoredInput(payload, raw=text, source=control))
         key = "cli.queue.queued_next_turn" if self._agent_running else "cli.queue.queued"
         _cprint(f"  {t(key, preview=_preview(payload))}")
 
@@ -388,15 +397,27 @@ class CLILoopsMixin:
         if idx is None:
             _cprint(f"  {t('cli.queue.usage_edit')}")
             return
-        new_prompt = bits[1]
-        new_text = self._expand_paste_references(new_prompt.strip())
+        idx = int(idx_text)
+        raw_prompt = new_prompt.strip()
+        new_text = self._expand_paste_references(raw_prompt)
+        from hermes_cli.maintenance_input import AuthoredInput, commit_control, revise_control
+
+        def _control_for(item):
+            base = getattr(item, "maintenance_source", None)
+            return (revise_control(self, base, "queue_edit", raw_prompt, extraction=new_text)
+                    if base is not None else
+                    commit_control(self, "queue_edit", raw_prompt, extraction=new_text))
 
         def _edit(items: list) -> list:
             if 1 <= idx <= len(items):
                 # A voice-queued item keeps its sentinel so the concise voice-response
                 # prefix still applies (#65827).
                 voice = isinstance(items[idx - 1], _VoiceInputMessage)
-                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+                if voice:
+                    items[idx - 1] = _VoiceInputMessage(new_text)
+                else:
+                    items[idx - 1] = AuthoredInput(
+                        new_text, raw=raw_prompt, source=_control_for(items[idx - 1]))
             return items
 
         before, after = self._mutate_pending_input(_edit)
@@ -456,6 +477,7 @@ class CLILoopsMixin:
         # agent runs, push into its pending_steer slot (drained by _execute_tool_calls_*
         # into the next tool result); otherwise fall back to /queue semantics.
         from cli import _cprint, _slash_args
+        from hermes_cli.maintenance_input import AuthoredInput, commit_control, remember_steer
         payload = _slash_args(cmd_original)
         if not payload:
             _cprint(f"  {t('cli.steer.usage')}")
@@ -466,11 +488,15 @@ class CLILoopsMixin:
                 _cprint(f"  {t('cli.steer.failed', error=exc)}")
             else:
                 if accepted:
+                    control = commit_control(self, "slash_steer", payload)
+                    if control is not None:
+                        remember_steer(self, payload, control)
                     _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
                 else:
                     _cprint(f"  {t('cli.steer.rejected_empty')}")
         else:
-            self._pending_input.put(payload)
+            control = commit_control(self, "slash_steer", payload)
+            self._pending_input.put(AuthoredInput(payload, raw=payload, source=control))
             _cprint(f"  {t('cli.steer.no_agent_queued', preview=_preview(payload))}")
 
     # ────────────────────────────────────────────────────────────────

@@ -212,7 +212,16 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
-    with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
+    from hermes_maintenance_source import mint_local_input, local_input
+    from hermes_constants import get_hermes_home
+    import contextlib
+    receiving_session = getattr(cli, "session_id", None) or getattr(cli.agent, "session_id", None)
+    source_scope = (local_input(mint_local_input(
+                        effective_query, home=get_hermes_home(), session_id=receiving_session))
+                    if author is None and isinstance(effective_query, str) and effective_query.strip()
+                    and receiving_session and sys.stdin.isatty()
+                    and not os.environ.get("HERMES_KANBAN_TASK") else contextlib.nullcontext())
+    with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"), source_scope:
         try:
             result = cli.agent.run_conversation(
                 user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
@@ -558,25 +567,17 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         if _query_label:
             cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_query_label}")
         cli._show_security_advisories()
-        response = cli.chat(query, images=single_query_images or None)
-        # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
-        # terminal kanban call, so the dispatcher booked a protocol violation and
-        # cold-restarted the task from scratch. Retry the authorised turn IN PLACE
-        # (see agent/kanban_turn_recovery.py) and CARRY THE RECOVERED RESPONSE: the
-        # goal judge below must evaluate the deliverable of the latest settled turn,
-        # never the stale provider error of the turn recovery replaced (re-review P2).
-        from agent.kanban_turn_recovery import recover_failed_kanban_turns
-
-        def _nonquiet_recover_turn(nudge):
-            nonlocal response
-            response = cli.chat(nudge)
-            return response
-
-        recover_failed_kanban_turns(
-            _nonquiet_recover_turn,
-            lambda: getattr(cli, "_last_turn_result", None),
-            emit=lambda msg: print(msg, file=sys.stderr, flush=True),
-        )
+        from hermes_maintenance_source import mint_local_input, local_input
+        from hermes_constants import get_hermes_home
+        import contextlib
+        receiving_session = getattr(cli, "session_id", None) or getattr(cli.agent, "session_id", None)
+        source_scope = (local_input(mint_local_input(
+                            query, home=get_hermes_home(), session_id=receiving_session))
+                        if isinstance(query, str) and query.strip() and receiving_session
+                        and sys.stdin.isatty() and not os.environ.get("HERMES_KANBAN_TASK")
+                        else contextlib.nullcontext())
+        with source_scope:
+            response = cli.chat(query, images=single_query_images or None)
         # Kanban goal_mode on the `-q` path: same judge loop as `-Q`, but each follow-up turn
         # runs through cli.chat so the worker log keeps its live tool feed (the dispatcher
         # used to force -Q here, which left goal_mode cards with a blank Worker log).

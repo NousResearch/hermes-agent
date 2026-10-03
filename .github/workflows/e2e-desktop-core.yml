@@ -23,6 +23,9 @@ concurrency:
 
 jobs:
   core:
+    # Fork policy: this lane runs on a Linux runner only (see AGENTS.md).
+    # Self-disabling: upstream keeps running it.
+    if: ${{ github.repository != 'hushulin/hermes-agent' }}
     name: Desktop core E2E (Linux)
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30

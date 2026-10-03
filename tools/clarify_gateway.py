@@ -3,7 +3,8 @@ thread while the event loop handles the user's reply, so a pending clarify is st
 module-level (same shape as ``tools.approval``) and the agent thread blocks on an ``Event``
 until an adapter button callback or the gateway text-intercept resolves it, or the timeout
 fires. Adapters render inline buttons (an "Other" row flips the entry into text-capture
-mode) or a numbered-list text fallback."""
+mode) or a numbered-list text fallback. Persisted host-delivery prompts can
+be registered without a waiter and are removed after their one response."""
 
 from __future__ import annotations
 import json
@@ -27,6 +28,8 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    control_binding: Optional[Dict[str, str]] = None  # host-owned maintenance binding
+    host_delivery: bool = False  # persisted host prompt; no in-process waiter owns it
 
 
 _lock = threading.RLock()
@@ -47,15 +50,55 @@ CANCELLED = "\x00cancelled"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, control_binding: Optional[Dict[str, str]] = None) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
+    if control_binding is not None and (
+            not isinstance(control_binding, dict)
+            or set(control_binding) != {"task_id", "item_id", "proposal_revision"}
+            or any(not isinstance(value, str) or not value for value in control_binding.values())):
+        raise ValueError("invalid control binding")
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices),
+                          control_binding=dict(control_binding) if control_binding else None)
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
+
+
+def register_host_delivery(
+    clarify_id: str, session_key: str, question: str,
+    choices: Optional[List[str]], control_binding: Dict[str, str],
+) -> _ClarifyEntry:
+    """Register a persisted host prompt without creating or blocking a waiter.
+
+    The question is answerable only after the host's delivery receipt has made
+    the durable core binding visible. The gateway hydrates this entry lazily;
+    resolving it removes the entry because no in-process waiter exists.
+    """
+    if (not isinstance(control_binding, dict)
+            or set(control_binding) != {"task_id", "item_id", "proposal_revision"}
+            or any(not isinstance(value, str) or not value for value in control_binding.values())):
+        raise ValueError("invalid control binding")
+    entry = register(clarify_id, session_key, question, choices,
+                     control_binding=control_binding)
+    entry.host_delivery = True
+    return entry
+
+
+def unregister_host_delivery(clarify_id: str) -> bool:
+    """Drop a host prompt/button entry that is no longer answerable."""
+    with _lock:
+        entry = _entries.pop(clarify_id, None)
+        if entry is None:
+            return False
+        ids = _session_index.get(entry.session_key) or []
+        if clarify_id in ids:
+            ids.remove(clarify_id)
+            if not ids:
+                _session_index.pop(entry.session_key, None)
+        return True
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
@@ -98,7 +141,22 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
             return False
         entry.response = str(response) if response is not None else ""
         entry.event.set()
+        if entry.host_delivery:
+            _entries.pop(clarify_id, None)
+            ids = _session_index.get(entry.session_key) or []
+            if clarify_id in ids:
+                ids.remove(clarify_id)
+                if not ids:
+                    _session_index.pop(entry.session_key, None)
         return True
+
+
+def get_pending_control_for_session(session_key: str) -> tuple[Optional[_ClarifyEntry], tuple[_ClarifyEntry, ...]]:
+    """Return the oldest host-bound clarify and all bound candidates in this session."""
+    with _lock:
+        entries = tuple(entry for cid in (_session_index.get(session_key) or [])
+                        if (entry := _entries.get(cid)) is not None and entry.control_binding is not None)
+    return (entries[0] if len(entries) == 1 else None, entries)
 
 
 def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False) -> Optional[_ClarifyEntry]:
@@ -210,14 +268,23 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     return json.dumps(selected, ensure_ascii=False) if selected else None
 
 
+def prepare_text_response(entry: _ClarifyEntry, response: str) -> tuple[str, Optional[str]]:
+    """Validate a typed response without consuming the pending entry."""
+    coerced, reason = _coerce_text_response_detailed(entry, response)
+    if coerced is None:
+        return (TEXT_REJECTED_SELECTION if reason == "invalid_selection"
+                else TEXT_REJECTED_PROSE), None
+    return TEXT_RESOLVED, coerced
+
+
 def attempt_text_response_for_session(session_key: str, response: str) -> str:
     """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return TEXT_NO_PENDING
-    coerced, reason = _coerce_text_response_detailed(entry, response)
-    if coerced is None:
-        return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
+    outcome, coerced = prepare_text_response(entry, response)
+    if outcome != TEXT_RESOLVED:
+        return outcome
     if resolve_gateway_clarify(entry.clarify_id, coerced):
         return TEXT_RESOLVED
     return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left

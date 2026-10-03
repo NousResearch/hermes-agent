@@ -1035,6 +1035,34 @@ class GatewayBusySessionMixin:
         )
         return await self._handle_reset_command(event)
 
+    async def _hm_commit_control_source(self, event: MessageEvent, source, kind: str, text: str):
+        """Persist one authenticated text-control occurrence before consuming it."""
+        platform = getattr(getattr(source, "platform", None), "value", None)
+        if platform not in ("feishu", "qqbot", "weixin"):
+            return None
+        from hermes_maintenance_source import (admit_platform_source,
+                                               commit_platform_control_source,
+                                               derive_platform_control_source,
+                                               mint_feishu_text)
+        adapter = self._delivery_adapter_for(source)
+        home = self._resolve_profile_home_for_source(source)
+        key = self._session_key_for_source(source)
+        if platform == "feishu":
+            base = mint_feishu_text(event, adapter, home, key)
+        else:
+            base = getattr(event, "_maintenance_source", None)
+        control = (derive_platform_control_source(base, kind=kind, text=text)
+                   if base is not None else None)
+        if control is None:
+            return None
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        if commit_platform_control_source(home, session_entry.session_id, control) is None:
+            return None
+        event._maintenance_source = control
+        event._maintenance_source_reuse = control
+        admit_platform_source(control)
+        return control
+
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.
         queued_text = event.get_command_args().strip()
@@ -1042,9 +1070,14 @@ class GatewayBusySessionMixin:
         has_media = bool(getattr(event, "media_urls", None))
         if not queued_text and not has_media:
             return t("gateway.queue.usage")
+        control = await self._hm_commit_control_source(
+            event, source, "explicit_queue", queued_text) if queued_text else None
+        if (getattr(getattr(source, "platform", None), "value", None) in ("feishu", "qqbot", "weixin")
+                and control is None and not has_media):
+            return t("gateway.queue.usage")
         adapter = self._delivery_adapter_for(source)
         if adapter:
-            self._enqueue_fifo(quick_key, MessageEvent(
+            queued_event = MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
                 source=event.source, raw_message=event.raw_message, message_id=event.message_id,
                 media_urls=list(getattr(event, "media_urls", []) or []),
@@ -1056,7 +1089,10 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
-            ), adapter)
+            )
+            if control is not None:
+                queued_event._maintenance_source_reuse = control
+            self._enqueue_fifo(quick_key, queued_event, adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
 
@@ -1067,6 +1103,10 @@ class GatewayBusySessionMixin:
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")
+        control = await self._hm_commit_control_source(event, source, "explicit_steer", steer_text)
+        if (getattr(getattr(source, "platform", None), "value", None) in ("feishu", "qqbot", "weixin")
+                and control is None):
+            return t("gateway.steer.failed", error="control source unavailable")
         _steer_state = self._peek_session_state(quick_key)
         running_agent = _steer_state.turn.agent if _steer_state else None
 
@@ -1074,11 +1114,14 @@ class GatewayBusySessionMixin:
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
             adapter = self._delivery_adapter_for(source)
             if adapter:
-                self._enqueue_fifo(quick_key, MessageEvent(
+                queued_event = MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
                     channel_context=event.channel_context,
-                ), adapter)
+                )
+                if control is not None:
+                    queued_event._maintenance_source_reuse = control
+                self._enqueue_fifo(quick_key, queued_event, adapter)
             return reply
 
         if running_agent is _AGENT_PENDING_SENTINEL:

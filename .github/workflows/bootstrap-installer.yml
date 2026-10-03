@@ -20,6 +20,9 @@ concurrency:
 
 jobs:
   posix:
+    # Fork policy: this lane runs on a Linux runner only (see AGENTS.md).
+    # Self-disabling: upstream keeps running it.
+    if: ${{ github.repository != 'hushulin/hermes-agent' }}
     name: install.sh protocol + small fresh-install E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 15

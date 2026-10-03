@@ -1987,7 +1987,13 @@ def _compressor_max_tokens(agent):
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
-    _selected_engine = _select_context_engine(_agent_cfg)
+    # Isolated agents must bypass selection itself: loading a plugin can run its factory.
+    _selected_engine = None if getattr(agent, "_skip_external_context_engine", False) else _select_context_engine(_agent_cfg)
+    if getattr(agent, "_disable_automatic_compaction", False):
+        cs.enabled = False
+        cs.micro_compact = False
+        cs.codex_app_server_auto = "off"
+        cs.codex_responses_native = False
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
         # External engines own compaction policy — the host threshold (and its Codex

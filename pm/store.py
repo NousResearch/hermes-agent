@@ -282,7 +282,14 @@ def flatten_single_dir(dest: Path) -> None:
         target = dest / item.name
         if target.exists():
             return
-        item.rename(target)
+        for attempt in range(21):
+            try:
+                item.rename(target)
+                break
+            except OSError as exc:
+                if sys.platform != "win32" or exc.winerror not in (5, 32, 33) or attempt == 20:
+                    raise
+                time.sleep(0.1)
     inner.rmdir()
 
 

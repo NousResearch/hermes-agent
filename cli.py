@@ -1249,9 +1249,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if bare in _get_plugin_cmd_handler_names():
             self._run_plugin_slash_command(base_cmd, user_args)
         elif base_cmd in skill_bundles:
-            self._run_skill_bundle_command(base_cmd, skill_bundles[base_cmd], user_args)
+            self._run_skill_bundle_command(
+                base_cmd, skill_bundles[base_cmd], user_args, raw_command=cmd_original)
         elif base_cmd in skill_commands:
-            self._run_skill_slash_command(base_cmd, skill_commands[base_cmd], user_args)
+            self._run_skill_slash_command(
+                base_cmd, skill_commands[base_cmd], user_args, raw_command=cmd_original)
         else:
             return self._expand_slash_prefix(cmd_original, cmd_lower, skill_commands, skill_bundles)
         return True
@@ -1310,11 +1312,13 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except Exception as e:
             _cprint(f"\033[1;31m{_t('cli.plugin.command_error', error=str(e))}{_RST}")
 
-    def _queue_skill_message(self, msg) -> None:
+    def _queue_skill_message(self, msg, *, raw: str | None = None) -> None:
         if hasattr(self, '_pending_input'):
-            self._pending_input.put(msg)
+            from hermes_cli.maintenance_input import AuthoredInput
+            self._pending_input.put(AuthoredInput(msg, raw=raw) if raw else msg)
 
-    def _run_skill_bundle_command(self, base_cmd: str, bundle_info: dict, user_instruction: str) -> None:
+    def _run_skill_bundle_command(self, base_cmd: str, bundle_info: dict, user_instruction: str,
+                                  *, raw_command: str | None = None) -> None:
         """``/<bundle>`` loads several skills at once (bundles win over same-named skills)."""
         bundle_result = build_bundle_invocation_message(base_cmd, user_instruction, task_id=self.session_id)
         if not bundle_result:
@@ -1322,15 +1326,17 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         msg, loaded_names, missing = bundle_result
         self._queue_loaded_skills(
-            msg, _t("cli.skills.loading_bundle", name=bundle_info['name'], count=str(len(loaded_names))), missing)
+            msg, _t("cli.skills.loading_bundle", name=bundle_info['name'], count=str(len(loaded_names))), missing,
+            raw=raw_command or f"{base_cmd} {user_instruction}".strip())
 
-    def _queue_loaded_skills(self, msg, label: str, missing) -> None:
+    def _queue_loaded_skills(self, msg, label: str, missing, *, raw: str | None = None) -> None:
         print(f"\n⚡ {label}")
         if missing:
             ChatConsole().print(f"[yellow]{_t('cli.skills.skipped_missing', names=', '.join(missing))}[/]")
-        self._queue_skill_message(msg)
+        self._queue_skill_message(msg, raw=raw)
 
-    def _run_skill_slash_command(self, base_cmd: str, skill_info: dict, rest: str) -> None:
+    def _run_skill_slash_command(self, base_cmd: str, skill_info: dict, rest: str,
+                                 *, raw_command: str | None = None) -> None:
         """``/<skill> ...``; stacked ``/skill-a /skill-b do XYZ`` loads every leading skill (up to 5)."""
         from agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
 
@@ -1345,12 +1351,14 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             msg, loaded_names, missing = stacked_result
             self._queue_loaded_skills(
                 msg, _t("cli.skills.loading_stacked", count=str(len(loaded_names)), names=', '.join(loaded_names)),
-                missing,
+                missing, raw=raw_command or " ".join([base_cmd, *extra_keys, user_instruction]).strip(),
             )
             return
         msg = build_skill_invocation_message(base_cmd, rest, task_id=self.session_id)
         if msg:
-            self._queue_loaded_skills(msg, _t("cli.skills.loading_skill", name=skill_info['name']), None)
+            self._queue_loaded_skills(
+                msg, _t("cli.skills.loading_skill", name=skill_info['name']), None,
+                raw=raw_command or f"{base_cmd} {rest}".strip())
         else:
             ChatConsole().print(f"[bold red]{_t('cli.skills.skill_load_failed', command=base_cmd)}[/]")
 

@@ -96,6 +96,10 @@ def perform_api_call(
             return agent._interruptible_streaming_api_call(
                 next_api_kwargs, on_first_delta=_stop_spinner
             )
+        if getattr(agent, "_restricted_single_attempt", False):
+            # The restricted runner reserves each physical send itself. Relay can
+            # substitute or repeat a request, so this instance must bypass it.
+            return agent._interruptible_api_call(next_api_kwargs)
         from agent import relay_llm
 
         return relay_llm.execute(
@@ -130,13 +134,13 @@ def perform_api_call(
         if _model_request_active is not None:
             _model_request_active.set()
     try:
-        response = run_llm_execution_middleware(
+        response = (_perform_api_call(api_kwargs) if getattr(agent, "_restricted_single_attempt", False) else run_llm_execution_middleware(
             api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
             task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
             session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
-        )
+        ))
     finally:
         with _bracket:
             if _model_request_active is not None:

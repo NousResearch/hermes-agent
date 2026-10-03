@@ -822,6 +822,18 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         chat_id: str, qq_chat_type: str, verbose: bool = False, **source_kwargs: Any) -> None:
         """Shared inbound tail: fold attachment transcripts/file info and quoted context
         into the text, drop empty events, remember the QQ chat kind and dispatch."""
+        from hermes_maintenance_source import mint_platform_text
+        raw_text = d.get("content")
+        parsed_time = self._parse_qq_timestamp(timestamp)
+        source_time = None
+        if timestamp:
+            try:
+                source_time = datetime.fromisoformat(timestamp).timestamp()
+            except (ValueError, TypeError):
+                try:
+                    source_time = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc).timestamp()
+                except (ValueError, TypeError, OverflowError):
+                    pass
         att = await self._process_attachments(attachments)
         text = content
         voice_transcripts = att["voice_transcripts"]
@@ -846,8 +858,31 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             source=self.build_source(chat_id=chat_id,** source_kwargs), text=text,
             message_type=self._detect_message_type(image_urls, image_media_types), raw_message=d,
             message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
-            timestamp=self._parse_qq_timestamp(timestamp),
+            timestamp=parsed_time,
         )
+        if (isinstance(raw_text, str) and raw_text.strip() and not attachments
+                and isinstance(content, str) and content.strip()):
+            try:
+                structure = json.dumps(d, ensure_ascii=False, sort_keys=True,
+                                       separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                structure = ""
+            if structure:
+                receipt = mint_platform_text(
+                    adapter=self, authority="qqbot-human", receiver=self._app_id,
+                    actor=str(source_kwargs.get("user_id") or ""), chat_id=chat_id,
+                    chat_type=str(source_kwargs.get("chat_type") or ""), event_id=msg_id,
+                    raw=raw_text, extraction=content, display=event.text,
+                    event_structure=structure, message_type="text",
+                    input_kind="reply_reference" if quoted["quote_block"] else "text",
+                    reply_to_message_id=quoted.get("reply_to_message_id"),
+                    reply_to_author_id=quoted.get("reply_to_author_id"),
+                    reply_to_text=quoted.get("reply_to_text"),
+                    source_time=source_time,
+                    timezone=str(parsed_time.tzinfo or "received-time") if source_time is not None else "received-time")
+                if receipt is not None:
+                    event._maintenance_sources = (receipt,)
+                    event._maintenance_display = event.text
         await self.handle_message(event)
 
     # ── Quoted-message handling ──
@@ -880,11 +915,36 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             lines.append(att_result["attachment_info"])
         if not lines and not quoted_images:
             return empty
+        quote_message_id = None
+        quote_author_id = None
+        for element in elements:
+            if quote_message_id is None:
+                for key in ("message_id", "msg_id", "id"):
+                    value = element.get(key)
+                    if isinstance(value, str) and value:
+                        quote_message_id = value
+                        break
+            if quote_author_id is None:
+                for container in (element.get("author"), element.get("member"), element):
+                    if not isinstance(container, dict):
+                        continue
+                    for key in ("id", "user_id", "user_openid", "member_openid", "openid"):
+                        value = container.get(key)
+                        if isinstance(value, str) and value:
+                            quote_author_id = value
+                            break
+                    if quote_author_id:
+                        break
+            if quote_message_id and quote_author_id:
+                break
         # Images-only quote still gets a marker so the LLM knows context was referenced.
         return {
             "quote_block": "[Quoted message]:\n" + "\n".join(lines) if lines else "[Quoted message]: (image)",
             "image_urls": quoted_images,
-            "image_media_types": att_result.get("image_media_types") or []}
+            "image_media_types": att_result.get("image_media_types") or [],
+            "reply_to_message_id": quote_message_id,
+            "reply_to_author_id": quote_author_id,
+            "reply_to_text": "\n".join(lines) if lines else None}
 
     @staticmethod
     def _merge_quote_into(text: str, quote_block: str) -> str:

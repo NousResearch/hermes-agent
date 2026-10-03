@@ -13,6 +13,10 @@ def test_oneshot_replaces_lone_surrogate_and_exits_zero():
     """hermes -z must print U+FFFD and exit 0 when the model returns U+D800."""
     program = textwrap.dedent(
         """
+        import os
+        import runpy
+        if os.environ.get("HERMES_TEST_ISOLATION"):
+            runpy.run_path(os.environ["MM_ISOLATION_GUARD_PATH"], run_name="__main__")
         import hermes_cli.oneshot as oneshot
 
         dirty = "answer \\ud800 here"

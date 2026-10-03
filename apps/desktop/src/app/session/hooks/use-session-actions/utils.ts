@@ -236,6 +236,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'inputIds',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -362,6 +363,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.rowId !== b.rowId ||
+    (a.inputIds?.length ?? 0) !== (b.inputIds?.length ?? 0) ||
+    a.inputIds?.some((id, index) => id !== b.inputIds?.[index]) ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||
@@ -1451,6 +1454,9 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   if (queuedUser) {
     projected.push({
       id: `user-queued-${sessionId}`,
+      inputIds: projection.queued?.inputs?.slice(0, 256).flatMap(input =>
+        typeof input?.id === 'string' && input.id ? [input.id] : []
+      ),
       role: 'user',
       parts: [textPart(queuedUser)]
     })

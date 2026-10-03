@@ -13,6 +13,7 @@ import logging
 import socket
 import threading
 import time
+from uuid import uuid4
 from typing import Any
 
 from tui_gateway import server
@@ -99,6 +100,7 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
+        self.socket_id = uuid4().hex
         #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
@@ -366,6 +368,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             "jsonrpc": "2.0", "method": "event",
             "params": {"type": "gateway.ready", "payload": {
                 "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
+                "shared_session": {"version": 1, "socket_id": transport.socket_id},
             }},
         })
         if ready_ok:

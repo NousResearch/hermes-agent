@@ -12,7 +12,7 @@
  * This module adds only what the wire does not carry: the client-local synthetic events the TUI
  * transport publishes into the same handler stream, and the `GatewayEvent` envelope.
  */
-import type { BackendGatewayEventMap } from './gateway-contract.generated.js'
+import type { BackendGatewayEventMap, TurnDescriptor } from './gateway-contract.generated.js'
 
 export * from './gateway-contract.generated.js'
 
@@ -50,6 +50,8 @@ export interface GatewayEvent<K extends GatewayEventName = GatewayEventName> {
    *  absent on session-less broadcasts. */
   seq?: number
   session_id?: string
+  /** Volatile execution identity, scoped by backend replay epoch and runtime session. */
+  turn?: TurnDescriptor
   type: K
 }
 

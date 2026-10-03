@@ -261,7 +261,8 @@ class ComputeHost:
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")
-                                  if isinstance(frame.get("display_metadata"), dict) else None))
+                                  if isinstance(frame.get("display_metadata"), dict) else None),
+                turn_context=frame.get("turn_context"), input_batch=frame.get("input_batch"))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -274,9 +275,13 @@ class ComputeHost:
             session_info = server._session_info(session.get("agent"), session)
             with self._progress_lock:
                 self._progress_counter += 1
+            observation = session.get("_turn_observation")
+            terminal = (observation.terminal_evidence() if observation is not None
+                        and observation.wire() == frame.get("turn_context") else None)
             self._reply(
                 "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
-                session_info=session_info, session_info_emitted=True)
+                session_info=session_info, session_info_emitted=True,
+                **({"terminal_observation": terminal} if terminal is not None else {}))
         except Exception as exc:
             with contextlib.suppress(Exception):
                 from tui_gateway import server

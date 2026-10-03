@@ -842,7 +842,9 @@ export function usePromptActions({
         try {
           const result = await target.requestGateway<SessionRedirectResponse>('session.redirect', {
             session_id: id,
-            text
+            submission_ref: messageId,
+            text,
+            input_visibility: 'visible'
           })
 
           if (result?.status === 'redirected') {
@@ -916,9 +918,13 @@ export function usePromptActions({
       }
 
       const send = async (id: string): Promise<boolean> => {
-        const response = await target.requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
+        const response = await target.requestGateway<{ status?: string }>('session.steer', {
+          session_id: id,
+          text,
+          input_visibility: 'hidden'
+        })
 
-        return response?.status === 'queued'
+        return response?.status === 'queued' || response?.status === 'streaming'
       }
 
       try {
@@ -967,7 +973,8 @@ export function usePromptActions({
       interruptFirst: boolean,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      submissionRef?: string
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -985,7 +992,8 @@ export function usePromptActions({
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        submissionRef
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -1022,7 +1030,8 @@ export function usePromptActions({
           false,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1086,7 +1095,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, undefined, plan.submissionRef)
+      )
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -1097,7 +1108,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1207,7 +1219,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage, plan.submissionRef)
+      )
 
       const isCompressedAwayError = (err: unknown) => {
         if (!(err instanceof JsonRpcGatewayError) || err.code !== 4018) {
@@ -1234,7 +1248,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1260,6 +1275,10 @@ export function usePromptActions({
             const retryPlan = planEdit(refreshed, edited)
 
             if (retryPlan && !retryPlan.isFailedTurn) {
+              updateSessionState(sessionId, state =>
+                applyRewindOptimistic(state, retryPlan.sourceIndex, retryPlan.editedMessage, retryPlan.submissionRef)
+              )
+
               const survivorRowIds = await submitRewindPrompt(
                 sessionId,
                 retryPlan.text,
@@ -1268,7 +1287,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                retryPlan.submissionRef
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)

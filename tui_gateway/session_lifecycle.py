@@ -552,7 +552,15 @@ def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
-        session = _sessions.pop(sid, None)
+        session = _sessions.get(sid)
+        observation = session.get("_turn_observation") if session else None
+        # Registry transitions precede publication gates. Publication never
+        # reacquires _sessions_lock, so a close can finish an in-progress frame
+        # before removing its exact destination record.
+        with observation.gate if observation is not None else contextlib.nullcontext():
+            if observation is not None:
+                observation.terminal = True
+            session = _sessions.pop(sid, None)
         if session is not None:
             from hermes_constants import get_hermes_home
 
@@ -704,8 +712,11 @@ def _interrupt_session_turn(
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
-        session["queued_prompt"] = None
-        session.pop("queued_prompts", None)
+        from tui_gateway.input_observation import clear_queue, record_outcome
+        clear_queue(session, "queue_cleared")
+        pending = session.get("inflight_turn") or {}
+        if pending.get("input_batch") and not pending.get("turn"):
+            record_outcome(session, pending["input_batch"], "cancelled", reason="cancelled_before_start")
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     if should_interrupt:
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
@@ -723,6 +734,8 @@ def _interrupt_session_turn(
                 )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+    from tui_gateway.input_observation import publish_state
+    publish_state(sid, session)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt

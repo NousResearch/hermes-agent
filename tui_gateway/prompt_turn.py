@@ -128,9 +128,16 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
+            from tui_gateway.input_observation import project_inputs, record_outcome
+            batch = (session.get("inflight_turn") or {}).get("input_batch")
+            payload = {"message": str(ownership_refusal), **project_inputs(session, batch)}
+            record_outcome(session, batch, "failed_before_start", reason="ownership_refused")
             session["running"] = False
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+            _clear_inflight_turn(session)
+        _emit("error", sid, payload)
+        from tui_gateway.input_observation import publish_state
+        publish_state(sid, session)
         return None
     with session["history_lock"]:
         if session.get("_closing") or (
@@ -423,7 +430,6 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
-        _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, prompt)
         if on_done is not None:
             on_done()
@@ -743,7 +749,10 @@ def _invoke_agent(
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
     hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
+    from tui_gateway.turn_observation import capture_turn_callback, current_turn
+    observation = current_turn()
 
+    @capture_turn_callback
     def _stream(delta):
         if getattr(agent, "_mute_notification_reply", False):
             return
@@ -754,21 +763,28 @@ def _invoke_agent(
                 hold["held"] += delta
                 return
             delta, hold["held"] = hold["held"] + delta, ""
-        with session["history_lock"]:
-            _append_inflight_delta(session, delta)
         payload = {"text": delta}
         if streamer and (r := streamer.feed(delta)) is not None:
             payload["rendered"] = r
-        if st.tts_queue is not None and isinstance(delta, str):
-            st.tts_queue.put(delta)
-        _emit("message.delta", sid, payload)
+        gate = observation.publication() if observation is not None else contextlib.nullcontext(True)
+        with gate as accepted:
+            if accepted:
+                with session["history_lock"]:
+                    _append_inflight_delta(session, delta)
+                if st.tts_queue is not None and isinstance(delta, str):
+                    st.tts_queue.put(delta)
+                _emit("message.delta", sid, payload)
 
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
+    @capture_turn_callback
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         if getattr(agent, "_mute_notification_reply", False):
             return
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        gate = observation.publication() if observation is not None else contextlib.nullcontext(True)
+        with gate as accepted:
+            if accepted:
+                _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -997,6 +1013,11 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
 
 def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseException) -> None:
     """Except-path of the turn: crash log, history restore, terminal error frame."""
+    from tui_gateway.turn_observation import current_turn
+    observation = current_turn()
+    if observation is not None and observation.terminal:
+        logger.exception("Post-terminal bookkeeping failed for session %s", sid)
+        return
     import traceback
     with contextlib.suppress(Exception):
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
@@ -1107,7 +1128,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, turn_source: dict | None = None,
+    turn_context: dict | None = None, input_batch: dict | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1116,18 +1138,35 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
-    admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
-    if admitted is None:
-        return False
-    images, agent = admitted
-    from gateway.warning_notifications import diagnostic_turn_muted
-    from agent.notification_presentation import notification_config_snapshot
-    with _session_profile_runtime_scope(session):
-        notification_config = notification_config_snapshot()
-        muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
-    if muted:
-        display_kind = "hidden"
+    from tui_gateway.input_observation import state, new_input, project_inputs, adopt_inputs
+    from tui_gateway.turn_observation import make_turn, turn_scope
+    with state(session).control:
+        admitted = _admit_prompt_turn(
+            sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        if admitted is None:
+            return False
+        images, agent = admitted
+        from gateway.warning_notifications import diagnostic_turn_muted
+        from agent.notification_presentation import notification_config_snapshot
+        with _session_profile_runtime_scope(session):
+            notification_config = notification_config_snapshot()
+            muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
+        if muted:
+            display_kind = "hidden"
+        input_message = _display_turn_input(text, display_kind)
+        with session["history_lock"]:
+            # Stop can clear admission while the provider's reset returns. Never
+            # resurrect that snapshot or attach a descriptor to its replacement.
+            inflight = session.get("inflight_turn")
+            if not isinstance(inflight, dict) or session.get("_turn_cancel_requested"):
+                session["running"] = False
+                return False
+            input_batch = input_batch or inflight.get("input_batch") or new_input(session, text)
+            if os.environ.get("HERMES_COMPUTE_HOST_CHILD") == "1":
+                adopt_inputs(session, input_batch)
+            observation = make_turn(sid, session, turn_source, wire=turn_context, inputs=input_batch)
+            session["_turn_observation"] = observation
+            inflight.update(turn=observation.wire(), input=input_message, input_batch=input_batch)
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -1142,8 +1181,6 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
-    if not muted:
-        _emit("message.start", sid)
 
     def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -1164,6 +1201,9 @@ def _run_prompt_submit(
                     st.terminal_callback({
                         "status": "failed", "text": "", "error": "Context injection refused."})
                     st.receipt_committed = True
+                _emit_terminal_turn_error(sid, session, "Context injection refused.",
+                                           retire_marker=st.receipt_committed)
+                st.error_retained = True
                 return
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
@@ -1216,13 +1256,20 @@ def _run_prompt_submit(
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, st.agent)
         return st.result, goal_followup
+    with session["history_lock"]:
+        input_payload = {"input": input_message, **project_inputs(session, input_batch)}
+    if not muted:
+        with turn_scope(observation):
+            _emit("message.start", sid, input_payload)
+
     def run():
         from agent.notification_presentation import notification_turn
         # _prepare_turn_input owns profile binding for the worker. The context
         # here only gates presentation; do not introduce a second runtime scope.
         from agent.notification_presentation import notification_policy_snapshot
         with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
-            followup = run_body()
+            with turn_scope(observation):
+                followup = run_body()
         if followup is not None:
             _run_post_turn_followups(rid, sid, session, *followup)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the

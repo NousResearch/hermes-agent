@@ -402,14 +402,19 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>('session.steer', {
+              session_id: liveId,
+              text,
+              input_visibility: 'hidden'
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
           }
         )
 
-        return result?.status === 'queued'
+        return result?.status === 'queued' || result?.status === 'streaming'
       } catch {
         return false
       }
@@ -465,7 +470,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>('session.redirect', {
+              session_id: liveId,
+              submission_ref: messageId,
+              text,
+              input_visibility: 'visible'
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
@@ -508,7 +519,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       truncateMessageId?: string,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      submissionRef?: string
     ) =>
       runRewindSubmit(
         requestSessionGateway,
@@ -523,7 +535,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        submissionRef
       ),
     [bindRecoveredRuntime, requestSessionGateway]
   )
@@ -574,7 +587,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.submissionRef
           )
         )
       } catch (err) {
@@ -609,7 +623,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sessionId
       })
 
-      update(state => applyRewindOptimistic(state, plan.sourceIndex))
+      update(state => applyRewindOptimistic(state, plan.sourceIndex, undefined, plan.submissionRef))
 
       try {
         applySurvivorRowIds(
@@ -620,7 +634,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.submissionRef
           )
         )
       } catch (err) {
@@ -701,7 +716,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sessionId
       })
 
-      update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage, plan.submissionRef))
 
       try {
         applySurvivorRowIds(
@@ -712,7 +727,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.submissionRef
           )
         )
       } catch (err) {

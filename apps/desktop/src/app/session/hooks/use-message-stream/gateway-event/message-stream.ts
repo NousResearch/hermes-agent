@@ -19,6 +19,7 @@ import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
+import { observeMessageStartInput, shouldIgnoreMessageStart } from './message-start-input'
 import type { GatewayEventContext } from './types'
 
 function firstBillingLine(text: string): string {
@@ -84,7 +85,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'message.start') {
-    if (!sessionId) {
+    if (!sessionId || shouldIgnoreMessageStart(ctx)) {
       return true
     }
 
@@ -134,25 +135,28 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         return state
       }
 
-      return {
-        ...state,
-        busy: true,
-        awaitingResponse: true,
-        sawAssistantPayload: false,
-        interrupted: false,
-        interimBoundaryPending: false,
-        // Backend accepted the turn — the no-payload settle gate below may
-        // now treat a running=false heartbeat as a real turn end.
-        turnLive: true,
-        // A new turn is a new occurrence: the previous turn's late terminal
-        // frame (#119569) can no longer claim its heartbeat-settled bubble.
-        heartbeatSettledStreamId: null,
-        // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
-        // here would hide the submit→accept round trip from the timer.
-        // Backend-originated turns (queue drain elsewhere, goal follow-up)
-        // have no seed and arm here.
-        turnStartedAt: state.turnStartedAt ?? Date.now()
-      }
+      return observeMessageStartInput(
+        {
+          ...state,
+          busy: true,
+          observedExecutionId: event.turn?.id,
+          observedInputIds: [],
+          awaitingResponse: true,
+          sawAssistantPayload: false,
+          interrupted: false,
+          interimBoundaryPending: false,
+          // Backend accepted the turn — the no-payload settle gate below may
+          // now treat a running=false heartbeat as a real turn end.
+          turnLive: true,
+          heartbeatSettledStreamId: null,
+          // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
+          // here would hide the submit→accept round trip from the timer.
+          // Backend-originated turns (queue drain elsewhere, goal follow-up)
+          // have no seed and arm here.
+          turnStartedAt: state.turnStartedAt ?? Date.now()
+        },
+        ctx
+      )
     })
 
     if (isActiveEvent) {

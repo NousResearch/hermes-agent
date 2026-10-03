@@ -21,6 +21,7 @@ from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
+from .observations import (InputOccurrence, InputObservation, ProjectedInput, SharedSessionCapability)
 
 
 class OpenPayload(Payload):
@@ -54,6 +55,7 @@ class GatewayReadyPayload(Payload):
     skin: SkinPayload
     change_events: bool
     replay_epoch: str
+    shared_session: SharedSessionCapability | None = None
     heartbeat: bool | None = None  # WebSocket transport only
 
 
@@ -88,6 +90,8 @@ class ErrorPayload(Payload):
     """Every ``_emit("error", …)`` site sets exactly ``message``."""
 
     message: str
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
 
 
 event("error", ErrorPayload, doc="A session-level failure outside a turn (agent init, model switch, compression, resume).")
@@ -105,7 +109,19 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
-event("message.start", None, doc="A turn began streaming; no payload.")
+class MessageStartPayload(Payload):
+    # Other start producers remain payload-free; observed executions provide every field.
+    input: ProjectedInput | None = None
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
+
+
+class MessageInputPayload(InputObservation, Payload):
+    pass
+
+
+event("message.start", MessageStartPayload, doc="A turn began; optional canonical input and occurrence evidence.")
+event("message.input", MessageInputPayload, doc="An accepted visible correction in the captured execution.")
 
 
 class StreamDeltaPayload(Payload):
@@ -201,6 +217,8 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

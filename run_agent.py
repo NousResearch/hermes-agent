@@ -1091,6 +1091,8 @@ class AIAgent(
                 data = json.loads(content)
             except (json.JSONDecodeError, TypeError):
                 continue
+            if not isinstance(data, dict):  # a paired result may be valid JSON but not an object
+                continue
             if "todos" in data and isinstance(data["todos"], list):
                 return data["todos"], data.get("revision", 1)
         return None

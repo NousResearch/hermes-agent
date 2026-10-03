@@ -1126,7 +1126,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
         assert self._send_session is not None
-        data = await _download_bytes(self._send_session, url=url, timeout_seconds=30)
+        from tools.url_safety import ssrf_checked_aiohttp_get
+
+        async def _fetch() -> bytes:
+            async with ssrf_checked_aiohttp_get(self._send_session, url) as response:
+                response.raise_for_status()
+                return await response.read()
+        data = await asyncio.wait_for(_fetch(), timeout=30)
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(url.split("?", 1)[0]).suffix or ".bin") as handle:
             handle.write(data)
             return handle.name

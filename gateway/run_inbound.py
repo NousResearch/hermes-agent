@@ -1756,6 +1756,24 @@ class GatewayInboundMixin:
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
+        # Fail closed before any model-facing enrichment: every inbound PDF is replaced by a
+        # read-back-validated, page-complete Markdown artifact. The original is durably queued;
+        # conversion failures never expose the raw/partial PDF to the model.
+        try:
+            from gateway.pdf_preprocessing import PdfPreprocessingError, preprocess_event_pdfs
+            await preprocess_event_pdfs(event)
+        except PdfPreprocessingError as exc:
+            logger.error("Inbound PDF preprocessing failed closed: %s", exc)
+            adapter = self._delivery_adapter_for(source)
+            if adapter:
+                await adapter.send(
+                    source.chat_id,
+                    "O PDF foi preservado, mas a conversão integral não terminou. Ele não foi "
+                    "enviado ao modelo nem interpretado parcialmente; a recuperação automática "
+                    "continuará tentando.",
+                )
+            return None
+
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:

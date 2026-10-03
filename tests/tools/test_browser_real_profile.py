@@ -872,7 +872,12 @@ class TestReviewRound3:
         (tmp_path / "Default").mkdir(parents=True)
         assert bc._profile_is_locked(str(tmp_path), "Default") is False
 
-    def test_lock_probe_true_on_permissionerror(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("system, expect", [
+        ("Windows", True),   # a running browser holds the cookie DB deny-all
+        ("Darwin", False),   # EPERM is macOS TCC (no Full Disk Access), not a browser lock (#120396)
+        ("Linux", False),
+    ])
+    def test_lock_probe_permissionerror_only_means_locked_on_windows(self, tmp_path, monkeypatch, system, expect):
         import hermes_cli.browser_connect as bc
         (tmp_path / "Default").mkdir(parents=True)
         (tmp_path / "Default" / "Cookies").write_bytes(b"db")
@@ -885,7 +890,8 @@ class TestReviewRound3:
             return real_open(path, *a, **k)
 
         monkeypatch.setattr(builtins, "open", deny)
-        assert bc._profile_is_locked(str(tmp_path), "Default") is True
+        monkeypatch.setattr(bc.platform, "system", lambda: system)
+        assert bc._profile_is_locked(str(tmp_path), "Default") is expect
 
     def test_snapshot_fails_fast_when_locked(self, tmp_path, monkeypatch):
         """snapshot_real_profile always BLOCKS when locked — never kills, never
@@ -905,6 +911,60 @@ class TestReviewRound3:
         assert dst is None
         assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
         assert called["copytree"] == 0  # bailed before any copy
+
+    def test_snapshot_fails_fast_with_lock_message_on_windows_denial(self, tmp_path, monkeypatch):
+        """The Windows half of the probe contract, pinned end-to-end (not just the boolean):
+        a deny-all Cookies read must surface snapshot's [profile-locked] error and never
+        reach the copy."""
+        import builtins
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: False)
+        monkeypatch.setattr(bc.platform, "system", lambda: "Windows")
+        real_open = builtins.open
+
+        def deny(path, *a, **k):
+            if str(path).endswith("Cookies"):
+                raise PermissionError("locked")
+            return real_open(path, *a, **k)
+
+        monkeypatch.setattr(builtins, "open", deny)
+        called = {"copytree": 0}
+        import shutil as _sh
+        orig_ct = _sh.copytree
+        monkeypatch.setattr(_sh, "copytree",
+                            lambda *a, **k: (called.__setitem__("copytree", called["copytree"] + 1), orig_ct(*a, **k))[1])
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert dst is None
+        assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
+        assert called["copytree"] == 0
+
+    def test_close_reports_lock_release_only_on_windows(self, tmp_path, monkeypatch):
+        """POSIX has no deny-all lock to confirm release for — after the kill the close flow
+        must claim only 'closed the browser processes', never 'lock released' for a state the
+        kill didn't cause (e.g. a TCC read denial still standing)."""
+        import psutil
+        import hermes_cli.browser_connect as bc
+
+        class _FakeProc:
+            def children(self, recursive=True):
+                return []
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(bc, "_processes_holding_profile", lambda src: iter([_FakeProc()]))
+        monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], []))
+        monkeypatch.setattr(bc, "_resolve_source_profile", lambda src: ("Default", None))
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: False)
+        for system, fragment in (("Windows", "lock released"), ("Linux", "closed the browser processes")):
+            monkeypatch.setattr(bc.platform, "system", lambda system=system: system)
+            ok, msg = bc.close_browser_holding_profile(str(tmp_path))
+            assert ok is True, (system, msg)
+            assert fragment in msg, (system, msg)
+            if system != "Windows":
+                assert "lock released" not in msg, msg
 
     def test_snapshot_blocks_when_locked_even_with_autoclose(self, tmp_path, monkeypatch):
         """Even with autoclose armed, snapshot_real_profile does NOT kill — it

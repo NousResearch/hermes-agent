@@ -1,7 +1,6 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import contextlib
-import itertools
 import logging
 import ntpath
 import os
@@ -14,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -956,7 +956,7 @@ def _kill_process_windows(proc) -> None:
 # whole messaging control plane — the same failure domain the background fix closed. The
 # wrapper is reused verbatim; only the foreground spawn point is added. Import is
 # function-local because tools.process_registry imports this module at module level.
-_foreground_scope_counter = itertools.count(1)
+_FOREGROUND_SCOPE_PREFIX = "hermes-fg"
 
 
 _FOREGROUND_DEGRADED_CONSEQUENCE = (
@@ -1004,15 +1004,17 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
         if not _pr._systemd_run_user_scope_available():
             _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
             return args, None, run_env
-        suffix = f"{os.getpid()}-{next(_foreground_scope_counter)}"
+        # Random, not a counter: a scope leaked past a restart must not collide with a later
+        # gateway that reuses the same PID ("Unit ... already exists").
+        suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
         # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
         # more than the background cap; the isolation alone protects the gateway.
-        scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix="hermes-fg",
+        scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix=_FOREGROUND_SCOPE_PREFIX,
                                                memory_max=False)
         if scoped == args:
             _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
             return args, None, run_env
-        return scoped, f"hermes-fg-{suffix}.scope", _pr.systemd_user_bus_env(run_env)
+        return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", _pr.systemd_user_bus_env(run_env)
     except Exception as exc:
         if supervised:
             _warn_foreground_scope_degraded(f"building the scope wrapper failed ({type(exc).__name__}: {exc})")

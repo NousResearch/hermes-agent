@@ -721,7 +721,8 @@ def _make_run_env(env: dict) -> dict:
     run_env = _scrubbed_env(
         [(dict(strip_launch_profile_env(os.environ.copy()) | env), True)],
         frozenset(),
-        lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
+        lambda p: _prepend_git_bash_dirs(
+            _append_missing_sane_path_entries(_apply_login_shell_path(p))),
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
@@ -753,6 +754,151 @@ _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
 _hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
+
+
+# --- Login-shell PATH capture (zsh/fish users, #129103) ---
+# The terminal snapshot is built by ``bash -l`` (plus _resolve_shell_init_files),
+# so a zsh login shell's ~/.zprofile (Homebrew, pyenv, conda on macOS) is never
+# read and /opt/homebrew/bin loses to /usr/bin. When $SHELL names zsh/fish,
+# capture that shell's login PATH once and merge it in front of the inherited
+# PATH before the snapshot is taken.
+# ``-l`` sources ~/.zprofile / ~/.profile (where ``brew shellenv`` lives);
+# ``-i`` sources ~/.zshrc (where nvm/pyenv/asdf/conda PATH edits live) — ``-l``
+# alone misses the ~/.zshrc half. So try ``-ilc`` first, then fall back to
+# ``-lc`` (same ladder as apps/desktop/electron/shell-path.ts). Each attempt is
+# bounded, stdin-closed, and group-killed: interactive init can spawn daemons
+# that wedge a TTY-less probe (zsh + Powerlevel10k gitstatusd, #107109), but the
+# bound keeps the wedge protection. A broken/slow profile must never brick
+# terminal execution, so any failure leaves PATH untouched. Only successes are
+# cached; failures are re-probed next time and emit a debug log.
+_LOGIN_SHELL_PATH_START = "__HERMES_LOGIN_PATH_START__"
+_LOGIN_SHELL_PATH_END = "__HERMES_LOGIN_PATH_END__"
+_LOGIN_SHELL_PATH_TIMEOUT_S = 5.0
+# Probe flags in preference order: interactive-login first (both rc files),
+# then login-only. Some shells swallow combined ``-ilc`` with a non-tty stdin,
+# so the plain login shell is the fallback before giving up.
+_LOGIN_SHELL_PATH_FLAGS = ("-ilc", "-lc")
+# Shells whose login PATH the bash snapshot does not already cover. bash/sh/
+# dash/ksh share ~/.profile (already sourced); zsh/fish do not.
+_LOGIN_SHELL_PATH_CAPTURE_ALLOWLIST = frozenset({"zsh", "fish"})
+# Success-only cache: a failed probe (slow/broken rc) must not disable the fix
+# for the life of a long-running gateway — the next call re-probes.
+_login_shell_path_cache: dict[str, str] = {}
+
+
+def _user_login_shell_for_path_capture() -> str | None:
+    """$SHELL when it names a shell needing PATH capture (zsh/fish), else None.
+
+    POSIX-only; requires an executable file. bash-family shells return None —
+    the ``bash -l`` snapshot already sources their profile files."""
+    if _IS_WINDOWS:
+        return None
+    shell = (os.environ.get("SHELL") or "").strip()
+    if not shell or Path(shell).name not in _LOGIN_SHELL_PATH_CAPTURE_ALLOWLIST:
+        return None
+    if not (os.path.isfile(shell) and os.access(shell, os.X_OK)):
+        return None
+    return shell
+
+
+def _login_shell_probe_command() -> str:
+    """Shell-agnostic PATH probe wrapped in sentinels.
+
+    ``printenv PATH`` avoids per-family expansion syntax (fish rejects
+    ``${PATH}``, #107845); sentinels keep profile banners from corrupting the
+    capture (last START wins, exit code ignored)."""
+    return (
+        f"printf '%s' '{_LOGIN_SHELL_PATH_START}'; "
+        "printenv PATH; "
+        f"printf '%s' '{_LOGIN_SHELL_PATH_END}'"
+    )
+
+
+def _extract_login_shell_path(output: str) -> str | None:
+    """PATH between the last START and the next END markers, or None."""
+    text = output or ""
+    start = text.rfind(_LOGIN_SHELL_PATH_START)
+    if start == -1:
+        return None
+    value_start = start + len(_LOGIN_SHELL_PATH_START)
+    end = text.find(_LOGIN_SHELL_PATH_END, value_start)
+    if end == -1:
+        return None
+    value = text[value_start:end].strip()
+    return value or None
+
+
+def _probe_login_shell_path_once(shell: str, flag: str, timeout: float) -> str | None:
+    """Run one probe rung (``flag`` is ``-ilc`` or ``-lc``) and return its PATH,
+    or None on any failure. Bounded, stdin-closed, group-killed on timeout; a
+    profile may exit nonzero after the sentinel printed — trust the sentinel,
+    not the exit code. Never raises."""
+    try:
+        proc = subprocess.Popen(
+            [shell, flag, _login_shell_probe_command()],
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                if not _IS_WINDOWS:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                out, _ = proc.communicate(timeout=2)
+                return _extract_login_shell_path(out or "")
+            return None
+        return _extract_login_shell_path(out or "")
+    except Exception:
+        return None
+
+
+def _capture_user_login_shell_path(timeout: float = _LOGIN_SHELL_PATH_TIMEOUT_S) -> str | None:
+    """Run the user's login shell (``-ilc`` then ``-lc``) and return its PATH,
+    or None on any failure. Only successes are cached per shell path so every
+    terminal command does not re-probe; failures are re-probed next time and
+    emit a debug log. Never raises."""
+    shell = _user_login_shell_for_path_capture()
+    if shell is None:
+        return None
+    if shell in _login_shell_path_cache:
+        return _login_shell_path_cache[shell]
+    for flag in _LOGIN_SHELL_PATH_FLAGS:
+        if captured := _probe_login_shell_path_once(shell, flag, timeout):
+            _login_shell_path_cache[shell] = captured
+            return captured
+    logger.debug(
+        "Login-shell PATH probe failed for %s; leaving PATH untouched", shell)
+    return None
+
+
+def _reset_login_shell_path_cache() -> None:
+    """Clear the probe cache (tests only)."""
+    _login_shell_path_cache.clear()
+
+
+def _merge_login_shell_path(existing_path: str, login_path: str) -> str:
+    """Login entries first (so Homebrew/version-manager dirs win over /usr/bin),
+    then existing-only entries appended; duplicates collapsed, empties dropped."""
+    if _IS_WINDOWS:
+        return existing_path
+    ordered = dict.fromkeys(e for e in login_path.split(":") if e)
+    ordered.update(dict.fromkeys(e for e in existing_path.split(":") if e and e not in ordered))
+    return ":".join(ordered)
+
+
+def _apply_login_shell_path(existing_path: str) -> str:
+    """Merge the captured login-shell PATH in front of *existing_path*; no-op
+    when there is no captured shell or the probe failed."""
+    login_path = _capture_user_login_shell_path()
+    if not login_path:
+        return existing_path
+    merged = _merge_login_shell_path(existing_path, login_path)
+    return merged if merged else existing_path
 
 
 # --- Login-shell init files ---

@@ -443,6 +443,7 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         while True:
             try:
+                claim_guard = None
                 pending = list_session_admissions(self.db, session_id=ref.session_id)
                 if any(row['status'] == 'unknown' for row in pending):
                     self._pause(ref, 'unknown_execution')
@@ -458,7 +459,7 @@ class SessionAuthority:
                             service = getattr(self, 'hosted_room_service', None)
                             if service is None:
                                 raise RuntimeStoreError('permission_denied')
-                            await asyncio.to_thread(service.check_admission, ref, first)
+                            claim_guard = await asyncio.to_thread(service.check_admission, ref, first, _for_claim=True)
                         # Cancellation may advance the FIFO while the source owner is awaited;
                         # the successor must earn its own reauthorization, not inherit this one.
                         current = get_session_admission(self.db, admission_id=first['admission_id'])
@@ -483,8 +484,11 @@ class SessionAuthority:
                     from gateway.session_api_turn import check_api_turn
                     check_api_turn(self, ref, first['payload'])
                 self._require_admission_open()
-                row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id)
+                row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id,
+                    **({'_authorize_write': claim_guard} if claim_guard is not None else {}))
             except RuntimeStoreError as exc:
+                if exc.reason == 'admission_changed':
+                    continue  # A different FIFO head needs its own outside-writer authorization.
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)

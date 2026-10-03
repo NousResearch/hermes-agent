@@ -1303,6 +1303,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        r'exceeds the limit of\s*(\d+)',
+        r'is greater than the maximum of\s*(\d+)',
+        r'cannot be greater than\s*(?:max_model_len\s*=\s*)?(\d+)',
         r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
@@ -1369,6 +1372,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("output limit",), ("maximum allowed number of output tokens",),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
+    ("exceeds the limit of",), ("is greater than the maximum of",), ("cannot be greater than",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1386,7 +1390,8 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
-    ("limited to",),
+    ("limited to",), ("exceeds the limit of",), ("is greater than the maximum of",),
+    ("cannot be greater than",),
 )
 
 

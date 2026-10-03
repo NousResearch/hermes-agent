@@ -1028,6 +1028,8 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     resume_overrides = current.get("resume_runtime_overrides")
     if isinstance(resume_overrides, dict) and resume_overrides and _overrides_have_routable_provider(resume_overrides):
         kw.update(resume_overrides)
+        if current.get("create_reasoning_override") is not None:
+            kw["reasoning_config_override"] = current.get("create_reasoning_override")
     else:
         if override := current.get("model_override"):
             kw["model_override"] = override
@@ -1916,14 +1918,14 @@ def _display_mouse_tracking(display: dict) -> str:
     return "off" if raw is False or raw == 0 else "all"
 
 
-def _load_reasoning_config(model: str = "") -> dict | None:
+def _load_reasoning_config(model: str = "", provider: str | None = None) -> dict | None:
     """Via the shared chokepoint :func:`hermes_constants.resolve_reasoning_config` (per-model override >
-    global ``agent.reasoning_effort``; YAML False = disabled).
+    ``providers:`` entry > global ``agent.reasoning_effort``; YAML False = disabled).
 
     Closes #21256.
     """
     from hermes_constants import resolve_reasoning_config
-    return resolve_reasoning_config(_load_cfg(), model)
+    return resolve_reasoning_config(_load_cfg(), model, provider)
 
 
 def _load_service_tier() -> str | None:
@@ -2670,7 +2672,9 @@ def _make_agent(
         credential_pool=runtime.get("credential_pool"), quiet_mode=True,
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
-            reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
+            reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(
+                str(model or ""),
+                str(runtime.get("requested_provider") or runtime.get("provider") or "") or None)),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(platform),
         disabled_toolsets=_load_disabled_toolsets(),

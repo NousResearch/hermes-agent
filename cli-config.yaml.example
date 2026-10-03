@@ -1015,6 +1015,12 @@ memory:
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
 
+  # Seconds to wait for an external memory provider's synchronous prefetch
+  # before skipping this turn (default 8). Raise it for slow backends (cold
+  # recall, remote auth) so a late result is kept for the next turn instead
+  # of the provider appearing "parked" for the session.
+  external_prefetch_timeout: 8.0
+
 # =============================================================================
 # Session Continuity (Messaging Platforms)
 # =============================================================================

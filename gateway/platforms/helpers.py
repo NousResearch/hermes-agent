@@ -123,9 +123,21 @@ _STRIP_RULES = (
     (re.compile(r"`(.+?)`"), r"\1"),
     (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),
 )
-_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
+# Markdown link label: one level of balanced ``[...]`` and backslash escapes are
+# legal label content (PR titles like ``[Fix] Harden tokens``, citation markers
+# ``\[16\]``); a ``[^\]]+`` label leaves every such link as raw markdown on the
+# platform. Alternatives are disjoint on their first char and the unit count is
+# bounded, so a run of ``[\`` pairs stays linear instead of quadratic.
+MD_LINK_LABEL = r"(?:[^\[\]\\]|\\.|\[[^\[\]]*\]){1,1000}"
+_MD_LABEL_ESCAPE_RE = re.compile(r"\\([\[\]])")
+_MD_LINK_RE = re.compile(r"\[(" + MD_LINK_LABEL + r")\]\(([^\)]+)\)")
 _HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
 _NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
+
+
+def unescape_md_link_label(label: str) -> str:
+    r"""Drop the backslash escapes a markdown link label needs for ``[``/``]``."""
+    return _MD_LABEL_ESCAPE_RE.sub(r"\1", label)
 
 
 def _keep_link_target(match: "re.Match[str]") -> str:
@@ -136,10 +148,16 @@ def _keep_link_target(match: "re.Match[str]") -> str:
     unreachable rather than merely unformatted. Non-http targets (``mailto:``,
     relative paths) are not auto-linked, so they keep the label-only behaviour.
     """
-    label, target = match.group(1).strip(), match.group(2).strip()
+    label = unescape_md_link_label(match.group(1))
+    target = match.group(2).strip()
     if not _HTTP_TARGET_RE.match(target):
-        return match.group(1)
+        return label
+    label = label.strip()
     return target if label == target else f"{label}\n{target}"
+
+
+def _drop_link_target(match: "re.Match[str]") -> str:
+    return unescape_md_link_label(match.group(1))
 
 
 def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
@@ -150,7 +168,7 @@ def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
     """
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
-    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
+    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else _drop_link_target, text)
     return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
 
 

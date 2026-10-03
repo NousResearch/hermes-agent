@@ -2573,6 +2573,11 @@ class TestFormatMessage:
         )
         assert result == "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>"
 
+    def test_bracketed_label_becomes_link(self, adapter):
+        """PR-title labels like ``[Fix] …`` (balanced or escaped brackets) convert instead of staying raw."""
+        result = adapter.format_message("[[Fix] Harden tokens](https://e.com/1) and [\\[16\\]](https://e.com/2)")
+        assert result == "<https://e.com/1|[Fix] Harden tokens> and <https://e.com/2|[16]>"
+
 
     # --- Entity preservation (spec-compliance) ---
 

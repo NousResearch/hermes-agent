@@ -43,7 +43,7 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MD_LINK_LABEL, MessageDeduplicator, unescape_md_link_label
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -3186,7 +3186,7 @@ class SlackAdapter(BasePlatformAdapter):
             url = m.group(2).strip()
             if url.startswith("<") and url.endswith(">"):
                 url = url[1:-1].strip()
-            return _ph(f"<{url}|{m.group(1)}>")
+            return _ph(f"<{url}|{unescape_md_link_label(m.group(1))}>")
 
         def _convert_header(m):
             inner = re.sub(r"\*\*(.+?)\*\*", r"\1", m.group(1).strip())
@@ -3205,7 +3205,7 @@ class SlackAdapter(BasePlatformAdapter):
         passes = (
             (r"(```(?:[^\n]*\n)?[\s\S]*?```)", _protect_fence, 0),
             (r"(`[^`]+`)", lambda m: _ph(m.group(0)), 0),
-            (r"(?<!!)\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)", _convert_markdown_link, 0),
+            (r"(?<!!)\[(" + MD_LINK_LABEL + r")\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)", _convert_markdown_link, 0),
             (r"(<(?:[@#!]|(?:https?|mailto|tel):)[^>\n]+>)", lambda m: _ph(m.group(1)), 0),
             (r"^(>+\s)", lambda m: _ph(m.group(0)), re.MULTILINE),
             None,

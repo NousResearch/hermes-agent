@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  CRON_REASONING_VALUES,
   cronEditorUpdates,
   cronModelChoiceValue,
+  cronReasoningEffortToWire,
   jobDescription,
   jobIsScriptOnly,
   lastErrorSummary,
+  normalizeCronReasoningEffort,
   parseCronDeliveryTargets,
   parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
@@ -21,6 +24,29 @@ describe('cron model choice values', () => {
     expect(customProvider).not.toBe(colonModel)
     expect(parseCronModelChoiceValue(customProvider)).toEqual({ provider: 'custom:internlm', model: 'intern-latest' })
     expect(parseCronModelChoiceValue(colonModel)).toEqual({ provider: 'custom', model: 'internlm:intern-latest' })
+  })
+})
+
+describe('cron reasoning effort normalization', () => {
+  it('normalizes valid strings and the YAML false spelling', () => {
+    expect(normalizeCronReasoningEffort('  XHIGH ')).toBe('xhigh')
+    expect(normalizeCronReasoningEffort(false)).toBe('none')
+    expect(CRON_REASONING_VALUES).toContain('ultra')
+  })
+
+  it('clamps unknown, empty, and boolean true values to inherit', () => {
+    expect(normalizeCronReasoningEffort('turbo')).toBe('inherit')
+    expect(normalizeCronReasoningEffort('')).toBe('inherit')
+    expect(normalizeCronReasoningEffort(true)).toBe('inherit')
+    expect(normalizeCronReasoningEffort(null)).toBe('inherit')
+  })
+
+  it('uses one nullable wire mapping for create and edit payloads', () => {
+    expect(cronReasoningEffortToWire('inherit')).toBe(null)
+    expect(cronReasoningEffortToWire('bogus')).toBe(null)
+    expect(cronReasoningEffortToWire(true)).toBe(null)
+    expect(cronReasoningEffortToWire(false)).toBe('none')
+    expect(cronReasoningEffortToWire('high')).toBe('high')
   })
 })
 
@@ -117,7 +143,15 @@ describe('cronEditorUpdates', () => {
   it('omits prompt when saving a script-only job with an empty prompt', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'local', model: '', name: 'Weekly', prompt: '', provider: '', schedule: '0 9 * * 1' },
+        {
+          deliver: 'local',
+          model: '',
+          name: 'Weekly',
+          prompt: '',
+          provider: '',
+          reasoningEffort: 'inherit',
+          schedule: '0 9 * * 1'
+        },
         { scriptOnlyJob: true }
       )
     ).toEqual({
@@ -130,7 +164,15 @@ describe('cronEditorUpdates', () => {
   it('includes prompt when the user typed one on a script-only job', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'email', model: '', name: 'Weekly', prompt: 'note', provider: '', schedule: '0 9 * * 1' },
+        {
+          deliver: 'email',
+          model: '',
+          name: 'Weekly',
+          prompt: 'note',
+          provider: '',
+          reasoningEffort: 'inherit',
+          schedule: '0 9 * * 1'
+        },
         { scriptOnlyJob: true }
       ).prompt
     ).toBe('note')
@@ -144,6 +186,7 @@ describe('cronEditorUpdates', () => {
         name: 'Daily',
         prompt: 'go',
         provider: 'anthropic',
+        reasoningEffort: 'high',
         schedule: '0 9 * * *'
       },
       { scriptOnlyJob: false }
@@ -155,7 +198,15 @@ describe('cronEditorUpdates', () => {
 
   it('clears a previous pin when the override is reset to default', () => {
     const updates = cronEditorUpdates(
-      { deliver: 'local', model: '', name: 'Daily', prompt: 'go', provider: '', schedule: '0 9 * * *' },
+      {
+        deliver: 'local',
+        model: '',
+        name: 'Daily',
+        prompt: 'go',
+        provider: '',
+        reasoningEffort: 'inherit',
+        schedule: '0 9 * * *'
+      },
       { scriptOnlyJob: false }
     )
 
@@ -165,12 +216,70 @@ describe('cronEditorUpdates', () => {
 
   it('never touches model fields on script-only jobs', () => {
     const updates = cronEditorUpdates(
-      { deliver: 'local', model: 'x', name: 'Weekly', prompt: '', provider: 'y', schedule: '0 9 * * 1' },
+      {
+        deliver: 'local',
+        model: 'x',
+        name: 'Weekly',
+        prompt: '',
+        provider: 'y',
+        reasoningEffort: 'max',
+        schedule: '0 9 * * 1'
+      },
       { scriptOnlyJob: true }
     )
 
     expect('model' in updates).toBe(false)
     expect('provider' in updates).toBe(false)
+    expect('reasoning_effort' in updates).toBe(false)
+  })
+
+  it('sets and clears a per-job reasoning override explicitly', () => {
+    const pinned = cronEditorUpdates(
+      {
+        deliver: 'local',
+        model: '',
+        name: 'Daily',
+        prompt: 'go',
+        provider: '',
+        reasoningEffort: 'xhigh',
+        schedule: '0 9 * * *'
+      },
+      { scriptOnlyJob: false }
+    )
+
+    expect(pinned.reasoning_effort).toBe('xhigh')
+
+    const cleared = cronEditorUpdates(
+      {
+        deliver: 'local',
+        model: '',
+        name: 'Daily',
+        prompt: 'go',
+        provider: '',
+        reasoningEffort: 'inherit',
+        schedule: '0 9 * * *'
+      },
+      { scriptOnlyJob: false }
+    )
+
+    expect(cleared.reasoning_effort).toBe(null)
+  })
+
+  it('does not persist an invalid runtime picker value', () => {
+    const updates = cronEditorUpdates(
+      {
+        deliver: 'local',
+        model: '',
+        name: 'Daily',
+        prompt: 'go',
+        provider: '',
+        reasoningEffort: 'turbo' as never,
+        schedule: '0 9 * * *'
+      },
+      { scriptOnlyJob: false }
+    )
+
+    expect(updates.reasoning_effort).toBe(null)
   })
 })
 

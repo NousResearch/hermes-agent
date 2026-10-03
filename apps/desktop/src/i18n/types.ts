@@ -7,6 +7,7 @@
 
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
+import type { CronReasoningEffortOption } from '@/types/hermes'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -2855,6 +2856,8 @@ export interface Translations {
     deliverNeedsHomeChannel: string
     modelLabel: string
     modelDefault: string
+    reasoningLabel: string
+    reasoningLabels: Record<CronReasoningEffortOption, string>
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

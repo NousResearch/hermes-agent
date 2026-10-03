@@ -2395,6 +2395,8 @@ def _update_config_for_provider(
             model_cfg["default"] = default_model
     elif clear_default:
         model_cfg.pop("default", None)
+    from hermes_cli.route_identity import drop_stale_context_pin
+    drop_stale_context_pin(model_cfg, current_model)
     config["model"] = model_cfg
     atomic_config_replace(config_path, config)
     return config_path

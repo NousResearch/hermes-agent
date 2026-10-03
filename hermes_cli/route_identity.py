@@ -118,6 +118,20 @@ def should_clear_context_pin(configured_model: Any, active_model: Any, configure
         return True
 
 
+def drop_stale_context_pin(model_cfg: Any, prior_model_cfg: Any) -> None:
+    """Pop ``model.context_length`` from a ``model:`` block about to replace *prior_model_cfg* when
+    the pin belonged to the prior model or route. The pin is scoped to the configured default, so a
+    carried-over pin silently becomes the NEW model's window; ``model_selection_config_updates``
+    makes the same check for ``/model --global`` and the dashboard."""
+    if not isinstance(model_cfg, dict) or "context_length" not in model_cfg:
+        return
+    prior = prior_model_cfg if isinstance(prior_model_cfg, dict) else {"default": prior_model_cfg}
+    if should_clear_context_pin(
+            prior.get("default") or prior.get("model"), model_cfg.get("default"), prior.get("base_url"),
+            model_cfg.get("base_url"), prior.get("provider"), model_cfg.get("provider")):
+        model_cfg.pop("context_length", None)
+
+
 async def should_clear_context_pin_async(*args: Any) -> bool:
     """``should_clear_context_pin`` on a worker thread so async gateway handlers never run it on the
     event loop — the resolution chain is cache-only (``allow_network=False``) but can still do

@@ -34,16 +34,12 @@ export function collapseDuplicateFinalAfterToolInterim(
   }
 
   const priorIndex = messages.findLastIndex(
-    (message, index) =>
-      index < streamIndex &&
-      message.role === 'assistant' &&
-      message.interim &&
-      chatMessageText(message).trim() === options.finalText
+    (message, index) => index < streamIndex && message.role !== 'system' && (!message.hidden || message.role === 'user')
   )
 
   const prior = messages[priorIndex]
 
-  if (!prior) {
+  if (prior?.role !== 'assistant' || !prior.interim || chatMessageText(prior).trim() !== options.finalText) {
     return null
   }
 

@@ -93,8 +93,15 @@ def kanban_task_id() -> Optional[str]:
 
 
 def kanban_turn_recovery_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set and the attempt budget is non-zero."""
+    """On when ``HERMES_KANBAN_TASK`` is set and the attempt budget is non-zero.
+
+    Off for ``auto``-contract workers: they run as pure text-in-text-out
+    functions with no lifecycle tools, so the recovery nudge (which instructs
+    a terminal ``kanban_complete`` call) does not apply — a failed auto turn
+    exits non-zero and the dispatcher requeues it (#126626)."""
     if kanban_task_id() is None:
+        return False
+    if (os.environ.get("HERMES_KANBAN_COMPLETION_CONTRACT") or "").strip() == "auto":
         return False
     return max_recovery_attempts() > 0
 

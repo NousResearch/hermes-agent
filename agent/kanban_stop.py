@@ -33,8 +33,12 @@ _DEFAULT_MAX_ATTEMPTS = 2
 def kanban_stop_nudge_enabled() -> bool:
     """On when ``HERMES_KANBAN_TASK`` is set for the dispatcher-owned worker, unless
     ``HERMES_KANBAN_STOP_NUDGE`` disables it. In-process delegate_task children and cron runs
-    inherit the env var but own no board task and carry no kanban toolset."""
+    inherit the env var but own no board task and carry no kanban toolset.
+    ``auto``-contract workers run as pure text-in-text-out functions with no
+    lifecycle tools, so the terminal-call nudge never fires for them (#126626)."""
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    if (os.environ.get("HERMES_KANBAN_COMPLETION_CONTRACT") or "").strip() == "auto":
         return False
     return bool(owned_kanban_task())
 

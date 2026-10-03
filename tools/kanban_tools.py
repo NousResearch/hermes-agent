@@ -92,7 +92,19 @@ def _visible(*, to_env_worker: bool) -> bool:
 
 @no_cache_check_fn
 def _check_kanban_mode() -> bool:
-    """Lifecycle tools: dispatcher workers + profiles with the ``kanban`` toolset."""
+    """Lifecycle tools: dispatcher workers + profiles with the ``kanban`` toolset.
+
+    ``auto``-contract workers run as pure text-in-text-out functions with no
+    lifecycle tools or guidance (#126626).
+    """
+    try:
+        from hermes_cli.kanban_pr_acceptance import is_auto_worker_env
+
+        if is_auto_worker_env():
+            return False
+    except Exception:
+        if os.environ.get("HERMES_KANBAN_COMPLETION_CONTRACT") == "auto":
+            return False
     return _visible(to_env_worker=True)
 
 

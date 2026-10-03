@@ -1151,11 +1151,20 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without
-    # owning a task.
+    # owning a task. ``auto``-contract workers run as pure text-in-text-out functions:
+    # no lifecycle tools and no lifecycle guidance (#126626).
     from agent.delegation_context import owned_kanban_task
     from agent.prompt_builder import KANBAN_GUIDANCE
+    try:
+        from hermes_cli.kanban_pr_acceptance import is_auto_worker_env
+
+        _is_auto = is_auto_worker_env()
+    except Exception:
+        import os as _os
+
+        _is_auto = _os.environ.get("HERMES_KANBAN_COMPLETION_CONTRACT") == "auto"
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
+        "" if _is_auto else (KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else "")
     )
     if agent.quiet_mode:
         return

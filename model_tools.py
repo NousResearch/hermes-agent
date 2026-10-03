@@ -61,6 +61,16 @@ def _is_dispatcher_owned_worker() -> bool:
         return True
 
 
+def _is_auto_completion_worker() -> bool:
+    """True when this worker runs under the ``auto`` completion contract."""
+    try:
+        from hermes_cli.kanban_pr_acceptance import is_auto_worker_env
+
+        return is_auto_worker_env()
+    except Exception:
+        return os.environ.get("HERMES_KANBAN_COMPLETION_CONTRACT") == "auto"
+
+
 # --- Async bridging (single source of truth; registry.dispatch uses it too) ---
 # Loops are persistent (never asyncio.run per call): cached httpx/AsyncOpenAI
 # clients stay bound to a live loop, so their GC cleanup can't hit "Event loop
@@ -276,6 +286,7 @@ def _tool_defs_cache_key(
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        _is_auto_completion_worker(),
     )
 
 
@@ -315,18 +326,23 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
 def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]], quiet_mode: bool) -> set:
     """Tool names requested by the toolset selection (before check_fn filtering)."""
     tools: set = set()
+    is_auto = _is_auto_completion_worker()
     if enabled_toolsets is not None:
         enabled = list(enabled_toolsets)
         # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
+        # tools, even when the assignee profile restricts its chat toolsets —
+        # except ``auto``-contract workers, which run as pure text-in-text-out
+        # functions with no lifecycle tools or guidance (#126626).
         if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
+                and _is_dispatcher_owned_worker() and not is_auto and "kanban" not in enabled):
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools.update(resolve_toolset(ts_name))
+    if is_auto:
+        tools.difference_update({t for t in tools if t.startswith("kanban_")})
     # A role-reserved toolset (``setup``) reaches only a profile carrying that role, whatever the config,
     # CLI flag, env pin or "all" asked for; this is the one point every surface's selection passes.
     from toolsets import profile_role_toolsets

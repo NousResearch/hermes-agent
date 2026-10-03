@@ -1532,6 +1532,55 @@ class TestMaskSecretControlStripping:
         assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"
 
 
+class TestEnvVarReferencePassthrough:
+    """Issue #124523: ``hermes profile export`` force-redacts staged text, and a
+    whole-token env reference (``$TOKEN``, ``${API_KEY}``, ``${env:VAR}``) masked
+    into ``***``/``${API...KEY}`` corrupted scripts (401 on re-import), MCP
+    headers and bundled skills (origin-hash mismatch). A reference carries a
+    name, not a credential — the value lives in the environment — so it must
+    pass through while literal credentials keep masking."""
+
+    def test_auth_header_dollar_reference_preserved(self):
+        text = 'curl -H "Authorization: token $TOKEN" https://example.com'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_auth_header_braced_reference_preserved(self):
+        text = "Authorization: Bearer ${MCP_GLITCHTIP_API_KEY}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_windows_env_brace_form_preserved(self):
+        text = "Authorization: token ${env:WIN_KEY}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_yaml_assignment_reference_preserved(self):
+        text = "password: $PROFILE_PASSWORD"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_json_quoted_reference_preserved(self):
+        text = '"api_key": "${MY_API_KEY}"'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_literal_credential_still_masked(self):
+        # Fail-closed companion: a literal secret keeps its mask next to the
+        # preserved references.
+        result = redact_sensitive_text(
+            "Authorization: token ghp_abcdef1234567890abcdef1234567890abcd", force=True
+        )
+        assert "abcdef1234567890" not in result
+
+    def test_composite_reference_plus_literal_still_masked(self):
+        # ``fullmatch`` gate: a reference glued to extra non-reference text is
+        # treated as an opaque credential, never handed through unmasked.
+        result = redact_sensitive_text("x-access-token:${TOKEN}@git.example.net", force=True)
+        assert "git.example.net" not in result
+
+    def test_shell_special_parameters_still_masked(self):
+        # ``$1``/``$?`` are not name-shaped references; keep them out of the
+        # passthrough so the gate stays narrow.
+        result = redact_sensitive_text("Authorization: token $1", force=True)
+        assert result == "Authorization: token ***"
+
+
 class TestValueAwareGatingCorpus:
     """Issue #96607: corpus-level before/after for value-aware gating.
 

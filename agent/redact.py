@@ -644,10 +644,24 @@ def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
     return placeholder if len(value) < floor else f"{value[:head]}...{value[-tail:]}"
 
 
+# A whole-token environment-variable reference (``$TOKEN``, ``${API_KEY}``, ``${env:VAR}``)
+# is a name, not a credential — the value lives in the environment, so masking it secretes
+# nothing while corrupting exported scripts, configs and skills (``token $TOKEN`` became
+# ``token ***`` and broke auth on re-import; bundled skills no longer matched their origin
+# hash, issue #124523). ``fullmatch`` keeps it fail-closed: ``${VAR}suffix``/``$VAR@host``
+# composites still mask.
+_PURE_ENV_REFERENCE_RE = re.compile(
+    r"\$(?:\{(?:env:)?[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
 def _mask_token(token: str) -> str:
-    """Mask a log token — 18-char floor, preserves 6 prefix / 4 suffix; empty → ``***``."""
+    """Mask a log token — 18-char floor, preserves 6 prefix / 4 suffix; empty → ``***``;
+    a whole-token env reference is a name, not a secret, and passes through (#124523)."""
     if not token:
         return "***"
+    if _PURE_ENV_REFERENCE_RE.fullmatch(token):
+        return token
     return mask_secret(token, head=6, tail=4, floor=18)
 
 

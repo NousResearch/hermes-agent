@@ -223,7 +223,6 @@ def test_early_fork_sync_without_push_still_completes(checkout, monkeypatch):
 
 def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, capsys):
     t = update_tree
-    monkeypatch.setattr("hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
     run = subprocess.run
 
     def local_git_only(command, *args, **kwargs):

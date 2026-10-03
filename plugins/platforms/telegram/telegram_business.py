@@ -258,4 +258,3 @@ class TelegramBusinessMixin:
             await self._dispatch_authenticated_media(message, event)
         else:
             self._enqueue_text_event(event)
-

@@ -209,8 +209,9 @@ Note: on Windows winget installs, gh lands at `/c/Program Files/GitHub CLI` — 
 >
 > ```bash
 > # $TOKEN = the access token from the device flow above (never echo it)
+> GH_AUTH="Authorization: token $TOKEN"
 > mkdir -p ~/.config/gh
-> LOGIN=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/user \
+> LOGIN=$(curl -s -H "$GH_AUTH" https://api.github.com/user \
 >   | sed 's/.*"login": *"\([^"]*\)".*/\1/')
 > printf 'github.com:\n    users:\n        %s:\n            oauth_token: %s\n    git_protocol: https\n    oauth_token: %s\n    user: %s\n' \
 >   "$LOGIN" "$TOKEN" "$TOKEN" "$LOGIN" > ~/.config/gh/hosts.yml
@@ -253,7 +254,8 @@ When `gh` is not available, you can still access the full GitHub API using `curl
 export GITHUB_TOKEN="<token>"
 
 # Then use in curl calls:
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
+GH_AUTH="Authorization: token $GITHUB_TOKEN"
+curl -s -H "$GH_AUTH" \
   https://api.github.com/user
 ```
 

@@ -714,6 +714,69 @@ def _localhost_to_ipv4(url: str) -> str:
     return re.sub(r"^(https?://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", url, count=1)
 
 
+def _is_lmstudio_models_payload(response: Any) -> bool:
+    """Return True only when an ``/api/v1/models`` 200 is genuinely LM Studio.
+
+    A 200 on this path is not by itself evidence of LM Studio: any
+    OpenAI-compatible local server is free to serve it, and several do (a
+    loopback proxy that exposes ``/api/v1/models`` so a harness can validate
+    model names, for one). Those return the standard OpenAI listing envelope,
+    ``{"object": "list", "data": [{"id": ..., "object": "model"}]}``.
+
+    LM Studio's native listing is structurally different: it keys entries under
+    ``models``, does not stamp ``object="list"``, and each entry carries fields
+    the OpenAI envelope never has (``loaded_instances``, ``max_context_length``,
+    ``arch``, ``publisher``, a publisher-qualified ``key``, or a ``type`` such as
+    "llm" paired with a ``state``). Discriminating on that shape — rather than on
+    a bare 200 — is what keeps a generic OpenAI server out of the LM Studio
+    branch.
+
+    Fails closed: any parse error or unrecognised shape returns False, so the
+    caller simply continues its detection waterfall and ends up on the
+    OpenAI-compatible path, which is the correct handling for such a server.
+    """
+    # Any ONE of these is decisive — the OpenAI listing envelope has none of them.
+    strong_markers = (
+        "loaded_instances",
+        "max_context_length",
+        "arch",
+        "publisher",
+        "key",  # publisher-qualified id, e.g. "qwen/qwen3-4b"
+    )
+    try:
+        data = response.json()
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    # An explicit OpenAI list envelope is a decisive NEGATIVE signal: LM Studio's
+    # native payload does not stamp object="list". This rejects every standard
+    # OpenAI-compatible server up front, whatever its entries happen to carry.
+    if data.get("object") == "list":
+        return False
+    # LM Studio keys entries under `models`; the OpenAI envelope never does, so
+    # the key itself is a positive signal. Fall back to `data` for builds that
+    # use it.
+    lmstudio_keyed = isinstance(data.get("models"), list)
+    entries = data.get("models") if lmstudio_keyed else data.get("data")
+    if not isinstance(entries, list):
+        return False
+    if not entries:
+        # An idle LM Studio (running, no model loaded) returns an empty list.
+        # Accept that only on the LM Studio-native `models` key — an empty
+        # `{"data": []}` is indistinguishable from an idle OpenAI server once
+        # the `object: "list"` envelope is absent, so fail closed there.
+        return lmstudio_keyed
+    first = entries[0]
+    if not isinstance(first, dict):
+        return False
+    if any(marker in first for marker in strong_markers):
+        return True
+    # `type` and `state` are individually too generic to be evidence, so they
+    # only count together.
+    return "type" in first and "state" in first
+
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
     import httpx
@@ -741,7 +804,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # Most specific first: (name, paths tried until one answers 200, body check). LM Studio answers /api/tags
     # with {"error": ...} and 200, so Ollama's body must carry "models"; older llama.cpp builds have no /v1 prefix.
     waterfall = (
-        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
+        # A bare 200 on /api/v1/models is NOT LM Studio: other OpenAI-compatible local servers answer it
+        # with the standard OpenAI listing, and misdetecting them routes into the LM Studio parser, which
+        # reads payload["models"] and discards every advertised context window. Require the native shape.
+        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), _is_lmstudio_models_payload),
         ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
         ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),

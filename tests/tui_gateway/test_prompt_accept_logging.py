@@ -106,7 +106,8 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
     assert "hunter2" not in fin
 
 
-def test_turn_settles_before_post_turn_trim(monkeypatch, caplog):
+@pytest.mark.parametrize("settle_info_raises", [False, True])
+def test_turn_settles_before_post_turn_trim(monkeypatch, caplog, settle_info_raises):
     """A blocked post-turn trim must not hold the session running or its bookend (#131740);
     turn audio still ends BEFORE settlement, so a next turn admitted during the trim keeps its own."""
     import hermes_cli.mem_trim as mem_trim
@@ -124,6 +125,8 @@ def test_turn_settles_before_post_turn_trim(monkeypatch, caplog):
     monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
     monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    if settle_info_raises:  # a raising settle step must not skip the post-turn trim
+        monkeypatch.setattr(server, "_emit_settled_session_info", lambda *a: 1 / 0)
     audio_end = []  # (event, session running at that moment)
     tts = types.SimpleNamespace(put=lambda x: x is None and audio_end.append(("tts", session["running"])))
     monkeypatch.setattr(server, "_start_turn_voice", lambda: (tts, True))

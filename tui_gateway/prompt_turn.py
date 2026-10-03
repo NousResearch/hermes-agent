@@ -1187,39 +1187,41 @@ def _run_prompt_submit(
             _recover_turn_exception(sid, session, st, e)
         finally:
             _release_turn_scopes(sid, session, st)
-            _current_runtime_session_record.reset(runtime_session_token)
-            reset_transport(transport_token)
-            # A stale interim closure must not fire during a later turn.
-            st.agent.interim_assistant_callback = None
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
-                _release_hosted_room_turn_slot(session)
-            # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
-            # agent.session_id is re-read because compression may have rotated it (an
-            # accepted/finished pair whose id changed IS a rotation trace).
-            if isinstance(st.result, dict):
-                status = _result_status(st.result)
-            else:
-                status = "error" if st.error_retained else "complete"
-            logger.info(
-                "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
-                "error_retained=%s duration=%.1fs%s",
-                sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
-                status, st.error_retained, time.monotonic() - _turn_started_monotonic,
-                st.error_detail)
-            # Backstop for turns that never reached a terminal frame.
-            if st.receipt_committed:
-                _retire_turn_marker(session, st.marker_key)
+            try:  # a raising settle step must not skip the trim / HERMES_HOME reset
+                _current_runtime_session_record.reset(runtime_session_token)
+                reset_transport(transport_token)
+                # A stale interim closure must not fire during a later turn.
+                st.agent.interim_assistant_callback = None
                 with session["history_lock"]:
-                    if session.get("_active_turn_marker_key") == st.marker_key:
-                        session.pop("_active_turn_marker_key", None)
-                    session.pop("_hosted_room_task", None)
-            session.pop("_auto_continue_scheduled", None)
-            _emit_settled_session_info(sid, session, st.agent)
-            _post_turn_housekeeping(sid, session, st)
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                    if not st.error_retained:
+                        _clear_inflight_turn(session)
+                    _release_hosted_room_turn_slot(session)
+                # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
+                # agent.session_id is re-read because compression may have rotated it (an
+                # accepted/finished pair whose id changed IS a rotation trace).
+                if isinstance(st.result, dict):
+                    status = _result_status(st.result)
+                else:
+                    status = "error" if st.error_retained else "complete"
+                logger.info(
+                    "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
+                    "error_retained=%s duration=%.1fs%s",
+                    sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
+                    status, st.error_retained, time.monotonic() - _turn_started_monotonic,
+                    st.error_detail)
+                # Backstop for turns that never reached a terminal frame.
+                if st.receipt_committed:
+                    _retire_turn_marker(session, st.marker_key)
+                    with session["history_lock"]:
+                        if session.get("_active_turn_marker_key") == st.marker_key:
+                            session.pop("_active_turn_marker_key", None)
+                        session.pop("_hosted_room_task", None)
+                session.pop("_auto_continue_scheduled", None)
+                _emit_settled_session_info(sid, session, st.agent)
+            finally:
+                _post_turn_housekeeping(sid, session, st)
         return st.result, goal_followup
     def run():
         from agent.notification_presentation import notification_turn

@@ -1621,11 +1621,13 @@ def dump_api_request_debug(
         }
         if error is not None:
             dump_payload["error"] = _api_error_debug_info(error)
-        # Sanitize the session ID (may come from an untrusted X-Hermes-Session-Id header) so a
-        # "../"-shaped ID cannot write outside logs_dir.
-        from agent.session_persistence import _safe_session_filename_component
-        safe_sid = _safe_session_filename_component(agent.session_id)
-        dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+        # The id can come from an external session boundary; keep it as payload identity but derive
+        # one canonical filesystem component shared with transcript diversion and cleanup.
+        from hermes_state_ids import session_artifact_path
+        dump_file = session_artifact_path(
+            agent.logs_dir, agent.session_id, prefix="request_dump_",
+            suffix=f"_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json",
+        )
         # Redact secrets first: this fires unconditionally on API errors and captures the full
         # request body, so context-embedded secrets would otherwise land in cleartext on disk.
         from agent.redact import redact_sensitive_text

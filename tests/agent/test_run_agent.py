@@ -485,13 +485,15 @@ class TestSessionFilenameSafety:
         # The sanitizer is the chokepoint: every session-ID-derived artifact
         # path goes through it, so it must always yield a single, traversal-free
         # path segment while leaving legitimate IDs untouched.
-        from agent.session_persistence import _safe_session_filename_component as f
+        from hermes_state_ids import session_id_storage_name as f
         for raw in ("../../etc/passwd", "/abs/path", "..\\win\\trav", "a/b/c"):
             out = f(raw)
             assert "/" not in out and "\\" not in out and ".." not in out, out
-        # Legit IDs pass through unchanged; distinct IDs never collide.
+        # Legit IDs pass through unchanged; representative normalized IDs stay distinct.
         assert f("api-abc123def456") == "api-abc123def456"
         assert f("../a") != f("../b")
+        assert f("opaque") != f(" opaque ")
+        assert f(0) != f("")
 
 
 class TestGetMessagesUpToLastAssistant:

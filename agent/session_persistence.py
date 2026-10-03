@@ -1,10 +1,7 @@
 """Durable transcript persistence for ``AIAgent`` (mixin; MRO-resolved from ``run_agent``): SQLite flush
 with intrinsic ``_DB_PERSISTED_MARKER`` dedup, ephemeral-scaffolding filtering, explicit
 trajectory export."""
-import hashlib
-
 import logging
-import re
 from contextlib import nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -58,16 +55,6 @@ def _is_ephemeral_scaffolding(msg: Any) -> bool:
 # id(msg) set can alias a freed dict's address onto a new message, a key on the dict cannot. The `_` prefix is
 # mandatory (wire sanitizers strip `_` keys). CONTRACT: the marker asserts the dict's CONTENT is durable as
 # written — any in-place mutation that must persist MUST pop it (turn_finalizer, context_compressor).
-
-
-def _safe_session_filename_component(session_id: str) -> str:
-    """Path-safe component for a (possibly untrusted ``X-Hermes-Session-Id``) ID: non ``[A-Za-z0-9_-]`` → ``_``,
-    capped, plus a content hash when changed so distinct IDs cannot collide."""
-    raw = str(session_id or "").strip()
-    sanitized = re.sub(r"[^\w-]", "_", raw).strip("._")[:96] or "session"
-    if raw and sanitized == raw:
-        return sanitized
-    return f"{sanitized}_{hashlib.sha256(raw.encode('utf-8', errors='surrogatepass')).hexdigest()[:12]}"
 
 
 def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:

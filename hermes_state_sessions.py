@@ -16,6 +16,7 @@ from agent.session_activity import (
 )
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_ids import session_id_storage_name
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
@@ -1571,24 +1572,40 @@ class SessionSessionsMixin:
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
-        """Remove ``<id>.json``/``.jsonl``, the legacy ``session_<id>.json`` snapshot, and gateway
-        ``request_dump_<id>_*.json``; OSError is swallowed so a filesystem hiccup never blocks a
-        DB operation. Every historical writer name is swept because a "deleted" session's snapshot
-        can carry plaintext secrets (#20334, #60207)."""
+        """Remove canonical ``<id>.json``/``.jsonl``, the legacy ``session_<id>.json`` snapshot,
+        and gateway ``request_dump_<id>_*.json``. A pre-canonical name is swept only when it was
+        already one path component; cleanup never interprets an opaque id as a path. Filesystem
+        errors and malformed legacy names are swallowed so cleanup never blocks a DB operation.
+        Contained historical writer names are swept because a "deleted" session's snapshot can carry
+        plaintext secrets (#20334, #60207)."""
         if sessions_dir is None:
             return
-        targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
-        targets.append(sessions_dir / f"session_{session_id}.json")
+        sessions_dir = Path(sessions_dir)
+        storage_name = session_id_storage_name(session_id)
+        raw_value = "" if session_id is None else str(session_id)
+        raw_name = raw_value.strip()
+        names = [storage_name]
+        if (
+            raw_name and raw_value == raw_name and raw_name != storage_name and ".." not in raw_name
+            and "/" not in raw_name and "\\" not in raw_name
+            and not (len(raw_name) >= 2 and raw_name[0].isalpha() and raw_name[1] == ":")
+        ):
+            # Sweep the pre-canonical filename only when the historical id was already one component.
+            names.append(raw_name)
+        targets = [
+            sessions_dir / filename
+            for name in names
+            for filename in (f"{name}.json", f"{name}.jsonl", f"session_{name}.json")
+        ]
         try:
-            # glob.escape: a session id carrying ``[`` / ``?`` / ``*`` is a PATTERN otherwise, so the
-            # dump sweep either matches nothing or matches another session's files.
-            targets.extend(sessions_dir.glob(f"request_dump_{glob.escape(session_id)}_*.json"))
-        except OSError:
+            for name in names:
+                targets.extend(sessions_dir.glob(f"request_dump_{glob.escape(name)}_*.json"))
+        except (OSError, ValueError):
             pass
         for p in targets:
             try:
                 p.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, ValueError):
                 pass
 
     def get_session_delete_targets(self, session_id: str) -> List[str]:

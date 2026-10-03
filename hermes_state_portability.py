@@ -509,6 +509,13 @@ class SessionPortabilityMixin:
             raise ValueError("session must be an object")
         if not session_id:
             raise ValueError("session id is required")
+        if (
+            ".." in session_id or "/" in session_id or "\\" in session_id
+            or (len(session_id) >= 2 and session_id[0].isalpha() and session_id[1] == ":")
+        ):
+            # Imports are the one boundary that adopts a caller-provided id as a durable Hermes id.
+            # Reject path-shaped values instead of rewriting their logical identity.
+            raise ValueError("session id must not contain '..', path separators, or a drive prefix")
         if session_id in seen_ids:
             raise ValueError("duplicate session id")
         messages = raw.get("messages") or []

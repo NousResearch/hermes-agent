@@ -1853,6 +1853,29 @@ class TestResolvePreToolBlock:
         }
 
 
+    def test_approve_without_rule_key_is_scoped_to_its_reason(self, monkeypatch):
+        """With no ``rule_key`` the gate derives the grain from tool + reason, so approving one
+        plugin reason on a tool does not approve a different reason on the same tool."""
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        reasons = iter(["read ~/.ssh/known_hosts", "overwrite ~/.ssh/authorized_keys"])
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": next(reasons)}],
+        )
+        keys = []
+
+        def _gate(**kwargs):
+            keys.append(kwargs["pattern_key"])
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval._run_approval_gate", _gate)
+
+        resolve_pre_tool_block("write_file", {"path": "a"})
+        resolve_pre_tool_block("write_file", {"path": "b"})
+        assert len(keys) == 2 and keys[0] != keys[1]
+
+
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         monkeypatch.setattr(

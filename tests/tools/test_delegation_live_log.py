@@ -10,14 +10,21 @@ Covers:
 """
 
 import json
+import os
+import threading
+import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from tools import delegation_live_log as dll
 from tools.delegation_live_log import (
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
+    prune_stale_live_dirs,
+    update_manifest_statuses,
     wrap_progress_callback,
 )
 

@@ -53,6 +53,13 @@ _REFUSALS = {
 
 
 def _graphql_refusal(payload: dict, name: str) -> None:
+    """Reject incomplete evidence using positive, sanitized refusal signals.
+
+    Throttling recognizes the exact ``RATE_LIMITED`` type or a case-insensitive
+    ``API rate limit exceeded`` message. Secondary-limit wording alone and
+    differently cased types remain generic infrastructure refusals; they still
+    block completion, but do not receive the retry diagnosis.
+    """
     data = payload.get("data")
     errors = payload.get("errors") or []
     if not isinstance(errors, list) or any(not isinstance(e, dict) for e in errors):

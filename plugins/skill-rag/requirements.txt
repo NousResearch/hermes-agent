@@ -1,0 +1,6 @@
+pyyaml>=6.0,<7
+numpy>=1.24,<3
+# Optional, only for EMBEDDING_PROVIDER=local:
+# sentence-transformers>=2.2.0,<3
+# Optional, only for EMBEDDING_PROVIDER=openai_compatible:
+# requests>=2.28,<3

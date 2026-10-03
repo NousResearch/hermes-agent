@@ -1510,6 +1510,13 @@ def _build_skills_system_prompt_inner(
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
     project_dirs: "list[Path] | None" = None,
 ) -> str:
+    # Generic opt-out: when skills.prompt_index is false in config.yaml, skip the static
+    # skill index entirely (a retrieval plugin or external tool manages skill discovery).
+    # Plugin-agnostic by design (plugins/AGENTS.md: never hardcode plugin-specific logic in core).
+    from agent.skill_utils import _skills_cfg_get
+    if _skills_cfg_get("prompt_index") is False:
+        logger.debug("skills.prompt_index=false in config.yaml, skipping <available_skills> in system prompt")
+        return ""
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)

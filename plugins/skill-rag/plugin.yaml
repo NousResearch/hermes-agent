@@ -1,0 +1,6 @@
+name: skill-rag
+version: 0.2.0
+description: Semantic skill retrieval with context injection
+provides_hooks:
+  - pre_llm_call
+  - on_skill_lifecycle

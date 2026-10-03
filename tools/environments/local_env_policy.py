@@ -52,9 +52,17 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
 })
 
 
+def _left_core_env(*, secrets_only: bool) -> frozenset:
+    """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
+    stripped exactly as when core shipped them, plugin installed or not."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return frozenset(name for feature in LEFT_CORE
+                     for name in feature.secret_env + (() if secrets_only else feature.private_env))
+
+
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST)
+    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
@@ -382,5 +390,5 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-}) | _ADAPTER_SECRET_ENV  # every declared adapter secret is Tier 1, like the bot tokens above
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

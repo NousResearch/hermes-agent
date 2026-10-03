@@ -282,7 +282,14 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
         if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            # PEP 621 requires version (or project.dynamic) once [project] exists.
+            # Manifest-only members already write version = "0.0.0". A tool-only
+            # pyproject has no [project] until this rename, so uv lock rejects it.
+            project = document.setdefault("project", {})
+            project["name"] = f"hermes-plugin-{key}"
+            dynamic = project.get("dynamic")
+            if not (isinstance(dynamic, list) and "version" in dynamic):
+                project.setdefault("version", "0.0.0")
         if virtual or changed:
             import tomli_w
 

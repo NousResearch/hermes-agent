@@ -68,6 +68,49 @@ def test_pyproject_member_is_renamed_by_its_key_and_stays_unique(tmp_path):
     assert document["project"]["dependencies"] == ["hindsight-client>=0.10.1"]
 
 
+def test_virtual_member_without_version_gets_placeholder(tmp_path):
+    """uv rejects [project] with no version and no project.dynamic entry.
+    Tool-only pyprojects and [project] tables that omit version both get the
+    same 0.0.0 placeholder manifest-only members already write. A declared
+    version stays, and a dynamic version is not also given a static field."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    cases = {
+        "tool-only": '[tool.ruff]\ntarget-version = "py311"\n',
+        "project-without-version": (
+            '[project]\nname = "lint-only"\ndependencies = ["rich"]\n'
+        ),
+        "dynamic-version": (
+            '[project]\nname = "setuptools-scm-plugin"\ndynamic = ["version"]\n'
+        ),
+    }
+    parsed = {}
+    for name, text in cases.items():
+        plugin = tmp_path / name / "plugins" / name
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(text, encoding="utf-8")
+        root = tmp_path / f"gen-{name}"
+        root.mkdir()
+        member = _workspace_member(plugin, root, identity=plugin)
+        parsed[name] = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+
+    tool_only = parsed["tool-only"]["project"]
+    assert tool_only["name"].startswith("hermes-plugin-tool-only-")
+    assert tool_only["version"] == "0.0.0"
+    assert parsed["tool-only"]["tool"]["ruff"]["target-version"] == "py311"
+
+    bare = parsed["project-without-version"]["project"]
+    assert bare["name"].startswith("hermes-plugin-project-without-version-")
+    assert bare["version"] == "0.0.0"
+    assert bare["dependencies"] == ["rich"]
+
+    dynamic = parsed["dynamic-version"]["project"]
+    assert dynamic["name"].startswith("hermes-plugin-dynamic-version-")
+    assert dynamic["dynamic"] == ["version"]
+    assert "version" not in dynamic
+
+
 def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     """uv verifies a buildable member's [project].name against the package metadata
     its backend produces, so renaming it breaks the build ("Package metadata name

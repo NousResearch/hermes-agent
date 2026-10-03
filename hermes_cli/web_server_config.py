@@ -201,6 +201,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "cron": "agent",
     "network": "agent",
     "models_dev": "agent",
+    # `pricing.external_source` is the only schema-surfaced pricing field.
+    "pricing": "agent",
     "checkpoints": "agent",
     "approvals": "security",
     "human_delay": "display",

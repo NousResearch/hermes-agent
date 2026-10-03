@@ -10,6 +10,16 @@
 _config_version: 49
 
 # =============================================================================
+# Cost / pricing
+# =============================================================================
+# Preferred dynamic catalog for models absent from the curated pricing
+# snapshot. Sources remain provider-scoped: models.dev applies only to mapped
+# providers, while OpenRouter's flat model-id catalog applies only when the
+# route is billed by OpenRouter. Inapplicable sources are skipped safely.
+pricing:
+  external_source: models_dev  # models_dev | openrouter
+
+# =============================================================================
 # Database Configuration
 # =============================================================================
 # WAL is the normal default. Hermes automatically falls back to DELETE when

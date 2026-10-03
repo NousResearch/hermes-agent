@@ -890,9 +890,20 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(model_id.split("/", 1)[1], entry)
 
 
-def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Fetch model metadata from OpenRouter (cached for 1 hour)."""
+def fetch_model_metadata(
+    force_refresh: bool = False, *, allow_network: bool = True
+) -> Dict[str, Dict[str, Any]]:
+    """Fetch OpenRouter metadata (cached for 1 hour). ``allow_network=False`` returns only the
+    memory/disk cache, of any age, and never makes a request."""
     global _model_metadata_cache, _model_metadata_cache_time
+    if not allow_network:
+        if not _model_metadata_cache:
+            disk_cache = _load_model_metadata_disk_cache()
+            if disk_cache:
+                disk_age = _model_metadata_disk_cache_age_seconds()
+                _model_metadata_cache = disk_cache
+                _model_metadata_cache_time = time.time() - disk_age if disk_age is not None else 0
+        return _model_metadata_cache
     if not force_refresh:
         if _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
             return _model_metadata_cache

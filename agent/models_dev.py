@@ -592,6 +592,39 @@ def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
     return _extract_limit(entry, "context")
 
 
+def _extract_cost(entry: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Flat USD rates from a models.dev entry. models.dev already quotes dollars per MILLION
+    tokens, the unit ``PricingEntry`` uses, so the values are returned unscaled."""
+    cost = entry.get("cost") if isinstance(entry, dict) else None
+    if not isinstance(cost, dict):
+        return None
+
+    def _rate(key: str) -> Optional[float]:
+        value = cost.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value >= 0 else None
+
+    if _rate("input") is None and _rate("output") is None:
+        return None
+    rates = {key: _rate(key) for key in ("input", "output", "cache_read", "cache_write")}
+    return {key: value for key, value in rates.items() if value is not None}
+
+
+def lookup_models_dev_pricing(
+    provider: str, model: str, *, allow_network: bool = False
+) -> Optional[Dict[str, float]]:
+    """Provider-scoped per-million pricing from models.dev. Providers absent from
+    :data:`PROVIDER_TO_MODELS_DEV` return ``None``; model ids are never scanned across vendors.
+    ``allow_network`` defaults to False: usage accounting is a hot path."""
+    models = _get_provider_models(provider, allow_network=allow_network)
+    if models is None:
+        return None
+    # Exact/case-insensitive only: a suffix match would bill one model at another's rate.
+    entry = next((e for _mid, e in _iter_model_entries(models, model, suffix_fallback=False, provider=provider)), None)
+    return _extract_cost(entry) if entry is not None else None
+
+
 def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False) -> Optional[int]:
     """Context window in tokens for provider+model, or None if not found. An EXPLICIT ``model_overrides``
     entry wins over the catalog; ``_default`` fills the gap only when the catalog has no answer (the

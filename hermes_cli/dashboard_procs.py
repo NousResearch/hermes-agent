@@ -908,7 +908,8 @@ def read_valid_backend_lock(lock_path: Path) -> dict | None:
     try:  # validateOwnershipId(): exactly 32 lowercase hex chars
         if not _is_hex(ownership_id, 32) or not lock_path.is_file():
             return None
-        data = lock_path.read_bytes()
+        with lock_path.open("rb") as f:  # bounded: this runs on every owner-watchdog poll
+            data = f.read(65537)
         if len(data) > 65536:
             return None
         parsed = json.loads(data)

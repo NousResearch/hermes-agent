@@ -113,7 +113,7 @@ def _model_flow_moa(config, current_model=""):
 
     names = list(presets.keys())
     default_name = moa.get("default_preset") or names[0]
-    # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
+    # Rows show the aggregator as the acting model so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
@@ -161,7 +161,7 @@ def _model_flow_moa(config, current_model=""):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
     print(
-        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
+        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step; reference calls are billed separately)"
     )
 
 

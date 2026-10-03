@@ -790,6 +790,6 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
         return _row(
             "moa", "Mixture of Agents", (current_provider or "").lower() == "moa", models=models,
             total_models=len(models), source="virtual", authenticated=True, auth_type="virtual",
-            warning="Aggregator is the acting model billed for the run; references only advise once per user turn by default.")
+            warning="Aggregator is the acting model and runs every tool-loop step; reference calls are billed separately and advise once per user turn by default.")
     except Exception:
         return None

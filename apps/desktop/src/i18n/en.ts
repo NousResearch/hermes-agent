@@ -1855,9 +1855,9 @@ export const en: Translations = {
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preset',
       moaDescription:
-        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop. Reference calls are billed separately on their own providers, and their outputs increase the aggregator’s input tokens. References advise once per user turn by default.',
       moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'acting model · billed for the run',
+      moaAggregatorBilled: 'acting model · reference calls billed separately',
       moaReferenceHint: 'advises once per turn by default',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },

@@ -474,6 +474,49 @@ class TestManualTrackNeverTrackGate:
         auto, prompt = dg.dry_run()
         assert auto == [] and prompt == []
 
+    @pytest.mark.parametrize("parent", ["cron", "cronjobs"])
+    @pytest.mark.parametrize("name", [
+        "ticker_heartbeat", "ticker_last_success", "ticker_last_error",
+        "catch_up_occurrences", ".jobs.lock", ".fire-1234567890abcdef.lock",
+    ])
+    def test_cron_control_plane_refused_and_stale_entries_preserved(self, _isolate_env, parent, name):
+        dg = _load_lib()
+        p = _isolate_env / parent / name
+        p.parent.mkdir()
+        p.write_text("control state")
+        assert dg.track(str(p), "temp") is False
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "temp", "timestamp": old_ts, "size": 13}])
+        assert dg.dry_run() == ([], [])
+        assert dg.quick()["deleted"] == 0
+        assert p.read_text() == "control state"
+        assert dg.load_tracked() == []
+
+    @pytest.mark.parametrize("parent", ["projects", "workspace", "sessions", "logs"])
+    @pytest.mark.parametrize("category", ["other", "research"])
+    def test_read_only_preview_keeps_protected_large_and_research_files(self, _isolate_env, parent, category):
+        dg = _load_lib()
+        p = _isolate_env / parent / "report.bin"
+        p.parent.mkdir()
+        p.write_text("keep")
+        item = {"path": str(p), "category": category,
+                "timestamp": (datetime.now(timezone.utc) - timedelta(days=40)).isoformat(),
+                "size": 600 * 1024 * 1024 if category == "other" else 4}
+        dg.save_tracked([item])
+        assert dg.dry_run() == ([], [item])
+        assert dg.load_tracked() == [item]
+        assert p.read_text() == "keep"
+        assert dg.quick()["deleted"] == 0
+        assert p.read_text() == "keep"
+
+    def test_fire_lock_pattern_is_limited_to_control_plane(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "cron" / "output" / "job" / ".fire-example.lock"
+        p.parent.mkdir(parents=True)
+        p.write_text("artifact")
+        assert dg.track(str(p), "temp") is True
+        assert not dg._is_protected_cron_path(p)
+
     def test_slash_track_refuses_never_track_path(self, _isolate_env):
         pi = _load_plugin_init()
         env = _isolate_env / ".env"

@@ -102,7 +102,8 @@ def _cmd_boards_rm(args: argparse.Namespace) -> int:
         return _err(f"kanban boards rm: {exc}")
     if res["action"] == "archived":
         print(f"Board {res['slug']!r} archived → {res['new_path']}\n"
-              "Recover by moving the directory back to <root>/kanban/boards/<slug>/.")
+              "Recover by moving the directory back to <root>/kanban/boards/<slug>/, then run "
+              f"`hermes kanban boards create {res['slug']}` to clear its removal fence.")
     else:
         print(f"Board {res['slug']!r} deleted.")
     return 0

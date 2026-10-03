@@ -1127,8 +1127,17 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         return _err("at least one task_id is required")
     with kbc.connect_closing() as conn:
         if purge_ids:
-            return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
-                               lambda tid: f"cannot delete {tid} (must already be archived)")
+            refusals: dict[str, str] = {}
+
+            def _purge(tid: str) -> bool:
+                try:
+                    return kb.delete_archived_task(conn, tid)
+                except kb.WorkerStillRunningError as exc:
+                    refusals[tid] = str(exc)
+                    return False
+
+            return _bulk_apply(purge_ids, _purge, lambda tid: f"Deleted {tid}",
+                               lambda tid: refusals.get(tid, f"cannot delete {tid} (must already be archived)"))
         return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
                            lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
 

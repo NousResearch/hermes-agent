@@ -177,7 +177,18 @@ def _dispatch_tick_lock(db_path: Path):
     lock is the defense-in-depth that prevents two dispatchers from ever writing concurrently *regardless of
     how the second one got there*.
     """
-    lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
+    marker = _kb._board_removal_marker_for_db_path(db_path)
+    if marker is not None and marker.exists():
+        yield False
+        return
+    # Named-board locks live outside the board directory.  remove_board keeps
+    # this handle through rename/rmtree; an in-directory handle blocks that
+    # hand-off on Windows and can be recreated under the old path on POSIX.
+    lock_path = (
+        marker.parent.parent / ".locks" / f"{marker.stem}.dispatch.lock"
+        if marker is not None
+        else db_path.with_name(db_path.name + ".dispatch.lock")
+    )
     handle = None
     acquired = False
     try:
@@ -673,6 +684,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _kb._assert_board_not_removed(path, board=board)
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a
@@ -758,6 +770,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _kb._assert_board_not_removed(path, board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:

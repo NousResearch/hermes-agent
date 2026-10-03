@@ -446,6 +446,31 @@ def test_delete_task(client):
     r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
     assert r.status_code == 404
 
+def test_delete_task_with_unstoppable_worker_returns_409(client, monkeypatch):
+    """A live worker the host cannot verify blocks the delete with a 409 that says
+    why (not a misleading 404), and the task survives. Response shape after #28684."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "still-running", "assignee": "worker"}).json()["task"]
+    with kbc.connect_closing() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t["id"], claimer=f"{host}:worker")
+        kbd._set_worker_pid(conn, t["id"], 65432)
+        with kb.write_txn(conn):
+            for table, key in (("tasks", "id"), ("task_runs", "task_id")):
+                conn.execute(
+                    f"UPDATE {table} SET worker_started_at = ? WHERE {key} = ?",
+                    (kbd.UNVERIFIED_WORKER_FINGERPRINT, t["id"]),
+                )
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid == 65432)
+
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}")
+
+    assert r.status_code == 409
+    assert "could not be stopped" in r.json()["detail"]
+    assert client.get(f"/api/plugins/kanban/tasks/{t['id']}").status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------

@@ -241,3 +241,21 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_archive_rm_names_a_worker_that_could_not_be_stopped(kanban_home, monkeypatch, capsys):
+    """`archive --rm` refused by a live, unstoppable worker says so, instead of
+    claiming the (archived) task "must already be archived"."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="archived with a stray worker", assignee="dev")
+        assert kb.archive_task(conn, tid)
+
+    def refuse(_conn, task_id, **_kwargs):
+        raise kb.WorkerStillRunningError(task_id)
+
+    monkeypatch.setattr(kb, "delete_archived_task", refuse)
+
+    assert kc._cmd_archive(argparse.Namespace(task_ids=[], purge_ids=[tid])) == 1
+    err = capsys.readouterr().err
+    assert "could not be stopped" in err
+    assert "must already be archived" not in err

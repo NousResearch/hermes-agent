@@ -205,8 +205,9 @@ class TestBoardCRUD:
         # connect() gets a fresh schema-init pass.
         assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
 
-        # Simulate the event-stream poll: re-open the same slug. connect()
-        # recreates the directory + empty .db; the schema must be re-applied.
+        # Re-creation is an explicit operator action.  A stale dispatcher or
+        # surviving worker must not implicitly recreate a removed board.
+        kb.create_board("recycle")
         with kbc.connect_closing(board="recycle") as conn:
             tables = {
                 row[0]
@@ -216,6 +217,77 @@ class TestBoardCRUD:
             }
         assert "task_events" in tables
         assert "tasks" in tables
+
+    @pytest.mark.parametrize("archive", [True, False])
+    def test_remove_board_terminates_workers_before_archive_or_delete(
+        self, fresh_home, monkeypatch, archive,
+    ):
+        slug = "archive-live" if archive else "delete-live"
+        kb.create_board(slug)
+        original = kb.board_dir(slug)
+        with kbc.connect_closing(board=slug) as conn:
+            tid = kb.create_task(conn, title="running", assignee="dev")
+            host = kb._claimer_id().split(":", 1)[0]
+            kb.claim_task(conn, tid, claimer=f"{host}:worker")
+            monkeypatch.setattr(kbd, "_process_fingerprint", lambda pid: f"test-boot|{pid}")
+            kbd._set_worker_pid(conn, tid, 54321)
+
+        live = {54321}
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid in live)
+        signalled = []
+
+        def signal_worker(pid, sig):
+            signalled.append((pid, sig))
+            assert original.is_dir(), "worker termination must precede the filesystem hand-off"
+            live.discard(pid)
+
+        result = kb.remove_board(slug, archive=archive, signal_fn=signal_worker)
+
+        assert signalled and signalled[0][0] == 54321
+        assert not live
+        assert not original.exists()
+        assert result["action"] == ("archived" if archive else "deleted")
+        if archive:
+            assert Path(result["new_path"]).is_dir()
+        else:
+            assert result["new_path"] == ""
+
+        # A stale worker/dispatcher still carrying the removed board's pinned
+        # environment cannot recreate its directory after the hand-off.
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", slug)
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(original / "kanban.db"))
+        with pytest.raises(ValueError):
+            with kbc.connect_closing():
+                pass
+        assert not original.exists()
+        monkeypatch.delenv("HERMES_KANBAN_BOARD")
+        monkeypatch.delenv("HERMES_KANBAN_DB")
+
+        guarded = f"{slug}-unverified"
+        kb.create_board(guarded)
+        guarded_dir = kb.board_dir(guarded)
+        with kbc.connect_closing(board=guarded) as conn:
+            guarded_tid = kb.create_task(conn, title="unknown worker", assignee="dev")
+            kb.claim_task(conn, guarded_tid, claimer=f"{host}:worker")
+            kbd._set_worker_pid(conn, guarded_tid, 65432)
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET worker_started_at = ? WHERE id = ?",
+                    (kbd.UNVERIFIED_WORKER_FINGERPRINT, guarded_tid),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET worker_started_at = ? WHERE task_id = ?",
+                    (kbd.UNVERIFIED_WORKER_FINGERPRINT, guarded_tid),
+                )
+        live.add(65432)
+        before = list(signalled)
+
+        with pytest.raises(ValueError):
+            kb.remove_board(guarded, archive=archive, signal_fn=signal_worker)
+        assert signalled == before
+        assert guarded_dir.is_dir()
+        with kbc.connect_closing(board=guarded) as conn:
+            assert kb.get_task(conn, guarded_tid) is not None
 
 
 

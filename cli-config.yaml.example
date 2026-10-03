@@ -9,6 +9,13 @@
 # has. Hermes manages it: do not copy it into another config.
 _config_version: 49
 
+# Set this in a profile's config.yaml to prevent both reads from that profile
+# into other profiles and reads from other profiles into this one. Own-profile
+# discovery, browse, read, and scroll remain available. Omitted = true for
+# compatibility with existing multi-profile installations.
+# session_search:
+#   allow_cross_profile: false
+
 # =============================================================================
 # Database Configuration
 # =============================================================================

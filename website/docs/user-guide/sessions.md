@@ -846,6 +846,13 @@ left behind — the import is a clean transcript, not a byte-for-byte replay.
 
 The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and returns views of actual messages from the DB rather than generating summaries.
 
+To keep a profile's session history private while retaining its own search,
+set `session_search.allow_cross_profile: false` in that profile's `config.yaml`.
+The setting blocks both that profile's reads of other profiles and other
+profiles' reads of it. Existing installations retain cross-profile reads when
+the setting is omitted. An unreadable or malformed configuration blocks a
+cross-profile read until it can be checked.
+
 ### Four calling shapes
 
 The tool infers what you want from which arguments you set. There's no `mode` parameter.

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useMemo, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { StatusRow } from '@/components/chat/status-row'
@@ -6,7 +7,13 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $sharedMetricsDetailsOpen, answerSharedMetricsOffer, type SharedMetricsChoice } from '@/store/shared-metrics'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $sharedMetricsDetailsOpen,
+  answerSharedMetricsOffer,
+  type SharedMetricsChoice,
+  sharedMetricsProfileRequester
+} from '@/store/shared-metrics'
 
 const CHOICES: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
 
@@ -20,13 +27,19 @@ export function SharedMetricsConsentStrip() {
   const { requestGateway } = useGatewayRequest()
   const { t } = useI18n()
   const copy = t.sharedMetrics
+  const profile = normalizeProfileKey(useStore($activeGatewayProfile))
   const [saving, setSaving] = useState(false)
+
+  const scopedRequest = useMemo(
+    () => sharedMetricsProfileRequester(requestGateway, profile),
+    [profile, requestGateway]
+  )
 
   const choose = async (choice: SharedMetricsChoice) => {
     setSaving(true)
 
     try {
-      await answerSharedMetricsOffer(requestGateway, choice)
+      await answerSharedMetricsOffer(scopedRequest, choice)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {

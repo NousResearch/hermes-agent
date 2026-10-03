@@ -8,6 +8,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -21,8 +22,11 @@ import {
   type SubagentStatus,
   type SubagentStreamEntry
 } from '@/store/subagents'
+import { $agentsPanelView, type AgentsPanelView } from '@/store/trace'
 
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
+
+import { TraceView } from './trace-view'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
@@ -85,6 +89,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
   const activeSessionId = useStore($activeSessionId)
+  const view = useStore($agentsPanelView)
 
   // Aggregate every session for live work, terminal rows only for the
   // session the user is in — matching the status-bar indicator, so a subagent
@@ -96,15 +101,33 @@ export function AgentsView({ onClose }: AgentsViewProps) {
     [subagentsBySession, activeSessionId]
   )
 
+  const views = useMemo(
+    () => [
+      { id: 'trace' as const, label: t.agents.viewTrace },
+      { id: 'tree' as const, label: t.agents.viewTree }
+    ],
+    [t]
+  )
+
   return (
     <Panel closeLabel={t.agents.close} onClose={onClose}>
-      {tree.length === 0 ? (
+      <PanelHeader
+        actions={
+          <SegmentedControl<AgentsPanelView>
+            onChange={next => $agentsPanelView.set(next)}
+            options={views}
+            value={view}
+          />
+        }
+        subtitle={view === 'tree' && tree.length > 0 ? t.agents.subtitle : undefined}
+        title={view === 'trace' ? t.agents.traceTitle : t.agents.title}
+      />
+      {view === 'trace' ? (
+        <TraceView />
+      ) : tree.length === 0 ? (
         <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} />
       ) : (
-        <>
-          <PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} />
-          <SubagentTree tree={tree} />
-        </>
+        <SubagentTree tree={tree} />
       )}
     </Panel>
   )

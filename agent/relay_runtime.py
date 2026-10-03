@@ -31,6 +31,11 @@ LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
+SESSION_ID_KEY = "hermes.session_id"
+PARENT_SESSION_ID_KEY = "hermes.parent_session_id"
+TURN_ID_KEY = "hermes.turn_id"
+# The tool call (``category_profile.tool_call_id``) that spawned a subagent session.
+SPAWNED_BY_TOOL_CALL_KEY = "hermes.spawned_by_tool_call_id"
 RELAY_PLUGINS_EXECUTION_CONSUMER = "hermes.nemo_relay.plugins"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
 
@@ -407,6 +412,7 @@ class RelayRuntime:
         self._sessions: dict[str, RelaySession] = {}
         self._subagent_parents: dict[str, str] = {}
         self._subagent_parent_handles: dict[str, Any] = {}
+        self._subagent_spawners: dict[str, str] = {}
         self._execution_consumers: set[str] = set()
         self._closing = self._shutdown_started = False
         self._shutdown_complete, self._operations_idle = threading.Event(), threading.Event()
@@ -447,14 +453,20 @@ class RelayRuntime:
         Subagents parent under their spawning turn/session handle (``resolve_parent`` creates the parent when
         unknown). ``exit_fallback``: at interpreter shutdown the executor refuses futures; push synchronously."""
         parent_handle = None
+        # Subscribers attribute every child event to a Hermes session through this scope.
+        scope_metadata[SESSION_ID_KEY] = session.session_id
         if session.parent_session_id:
             with self._sessions_lock:
                 parent_handle = self._subagent_parent_handles.get(session.session_id)
+                spawner = self._subagent_spawners.get(session.session_id)
+            if spawner:
+                scope_metadata[SPAWNED_BY_TOOL_CALL_KEY] = spawner
             if parent_handle is None and resolve_parent:
                 parent = self.ensure_session({"session_id": session.parent_session_id})
                 if parent is not None:
                     parent_handle = parent.handle
             scope_metadata["nemo_relay_scope_role"] = "subagent"
+            scope_metadata[PARENT_SESSION_ID_KEY] = session.parent_session_id
         context = contextvars.Context()
         args = (self.relay.scope.push, SESSION_SCOPE, self.relay.ScopeType.Agent)
         push_kwargs.update(handle=parent_handle, metadata=scope_metadata, input=_scope_input(session.cwd))
@@ -554,6 +566,8 @@ class RelayRuntime:
             self._subagent_parents[child_session_id] = parent_session_id
             if parent_handle is not None:
                 self._subagent_parent_handles[child_session_id] = parent_handle
+            if spawner := _SPAWNING_TOOL_CALL.get():
+                self._subagent_spawners[child_session_id] = spawner
         return self.ensure_session({"session_id": child_session_id}, metadata=metadata, cwd=cwd)
 
     def unregister_subagent(self, event: dict[str, Any]) -> None:
@@ -567,6 +581,7 @@ class RelayRuntime:
         with self._sessions_lock:
             self._subagent_parents.pop(session_id, None)
             self._subagent_parent_handles.pop(session_id, None)
+            self._subagent_spawners.pop(session_id, None)
 
     def _lookup(self, session_id: str) -> RelaySession | None:
         """Registry lookup (closing sessions included) without creating one."""
@@ -905,6 +920,23 @@ class RelayTurnContext:
     closed: bool = False
 
 
+_SPAWNING_TOOL_CALL: contextvars.ContextVar[str] = contextvars.ContextVar("hermes_relay_spawning_tool_call", default="")
+
+
+@contextlib.contextmanager
+def spawning_tool_call(tool_call_id: str | None):
+    """Name the tool call a subagent opened inside this block was spawned by.
+
+    Delegation copies the context into every child thread, so the child's session scope carries
+    ``SPAWNED_BY_TOOL_CALL_KEY`` and a reader can hang the child under that exact call.
+    """
+    token = _SPAWNING_TOOL_CALL.set(tool_call_id or "")
+    try:
+        yield
+    finally:
+        _SPAWNING_TOOL_CALL.reset(token)
+
+
 _CURRENT_TURN: contextvars.ContextVar[RelayTurnContext | None] = contextvars.ContextVar(
     "hermes_relay_turn", default=None
 )
@@ -1053,7 +1085,7 @@ class RelaySessionCoordinator:
             turn_metadata.update(
                 runtime_metadata(
                     host.runtime_id,
-                    **{"hermes.execution_surface": lease.platform or "unknown"},
+                    **{"hermes.execution_surface": lease.platform or "unknown", TURN_ID_KEY: turn_id},
                 )
             )
             turn.handle = _warn_on_error(

@@ -96,6 +96,15 @@ class InlineToolContext:
 
 InlineToolExecutor = Callable[[Any, dict, InlineToolContext], Any]
 
+
+def dispatch_delegate_task(agent: Any, args: dict, tool_call_id: Optional[str]) -> Any:
+    """Run ``delegate_task`` with its call id bound, so each child's Relay session scope names the
+    exact call that spawned it (``relay_runtime.SPAWNED_BY_TOOL_CALL_KEY``)."""
+    from agent.relay_runtime import spawning_tool_call
+
+    with spawning_tool_call(tool_call_id):
+        return agent._dispatch_delegate_task(args)
+
 # ``(kwarg, args_key)`` → ``args.get(key)``; ``(kwarg, args_key, default)`` → ``args.get(key, default)``.
 _ArgSpec = Tuple[Any, ...]
 
@@ -276,7 +285,7 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
-    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    "delegate_task": lambda agent, args, ctx: dispatch_delegate_task(agent, args, ctx.tool_call_id),
 }
 
 

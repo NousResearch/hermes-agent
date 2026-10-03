@@ -4201,6 +4201,24 @@
       }
     },
     {
+      "name": "trace.events",
+      "summary": "Recorded Relay events for one session and its subagents, oldest first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/TraceEventsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/TraceEventsResult"
+        }
+      }
+    },
+    {
       "name": "usage.bars",
       "summary": "Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable.",
       "params": [
@@ -36562,6 +36580,81 @@
         "title": "TourStep",
         "type": "object"
       },
+      "TraceEventPayload": {
+        "additionalProperties": false,
+        "description": "``methods_trace._forward_trace_event`` \u2014 one Relay event recorded for a watched session.",
+        "properties": {
+          "trace_session_id": {
+            "title": "Trace Session Id",
+            "type": "string"
+          },
+          "event": {
+            "title": "Event"
+          }
+        },
+        "required": [
+          "trace_session_id",
+          "event"
+        ],
+        "title": "TraceEventPayload",
+        "type": "object"
+      },
+      "TraceEventsParams": {
+        "additionalProperties": false,
+        "description": "``session_id`` is a live gateway session id or a stored session id; a live one is also\nsubscribed, so its ``trace.event`` frames start flowing.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "TraceEventsParams",
+        "type": "object"
+      },
+      "TraceEventsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "events": {
+            "items": {},
+            "title": "Events",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "recording": {
+            "default": true,
+            "title": "Recording",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "TraceEventsResult",
+        "type": "object"
+      },
       "TranscriptMessage": {
         "additionalProperties": true,
         "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``\nrewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
@@ -40191,6 +40284,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolStartPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "trace.event",
+      "summary": "A Relay event recorded live for a session a client is tracing.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/TraceEventPayload"
           }
         }
       ]

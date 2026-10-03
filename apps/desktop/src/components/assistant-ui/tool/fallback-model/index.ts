@@ -242,6 +242,15 @@ const PREFIX_META: { icon?: string; labelKey: string; prefix: string; tone: Tool
   { prefix: 'web_', labelKey: 'web', icon: 'globe', tone: 'web' }
 ]
 
+/** The icon the thread uses for a tool, so the trace waterfall draws the same glyph. */
+export function toolIconName(name: string): string {
+  if (isToolTitleKey(name)) {
+    return TOOL_META[name].icon ?? 'tools'
+  }
+
+  return PREFIX_META.find(p => name.startsWith(p.prefix))?.icon ?? 'tools'
+}
+
 function toolMeta(name: string): ToolMeta {
   if (isToolTitleKey(name)) {
     const meta = TOOL_META[name]

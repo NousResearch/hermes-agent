@@ -2337,6 +2337,13 @@ DEFAULT_CONFIG = {
             # Non-HTTPS refused unless the host is localhost.
             "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
+        # Local execution traces (hermes_cli/observability/relay_traces.py): Relay events per session,
+        # written under <home>/traces for the desktop Agents view and `hermes trace`. Nothing is sent.
+        "traces": {
+            "enabled": True,
+            # Trace files untouched this long are deleted when the profile's first session opens.
+            "retention_days": 30,
+        },
     },
 
     "doctor": {

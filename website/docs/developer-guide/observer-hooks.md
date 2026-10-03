@@ -332,3 +332,23 @@ explicit file selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`, can add
 [ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).
+
+Local execution traces (`hermes_cli/observability/relay_traces.py`) are one more
+Relay subscriber. Every ATOF event under a `hermes.session` scope (which carries
+`hermes.session_id`, and `hermes.parent_session_id` for a delegated child) is
+appended, payloads bounded, to `<profile home>/traces/<session_id>.jsonl` and
+forwarded live to Desktop clients as `trace.event`. Relay emits LLM and tool
+events itself only for calls on its managed pipeline; for other runs the recorder
+opens the same spans from `pre_api_request` / `post_api_request`,
+`pre_auxiliary_call` / `post_auxiliary_call` and `pre_tool_call` /
+`post_tool_call` through Relay's manual `llm.call` / `tools.call` API, and marks
+each turn with its prompt preview (`hermes.turn.input`). Relay has no in-call
+streaming events and its marks attach only to scopes, so streamed output is
+recorded as `hermes.llm.first_token` and throttled `hermes.llm.stream` marks on
+the call's parent scope, naming the call by `api_request_id` (and `llm_uuid` for
+a manual span). A subagent's session scope names the `delegate_task` call that
+spawned it (`hermes.spawned_by_tool_call_id`, matching the tool span's
+`category_profile.tool_call_id`). The Desktop Agents view
+and `hermes trace show|export <session>` read these files. Turn it off per
+profile with `telemetry.traces.enabled: false`; files untouched for
+`telemetry.traces.retention_days` (default 30) are pruned.

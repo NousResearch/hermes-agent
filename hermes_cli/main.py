@@ -359,6 +359,7 @@ from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.verify import build_verify_parser
+from hermes_cli.subcommands.trace import build_trace_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
@@ -2284,6 +2285,13 @@ def cmd_verify(args):
     sys.exit(run_verify_command(args))
 
 
+def cmd_trace(args):
+    """Show or export the Relay events recorded for a session."""
+    from hermes_cli.trace_cmd import run_trace_command
+
+    sys.exit(run_trace_command(args))
+
+
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
@@ -2567,7 +2575,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     """
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
-        "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
+        "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "trace", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
         "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
@@ -2901,7 +2909,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "sync", "tools", "trace", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -3507,6 +3515,7 @@ def _build_cli_parser():
     build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
+    build_trace_parser(subparsers, cmd_trace=cmd_trace)
     build_security_parser(subparsers, cmd_security=cmd_security)
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)

@@ -330,6 +330,7 @@ class StreamDeliveryMixin:
             return
         delivered = self._deliver_to_stream_callbacks(text)
         self._enqueue_stream_hook("on_stream_delta", delta=text, kind="text")
+        self._note_trace_stream("text", text)
         if delivered:
             self._record_streamed_assistant_text(text)
 
@@ -346,6 +347,7 @@ class StreamDeliveryMixin:
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
         self._call_quietly(self.reasoning_callback, text)
+        self._note_trace_stream("reasoning", text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
         # serialized every streaming thread in the process behind a config cache hit.
         enabled = getattr(self, "_stream_reasoning_hooks_enabled", None)
@@ -360,6 +362,14 @@ class StreamDeliveryMixin:
             self._stream_reasoning_hooks_enabled = enabled
         if enabled:
             self._enqueue_stream_hook("on_stream_delta", label="reasoning on_stream_delta", delta=text, kind="reasoning")
+
+    def _note_trace_stream(self, kind: str, text: str) -> None:
+        """Hand a delta to the execution-trace recorder (it throttles into Relay marks)."""
+        from hermes_cli.observability.relay_traces import note_stream_delta
+
+        note_stream_delta(
+            getattr(self, "session_id", "") or "", getattr(self, "_current_api_request_id", "") or "", kind, text
+        )
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify the display layer that the model is generating tool call arguments (spinner for large payloads)."""

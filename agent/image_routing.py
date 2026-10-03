@@ -12,11 +12,14 @@ main models (``native`` is the absolute override); else ``supports_vision``
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import mimetypes
 import os
 import re
+import threading
 from contextlib import suppress
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -318,12 +321,198 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
+# ─── live vision probe ──────────────────────────────────────────────────────
+# Brand-new model ids are unknown to config AND the models.dev catalog; such a
+# model's images would keep taking the text path (vision_analyze refs) forever,
+# even when the model can see. This chain tail therefore kicks ONE background
+# probe (a tiny OCR fixture through the same client vision_analyze resolves) and
+# persists the verdict in ``$HERMES_HOME/vision_caps_cache.json``: the next
+# image turn routes natively (True) or keeps refs (False). Config and catalog
+# verdicts keep precedence; deleting the cache file resets everything.
+# Transient failures (429/5xx/network/clientless) write nothing, so a later
+# image turn retries; agent/turn_recovery also records False when a real native
+# call 400s with a capability rejection (self-heal, see recover_before_classification).
+
+_PROBE_CODE = "ZQ7K"
+_PROBE_PROMPT = "What 4-character code is written in this image? Reply with only the code."
+# White 90x30 canvas with black "ZQ7K", upscaled 4x NEAREST → 1039-byte PNG: any
+# vision model OCRs it, and it is trivially small on the wire.
+_PROBE_IMAGE_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAWgAAAB4CAIAAABQJv+tAAAD1klEQVR42u3dPyjnDxzH8c/9XMiCRQZmYaIQS"
+    "cot4iyWuywGg03nFosMZNAZiEh33Xrz+XMp1pN0JlKSAV03GAwGkfy2d5/ho+99f/1Ofr8ej+nV9eH7zX179un"
+    "Tx8eLh4eHBCAff/kRAMIBCAcgHIBwAMIBIByAcADCAQgHIBwAwgEIByAcgHAAwgEgHIBwAMIBCAcgHIBwAAgHIBy"
+    "AcADCAQgHgHAAwgEIByAcgHAACAcgHIBwAMIBCAeAcADCATyVl3/im75//z72jx8/Mo+5v7+Pvbu7G/v29jbz+M+"
+    "fP8deWFiIXVhYGPvu7i72u3fvYg8MDMR+8+ZN7F+/fmW+Vvo9HB8fx768vMw8vqysLPbV1VXmMefn57H7+vpif/"
+    "v2LXZlZaVPJM44AOEAEA4geT7XOGZnZ3MeMzc3F7u9vT3zmM3NzdifPn2Kvb29neS6vtDb2xu7uro69pcvX3K+t"
+    "48fP8Y+Ozv7xz+Hm5ub2G/fvo29tLSUuK6BMw5AOACEA/hXvXh4eHiyF/v582fs7u7u2Ds7O7FLSkpiv3r1Kvbk"
+    "5GTs1tbWnK/1/fv32FNTU7E3NjYyj0//HBobG5Os6ywVFRVJPvdxDA4OJlnXcYaGhnzycMYBCAeAcADJ87+P4zH"
+    "p3x+Znp5Osq5rpB0dHcVuaGjI67XS1ykODw9zHr+6uhq7qakpyXVd4zHz8/Oxi4uLE9c1cMYBIByAcADJ/+IaR/"
+    "o+iPQzOHp6ev7o66bvy7i+vk7y+f2alZWVvF4r/fyOxcXF2LW1tT5hOOMAEA5AOIDkv3uNI/0cirGxsSTrXonfUV"
+    "9fH3t/fz92W1tbzq9NH19XV5d5TPpZp+nfN6mpqcnrfRYUFMTe29uL3d/fH3t5eTn28PCwTx7OOADhABAOIHn+z"
+    "+MYHx+PXV5eHnt0dDSv75N+tujExETs9fX12KWlpUnWszBev36dZF1nSd8/kr4GMTIyErujoyOv9/nY8zguLi5it"
+    "7S0xN7a2krc64EzDkA4AIQDSJ79fRwzMzOxm5ubY3/9+jXn166trcXu6urKvF6Q/vf0PRTp53eknZ6exj45OUmyn"
+    "oGa73WN31FVVRX7w4cPSdbfWEnfS1JUVOQTiTMOQDgAhANInv/fVXlKl5eXsQ8ODmJ3dnb6XwdnHIBwAMIBJK5xA"
+    "DjjAIQDEA5AOADhAIQDQDgA4QCEAxAOQDgAhAMQDkA4AOEAhANAOADhAIQDEA5AOADhABAOQDgA4QCEAxAOAOEAh"
+    "AMQDkA4AOEAEA5AOADhAIQDEA4A4QCEAxAOQDgA4QCEAyAPfwN2EeYSJjWGtAAAAABJRU5ErkJggg=="
+)
+
+_VISION_CAPS_MEM: Dict[str, Any] = {}
+_VISION_CAPS_LOADED = False
+_VISION_PROBE_LOCK = threading.Lock()
+_VISION_PROBE_IN_FLIGHT: set = set()
+
+
+def _vision_caps_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "vision_caps_cache.json"
+
+
+def _vision_caps_key(provider: str, model: str) -> str:
+    return f"{(provider or '').strip().lower()}|{(model or '').strip().lower()}"
+
+
+def _load_vision_caps() -> Dict[str, Any]:
+    global _VISION_CAPS_MEM, _VISION_CAPS_LOADED
+    if not _VISION_CAPS_LOADED:
+        _VISION_CAPS_LOADED = True
+        try:
+            raw = json.loads(_vision_caps_path().read_text(encoding="utf-8"))
+            _VISION_CAPS_MEM = raw if isinstance(raw, dict) else {}
+        except Exception:
+            _VISION_CAPS_MEM = {}
+    return _VISION_CAPS_MEM
+
+
+def record_vision_verdict(provider: str, model: str, verdict: bool, source: str = "probe") -> None:
+    """Persist a conclusive verdict (probe worker, or turn_recovery's native-400 self-heal)."""
+    if not provider or not model:
+        return
+    with _VISION_PROBE_LOCK:
+        caps = _load_vision_caps()
+        caps[_vision_caps_key(provider, model)] = {
+            "supports_vision": bool(verdict),
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "source": source,
+        }
+        try:
+            path = _vision_caps_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(caps, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.debug("image_routing: vision caps cache write failed — %s", exc)
+
+
+def _cached_vision_verdict(provider: str, model: str) -> Optional[bool]:
+    raw = _load_vision_caps().get(_vision_caps_key(provider, model))
+    if isinstance(raw, dict) and isinstance(raw.get("supports_vision"), bool):
+        return raw["supports_vision"]
+    return None
+
+
+def _send_fixture_probe(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """One real chat.completions call carrying the OCR fixture, through the same client
+    builder ``vision_analyze`` uses (credentials/headers/api_mode included). True/False is
+    conclusive; None means "no evidence" (empty answer). Transport exceptions propagate —
+    the runner maps status codes."""
+    from agent.auxiliary_client import resolve_provider_client
+
+    base_url: str = _resolve_inference_base_url(cfg, provider)
+    api_key: str = _resolve_inference_api_key(cfg, provider)
+    client, resolved = resolve_provider_client(
+        provider, model, False,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+        is_vision=True,
+    )
+    if client is None:
+        return None
+    # OpenCode relay hard-requires the affinity header (400 MissingSessionID); a
+    # probe thread has no conversation contextvar, so pin an explicit probe scope.
+    from agent.opencode_affinity import merge_session_affinity_headers
+
+    payload: Dict[str, Any] = {
+        "model": resolved or model,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": _PROBE_PROMPT},
+            {"type": "image_url", "image_url": {"url": _PROBE_IMAGE_DATA_URL}},
+        ]}],
+        "max_tokens": 256,
+    }
+    merge_session_affinity_headers(
+        payload, provider, base_url, f"hermes-vision-probe:{provider}:{model}",
+    )
+    resp = client.chat.completions.create(**payload)
+    content: Any = None
+    with suppress(Exception):
+        content = resp.choices[0].message.content
+    if isinstance(content, list):
+        content = " ".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return _PROBE_CODE.lower() in content.lower()
+
+
+def _run_vision_probe(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> None:
+    key = _vision_caps_key(provider, model)
+    verdict: Optional[bool] = None
+    try:
+        verdict = _send_fixture_probe(provider, model, cfg)
+    except Exception as exc:
+        # Only a capability-worded 400/415/422 ("model does not support image")
+        # caches False — request-shape errors (e.g. MissingSessionID) and
+        # auth/rate/server/network failures must not poison the cache, so they
+        # log and retry on a later image turn.
+        err_text = str(exc)
+        with suppress(Exception):
+            body = getattr(exc, "body", None)
+            if body:
+                err_text += " " + (body if isinstance(body, str) else json.dumps(body, ensure_ascii=False))
+        from agent.message_sanitization import _looks_like_image_content_rejection
+        if getattr(exc, "status_code", None) in (400, 415, 422) and _looks_like_image_content_rejection(err_text):
+            verdict = False
+        else:
+            logger.debug("image_routing: vision probe transient failure for %s — %s", key, err_text[:400])
+    finally:
+        with _VISION_PROBE_LOCK:
+            _VISION_PROBE_IN_FLIGHT.discard(key)
+    if verdict is not None:
+        record_vision_verdict(provider, model, verdict)
+        logger.info("image_routing: live vision probe %s → %s", key, verdict)
+
+
+def _kick_vision_probe(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> None:
+    key = _vision_caps_key(provider, model)
+    with _VISION_PROBE_LOCK:
+        if key in _VISION_PROBE_IN_FLIGHT:
+            return
+        _VISION_PROBE_IN_FLIGHT.add(key)
+    from agent.memory_provider import spawn_context_thread  # bare threads drop the scope
+    spawn_context_thread(
+        _run_vision_probe, name="vision-probe-" + key, args=(provider, model, cfg),
+    ).start()
+
+
+def _probe_live_vision(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """Cached verdict when one exists; otherwise kick one background probe and report
+    unknown for THIS turn (the image stays a text ref until the verdict lands)."""
+    cached = _cached_vision_verdict(provider, model)
+    if cached is not None:
+        return cached
+    _kick_vision_probe(provider, model, cfg)
+    return None
+
+
+
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: Tuple[Tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
+    ("live vision probe", _probe_live_vision),
 )
 
 
@@ -337,7 +526,7 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe → registered
+    (managed local runtime → models.dev catalog → Ollama probe → live probe → registered
     ``ProviderProfile.supports_vision`` declaration).
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 
 from agent.image_routing import (
@@ -670,3 +673,122 @@ class TestCodexContextVariantVisionLookup:
         # Ineligible alias: looked up verbatim, no capability gained.
         assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
         assert seen[-1] == "gpt-5.5-900k"
+
+
+class TestLiveVisionProbe:
+    """The chain-tail live probe: cached verdicts drive routing, unknown models get ONE
+    background probe, and only capability-worded rejections poison the cache."""
+
+    @pytest.fixture(autouse=True)
+    def ir(self, tmp_path, monkeypatch):
+        from agent import image_routing as _ir
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(_ir, "_VISION_CAPS_MEM", {})
+        monkeypatch.setattr(_ir, "_VISION_CAPS_LOADED", False)
+        monkeypatch.setattr(_ir, "_VISION_PROBE_IN_FLIGHT", set())
+        return _ir
+
+    def test_cached_true_short_circuits_without_kick(self, ir):
+        ir.record_vision_verdict("opencode-go", "m1", True)
+        assert ir._probe_live_vision("opencode-go", "m1", {}) is True
+        with patch.object(ir, "_kick_vision_probe") as kick:
+            assert ir._probe_live_vision("opencode-go", "m1", {}) is True
+        kick.assert_not_called()
+
+    def test_cached_false_short_circuits_and_persists(self, ir):
+        ir.record_vision_verdict("opencode-go", "m2", False, source="native-400")
+        assert ir._probe_live_vision("opencode-go", "m2", {}) is False
+        saved = json.loads(ir._vision_caps_path().read_text(encoding="utf-8"))
+        assert saved["opencode-go|m2"]["supports_vision"] is False
+        assert saved["opencode-go|m2"]["source"] == "native-400"
+
+    def test_unknown_reports_unknown_and_kicks_once(self, ir):
+        with patch.object(ir, "_kick_vision_probe") as kick:
+            assert ir._probe_live_vision("opencode-go", "new-model", {}) is None
+        kick.assert_called_once_with("opencode-go", "new-model", {})
+
+    def test_kick_single_flight(self, ir):
+        with patch("agent.memory_provider.spawn_context_thread") as spawn:
+            ir._kick_vision_probe("opencode-go", "m3", {})
+            ir._kick_vision_probe("opencode-go", "m3", {})
+        assert spawn.call_count == 1
+        assert "opencode-go|m3" in ir._VISION_PROBE_IN_FLIGHT
+
+    def test_probe_true_written_to_cache(self, ir):
+        with patch.object(ir, "_send_fixture_probe", return_value=True):
+            ir._run_vision_probe("opencode-go", "m4", {})
+        assert ir._cached_vision_verdict("opencode-go", "m4") is True
+
+    def test_http_400_with_capability_wording_caches_false(self, ir):
+        class Fake400(Exception):
+            status_code = 400
+
+        ir._VISION_PROBE_IN_FLIGHT.add("opencode-go|m5")
+        with patch.object(
+            ir, "_send_fixture_probe",
+            side_effect=Fake400("Error code: 400 - This model does not support image input"),
+        ):
+            ir._run_vision_probe("opencode-go", "m5", {})
+        assert ir._cached_vision_verdict("opencode-go", "m5") is False
+        assert "opencode-go|m5" not in ir._VISION_PROBE_IN_FLIGHT
+
+    def test_http_400_request_shape_caches_nothing(self, ir):
+        """Regression: a MissingSessionID 400 once poisoned the cache to
+        supports_vision=False — request-shape 400s must never count as a capability verdict."""
+        class Fake400(Exception):
+            status_code = 400
+
+        ir._VISION_PROBE_IN_FLIGHT.add("opencode-go|m5b")
+        with patch.object(
+            ir, "_send_fixture_probe",
+            side_effect=Fake400('{"type": "MissingSessionID", "message": "Request is missing x-opencode-session"}'),
+        ):
+            ir._run_vision_probe("opencode-go", "m5b", {})
+        assert ir._cached_vision_verdict("opencode-go", "m5b") is None
+        assert "opencode-go|m5b" not in ir._VISION_PROBE_IN_FLIGHT
+
+    def test_fixture_probe_merges_session_affinity_headers(self, ir):
+        """The probe goes through the same client builder vision_analyze uses; relays that
+        hard-require a session header answer 400 MissingSessionID without it."""
+        captured = {}
+
+        from types import SimpleNamespace
+
+        resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ZQ7K"))])
+
+        class FakeClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kw):
+                        captured.update(kw)
+                        return resp
+
+        cfg = {"model": {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go/v1"}}
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(FakeClient(), "some-vision-model"),
+        ):
+            verdict = ir._send_fixture_probe("opencode-go", "some-vision-model", cfg)
+        assert verdict is True
+        assert "x-opencode-session" in (captured.get("extra_headers") or {})
+
+    def test_transient_error_caches_nothing_and_clears_flight(self, ir):
+        class Fake429(Exception):
+            status_code = 429
+
+        ir._VISION_PROBE_IN_FLIGHT.add("opencode-go|m6")
+        with patch.object(ir, "_send_fixture_probe", side_effect=Fake429("slow down")):
+            ir._run_vision_probe("opencode-go", "m6", {})
+        assert ir._cached_vision_verdict("opencode-go", "m6") is None
+        assert "opencode-go|m6" not in ir._VISION_PROBE_IN_FLIGHT
+
+    def test_live_probe_is_chain_tail(self, ir):
+        assert [name for name, _ in ir._VISION_PROBES][-1] == "live vision probe"
+
+    def test_cached_verdict_drives_auto_mode(self, ir):
+        import agent.models_dev  # noqa: F401 — make the patch target importable
+
+        ir.record_vision_verdict("opencode-go", "m8", True)
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("opencode-go", "m8", {}) == "native"

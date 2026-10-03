@@ -289,6 +289,17 @@ def recover_before_classification(
             # Record the model; the retry re-enters build_api_request with the same
             # api_messages and strip_images_for_rejecting_model strips them there.
             _rejected.add(_model_key)
+            # Persist the verdict too: image_routing consults the on-disk caps cache when
+            # deciding the input mode, so the next turn (and later sessions) skip the native
+            # path for this (provider, model) instead of re-sending a known-rejected image.
+            try:
+                from agent.image_routing import record_vision_verdict
+                record_vision_verdict(
+                    getattr(agent, "provider", "") or "", getattr(agent, "model", "") or "",
+                    False, source="native-400",
+                )
+            except Exception:
+                pass
             _vlines(
                 agent,
                 "⚠️  Server rejected image content — sending text only to this model; "

@@ -29,7 +29,26 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # shutdown_all() drain bound; workers are daemon threads so a wedged provider never
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+# 2026-09-25 audit: the plain 8.0s bound was measured dropping prefetch on almost every
+# turn for the live Hindsight backend — 8/8 direct recall samples (bypassing Hermes)
+# took 7.5-14.5s because Hindsight's recall does server-side LLM reranking/synthesis
+# (its own settings.py documents "cloud API can take 30-40s per request"); ~200 timeout
+# log entries. The shared default stays 8.0s so every external provider keeps the same
+# fail-fast bound as before; providers with measured latency above that get their own
+# ceiling in _PROVIDER_PREFETCH_TIMEOUT_S below. Revert is a two-line change in this
+# block (restore 8.0 everywhere / empty the per-provider map).
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+
+# Per-provider prefetch ceilings that override _EXTERNAL_PREFETCH_TIMEOUT_S, keyed by
+# provider.name. Prefetch runs on the blocking turn path (thread.join before the tool
+# loop), so a hung provider stalls the turn for up to this long — the bar for listing a
+# provider here is a *measured* latency above the shared default.
+_PROVIDER_PREFETCH_TIMEOUT_S: Dict[str, float] = {
+    # Hindsight: recall does server-side LLM reranking/synthesis; 8/8 measured samples
+    # took 7.5-14.5s (2026-09-25). 20.0s gives margin over the observed max while still
+    # failing fast relative to Hindsight's own 120s client timeout.
+    "hindsight": 20.0,
+}
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -346,6 +365,7 @@ class MemoryManager:
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
         self._has_external: bool = False
         timeout = external_prefetch_timeout
+        self._external_timeout_is_explicit = timeout is not None
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
         if timeout <= 0:
             raise ValueError("external_prefetch_timeout must be positive")
@@ -477,11 +497,16 @@ class MemoryManager:
             self._external_prefetch_threads[provider.name] = thread
             thread.start()
 
-        thread.join(self._external_prefetch_timeout)
+        # Precedence: explicit constructor override > per-provider ceiling > shared default.
+        timeout = (
+            self._external_prefetch_timeout if self._external_timeout_is_explicit
+            else _PROVIDER_PREFETCH_TIMEOUT_S.get(provider.name, self._external_prefetch_timeout)
+        )
+        thread.join(timeout)
         if thread.is_alive():
             logger.warning(
                 "Memory provider '%s' prefetch timed out after %.1fs; skipping it until "
-                "the stuck call returns", provider.name, self._external_prefetch_timeout,
+                "the stuck call returns", provider.name, timeout,
             )
             return ""
 

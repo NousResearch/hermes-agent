@@ -87,6 +87,34 @@ def _set_read_only(server: str, tool: str, value: bool):
     mcp_tool._tool_read_only_hints.setdefault(server, {})[tool] = value
 
 
+class TestReadOnlyAnnotationAcrossSdkGenerations:
+    """The annotation field has one name on the wire and another in Python.
+
+    ``readOnlyHint`` arrives as the wire/cached-dict spelling, but MCP SDK 2.x exposes the
+    Python model attribute as ``read_only_hint`` — and a pydantic alias does not apply to
+    attribute access. Reading only the camelCase name therefore answers a silent ``None``
+    on every tool, so a server marked ``trust: untrusted`` gates pure reads as if they were
+    write-capable. Fail-closed semantics are unchanged: only an explicit ``True`` relaxes
+    gating.
+    """
+
+    def test_hint_is_read_from_both_dict_and_sdk_object_shapes(self):
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"readOnlyHint": True})) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))) is True
+
+    def test_missing_or_non_true_hint_stays_write_capable(self):
+        assert _mcp_registration._annotation_read_only_hint(SimpleNamespace(annotations=None)) is False
+        assert _mcp_registration._annotation_read_only_hint(SimpleNamespace(annotations=SimpleNamespace())) is False
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))) is False
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint="true"))) is False
+
+
 class TestTrustGateAtCallTime:
     """The handler preamble consults the approval path when required."""
 

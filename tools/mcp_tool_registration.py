@@ -47,9 +47,20 @@ def _normalize_server_trust(value: Any) -> str:
 
 
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
-    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
+    """True only when annotations carry an explicit read-only hint; unknown = write-capable.
+
+    The same field is ``readOnlyHint`` over the wire and in cached dicts, but MCP SDK 2.x
+    exposes the Python model attribute as ``read_only_hint`` — and a pydantic alias does not
+    apply to attribute access, so reading only the camelCase name silently answers ``None``
+    and gates every tool on an untrusted server as write-capable, pure reads included.
+    """
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint", annotations.get("read_only_hint"))
+    elif annotations is None:
+        hint = None
+    else:
+        hint = mcp_field(annotations, "read_only_hint", "readOnlyHint", None)
     return hint is True
 
 

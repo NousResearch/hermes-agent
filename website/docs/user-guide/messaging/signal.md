@@ -105,6 +105,7 @@ SIGNAL_ACCOUNT=+1234567890
 
 # Security (recommended)
 SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers or UUIDs
+SIGNAL_SEND_ALLOWED_USERS=+1234567890            # Outbound DM allowlist (defaults to SIGNAL_ALLOWED_USERS)
 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
@@ -140,6 +141,24 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Not set (default) | All group messages are ignored. The bot only responds to DMs. |
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
+
+### Outbound Access (Egress Allowlist)
+
+Every message Hermes sends over Signal — replies, typing indicators, reactions, attachments, cron deliveries, and `hermes send` — must target an allowlisted chat. Sends to any other target are blocked before they reach signal-cli and return an `outbound blocked: target not on allowlist` error.
+
+DM targets are checked against `SIGNAL_SEND_ALLOWED_USERS`:
+
+| Configuration | Behavior |
+|---------------|----------|
+| `SIGNAL_SEND_ALLOWED_USERS` set | Only the listed E.164 numbers or UUIDs can receive DMs. |
+| Not set, `SIGNAL_ALLOWED_USERS` set to a list | Falls back to `SIGNAL_ALLOWED_USERS` — the bot can message the users allowed to message it. |
+| Not set, `SIGNAL_ALLOWED_USERS` is `*` or not set | **Fails closed** — all DM sends are blocked. |
+
+Group targets (`group:<id>`) are checked against `SIGNAL_GROUP_ALLOWED_USERS`. Only group IDs listed explicitly can receive messages; `*` opens inbound group access but does not allow sends to any group.
+
+:::warning
+If you rely on DM pairing or `SIGNAL_ALLOW_ALL_USERS=true` (no `SIGNAL_ALLOWED_USERS` list), the bot cannot reply to anyone until you set `SIGNAL_SEND_ALLOWED_USERS`. Include your `SIGNAL_HOME_CHANNEL` too if cron jobs deliver there.
+:::
 
 ---
 

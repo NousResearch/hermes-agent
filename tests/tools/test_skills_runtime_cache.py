@@ -159,3 +159,49 @@ def test_hash_filter_is_skill_relative(tmp_path):
     _write(src, "scripts/helper.py", "ANSWER = 1\n")
     assert ss._dir_hash(src) == _legacy_hash(src)
     assert set(_skill_file_list(src)) == {"SKILL.md", "scripts/helper.py"}
+
+
+@pytest.fixture
+def official_skill(tmp_path, monkeypatch):
+    """An official optional skill served by the real OptionalSkillSource, nothing remote."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub_search as hub_search
+    from tools.skills_hub_official import OptionalSkillSource
+
+    src = tmp_path / "optional-skills" / "tools" / "demo-hub"
+    _write(src, "SKILL.md", "---\nname: demo-hub\ndescription: Demo.\n---\n# Demo\n")
+    _write(src, "scripts/helper.py", "ANSWER = 1\n")
+    monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(tmp_path / "optional-skills"))
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [OptionalSkillSource()])
+    monkeypatch.setattr(hub_search, "create_source_router", lambda auth=None: [OptionalSkillSource()])
+    return src, ss._skills_dir() / "tools" / "demo-hub"
+
+
+def test_hub_update_is_not_blocked_by_generated_bytecode(official_skill):
+    from io import StringIO
+
+    from rich.console import Console
+
+    from hermes_cli.skills_hub import do_install, do_update
+
+    src, dest = official_skill
+    out = StringIO()
+    console = Console(file=out, width=300, color_system=None)
+    do_install("official/tools/demo-hub", skip_confirm=True, invalidate_cache=False, console=console)
+    py_compile.compile(str(dest / "scripts/helper.py"), doraise=True)
+    _write(src, "scripts/helper.py", "ANSWER = 2\n")
+    do_update(console=console)
+    assert (dest / "scripts/helper.py").read_text() == "ANSWER = 2\n", out.getvalue()
+
+
+def test_backfilled_provenance_ignores_generated_bytecode(official_skill):
+    from tools.skills_hub_install import check_for_skill_updates
+    from tools.skills_hub_official import OptionalSkillSource
+
+    src, dest = official_skill
+    _write(dest, "SKILL.md", (src / "SKILL.md").read_text())
+    _write(dest, "scripts/helper.py", "ANSWER = 1\n")
+    py_compile.compile(str(dest / "scripts/helper.py"), doraise=True)
+    assert ss._backfill_optional_provenance(quiet=True) == ["demo-hub"]
+    [row] = check_for_skill_updates(sources=[OptionalSkillSource()])
+    assert row["status"] == "up_to_date"

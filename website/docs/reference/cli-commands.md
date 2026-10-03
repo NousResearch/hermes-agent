@@ -238,6 +238,8 @@ Per-run overrides (no mutation to `~/.hermes/config.yaml`):
 | `-m` / `--model <model>` | `HERMES_INFERENCE_MODEL` | Override the model for this run |
 | `--provider <provider>` | _(none)_ | Override the provider for this run |
 | `--usage-file <path>` | _(none)_ | Write a JSON usage report after the run (see below) |
+| `--output-schema <path>` | _(none)_ | Require the final answer to validate against the JSON Schema in `<path>` (see below) |
+| `--output-last-message <path>` | _(none)_ | Write the validated final JSON payload to `<path>`; requires `--output-schema` |
 
 ```bash
 hermes -z "…" --provider openrouter --model openai/gpt-5.5
@@ -289,6 +291,15 @@ Use this when you want to:
 
 **If you need to add a new provider:** Exit your Hermes session first (`Ctrl+C` or `/quit`), then run `hermes model` from your terminal prompt.
 :::
+
+#### `--output-schema` — schema-shaped final answers for pipelines
+
+`hermes -z "…" --output-schema schema.json` makes the one-shot answer machine-parseable: the JSON Schema in the file is appended to the prompt as an output contract, the final response is validated against it, and an invalid response gets exactly one corrective turn in the same conversation (the validator's error list is sent back to the model). A response that still fails validation is **not** printed: the run exits non-zero and `--usage-file` records `output schema validation failed`, so a pipeline never has to parse a near-miss. Add `--output-last-message result.json` to write only the validated payload to a file (parent directories are created; nothing is written on failure). The schema is read and checked before the agent starts, so a bad path or an invalid schema fails fast without spending tokens. Inspired by Muse Code's `muse exec --output-schema`; the validation is done locally, so it works with every provider.
+
+```bash
+hermes -z "list the three largest files as {\"files\":[{\"path\":…,\"bytes\":…}]}" \
+  --output-schema ~/schemas/files.json --output-last-message ~/.hermes/cache/scratch/files.json
+```
 
 ### `/model` slash command (mid-session)
 

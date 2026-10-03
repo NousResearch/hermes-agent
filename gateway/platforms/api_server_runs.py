@@ -274,7 +274,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "approval", "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -1166,7 +1166,13 @@ def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
                 from gateway.platforms.api_server import _approval_request_event
 
                 status = "waiting_for_approval"
-                fields["approval"] = _approval_request_event(run_id, pending[0])
+                current_approval = self._run_statuses.get(run_id, {}).get("approval") or {}
+                surface_fields = {
+                    key: current_approval[key]
+                    for key in ("message_id", "session_id")
+                    if key in current_approval
+                }
+                fields["approval"] = _approval_request_event(run_id, pending[0], **surface_fields)
     self._set_run_status(run_id, status, last_event=name, **fields)
     q = self._run_streams.get(run_id)
     if q is not None:

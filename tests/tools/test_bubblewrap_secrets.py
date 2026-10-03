@@ -65,7 +65,16 @@ def _bwrap_usable() -> bool:
 BWRAP_USABLE = _bwrap_usable()
 needs_bwrap = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap missing or its namespace probe failed")
 
-MOUNT_FLAGS = {"--bind": 2, "--ro-bind": 2, "--bind-try": 2, "--ro-bind-try": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1}
+MOUNT_FLAGS = {
+    "--bind": 2, "--ro-bind": 2, "--bind-try": 2, "--ro-bind-try": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1,
+    "--symlink": 2, "--remount-ro": 1,
+}
+# Sensitive entries that sit below an entry the default allowlist shows.
+# The top-level entries are hidden by the HOME layout and get no mount.
+BELOW_VISIBLE = (
+    ".config/git/credentials", ".cargo/credentials", ".cargo/credentials.toml",
+    ".m2/settings.xml", ".gradle/gradle.properties", ".cache/huggingface/token",
+)
 
 
 def _mounts(argv):
@@ -228,19 +237,25 @@ class TestOverlayArgs:
         ]
 
     def test_overlays_sit_after_operator_binds_and_before_the_state_dir(self, paths, tmp_path):
-        populate_home(Path(paths["home"]))
+        home = Path(paths["home"])
+        populate_home(home)
         Path(paths["hermes_home"]).mkdir(parents=True)
         shared = tmp_path / "shared"
         shared.mkdir()
         config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(shared)),))
         mounts = _mounts(build_bwrap_args(config, **paths))
-        overlay_idx = [mounts.index(m) for m in self._overlays(paths)]
-        assert len(overlay_idx) == len(SENSITIVE_HOME_PATHS) + 1
+        overlay_idx = [mounts.index(("--tmpfs", str(home / rel))) for rel in BELOW_VISIBLE]
         i_cwd = mounts.index(("--bind-try", paths["initial_cwd"], paths["initial_cwd"]))
         i_shared = mounts.index(("--ro-bind", str(shared), str(shared)))
+        i_home = mounts.index(("--tmpfs", str(home)))
         i_state = mounts.index(("--bind", paths["state_dir"], paths["state_dir"]))
-        assert i_cwd < i_shared < min(overlay_idx)
-        assert max(overlay_idx) < i_state
+        i_seal = mounts.index(("--remount-ro", str(home)))
+        assert i_cwd < i_shared < i_home < min(overlay_idx)
+        assert max(overlay_idx) < i_state < i_seal
+        # A top-level entry is not visible, so nothing is mounted on it.
+        top_level = {str(home / rel) for rel in SENSITIVE_HOME_PATHS if "/" not in rel}
+        assert top_level.isdisjoint(m[-1] for m in mounts)
+
 
 
 class TestEmptyFileLifecycle:
@@ -261,15 +276,20 @@ class TestEmptyFileLifecycle:
 
     def test_argv_binds_that_file_over_sensitive_files(self, sandbox_root, work_dir, tmp_path, monkeypatch):
         home = tmp_path / "home"
-        home.mkdir()
+        (home / ".cargo").mkdir(parents=True)
+        (home / ".cargo" / "credentials.toml").write_text(MARKER)
         (home / ".npmrc").write_text(MARKER)
         (home / ".ssh").mkdir()
         monkeypatch.setenv("HOME", str(home))
         with _no_session():
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
         mounts = _mounts(env._wrap_popen_args(["bash"]))
-        assert ("--ro-bind", env._empty_file, str(home / ".npmrc")) in mounts
-        assert ("--tmpfs", str(home / ".ssh")) in mounts
+        assert ("--ro-bind", env._empty_file, str(home / ".cargo" / "credentials.toml")) in mounts
+        # The top-level entries are off the allowlist: nothing is mounted there.
+        dests = {m[-1] for m in mounts}
+        assert str(home / ".npmrc") not in dests
+        assert str(home / ".ssh") not in dests
+
 
 
 @needs_bwrap
@@ -293,22 +313,27 @@ class TestSensitiveHomePathsIntegration:
                 leaks[rel] = out
         assert leaks == {}
 
-    def test_hidden_dirs_are_empty_and_hidden_files_are_zero_length(self, env, fake_home):
-        for rel in DIR_ENTRIES:
-            result = env.execute(f"ls -A {fake_home / rel} | wc -l")
+    def test_hidden_entries_are_absent_or_empty(self, env, fake_home):
+        # A top-level entry does not exist in the sandbox at all; an entry
+        # below a visible one shows as an empty directory or a zero-length file.
+        for rel in SENSITIVE_HOME_PATHS:
+            path = fake_home / rel
+            result = env.execute(
+                f"if [ -d {path} ]; then ls -A {path} | wc -l; elif [ -e {path} ]; then wc -c < {path}; else echo absent; fi"
+            )
             assert result["returncode"] == 0, (rel, result["output"])
-            assert result["output"].strip() == "0", rel
-        for rel in FILE_ENTRIES:
-            result = env.execute(f"test -f {fake_home / rel} && wc -c < {fake_home / rel}")
-            assert result["returncode"] == 0, (rel, result["output"])
-            assert result["output"].strip() == "0", rel
+            assert result["output"].strip() == ("absent" if rel not in BELOW_VISIBLE else "0"), rel
+
 
     def test_non_sensitive_home_content_stays_visible(self, env, fake_home):
-        # The hiding must come from the overlays, not from an unrelated mask.
+        # The hiding must come from the layout, not from an unrelated mask.
         assert env.execute(f"cat {fake_home}/visible.txt")["output"].strip() == VISIBLE
-        assert env.execute(f"cat {fake_home}/.config/visible.txt")["output"].strip() == VISIBLE
+        # .config is default-deny: only an allowed child shows, and a file
+        # no list names does not.
+        assert VISIBLE not in env.execute(f"cat {fake_home}/.config/visible.txt 2>&1")["output"]
         listing = set(env.execute(f"ls -A {fake_home}/.config")["output"].split())
-        assert listing == {"gcloud", "visible.txt"}
+        assert listing == {"git"}
+
 
     def test_writes_into_a_hidden_dir_never_reach_the_host(self, env, fake_home):
         env.execute(f"touch {fake_home}/.ssh/from-sandbox; echo {VISIBLE} > {fake_home}/.npmrc")
@@ -323,10 +348,14 @@ class TestSensitiveHomePathsIntegration:
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
             assert env.execute("true")["returncode"] == 0
-            dests = {m[-1] for m in _mounts(env._wrap_popen_args(["bash"]))}
-            assert not any(d.startswith(str(home)) for d in dests)
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            # An empty HOME gets the layout and nothing inside it.
+            assert [m for m in mounts if m[-1].startswith(str(home))] == [
+                ("--tmpfs", str(home)), ("--remount-ro", str(home)),
+            ]
         finally:
             env.cleanup()
+
 
 
 @needs_bwrap
@@ -357,10 +386,12 @@ class TestAncestorPinIntegration:
         assert MARKER not in out
         assert "secret" not in out.split()
 
-    def test_pinned_dir_stays_writable(self, env, fake_home):
+    def test_default_deny_dir_is_read_only(self, env, fake_home):
         result = env.execute(f"touch {fake_home}/.config/probe")
-        assert result["returncode"] == 0, result["output"]
-        assert (fake_home / ".config" / "probe").is_file()
+        assert result["returncode"] != 0
+        assert "Read-only file system" in result["output"]
+        assert not (fake_home / ".config" / "probe").exists()
+
 
 
 @needs_bwrap
@@ -489,7 +520,8 @@ class TestHermesHomeIntegration:
         try:
             out = env.execute(f"cat {default_home}/.env {default_home}/auth.json 2>&1; ls -A {default_home}")["output"]
             assert MARKER not in out
-            assert env.execute(f"ls -A {default_home}")["output"].split() == []
+            # Off the allowlist, so it does not exist in the sandbox at all.
+            assert env.execute(f"ls -A {default_home} 2>/dev/null")["output"].split() == []
             assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["sandboxes"]
         finally:
             env.cleanup()
@@ -512,12 +544,16 @@ class TestHomeModeCarveOut:
         profile_home.mkdir(parents=True)
         (Path(paths["home"]) / ".ssh").mkdir()
         mounts = _mounts(build_bwrap_args(BubblewrapConfig(home_mode=mode), **paths))
-        i_overlay = mounts.index(("--tmpfs", str(hermes_home)))
+        # HERMES_HOME is HOME/.hermes here: the HOME layout hides it, and
+        # the profile home and the state dir are bound inside the layout,
+        # before HOME is sealed.
+        i_layout = mounts.index(("--tmpfs", paths["home"]))
         i_profile = mounts.index(("--bind", str(profile_home), str(profile_home)))
         i_state = mounts.index(("--bind", paths["state_dir"], paths["state_dir"]))
-        assert i_overlay < i_profile < i_state
+        i_seal = mounts.index(("--remount-ro", paths["home"]))
+        assert i_layout < i_profile < i_state < i_seal
         # The real HOME set stays hidden regardless of the subprocess HOME.
-        assert ("--tmpfs", str(Path(paths["home"]) / ".ssh")) in mounts
+        assert str(Path(paths["home"]) / ".ssh") not in {m[-1] for m in mounts}
 
     @pytest.mark.parametrize("mode", ["auto", "real"])
     def test_home_mode_auto_and_real_add_no_profile_home_bind(self, paths, mode):
@@ -525,14 +561,14 @@ class TestHomeModeCarveOut:
         (hermes_home / "home").mkdir(parents=True)
         argv = build_bwrap_args(BubblewrapConfig(home_mode=mode), **paths)
         assert str(hermes_home / "home") not in argv
-        assert ("--tmpfs", str(hermes_home)) in _mounts(argv)
+        assert ("--tmpfs", paths["home"]) in _mounts(argv)
 
     def test_home_mode_profile_without_the_dir_adds_no_bind(self, paths):
         hermes_home = Path(paths["hermes_home"])
         hermes_home.mkdir(parents=True)
         argv = build_bwrap_args(BubblewrapConfig(home_mode="profile"), **paths)
         assert str(hermes_home / "home") not in argv
-        assert ("--tmpfs", str(hermes_home)) in _mounts(argv)
+        assert ("--tmpfs", paths["home"]) in _mounts(argv)
 
 
 @needs_bwrap
@@ -643,3 +679,202 @@ class TestHomeModeIntegration:
             env.cleanup()
         assert (default_home / ".env").read_text() == f"DEFAULT_MARKER={MARKER}\n"
 
+
+
+def _write(path: Path, text: str = MARKER) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text + "\n")
+    return path
+
+
+UNLISTED_TOP = (".git-credentials", ".pgpass", ".boto", ".ssh/id_ed25519", ".zz-unlisted/secret", ".zz-unlisted-file")
+UNLISTED_NESTED = (".config/zz-unlisted/token", ".config/zz-file", ".local/share/zz-unlisted/db", ".local/state/history")
+BELOW_ALLOWED = (".config/gh/hosts.yml", ".cargo/credentials.toml")
+ALLOWED_SAMPLES = (".gitconfig", ".cargo/bin/x", ".cache/x", ".config/git/config", ".local/bin/x")
+
+
+@pytest.fixture
+def deny_home(host_dir, monkeypatch):
+    """A HOME with unlisted secrets, allowed entries, a linked rc file and two tools on PATH."""
+    home = host_dir / "home"
+    home.mkdir()
+    for rel in UNLISTED_TOP + UNLISTED_NESTED + BELOW_ALLOWED:
+        _write(home / rel)
+    for rel in ALLOWED_SAMPLES:
+        _write(home / rel, VISIBLE)
+    _write(home / "dotfiles" / "bashrc", f"# {VISIBLE}")
+    (home / ".bashrc").symlink_to("dotfiles/bashrc")
+    (home / ".config" / "pip").symlink_to("git")
+    _write(home / "proj" / "inside.txt", VISIBLE)
+    _write(home / "sibling" / "data.txt", VISIBLE)
+    _write(home / ".local" / "share" / "other" / "marker")
+    for rel in (".zz-tool/bin/zz-top", ".local/share/zz/bin/zz-nested"):
+        tool = _write(home / rel, f"#!/bin/sh\necho {VISIBLE}")
+        tool.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(home / ".zz-tool" / "bin"), str(home / ".local/share/zz/bin"), os.environ["PATH"]]),
+    )
+    return home
+
+
+def _host_names(home: Path) -> set[str]:
+    return {p.name for p in home.iterdir()}
+
+
+@needs_bwrap
+class TestHomeDefaultDenyIntegration:
+    """HOME is default-deny for dot entries: what no list names is hidden too."""
+
+    @staticmethod
+    def _env(cwd, **kwargs):
+        return BubblewrapEnvironment(cwd=str(cwd), timeout=30, **kwargs)
+
+    @pytest.fixture
+    def env(self, sandbox_root, deny_home):
+        env = self._env(deny_home / "proj")
+        try:
+            yield env
+        finally:
+            env.cleanup()
+
+    @pytest.fixture
+    def env_at_home(self, sandbox_root, deny_home):
+        env = self._env(deny_home)
+        try:
+            yield env
+        finally:
+            env.cleanup()
+
+    @pytest.mark.parametrize("profile", sorted(bubblewrap.PROFILES))
+    @pytest.mark.parametrize("at_home", [False, True])
+    def test_unlisted_entries_cannot_be_read_or_listed(self, sandbox_root, deny_home, profile, at_home):
+        env = self._env(deny_home if at_home else deny_home / "proj", config=BubblewrapConfig(profile=profile))
+        try:
+            for rel in UNLISTED_TOP + UNLISTED_NESTED + BELOW_ALLOWED:
+                out = env.execute(f"cat {deny_home / rel} 2>&1")["output"]
+                assert MARKER not in out, (profile, rel)
+            listed = set()
+            for rel in ("", ".config", ".local", ".local/share"):
+                listed |= set(env.execute(f"ls -A {deny_home / rel}")["output"].split())
+            assert listed.isdisjoint(
+                {".git-credentials", ".pgpass", ".boto", ".ssh", ".zz-unlisted", ".zz-unlisted-file",
+                 "zz-unlisted", "zz-file", "state", "gh", "other"}
+            ), (profile, listed)
+        finally:
+            env.cleanup()
+
+    def test_absent_names_cannot_be_created_with_cwd_at_home(self, env_at_home, deny_home):
+        home = deny_home
+        (home / ".ssh").joinpath("id_ed25519").unlink()
+        (home / ".ssh").rmdir()
+        before = _host_names(home)
+        for command in (
+            f"mkdir -p {home}/.ssh && printf injected > {home}/.ssh/authorized_keys",
+            f"printf injected > {home}/.netrc",
+            f"ln -s /etc {home}/.aws",
+            f"printf injected > {home}/newfile",
+        ):
+            result = env_at_home.execute(command)
+            assert result["returncode"] != 0, (command, result["output"])
+        assert _host_names(home) == before
+        assert not (home / ".ssh").exists()
+
+    def test_sibling_is_read_only_from_a_project_cwd(self, env, deny_home):
+        assert env.execute(f"cat {deny_home}/sibling/data.txt")["output"].strip() == VISIBLE
+        result = env.execute(f"printf changed > {deny_home}/sibling/data.txt")
+        assert result["returncode"] != 0
+        assert (deny_home / "sibling" / "data.txt").read_text().strip() == VISIBLE
+        assert env.execute("printf ok > made-here.txt")["returncode"] == 0
+        assert (deny_home / "proj" / "made-here.txt").read_text() == "ok"
+
+    def test_write_inside_an_existing_directory_reaches_the_host_with_cwd_at_home(self, env_at_home, deny_home):
+        result = env_at_home.execute(f"printf ok > {deny_home}/proj/from-sandbox.txt")
+        assert result["returncode"] == 0, result["output"]
+        assert (deny_home / "proj" / "from-sandbox.txt").read_text() == "ok"
+
+    def test_directory_made_on_the_host_later_is_visible_to_the_next_command(self, env, deny_home):
+        assert env.execute("true")["returncode"] == 0
+        _write(deny_home / "later" / "file.txt", VISIBLE)
+        assert env.execute(f"cat {deny_home}/later/file.txt")["output"].strip() == VISIBLE
+
+    def test_path_change_after_construction_does_not_change_the_mounts(self, env, deny_home, monkeypatch):
+        before = _mounts(env._wrap_popen_args(["bash"]))
+        _write(deny_home / ".zz-late" / "bin" / "x")
+        monkeypatch.setenv("PATH", str(deny_home / ".zz-late" / "bin") + os.pathsep + os.environ["PATH"])
+        after = _mounts(env._wrap_popen_args(["bash"]))
+        assert after == before
+        assert str(deny_home / ".zz-late") not in {m[-1] for m in after}
+
+    def test_linked_rc_file_is_read_through_its_link(self, env, deny_home):
+        assert VISIBLE in env.execute(f"cat {deny_home}/.bashrc")["output"]
+        assert env.execute(f"test -L {deny_home}/.bashrc")["returncode"] == 0
+
+    def test_allowed_entries_are_visible(self, env, deny_home):
+        for rel in ALLOWED_SAMPLES + (".bashrc",):
+            assert VISIBLE in env.execute(f"cat {deny_home / rel}")["output"], rel
+
+    def test_tools_on_path_run_by_name_and_their_neighbours_stay_hidden(self, env, deny_home):
+        for tool in ("zz-top", "zz-nested"):
+            result = env.execute(f"PATH={deny_home}/.zz-tool/bin:{deny_home}/.local/share/zz/bin:$PATH {tool}")
+            assert result["output"].strip() == VISIBLE, (tool, result["output"])
+        assert MARKER not in env.execute(f"cat {deny_home}/.local/share/other/marker 2>&1")["output"]
+
+    def test_nothing_can_be_created_in_a_default_deny_directory(self, env_at_home, deny_home):
+        for command in (f"mkdir {deny_home}/.config/gh2", f"mkdir -p {deny_home}/.local/share/keyrings && "
+                        f"printf x > {deny_home}/.local/share/keyrings/x", f"mkdir {deny_home}/.local/zz-new"):
+            result = env_at_home.execute(command)
+            assert result["returncode"] != 0, (command, result["output"])
+        assert not (deny_home / ".config" / "gh2").exists()
+        assert not (deny_home / ".local" / "share" / "keyrings").exists()
+        assert not (deny_home / ".local" / "zz-new").exists()
+
+    def test_allowed_child_that_is_a_symlink_stays_a_symlink(self, env, deny_home):
+        assert env.execute(f"readlink {deny_home}/.config/pip")["output"].strip() == "git"
+
+    def test_allowed_entries_are_read_only_with_cwd_at_home(self, env_at_home, deny_home):
+        for command in (
+            f"echo injected >> {deny_home}/.bashrc",
+            f"echo injected >> {deny_home}/.gitconfig",
+            f"printf x > {deny_home}/.cache/y",
+        ):
+            result = env_at_home.execute(command)
+            assert result["returncode"] != 0, command
+            assert "Read-only file system" in result["output"], (command, result["output"])
+        assert (deny_home / "dotfiles" / "bashrc").read_text() == f"# {VISIBLE}\n"
+        assert (deny_home / ".gitconfig").read_text() == VISIBLE + "\n"
+        assert not (deny_home / ".cache" / "y").exists()
+
+    def test_every_home_path_of_the_file_safety_policy_is_hidden(self, sandbox_root, deny_home):
+        from agent.file_safety import build_write_denied_paths, build_write_denied_prefixes
+
+        home = str(deny_home)
+        files = [Path(p) for p in build_write_denied_paths(home) if p.startswith(home + os.sep)]
+        dirs = [Path(p.rstrip(os.sep)) for p in build_write_denied_prefixes(home) if p.startswith(home + os.sep)]
+        assert files and dirs
+        for path in dirs:
+            if not path.exists():
+                _write(path / "secret")
+        for path in files:
+            if not path.exists():
+                _write(path)
+        env = self._env(deny_home / "proj")
+        try:
+            for path in files + [d / "secret" for d in dirs]:
+                assert MARKER not in env.execute(f"cat {path} 2>&1")["output"], path
+        finally:
+            env.cleanup()
+
+    def test_a_path_added_to_the_file_safety_policy_is_hidden(self, sandbox_root, deny_home):
+        from agent import file_safety
+
+        invented = _write(deny_home / "sibling" / "zz-policy-secret")
+        real = file_safety.build_write_denied_paths
+        with patch.object(file_safety, "build_write_denied_paths", lambda home: real(home) | {str(invented)}):
+            env = self._env(deny_home / "proj")
+        try:
+            assert MARKER not in env.execute(f"cat {invented} 2>&1")["output"]
+            assert env.execute(f"cat {deny_home}/sibling/data.txt")["output"].strip() == VISIBLE
+        finally:
+            env.cleanup()

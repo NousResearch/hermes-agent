@@ -48,6 +48,13 @@ def to_whatsapp_jid(value: str) -> str:
     if _BARE_PHONE_RE.fullmatch(normalized):
         digits = re.sub(r"\D+", "", normalized)
         if digits:
+            # E.164 phone numbers are at most 15 digits.  Anything longer
+            # (e.g. 18-digit WhatsApp group IDs like 120363012345678901)
+            # is a group identifier — route to @g.us so the bridge delivers
+            # to the group rather than silently addressing a non-existent
+            # user.  See #102328.
+            if len(digits) > 15:
+                return f"{digits}@g.us"
             return f"{digits}@s.whatsapp.net"
     return normalized
 

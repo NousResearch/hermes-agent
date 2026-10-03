@@ -234,6 +234,7 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("lane", ["ready", "review"])
 @pytest.mark.parametrize("phase,status,error_type,exit_code,expected", [
     ("repository", None, "NOT_FOUND", 1, "auth"),
     ("repository", None, "NOT_FOUND", 0, "auth"),
@@ -255,7 +256,7 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
     ("evidence", "403", None, 1, "auth"),
 ])
 def test_refusals_are_classified_at_the_failed_operation(
-        tmp_path, monkeypatch, phase, status, error_type, exit_code, expected):
+        tmp_path, monkeypatch, lane, phase, status, error_type, exit_code, expected):
     """Exercise real gh subprocesses and SQLite completion, not classifier mocks."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     shim = tmp_path / "bin"
@@ -291,14 +292,45 @@ else:
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     kb.init_db()
     with connect() as conn:
-        tid = kb.create_task(conn, title="classify", completion_contract="acme/repo")
+        tid = kb.create_task(conn, title="classify", completion_contract="acme/repo", assignee="default")
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (lane, tid))
+        conn.commit()
         assert not kb.complete_task(conn, tid, result="done",
             metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
         receipt = json.loads(conn.execute(
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
         task = kb.get_task(conn, tid)
-        assert task.status != "done"
+        assert task.status == lane
         assert "PRIVATE_DIAGNOSTIC" not in task.last_failure_error
+        assert conn.execute("SELECT count(*) FROM task_runs WHERE task_id=?", (tid,)).fetchone()[0] == 0
+
+        from hermes_cli import kanban_db_dispatch as dispatch
+        from hermes_cli import config, profiles
+        monkeypatch.setattr(config, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}})
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+        event_time = conn.execute(
+            "SELECT created_at FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0]
+        monkeypatch.setattr(dispatch.time, "time", lambda: event_time + 100)
+        guard = {"auth": "blocker_auth", "policy": "acceptance_policy_cooldown",
+                 "retry": "rate_limit_cooldown", "infra": "infrastructure_cooldown"}[expected]
+        assert dispatch.check_respawn_guard(conn, tid, lane=lane) == guard
+        assert dict(dispatch.dispatch_once(conn, dry_run=True).respawn_guarded)[tid] == guard
+        monkeypatch.setattr(dispatch.time, "time", lambda: event_time + 400)
+        assert dispatch.check_respawn_guard(conn, tid, lane=lane) == (
+            guard if expected == "auth" else None)
+        result = dispatch.dispatch_once(conn, dry_run=True)
+        if expected == "auth":
+            assert dict(result.respawn_guarded)[tid] == "blocker_auth"
+        else:
+            assert tid in [spawn[0] for spawn in result.spawned]
+
+        # A newer worker failure supersedes the receipt, even if it says 403.
+        conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?",
+                     ("worker authentication failed with HTTP 403", tid))
+        conn.commit()
+        assert dispatch.check_respawn_guard(conn, tid, lane=lane) == "blocker_auth"
     assert receipt["ok"] is False
     assert receipt["classification"] == expected
     assert "PRIVATE_DIAGNOSTIC" not in json.dumps(receipt)

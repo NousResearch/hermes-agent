@@ -5497,7 +5497,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
 
     def _self_contained_prompt_content(
-        self, header: str, body: str, *, code_block: bool = False, tail: str = ""
+        self, header: str, body: str, *, code_block: bool = False, tail: str = "",
+        extra_prefix_length: int = 0,
     ) -> str:
         """Plain content mirroring an embed's payload.
         Embeds can be invisible/detached on web/mobile, so ``content`` carries the payload."""
@@ -5509,7 +5510,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             prefix = f"{header}\n\n"
             suffix = tail
         truncated_suffix = "\n" + t("platform.discord.prompt.truncated_marker")
-        budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix))
+        budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix) - extra_prefix_length)
         if len(body) > budget:
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
         return f"{prefix}{body}{suffix}"
@@ -5663,10 +5664,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             else:
                 hint = t("platform.discord.prompt.clarify_hint_text")
                 view = None
+            mention_content = self._approval_mention_content()
             content = self._self_contained_prompt_content(
                 f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
+                extra_prefix_length=(len(mention_content) + 1) if mention_content else 0,
             )
-            mention_content = self._approval_mention_content()
             if mention_content:
                 content = f"{mention_content}\n{content}"
             send_kwargs = {"content": content, "embed": embed}

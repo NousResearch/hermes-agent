@@ -53,6 +53,30 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clarify_mentions_count_toward_message_limit(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPROVAL_MENTIONS", "true")
+    channel = _FakeChannel()
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = _FakeClient(channel)
+    adapter._allowed_user_ids = {"111", "222", "333"}
+    adapter._allowed_role_ids = set()
+    adapter.config = SimpleNamespace(extra=None)
+
+    result = await adapter.send_clarify(
+        chat_id="99", question="Q" * 1900, choices=["staging", "production"],
+        clarify_id="clarify-long", session_key="session-1",
+    )
+
+    content = channel.sent_kwargs["content"]
+    assert result.success is True
+    assert content.startswith("<@111> <@222> <@333>\n")
+    assert len(content) <= adapter.MAX_MESSAGE_LENGTH
+    assert "... [truncated]" in content
+    assert "Q" * 1900 not in content
+    assert "allowed_mentions" in channel.sent_kwargs
+
+
+@pytest.mark.asyncio
 async def test_clarify_mentions_allowed_users_when_enabled(monkeypatch):
     monkeypatch.setenv("DISCORD_APPROVAL_MENTIONS", "true")
     channel = _FakeChannel()

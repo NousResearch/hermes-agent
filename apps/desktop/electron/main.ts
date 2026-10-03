@@ -17508,9 +17508,10 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
-// shared host (any pooled scope's descriptor serves the cross-profile read).
+// straight from the backend pool, never dialing. A pooled SSH backend serves the
+// shared remote HERMES_HOME, so one descriptor can read every profile; remote/cloud
+// sources use the same shared-host path. Profile-specific overrides are handled by
+// the configured remote-profile route before this registry aggregation.
 // The primary local connection is excluded for the legacy unpinned path — the
 // primary aggregate carries local rows there. A registry-pinned aggregate opts
 // in so forced-local backends remain visible when the legacy primary is remote.
@@ -17535,7 +17536,7 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
 
     const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
 
-    const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
+    const perProfile = includeLocal && connection.kind === 'local'
 
     for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
       try {

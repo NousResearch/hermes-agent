@@ -534,9 +534,34 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(
-                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            bridge_argv = [node, str(bridge_path), "--port", str(self._bridge_port),
+                           "--session", str(self._session_path),
+                           "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
+            try:
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
+                    **windows_detach_popen_kwargs())
+            except OSError as exc:
+                # CREATE_BREAKAWAY_FROM_JOB is rejected with access denied when the parent's
+                # job object forbids breakaway (a gateway launched via Task Scheduler runs in
+                # one); retry without it, mirroring hermes_cli.gateway_windows._spawn_detached.
+                # The predicate is winerror-only ON PURPOSE: ERROR_ACCESS_DENIED is winerror 5,
+                # while errno 5 on Windows is EIO (CRT mapping) — an errno fallback in a retry
+                # predicate would misfire. _spawn_detached's errno fallback feeds its log line
+                # only; it retries on any OSError. Here a non-access-denied OSError keeps
+                # failing loudly instead (pinned by test_other_oserror_not_retried).
+                if getattr(exc, "winerror", None) != 5:
+                    raise
+                from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+                logger.warning(
+                    "[%s] Bridge breakaway spawn refused (winerror=5; job object forbids "
+                    "breakaway) — retrying without CREATE_BREAKAWAY_FROM_JOB; bridge now "
+                    "lives inside the gateway's job object",
+                    self.name,
+                )
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
+                    creationflags=windows_detach_flags_without_breakaway())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

@@ -78,8 +78,14 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     for name in ("transcript.txt", "status.json"):
         with contextlib.suppress(OSError):
             (out / name).unlink()
-    env = {**os.environ, "HERMES_MEET_URL": url, "HERMES_MEET_OUT_DIR": str(out),
+    # The bot acts for the served profile: its home, none of the launch profile's .env residue, no
+    # inherited provider credentials (only the key resolved below). It runs this same interpreter,
+    # so it keeps the launcher-composed PYTHONPATH (Hermes tree + deps) the sanitizer strips.
+    from tools.environments.local import served_profile_child_env
+    env = {**served_profile_child_env(), "HERMES_MEET_URL": url, "HERMES_MEET_OUT_DIR": str(out),
            "HERMES_MEET_GUEST_NAME": guest_name}
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
     for value, var in (
         (headed and "1", "HERMES_MEET_HEADED"),
         (auth_state, "HERMES_MEET_AUTH_STATE"),
@@ -133,6 +139,7 @@ def status() -> Dict[str, Any]:
         "url": active.get("url"),
         "startedAt": active.get("started_at"),
         "outDir": active.get("out_dir"),
+        "sessionId": active.get("session_id"),
         **bot_status,
     }
 

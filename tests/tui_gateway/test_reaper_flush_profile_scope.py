@@ -62,3 +62,22 @@ def test_exit_flush_never_waits_on_an_external_secret_source(homes, monkeypatch)
     _install_session(monkeypatch, {"agent": _Agent([]), "profile_home": str(served)})
 
     assert tui_server._flush_sessions_before_exit(budget_s=1.0) == 1
+
+
+def test_finalize_observers_resolve_the_sessions_own_home(homes, monkeypatch):
+    """``on_session_finalize`` observers read profile state at call time (a plugin's run files, the
+    Relay profile key), exactly like ``on_session_end`` beside them: both fire in the session's scope."""
+    _launch, served = homes
+    from types import SimpleNamespace
+
+    from hermes_cli import lifecycle
+
+    fired: dict[str, str] = {}
+    monkeypatch.setattr(lifecycle, "invoke_hook", lambda name, **_kw: fired.setdefault(name, str(get_hermes_home())))
+    monkeypatch.setattr(lifecycle, "finalize_session",
+                        lambda **_kw: fired.setdefault("on_session_finalize", str(get_hermes_home())))
+    agent = SimpleNamespace(session_id="sid", model="m", platform="tui", _session_messages=None)
+    tui_server._finalize_session({"agent": agent, "history": [], "history_lock": threading.Lock(),
+                                  "session_key": "key", "_finalized": False, "profile_home": str(served)})
+
+    assert fired == {"on_session_end": str(served), "on_session_finalize": str(served)}

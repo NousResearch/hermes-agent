@@ -7,7 +7,7 @@ Covers the safety-gated pieces that don't require Playwright:
   * Status / transcript writes round-trip through the file-backed state
   * Tool handlers return well-formed JSON under all branches
   * Process manager refuses unsafe URLs and clears stale state cleanly
-  * ``_on_session_end`` hook is defensive (no-ops when no bot active)
+  * ``_on_session_finalize`` hook is defensive (no-ops when no bot active)
 
 Does NOT spawn a real Chromium — we mock ``subprocess.Popen`` where needed.
 """
@@ -18,6 +18,7 @@ import json
 import os
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -181,15 +182,72 @@ def test_meet_join_handler_missing_url_returns_error():
 
 
 # ---------------------------------------------------------------------------
-# _on_session_end — defensive cleanup
+# _on_session_finalize — defensive cleanup
 # ---------------------------------------------------------------------------
 
-def test_on_session_end_noop_when_nothing_active():
-    from plugins.google_meet import _on_session_end
+def test_on_session_finalize_noop_when_nothing_active():
+    from plugins.google_meet import _on_session_finalize
     # Should not raise and should not call stop().
     with patch("plugins.google_meet.pm.stop") as stop_mock:
-        _on_session_end()
+        _on_session_finalize(session_id="s1")
     stop_mock.assert_not_called()
+
+
+def test_bot_outlives_turns_and_other_sessions(monkeypatch):
+    """meet_join returns at once and the bot must keep running across turns; only the end of the
+    session that joined the call may stop it (on_session_end fires after every turn)."""
+    import plugins.google_meet as gm
+    from plugins.google_meet import process_manager as pm
+    from plugins.google_meet.tools import handle_meet_join
+
+    hooks = {}
+    ctx = SimpleNamespace(register_tool=lambda **_k: None, register_cli_command=lambda **_k: None,
+                          register_hook=lambda name, fn: hooks.setdefault(name, []).append(fn))
+    monkeypatch.setattr(gm.platform, "system", lambda: "Linux")
+    gm.register(ctx)
+
+    def _fake_start(**kw):
+        pm._write_active({"pid": 4242, "meeting_id": "abc-defg-hij", "out_dir": "/nonexistent",
+                          "url": kw["url"], "started_at": 0, "session_id": kw.get("session_id")})
+        return {"ok": True}
+
+    with patch.object(pm, "start", side_effect=_fake_start), \
+            patch("plugins.google_meet.tools.check_meet_requirements", return_value=True):
+        handle_meet_join({"url": "https://meet.google.com/abc-defg-hij"}, session_id="s1")
+
+    def _fire(name, **kw):
+        for fn in hooks.get(name, []):
+            fn(**kw)
+
+    with patch.object(pm, "_pid_alive", return_value=True), patch.object(pm, "stop") as stop_mock:
+        _fire("on_session_end", session_id="s1", completed=True, interrupted=False)
+        _fire("on_session_finalize", session_id="s2")
+        stop_mock.assert_not_called()
+        _fire("on_session_finalize", session_id="s1")
+        stop_mock.assert_called_once()
+
+
+def test_bot_follows_its_conversation_across_compression():
+    """Compression rotates the session id mid-meeting: finalizing the continuation still ends the
+    conversation that joined the call, while an unrelated session's end leaves the bot alone."""
+    import plugins.google_meet as gm
+    from hermes_state import SessionDB
+    from plugins.google_meet import process_manager as pm
+
+    db = SessionDB()  # the per-test HERMES_HOME's state.db
+    db.create_session("root", source="cli")
+    db.end_session("root", "compression")
+    db.create_session("tip", source="cli", parent_session_id="root")
+    db.create_session("other", source="cli")
+    db.close()
+    pm._write_active({"pid": 4242, "meeting_id": "abc-defg-hij", "out_dir": "/nonexistent",
+                      "url": "https://meet.google.com/abc-defg-hij", "started_at": 0, "session_id": "root"})
+
+    with patch.object(pm, "_pid_alive", return_value=True), patch.object(pm, "stop") as stop_mock:
+        gm._on_session_finalize(session_id="other")
+        stop_mock.assert_not_called()
+        gm._on_session_finalize(session_id="tip")
+        stop_mock.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

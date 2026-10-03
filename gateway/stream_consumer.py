@@ -271,6 +271,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+    # False: nothing streamed into the current segment, so the gateway's final send owns delivery.
+    streamed_content = property(lambda self: bool(self._accumulated or self._message_id or self._last_sent_text))
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -696,7 +698,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         ownership).  Split delivery: wholesale adoption would repeat sealed heads, refusing
         makes the gateway resend the ENTIRE body — so append only the suffix when the final
         strictly prefix-extends the ledger."""
-        if not (self._accumulated or self._message_id or self._last_sent_text):
+        if not self.streamed_content:
             return
         if not self._turn_split_delivery:
             final_payload = self._clean_for_display(final_raw)

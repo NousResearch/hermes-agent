@@ -21,6 +21,18 @@ logger = logging.getLogger("hermes_cli.auth")
 
 _RERUN = "Re-run 'qwen auth qwen-oauth'."
 
+# Qwen-style User-Agent: qwen-code-api sends this exact header during token refresh, and the
+# OAuth endpoint returns a non-JSON body when the header is missing (the user sees
+# "Expecting value: line 1 column 1 (char 0)" on the next ``response.json()``). Match it so
+# the request shape is identical to the working reference client (#7746).
+_QWEN_OAUTH_USER_AGENT = "QwenCode/0.14.0 (linux; x64)"
+
+# Cap on how much of a non-JSON refresh body we surface in the error message. The point is to
+# distinguish an empty body (server timed out / hung up), HTML (WAF / login page), or a JSON
+# document with the wrong shape; 500 chars is enough for either signal without leaking the
+# full error blob into logs.
+_QWEN_OAUTH_INVALID_JSON_BODY_PREVIEW = 500
+
 
 def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
@@ -64,7 +76,8 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
 
     try:
         response = httpx.post(
-            QWEN_OAUTH_TOKEN_URL, headers=_FORM_JSON_HEADERS,
+            QWEN_OAUTH_TOKEN_URL,
+            headers={**_FORM_JSON_HEADERS, "User-Agent": _QWEN_OAUTH_USER_AGENT},
             data={"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": QWEN_OAUTH_CLIENT_ID},
             timeout=timeout_seconds,
         )
@@ -80,7 +93,17 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     try:
         payload = response.json()
     except Exception as exc:
-        raise _qwen_err(f"Qwen OAuth refresh returned invalid JSON: {exc}", "qwen_refresh_invalid_json") from exc
+        # Surface the diagnostic context that the original error message hid: a refresh that
+        # comes back as HTML (WAF / login redirect) or an empty body (server hung up) used to
+        # look identical to a syntactically-bad JSON. The status / content-type / body preview
+        # is what tells the user which of those they hit (#7746).
+        body_preview = response.text[:_QWEN_OAUTH_INVALID_JSON_BODY_PREVIEW]
+        raise _qwen_err(
+            f"Qwen OAuth refresh returned invalid JSON: {exc} "
+            f"(status={response.status_code}, content_type={response.headers.get('content-type')!r}, "
+            f"body_preview={body_preview!r})",
+            "qwen_refresh_invalid_json",
+        ) from exc
 
     if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
         raise _qwen_err("Qwen OAuth refresh response missing access_token.", "qwen_refresh_invalid_response")

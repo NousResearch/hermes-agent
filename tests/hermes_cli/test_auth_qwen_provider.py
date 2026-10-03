@@ -100,6 +100,86 @@ def qwen_env(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _make_fake_qwen_response(*, status_code: int, text: str, content_type: str = "text/html"):
+    """httpx.Response is hard to instantiate directly; assemble a MagicMock that quacks like one."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    resp.headers = {"content-type": content_type}
+    resp.json.side_effect = json.JSONDecodeError("Expecting value", text, 0) if not text.lstrip().startswith("{") else None
+    if not text.lstrip().startswith("{"):
+        # Make ``response.json()`` actually raise (MagicMock would otherwise return a Mock object).
+        def _raise():
+            raise json.JSONDecodeError("Expecting value", text, 0)
+        resp.json.side_effect = _raise
+    else:
+        resp.json.return_value = json.loads(text)
+    return resp
+
+
+def test_refresh_qwen_cli_tokens_sends_qwen_code_user_agent(qwen_env):
+    """Match the Qwen-style ``User-Agent`` that qwen-code-api sends during refresh;
+    without it the OAuth endpoint returns a non-JSON body and the next ``response.json()``
+    raises "Expecting value" (#7746)."""
+    tokens = _make_qwen_tokens()
+    body = json.dumps({"access_token": "new-at", "expires_in": 3600})
+    fake = _make_fake_qwen_response(status_code=200, text=body, content_type="application/json")
+
+    with (
+        patch("hermes_cli.auth.httpx.post", return_value=fake) as mock_post,
+        patch("hermes_cli.auth._save_qwen_cli_tokens"),
+    ):
+        _refresh_qwen_cli_tokens(tokens)
+
+    call_kwargs = mock_post.call_args.kwargs
+    assert call_kwargs["headers"]["User-Agent"] == "QwenCode/0.14.0 (linux; x64)", (
+        "Qwen refresh must send the QwenCode User-Agent so the OAuth endpoint returns JSON (#7746)"
+    )
+
+
+def test_refresh_qwen_cli_tokens_invalid_json_includes_diagnostics(qwen_env):
+    """The original error message hid status/content-type/body, so a refresh that came back
+    as HTML (WAF) or empty (server hung up) looked identical to bad-JSON. Surface the
+    diagnostics in the AuthError so the user can tell them apart (#7746)."""
+    tokens = _make_qwen_tokens()
+    html_body = "<html><body>Login required</body></html>" * 20  # > 500 chars to test the preview cap
+    fake = _make_fake_qwen_response(status_code=200, text=html_body, content_type="text/html; charset=utf-8")
+
+    with (
+        patch("hermes_cli.auth.httpx.post", return_value=fake),
+        patch("hermes_cli.auth._save_qwen_cli_tokens"),
+    ):
+        with pytest.raises(AuthError) as exc:
+            _refresh_qwen_cli_tokens(tokens)
+
+    assert exc.value.code == "qwen_refresh_invalid_json"
+    msg = str(exc.value)
+    assert "status=200" in msg, f"diagnostic must include status code: {msg!r}"
+    assert "content_type=" in msg, f"diagnostic must include content-type: {msg!r}"
+    assert "text/html" in msg, f"content-type value should appear: {msg!r}"
+    assert "body_preview=" in msg, f"diagnostic must include body preview: {msg!r}"
+    assert "<html>" in msg, f"body preview should contain the actual body text: {msg!r}"
+
+
+def test_refresh_qwen_cli_tokens_invalid_json_empty_body(qwen_env):
+    """Counter-case: empty body is the other common shape of "invalid JSON"; the
+    diagnostic must report the empty body preview without crashing on it (#7746)."""
+    tokens = _make_qwen_tokens()
+    fake = _make_fake_qwen_response(status_code=200, text="", content_type="application/json")
+
+    with (
+        patch("hermes_cli.auth.httpx.post", return_value=fake),
+        patch("hermes_cli.auth._save_qwen_cli_tokens"),
+    ):
+        with pytest.raises(AuthError) as exc:
+            _refresh_qwen_cli_tokens(tokens)
+
+    assert exc.value.code == "qwen_refresh_invalid_json"
+    assert "body_preview=''" in str(exc.value), (
+        f"empty body should appear as an empty quoted preview: {str(exc.value)!r}"
+    )
+
+
 
 
 

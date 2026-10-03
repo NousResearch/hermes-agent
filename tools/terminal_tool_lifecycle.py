@@ -268,6 +268,9 @@ def cleanup_all_environments():
     from tools.terminal_tool import _active_environments
     # A command still running when the host exits would outlive it in its own process group.
     kill_live_foreground_processes()
+    # ...and one that already exited may have left a daemonized descendant in its scope.
+    from tools.environments.local import stop_foreground_scopes
+    stop_foreground_scopes()
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:

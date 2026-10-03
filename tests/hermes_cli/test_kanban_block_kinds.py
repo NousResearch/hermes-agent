@@ -188,6 +188,48 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
         assert child in [row[0] for row in res2.spawned]
 
 
+def test_real_dependency_wait_resets_synthetic_block_recurrence(
+    kanban_home: Path,
+) -> None:
+    """A genuine parent wait clears prior synthetic block recurrence state."""
+    with kbc.connect_closing() as conn:
+        child = _running_task(conn, title="child")
+
+        # A parent-free dependency request is correctly re-kinded to
+        # needs_input and starts the recurrence counter at one.
+        assert kb.block_task(conn, child, reason="workspace collision", kind="dependency")
+        initial = kb.get_task(conn, child)
+        assert (initial.status, initial.block_kind, initial.block_recurrences) == ("blocked", "needs_input", 1)
+        assert kb.unblock_task(conn, child)
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+
+        # A real unfinished parent turns the next dependency block into a normal wait.
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        kb.link_tasks(
+            conn,
+            parent_id=parent,
+            child_id=child,
+            expected_child_run_id=kb.get_task(conn, child).current_run_id,
+        )
+        assert kb.block_task(conn, child, reason="waiting for parent", kind="dependency")
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.get_task(conn, child).block_recurrences == 0
+        assert kb.recompute_ready(conn) == 0
+
+        # Once the parent completes, another synthetic block must begin at one,
+        # rather than inheriting the pre-wait recurrence and entering triage.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        assert kb.claim_task(conn, parent, claimer="worker") is not None
+        assert kb.complete_task(conn, parent, result="done")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+        assert kb.block_task(conn, child, reason="workspace collision", kind="dependency")
+        task = kb.get_task(conn, child)
+        assert (task.status, task.block_kind, task.block_recurrences) == ("blocked", "needs_input", 1)
+
+
 # ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------
@@ -196,5 +238,3 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
 # ---------------------------------------------------------------------------
 # Validation + back-compat
 # ---------------------------------------------------------------------------
-
-

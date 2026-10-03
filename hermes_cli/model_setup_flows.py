@@ -419,7 +419,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
 
     models = provider_model_ids("xai-oauth")
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.7"))
     _activate_provider_model(selected, "xai-oauth", base_url,
                              f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
 

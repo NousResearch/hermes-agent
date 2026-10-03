@@ -339,7 +339,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
     "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
-    "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
+    "grok-4.7": 500000, "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
@@ -365,8 +365,9 @@ DEFAULT_CONTEXT_LENGTHS = {
 # xAI Grok models that ACCEPT `reasoning.effort` (verified live against
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
 # parameter, so callers must send no `reasoning` key rather than a default `medium`.
-# grok-4.5/4.6 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
-_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6")
+# grok-4.5/4.6/4.7 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
+# grok-4.6/4.7 also accept xhigh (see grok_supports_xhigh_effort).
+_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7")
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:
@@ -394,6 +395,12 @@ def is_grok_46_family(model: str) -> bool:
     """Whether *model* is a Grok 4.6 family identifier."""
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
     return name == "grok-4.6" or name.startswith("grok-4.6-")
+
+
+def grok_supports_xhigh_effort(model: str) -> bool:
+    """Whether *model* accepts xAI ``reasoning.effort=xhigh`` (Grok 4.6 and 4.7 families)."""
+    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
+    return name in ("grok-4.6", "grok-4.7") or name.startswith(("grok-4.6-", "grok-4.7-"))
 
 
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
@@ -1529,7 +1536,7 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",  # 1M; "minimax" catch-all persisted 204,800
     "muse-spark-1.3", "muse-spark",  # 1M; pre-entry builds fell through to the 256K fallback
-    "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
+    "grok-4.3", "grok-4.6", "grok-4.7",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.

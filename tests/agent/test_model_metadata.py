@@ -1769,6 +1769,20 @@ class TestGrok43StaleCacheGuard:
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
 
+    def test_stale_grok_4_7_dropped_and_reresolves_to_500k(self, tmp_path, monkeypatch):
+        """Pre-catalog builds matched grok-4.7 via the 'grok-4' catch-all (256K)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        for slug in ("grok-4.7", "x-ai/grok-4.7"):
+            mm.save_context_length(slug, base, 256_000)
+            ctx = mm.get_model_context_length(
+                slug, base_url=base, api_key="", provider="xai"
+            )
+            assert ctx == 500_000, f"{slug} should heal to 500000, got {ctx}"
+
 
 class TestGenericPreCatalogStaleGuard:
     """Generic _stale_pre_catalog_cache_entry guard: models whose catalog

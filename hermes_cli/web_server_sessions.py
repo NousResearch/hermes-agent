@@ -283,28 +283,50 @@ def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
     return max(0.0, time.time() - last_active)
 
 
+def _serve_hosted_homes() -> list:
+    """Resolved homes this serve process hosts, launch home first: the launch profile alone until
+    multi-profile hosting activates, then every served profile (the multiplexer's set)."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_process_hermes_home
+
+    launch = Path(get_process_hermes_home()).resolve()
+    homes = [launch]
+    if is_multiplex_active():
+        from hermes_cli.profiles import profiles_to_serve
+        for _name, home in profiles_to_serve(multiplex=True):
+            if Path(home).resolve() not in homes:
+                homes.append(Path(home).resolve())
+    return homes
+
+
 def _maybe_run_skill_maintenance(started_at: float) -> None:
-    from hermes_constants import get_hermes_home
-    from hermes_cli.profiles import _check_gateway_running
-
-    # A live messaging gateway already owns these chores for this profile.
-    if _check_gateway_running(get_hermes_home()):
-        return
-
-    from agent.curator import maybe_run_curator
+    """Curator for the launch profile, then ``on_maintenance_tick`` once per hosted profile inside
+    that profile's runtime scope (its home, secrets and plugin manager), skipping any profile a
+    live messaging gateway owns. The launch scope is a ``nullcontext`` on a single-profile host."""
     from hermes_cli.lifecycle import has_hook, invoke_hook
+    from hermes_cli.profiles import _check_gateway_running
+    import tui_gateway.server as gateway
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
-    try:
-        idle_for = _skill_maintenance_idle_for(started_at)
-        if idle_for is not None:
-            maybe_run_curator(idle_for_seconds=idle_for)
-    except Exception as exc:
-        _log.debug("serve curator tick skipped: %s", exc)
-    try:
-        if has_hook("on_maintenance_tick"):
-            invoke_hook("on_maintenance_tick", surface="serve")
-    except Exception as exc:
-        _log.debug("serve plugin maintenance tick skipped: %s", exc)
+    for index, home in enumerate(_serve_hosted_homes()):
+        try:
+            if _check_gateway_running(home):
+                continue
+            scope = (launch_profile_scope_if_multiplexed() if index == 0
+                     else gateway._session_profile_runtime_scope({"profile_home": str(home)}))
+            with scope:
+                if index == 0:
+                    from agent.curator import maybe_run_curator
+                    try:
+                        idle_for = _skill_maintenance_idle_for(started_at)
+                        if idle_for is not None:
+                            maybe_run_curator(idle_for_seconds=idle_for)
+                    except Exception as exc:
+                        _log.debug("serve curator tick skipped: %s", exc)
+                if has_hook("on_maintenance_tick"):
+                    invoke_hook("on_maintenance_tick", surface="serve")
+        except Exception as exc:
+            _log.debug("serve plugin maintenance tick skipped for %s: %s", home, exc)
 
 
 async def _auto_archive_ticker_loop(

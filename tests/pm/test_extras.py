@@ -72,6 +72,10 @@ def test_declared_extra_gates_match_dependency_selection():
         ("linux", "Linux", "x86_64"), ("linux", "Linux", "aarch64"),
         ("darwin", "Darwin", "x86_64"), ("darwin", "Darwin", "arm64"),
         ("win32", "Windows", "AMD64"), ("win32", "Windows", "ARM64"),
+        # Termux is a real runtime here and the lock resolves a split for it, so
+        # a gate that only covers the desktop lanes cannot be trusted to match
+        # the markers (google-meet / playwright has no android distribution).
+        ("android", "Linux", "aarch64"),
     ]
     for system, platform_system, machine in targets:
         for python in ("3.12", "3.13", "3.14"):

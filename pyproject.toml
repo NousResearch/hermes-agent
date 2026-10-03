@@ -259,7 +259,18 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
+google-meet = [
+  # playwright ships no sdist and only macos/linux/windows wheels, so android
+  # has no distribution of this version at all. Left ungated, uv has to resolve
+  # a `sys_platform == 'android'` split it can never install, and an index that
+  # serves no PEP 658 metadata cannot even read the version's metadata for that
+  # split, which fails the whole lock (#126194). Mirrors the matrix extra's
+  # linux-only gate: an extra is selected all-or-nothing, so websockets carries
+  # the same marker even though it would install there on its own. Remove when
+  # playwright ships an android wheel or an sdist.
+  "playwright==1.62.0; sys_platform != 'android'",
+  "websockets==15.0.1; sys_platform != 'android'",
+]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
@@ -600,6 +611,11 @@ wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') an
 stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')"
 # NeuTTS excludes Python 3.14.
 neutts = "python_version < '3.14'"
+# playwright (the google-meet anchor) publishes no sdist and no android wheel,
+# so the extra is not installable there. Kept in step with the markers on the
+# dependencies themselves; see test_declared_extra_gates_match_dependency_selection
+# and test_every_extra_dependency_is_installable_wherever_the_extra_is_supported.
+google-meet = "sys_platform != 'android'"
 # KittenTTS: onnxruntime has no Intel macOS wheel; misaki[en]'s torch has no
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"

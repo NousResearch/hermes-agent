@@ -231,24 +231,31 @@ connects but never receives anything.
 | Setup | Hermes | Components you need |
 |-------|--------|---------------------|
 | **signal-cli daemon** (JSON-RPC + SSE) — the setup described above | any current release, up to and including **0.21.5 (2026-09-24)** | `signal-cli` **≥ 0.14.5** (Java 17+ when run natively) |
-| **signal-cli-rest-api** (REST + WebSocket) | a release containing the REST/WebSocket adapter — see PR [#53696](https://github.com/NousResearch/hermes-agent/pull/53696); **not yet in a published release** as of 0.21.5 | `signal-cli-rest-api` **v0.99 or newer**, `signal-cli` **≥ 0.14.5**, Docker, container started with `MODE=json-rpc` |
+| **signal-cli-rest-api** (REST + WebSocket) | a release containing the REST/WebSocket adapter — see PR [#53696](https://github.com/NousResearch/hermes-agent/pull/53696); **not yet in a published release** as of 0.21.5 | `signal-cli-rest-api` **v0.100 or newer**, `signal-cli` **≥ 0.14.5**, Docker, container started with `MODE=json-rpc` |
 
 **Hermes version.** Releases up to and including 0.21.5 talk to signal-cli directly: outbound
 over JSON-RPC (`/api/v1/rpc`), inbound over SSE (`/api/v1/events`). The REST/WebSocket adapter
 (inbound `/v1/receive/<number>`, outbound `/v2/send`) is the subject of
 [#53696](https://github.com/NousResearch/hermes-agent/pull/53696) and is not part of a published
-release yet. Check what your installation actually speaks before pointing `SIGNAL_HTTP_URL` at a
-container — `grep -c SIGNAL_API_MODE` in `gateway/platforms/signal.py` returns `0` on the
-JSON-RPC/SSE path.
+release yet. There is no configuration switch between the two transports — the adapter itself
+decides — so check what your installation speaks before pointing `SIGNAL_HTTP_URL` at a container.
+`grep -c "/api/v1/events" gateway/platforms/signal.py` and `grep -c "/api/v1/rpc"` in the same
+file both return `1` on the JSON-RPC/SSE path; the REST adapter's `signal.py` contains neither
+and carries `/v1/receive/<number>` and `/v2/send` instead.
 
 **signal-cli version.** Use **0.14.5 or newer**. Device linking had recurring defects in older
 builds: 0.14.7 shipped *"Fix linking after previous unsuccessful link attempt"*, and
 `addDevice returns Error: 404 - Add device link failed` is a separate, still-reported failure
 mode ([AsamK/signal-cli#2107](https://github.com/AsamK/signal-cli/issues/2107)).
 
-**signal-cli-rest-api version.** Use **v0.99 or newer**. The SSE endpoint `/api/v1/events` was
-removed there, so a JSON-RPC/SSE Hermes pointed at a current container connects but stays silent
-(related: [bbernhard/signal-cli-rest-api#678](https://github.com/bbernhard/signal-cli-rest-api/issues/678)).
+**signal-cli-rest-api version.** Use **v0.100 or newer**, for two reasons. The SSE endpoint
+`/api/v1/events` is gone from current builds, so a JSON-RPC/SSE Hermes pointed at such a
+container connects but stays silent (related:
+[bbernhard/signal-cli-rest-api#678](https://github.com/bbernhard/signal-cli-rest-api/issues/678)).
+And v0.99 cannot satisfy the `signal-cli ≥ 0.14.5` requirement in the table above: its
+`Dockerfile` pins `ARG SIGNAL_CLI_VERSION=0.14.3`, and the release workflow of that tag builds with
+`--build-arg BUILD_VERSION_ARG` only, so a v0.99 image ships signal-cli **0.14.3** — one version
+below the floor. v0.100 ships 0.14.5; `master` currently ships 0.14.8.
 Run the container with `MODE=json-rpc`; see
 [#57862](https://github.com/NousResearch/hermes-agent/issues/57862) for the history behind the
 `?account=` query parameter failing against multi-account daemons.

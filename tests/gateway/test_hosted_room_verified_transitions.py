@@ -1,8 +1,8 @@
 """Verified-transition marks: an authority change is accepted only with its own mark.
 
 Exclusive-authority recovery verifies its proof (the owner's attested decision to continue, a majority
-certificate, or the old host's signed handover), then marks the transition in the transaction that makes
-it. These tests drive the storage primitives and raw SQL writers; they do not certify any recovery
+certificate, the old host's signed handover, or the successor's signed evidence of the host's silence),
+then marks the transition in the transaction that makes it. These tests drive the storage primitives and raw SQL writers; they do not certify any recovery
 protocol.
 """
 
@@ -35,6 +35,14 @@ def _handover(room_id="room-1", from_epoch=1, to_epoch=2, successor=AUTH_B, last
     statement = {"room_id": room_id, "from_epoch": from_epoch, "to_epoch": to_epoch, "successor": successor,
                  "last_seq": last_seq, "last_hash": "a" * 64, **changes}
     return {"statement": statement, "signature": "ed25519-v1." + "S" * 86}
+
+
+def _evidence(**changes):
+    """The successor's signed evidence: the handover fields, and how long the old host was silent."""
+    return _handover(**{"silent_since": 1700000000.5, "silent_for_s": 180, **changes})
+
+
+STATEMENTS = {"handover": _handover, "evidence": _evidence}
 
 
 def _transition(proof=None, kind="certified"):
@@ -322,13 +330,14 @@ def test_a_marked_demotion_fences_without_quarantine(tmp_path, monkeypatch):
 def test_each_proof_kind_continues_the_room_with_its_mark(tmp_path, monkeypatch, kind):
     db, _ = _copy(tmp_path)
     monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
-    proof = _handover() if kind == "handover" else _proof()
+    proof = STATEMENTS[kind]() if kind in STATEMENTS else _proof()
     replicas.promote_replica(db, room_id="room-1", transition=_transition(proof, kind=kind))
     transition = rooms.read_events(db, room_id="room-1")["events"][-1]
     assert (transition["seq"], transition["payload"]["proof_kind"], transition["payload"]["proof"]) == (4, kind, proof)
     assert _marks(db)[0] == [("room-1", 1, 2, AUTH_B, kind)] and _quarantine(db) == {}
 
 
+@pytest.mark.parametrize("kind", sorted(STATEMENTS))
 @pytest.mark.parametrize("replayed, error", [
     ({"room_id": "room-2"}, "another room, epoch or successor"),  # another group's handover
     ({"from_epoch": 2, "to_epoch": 3}, "another room, epoch or successor"),  # a later handover of this group
@@ -336,44 +345,51 @@ def test_each_proof_kind_continues_the_room_with_its_mark(tmp_path, monkeypatch,
     ({"last_seq": 2}, "another last event"),  # an older handover: this copy holds more than it names
     ({"last_seq": 4}, "another last event"),  # this copy has not caught up with what was handed over
 ])
-def test_a_replayed_handover_statement_is_refused(tmp_path, monkeypatch, replayed, error):
-    """A handover hands exactly this history, in this group, from this epoch, to this computer."""
+def test_a_replayed_signed_statement_is_refused(tmp_path, monkeypatch, kind, replayed, error):
+    """A handover or evidence moves exactly this history, in this group, from this epoch, to this computer."""
     db, _ = _copy(tmp_path)
     monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
     with pytest.raises(replicas.ReplicaError, match=error):
-        replicas.promote_replica(db, room_id="room-1", transition=_transition(_handover(**replayed), kind="handover"),
+        replicas.promote_replica(db, room_id="room-1", transition=_transition(STATEMENTS[kind](**replayed), kind=kind),
                                  to_epoch=replayed.get("to_epoch", 2))
     assert replicas.replica_state(db, room_id="room-1")["authority"] == {"gateway_id": AUTH_A, "epoch": 1}
     assert _marks(db) == ([], [])
 
 
-def test_a_forged_or_malformed_handover_statement_is_refused(tmp_path, monkeypatch):
-    """The caller checks the signature and last_hash against the old host's key and the room's history.
+@pytest.mark.parametrize("kind", sorted(STATEMENTS))
+def test_a_forged_or_malformed_signed_statement_is_refused(tmp_path, monkeypatch, kind):
+    """The caller checks the signature and last_hash against the signer's key and the room's history.
 
     Here, a statement changed after its digest was taken, or not in its exact shape, is refused, and a
     statement used once can't verify a second change.
     """
     db, _ = _copy(tmp_path)
     monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_B)
-    tampered = _transition(_handover(), kind="handover")
+    make = STATEMENTS[kind]
+    tampered = _transition(make(), kind=kind)
     tampered["proof"]["statement"]["successor"] = AUTH_C
     with pytest.raises(replicas.ReplicaError, match="does not match its proof"):
         replicas.promote_replica(db, room_id="room-1", transition=tampered)
-    statement = _handover()["statement"]
-    for proof, error in (
-            ({**_handover(), "signer": AUTH_A}, "unknown fields"),
-            ({"statement": statement}, "missing fields"),
-            ({"statement": {**statement, "note": "x"}, "signature": _handover()["signature"]}, "unknown fields"),
-            ({**_handover(), "signature": "hmac-v1." + "S" * 86}, "ed25519-v1"),
-            (_handover(last_hash="A" * 64), "last_hash"),
-            (_handover(last_seq=-1), "last_seq"),
-            (_handover(from_epoch=True), "from_epoch"),
-            (_handover(successor=""), "successor"),
-            (_proof(), "missing fields")):  # another kind's proof is no handover
+    statement = make()["statement"]
+    malformed = [
+        ({**make(), "signer": AUTH_A}, "unknown fields"),
+        ({"statement": statement}, "missing fields"),
+        ({"statement": {**statement, "note": "x"}, "signature": make()["signature"]}, "unknown fields"),
+        ({**make(), "signature": "hmac-v1." + "S" * 86}, "ed25519-v1"),
+        (make(last_hash="A" * 64), "last_hash"),
+        (make(last_seq=-1), "last_seq"),
+        (make(from_epoch=True), "from_epoch"),
+        (make(successor=""), "successor"),
+        (_proof(), "missing fields")]  # another kind's proof is no signed statement
+    if kind == "evidence":
+        malformed += [(make(silent_for_s=-1), "silent_for_s"), (make(silent_since=True), "silent_since"),
+                      (make(silent_since="yesterday"), "silent_since"),
+                      ({"statement": _handover()["statement"], "signature": make()["signature"]}, "missing fields")]
+    for proof, error in malformed:
         with pytest.raises(replicas.ReplicaError, match=error):
-            replicas.promote_replica(db, room_id="room-1", transition=_transition(proof, kind="handover"))
+            replicas.promote_replica(db, room_id="room-1", transition=_transition(proof, kind=kind))
     assert _marks(db) == ([], [])
-    signed = _transition(_handover(), kind="handover")
+    signed = _transition(make(), kind=kind)
     replicas.promote_replica(db, room_id="room-1", transition=copy.deepcopy(signed))
     with rooms._transaction(db, immediate=True) as conn:
         _insert_transition(conn, "room-1", 5, event_id="replayed", payload={
@@ -381,20 +397,22 @@ def test_a_forged_or_malformed_handover_statement_is_refused(tmp_path, monkeypat
     assert _quarantine(db) == {"room-1": "unverified_authority_transition"}
 
 
-def test_the_old_authority_marks_its_own_handover(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind, reason", [("handover", "handover"), ("evidence", "automatic")])
+def test_the_old_authority_marks_its_own_step_down(tmp_path, monkeypatch, kind, reason):
+    """It hands over its exact history, or learns that its successor continued after that history."""
     db = _hosted(tmp_path)
     monkeypatch.setattr(replicas, "local_authority_gateway_id", lambda: AUTH_A)
     for stale in (1, 3):
         with pytest.raises(replicas.ReplicaError, match="another last event"):
             replicas.demote_room(db, room_id="room-1", observed_gateway_id=AUTH_B, observed_epoch=2,
-                                 transition=_transition(_handover(last_seq=stale), kind="handover"))
-    proof = _handover(last_seq=2)
+                                 transition=_transition(STATEMENTS[kind](last_seq=stale), kind=kind))
+    proof = STATEMENTS[kind](last_seq=2)
     replicas.demote_room(db, room_id="room-1", observed_gateway_id=AUTH_B, observed_epoch=2,
-                         transition=_transition(proof, kind="handover"), display={"reason": "handover"})
+                         transition=_transition(proof, kind=kind), display={"reason": reason})
     lost = rooms.read_events(db, room_id="room-1")["events"][-1]
     assert (lost["seq"], lost["kind"], lost["payload"]["proof_kind"], lost["payload"]["reason"]) == (
-        3, "authority.lost", "handover", "handover")
-    assert _marks(db)[0] == [("room-1", 1, 2, AUTH_B, "handover")] and _quarantine(db) == {}
+        3, "authority.lost", kind, reason)
+    assert _marks(db)[0] == [("room-1", 1, 2, AUTH_B, kind)] and _quarantine(db) == {}
 
 
 def test_a_transition_may_skip_an_epoch_nobody_certified(tmp_path, monkeypatch):

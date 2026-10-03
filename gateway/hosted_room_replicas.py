@@ -28,8 +28,8 @@ from gateway.hosted_rooms import (
     _prune_disbanded_rooms_locked, _room_id, _transaction, _validate_actor, _validate_event_kind,
     _validate_identifier, _validate_members, _validate_room_name, local_authority_gateway_id)
 from gateway.hosted_room_safety import (
-    HANDOVER_STATEMENT_FIELDS, PROOF_KINDS, _prune_disbanded_replicas_locked, _raise_if_quarantined,
-    mark_verified_transition, transition_proof_digest)
+    EVIDENCE_STATEMENT_FIELDS, HANDOVER_STATEMENT_FIELDS, PROOF_KINDS, _prune_disbanded_replicas_locked,
+    _raise_if_quarantined, mark_verified_transition, transition_proof_digest)
 from gateway.hosted_rooms_common import DbPath, bounded_int, clock, exact_fields, table_columns, utf8_len
 from gateway.hosted_rooms_common import display_label
 from gateway.hosted_rooms_common import text as bounded_text
@@ -313,20 +313,22 @@ def _append_control_event(
 def _verified_transition(value: Any) -> dict[str, Any]:
     """The caller's verified ``transition``: ``{proof_kind, proof_digest, proof}``.
 
-    The caller checked the proof itself: ``attested``, the owner explicitly continued the group here;
+    The caller checked the proof itself: ``attested``, the owner explicitly continued the group here
+    (or, after a split, the rule's choice signed by the host it keeps, ``decided_by: "rule"``);
     ``certified``, a majority of the room's voters promised; ``handover``, the old authority signed
-    the handover statement (its signature and ``last_hash`` are checked against that authority's room
-    identity key and the room's history). Here its digest must bind the proof the lineage event
-    records, and a handover statement must have its exact shape.
+    the handover statement; ``evidence``, the successor signed what it observed of the old
+    authority's silence (a statement's signature and ``last_hash`` are checked against the signer's
+    room identity key and the room's history). Here its digest must bind the proof the lineage event
+    records, and a signed statement must have its exact shape.
     """
     if not isinstance(value, dict) or set(value) != {"proof_kind", "proof_digest", "proof"}:
         raise ReplicaError("transition must carry exactly proof_kind, proof_digest and proof")
     if value["proof_kind"] not in PROOF_KINDS:
-        raise ReplicaError("transition proof_kind must be 'attested', 'certified' or 'handover'")
+        raise ReplicaError("transition proof_kind must be 'attested', 'certified', 'evidence' or 'handover'")
     if not isinstance(value["proof"], dict):
         raise ReplicaError("transition proof must be an object")
-    if value["proof_kind"] == "handover":
-        _handover_statement(value["proof"])
+    if value["proof_kind"] in _STATEMENT_FIELDS:
+        _signed_statement(value["proof_kind"], value["proof"])
     try:
         digest = transition_proof_digest(value["proof"])
     except (TypeError, ValueError, RecursionError) as exc:
@@ -336,25 +338,31 @@ def _verified_transition(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
-_HANDOVER_SIGNATURE_RE = re.compile(r"ed25519-v1\.[A-Za-z0-9_-]{86}")
+_SIGNATURE_RE = re.compile(r"ed25519-v1\.[A-Za-z0-9_-]{86}")
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+# Proof kinds that are one signed statement ``{statement, signature}``, with their statement fields.
+_STATEMENT_FIELDS = {"handover": HANDOVER_STATEMENT_FIELDS, "evidence": EVIDENCE_STATEMENT_FIELDS}
 
 
-def _handover_statement(proof: dict[str, Any]) -> dict[str, Any]:
-    """The statement of a ``handover`` proof ``{statement, signature}``, in its exact shape."""
-    exact_fields(proof, label="handover proof", required={"statement", "signature"}, error=ReplicaError)
-    statement = exact_fields(proof["statement"], label="handover statement", required=HANDOVER_STATEMENT_FIELDS,
+def _signed_statement(kind: str, proof: dict[str, Any]) -> dict[str, Any]:
+    """The statement of a ``handover`` or ``evidence`` proof ``{statement, signature}``, in its exact shape."""
+    exact_fields(proof, label=f"{kind} proof", required={"statement", "signature"}, error=ReplicaError)
+    statement = exact_fields(proof["statement"], label=f"{kind} statement", required=_STATEMENT_FIELDS[kind],
                              error=ReplicaError)
-    if not isinstance(proof["signature"], str) or _HANDOVER_SIGNATURE_RE.fullmatch(proof["signature"]) is None:
-        raise ReplicaError("handover signature must be an ed25519-v1 signature")
+    if not isinstance(proof["signature"], str) or _SIGNATURE_RE.fullmatch(proof["signature"]) is None:
+        raise ReplicaError(f"{kind} signature must be an ed25519-v1 signature")
     for field in ("room_id", "successor"):
         if not isinstance(statement[field], str) or not statement[field]:
-            raise ReplicaError(f"handover statement {field} must be a string")
+            raise ReplicaError(f"{kind} statement {field} must be a string")
     for field, low in (("from_epoch", 1), ("to_epoch", 1), ("last_seq", 0)):
         bounded_int(statement[field], error=ReplicaError, low=low, high=2**63 - 1,
-                    message=f"handover statement {field} must be an integer of at least {low}")
+                    message=f"{kind} statement {field} must be an integer of at least {low}")
     if not isinstance(statement["last_hash"], str) or _SHA256_HEX_RE.fullmatch(statement["last_hash"]) is None:
-        raise ReplicaError("handover statement last_hash must be a lowercase sha256 hex digest")
+        raise ReplicaError(f"{kind} statement last_hash must be a lowercase sha256 hex digest")
+    for field in ("silent_since", "silent_for_s") if kind == "evidence" else ():
+        value = statement[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ReplicaError(f"{kind} statement {field} must be a non-negative number of seconds")
     return dict(statement)
 
 
@@ -410,17 +418,18 @@ def _transition_display(display: Any, verified: dict[str, Any] | None) -> dict[s
 def _require_transition_scope(verified: dict[str, Any], *, last_seq: int, **scope: Any) -> None:
     """A proof that names its room, epochs or successor must name this transition's.
 
-    A handover statement names all of them, and ``last_seq`` is the event this transition directly
-    follows: the old authority handed over exactly this history, no more and no less.
+    A handover or evidence statement names all of them, and ``last_seq`` is the event this
+    transition directly follows: exactly this history moves, no more and no less.
     """
-    if verified["proof_kind"] == "handover":
+    kind = verified["proof_kind"]
+    if kind in _STATEMENT_FIELDS:
         statement = verified["proof"]["statement"]
         named = {"room_id": statement["room_id"], "from_epoch": statement["from_epoch"],
                  "to_epoch": statement["to_epoch"], "successor_gateway_id": statement["successor"]}
         if any(named[key] != value for key, value in scope.items()):
-            raise ReplicaError("handover statement names another room, epoch or successor")
+            raise ReplicaError(f"{kind} statement names another room, epoch or successor")
         if statement["last_seq"] != last_seq:
-            raise ReplicaError("handover statement names another last event")
+            raise ReplicaError(f"{kind} statement names another last event")
         return
     if any(key in verified["proof"] and verified["proof"][key] != value for key, value in scope.items()):
         raise ReplicaError("transition proof names another room or epoch")
@@ -628,8 +637,8 @@ def promote_replica(
     quarantines: readable, but closed to new events. With one the caller verified (``{proof_kind,
     proof_digest, proof}``), it is an ``authority.transition`` carrying that proof, marked verified in the
     same transaction, and the room stays writable. A verified transition may skip epochs no authority
-    held (``to_epoch``, any later epoch). A ``handover`` statement must name this copy's last event: the
-    transition directly follows exactly the history the old authority handed over. Its optional ``text``
+    held (``to_epoch``, any later epoch). A ``handover`` or ``evidence`` statement must name this copy's
+    last event: the transition directly follows exactly the history it moves. Its optional ``text``
     and ``display`` (names, reason, events at risk) are shown to readers as the event's notice; they are
     outside the proof and its digest.
     """

@@ -32,6 +32,11 @@ HASS_TOKEN=your-long-lived-access-token
 
 # Optional: HA URL (default: http://homeassistant.local:8123)
 HASS_URL=http://192.168.1.100:8123
+
+# Required for ha_call_service: what the agent may call and on which entities.
+# Comma-separated exact names or domain.* wildcards; unset means deny all.
+HASS_ALLOWED_SERVICES=light.*,climate.set_temperature,scene.turn_on
+HASS_ALLOWED_TARGETS=light.*,climate.thermostat,scene.movie_night
 ```
 
 :::info
@@ -98,7 +103,7 @@ Call a Home Assistant service to control a device.
 **Parameters:**
 - `domain` *(required)* — Service domain: `light`, `switch`, `climate`, `cover`, `media_player`, `fan`, `scene`, `script`
 - `service` *(required)* — Service name: `turn_on`, `turn_off`, `toggle`, `set_temperature`, `set_hvac_mode`, `open_cover`, `close_cover`, `set_volume_level`
-- `entity_id` *(optional)* — Target entity, e.g., `light.living_room`
+- `entity_id` *(required)* — Target entity, e.g., `light.living_room`. For scenes and scripts, target the scene/script entity itself (`scene.turn_on` with `entity_id="scene.movie_night"`).
 - `data` *(optional)* — Additional parameters as a JSON object
 
 **Examples:**
@@ -202,6 +207,16 @@ The following service domains are **blocked** to prevent arbitrary code executio
 - `rest_command` — HTTP requests from HA server (SSRF vector)
 
 Attempting to call services in these domains returns an error.
+:::
+
+:::warning Service-call policy (fail-closed)
+`ha_call_service` only runs when **both** policies allow the call and the user approves it:
+
+- `HASS_ALLOWED_SERVICES` must contain the `domain.service` (or `domain.*`).
+- `HASS_ALLOWED_TARGETS` must contain the target `entity_id` (or `domain.*`).
+- Every call must name a target entity; calls without one are rejected.
+
+Both variables default to empty, which denies every service call. Installs that used `ha_call_service` before these gates existed must set them to keep controlling devices. Read-only tools (`ha_list_entities`, `ha_get_state`, `ha_list_services`) are not affected.
 :::
 
 Entity IDs are validated against the pattern `^[a-z_][a-z0-9_]*\.[a-z0-9_]+$` to prevent injection attacks.

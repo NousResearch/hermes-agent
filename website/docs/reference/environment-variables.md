@@ -543,6 +543,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
+| `HASS_ALLOWED_SERVICES` | Comma-separated services `ha_call_service` may call, as exact `domain.service` names or `domain.*` (e.g. `light.turn_on,scene.*`). Unset or empty denies every service call. |
+| `HASS_ALLOWED_TARGETS` | Comma-separated entities `ha_call_service` may target, as exact entity IDs or `domain.*` (e.g. `light.*,scene.movie_night`). Unset or empty denies every service call. |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |
 | `WEBHOOK_PORT` | HTTP server port for receiving webhooks (default: `8644`) |
 | `WEBHOOK_SECRET` | Global HMAC secret for webhook signature validation (used as fallback when routes don't specify their own) |

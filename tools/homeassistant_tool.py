@@ -3,6 +3,11 @@
 Registers ``ha_list_entities``, ``ha_get_state``, ``ha_list_services``, ``ha_call_service``.
 Auth is a Long-Lived Access Token (``HASS_TOKEN``); the instance URL comes from
 ``HASS_URL`` (default http://homeassistant.local:8123).
+
+``ha_call_service`` is fail-closed: every call must name a target entity, the
+``domain.service`` must match ``HASS_ALLOWED_SERVICES`` and the target must match
+``HASS_ALLOWED_TARGETS`` (comma-separated exact names or ``domain.*``; unset means
+deny), and the call then goes through the normal tool-approval prompt.
 """
 
 import asyncio
@@ -109,6 +114,13 @@ def _parse_service_response(domain: str, service: str, result: Any) -> Dict[str,
     return {"success": True, "service": f"{domain}.{service}", "affected_entities": affected}
 
 
+def _policy_allows(value: str, configured: str) -> bool:
+    """Match an exact value or a ``domain.*`` entry in a comma-separated policy."""
+    entries = {entry.strip() for entry in configured.split(",") if entry.strip()}
+    domain = value.split(".", 1)[0]
+    return value in entries or f"{domain}.*" in entries
+
+
 async def _async_call_service(
     domain: str, service: str, entity_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -193,6 +205,28 @@ def _handle_call_service(args: dict, **kw) -> str:
             data = json.loads(data) if data.strip() else None
         except json.JSONDecodeError as e:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
+    if data is not None and not isinstance(data, dict):
+        return tool_error("Invalid 'data' parameter: expected a JSON object")
+
+    target = entity_id or (data or {}).get("entity_id")
+    if not isinstance(target, str) or not _ENTITY_ID_RE.match(target):
+        return tool_error("Home Assistant service calls require a valid target entity_id")
+    service_name = f"{domain}.{service}"
+    if not _policy_allows(service_name, get_secret("HASS_ALLOWED_SERVICES", "") or ""):
+        return tool_error(
+            f"Service '{service_name}' is not allowed by HASS_ALLOWED_SERVICES")
+    if not _policy_allows(target, get_secret("HASS_ALLOWED_TARGETS", "") or ""):
+        return tool_error(
+            f"Target '{target}' is not allowed by HASS_ALLOWED_TARGETS")
+
+    from tools.approval import request_tool_approval
+    approval = request_tool_approval(
+        "ha_call_service",
+        f"Call Home Assistant service {service_name} on {target}",
+        rule_key=f"homeassistant:{service_name}:{target}",
+    )
+    if not approval.get("approved"):
+        return tool_error(approval.get("message") or "Home Assistant service call denied")
     return _dispatch(
         _async_call_service(domain, service, entity_id, data),
         "ha_call_service", f"Failed to call {domain}.{service}")
@@ -282,7 +316,10 @@ HA_CALL_SERVICE_SCHEMA = {
     "name": "ha_call_service",
     "description": (
         "Call a Home Assistant service to control a device. Use ha_list_services "
-        "to discover available services and their parameters for each domain."
+        "to discover available services and their parameters for each domain. "
+        "Every call needs a target entity_id, and the service and target must be "
+        "allowed by the user's HASS_ALLOWED_SERVICES / HASS_ALLOWED_TARGETS policy; "
+        "each call also asks the user for approval."
     ),
     "parameters": {
         "type": "object",
@@ -305,8 +342,10 @@ HA_CALL_SERVICE_SCHEMA = {
             "entity_id": {
                 "type": "string",
                 "description": (
-                    "Target entity ID (e.g. 'light.living_room'). "
-                    "Some services (like scene.turn_on) may not need this."
+                    "Target entity ID (e.g. 'light.living_room'). Required: calls "
+                    "without a target are rejected. For scenes and scripts, target "
+                    "the scene or script entity itself (e.g. 'scene.movie_night' "
+                    "with scene.turn_on)."
                 ),
             },
             "data": {
@@ -319,7 +358,7 @@ HA_CALL_SERVICE_SCHEMA = {
                 ),
             },
         },
-        "required": ["domain", "service"],
+        "required": ["domain", "service", "entity_id"],
     },
 }
 

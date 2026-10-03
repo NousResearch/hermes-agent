@@ -110,6 +110,71 @@ def installation(tmp_path, monkeypatch):
     thread.join()
 
 
+@pytest.mark.parametrize("tip_status", [200, 503])
+def test_in_place_check_targets_main_without_moving_checkout(installation, tip_status):
+    """The in-place update source, not an unpublished local branch, owns the check."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    config = home / "config.yaml"
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text("{}")
+    local_url = "/repos/fixture/fork/commits/feature%2Fgui"
+    main_url = "/repos/fixture/fork/commits/main"
+    responses[local_url] = (422, {"message": "No commit found for SHA"})
+    responses[main_url] = (tip_status, base if tip_status == 200 else {})
+    before = {str(p.relative_to(root)): p.read_bytes()
+              for p in (root / ".git").rglob("*") if p.is_file()}
+    check = lambda: check_for_updates(install_root=linked, home=home,
+                                     branch_config_path=branch_file)
+    # Seed the failure cache, then opt in without forcing a refresh.
+    assert check()["error"] == "fetch-failed"
+    config.write_text("updates: {parked_branch_strategy: update_in_place}\n")
+    saved = config.read_bytes()
+    requests.clear()
+    status = check()
+    assert status["branch"] == "main", status
+    assert local_url not in requests and main_url in requests
+    if tip_status == 200:
+        assert "error" not in status, status
+        assert status["behind"] == 0 and not status["updateAvailable"]
+    else:
+        assert status["error"] == "fetch-failed"
+        assert "HTTP 503" in status["message"]
+    assert status["currentBranch"] == "feature/gui"
+    assert status["currentSha"] == head
+    assert config.read_bytes() == saved
+    assert branch_file.read_text() == "{}"
+    assert {str(p.relative_to(root)): p.read_bytes()
+            for p in (root / ".git").rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("selection", ["explicit", "configured", "default", "custom-channel"])
+def test_in_place_check_preserves_caller_branch_and_channel(installation, selection):
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    config = home / "config.yaml"
+    config.write_text("updates: {parked_branch_strategy: update_in_place}\n"
+                      if selection != "default" else "{}")
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "desktop-choice"})
+                           if selection in {"explicit", "configured"} else "{}")
+    expected = {"explicit": "explicit-choice", "configured": "desktop-choice"}.get(selection, "feature/gui")
+    channel = "branch-" + uuid4().hex[:12] if selection == "custom-channel" else "main"
+    responses[f"/releases/channels/{channel}.json"] = (200, source_channel(channel, "fixture/fork"))
+    path = f"/repos/fixture/fork/commits/{expected.replace('/', '%2F')}"
+    responses[path] = (200, head)
+    saved = branch_file.read_bytes()
+    status = check_for_updates(install_root=linked, home=home, channel=channel,
+                              branch="explicit-choice" if selection == "explicit" else None,
+                              branch_config_path=branch_file)
+    assert status["branch"] == expected and status["targetSha"] == head
+    assert status["behind"] == 0
+    assert branch_file.read_bytes() == saved
+    assert status["currentBranch"] == git("branch", "--show-current", cwd=linked) == "feature/gui"
+
+
 def test_target_worktree_owns_admission_and_fork_comparison(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
 

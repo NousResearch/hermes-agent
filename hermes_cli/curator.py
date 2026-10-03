@@ -397,6 +397,12 @@ def _cmd_ledger(args) -> int:
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)
     if not rows:
         print("curator: ledger is empty (or skills.ledger is disabled).")
+        others = [] if getattr(args, "skill", None) else skill_ledger.sibling_ledger_counts()
+        if others:
+            detail = ", ".join(f"'{name}' ({count} entries)" for name, count in others)
+            print(f"note: the ledger is per-profile; other profiles hold history: {detail}. "
+                  f"Run `hermes -p <profile> curator ledger` in that profile, or read "
+                  f"<profile-home>/skills/.curator_ledger.jsonl directly.")
         return 0
     print(f"{'id':<14} {'when':<12} {'actor':<8} {'action':<12} skill")
     for r in rows:

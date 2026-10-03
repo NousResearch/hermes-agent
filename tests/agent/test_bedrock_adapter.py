@@ -1207,6 +1207,22 @@ class TestBedrockContextProbe:
                 "eu.anthropic.claude-opus-4-8",
                 region="eu-central-1") == 1_000_000
 
+    def test_probe_max_tokens_meets_openai_bedrock_minimum(self):
+        """OpenAI-on-Bedrock (gpt-6-sol/luna) rejects max output < 16 with a
+        ValidationException BEFORE the prompt-length check, so the probe must
+        send at least 16 or it never sees the parseable 'prompt is too long'
+        error (#124923)."""
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        client = MagicMock()
+        client.converse.side_effect = Exception(
+            "prompt is too long: 5000032 tokens > 272000 maximum")
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            assert probe_bedrock_context_length(
+                "openai.gpt-6-sol", "us-east-1") == 272_000
+        sent = client.converse.call_args.kwargs["inferenceConfig"]
+        assert sent["maxTokens"] >= 16
+
 
 # ---------------------------------------------------------------------------
 # Tool-calling capability detection

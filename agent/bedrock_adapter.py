@@ -1214,8 +1214,12 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     for tier_tokens in _BEDROCK_PROBE_TIERS:
         oversized = "data " * int(tier_tokens / _WORDS_PER_TOKEN)
         try:
+            # maxTokens must clear every model's minimum: OpenAI-on-Bedrock (gpt-6-sol/luna) rejects
+            # max output < 16 with a ValidationException BEFORE the prompt-length check, so the old
+            # 8 never produced the parseable "prompt is too long" error — the probe just burned two
+            # ~1.3M/2.2M-token requests per process and fell back to the 128K default (#124923).
             client.converse(modelId=model_id, messages=[{"role": "user", "content": [{"text": oversized}]}],
-                            inferenceConfig={"maxTokens": 8})
+                            inferenceConfig={"maxTokens": 16})
             logger.debug("Bedrock context probe for %s accepted ~%s-token prompt; "
                          "window is at least that", model_id, f"{tier_tokens:,}")
             return tier_tokens

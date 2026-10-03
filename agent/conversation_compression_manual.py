@@ -9,7 +9,7 @@ here so ``--preview`` / ``--aggressive`` and the lock-skip wording cannot drift 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 #: Every surface renders the same refusal; hard truncation has no persistence path outside the guarded
 #: ``_compress_context`` rotation, so ``--aggressive`` is refused rather than mis-parsed as a focus topic.
@@ -69,10 +69,13 @@ def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> i
 def compress_now(
     agent: Any, history: Sequence[Dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
+    snapshot_is_current: Optional[Callable[[], bool]] = None,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
 
+    ``snapshot_is_current`` validates the host's snapshot after durable lease admission, before the
+    summarizer runs; the normal timeout/fallback pipeline remains in charge of the attempt.
     ``preview=True`` performs no compression and leaves ``agent`` untouched. A held compression lock
     yields ``lock_skipped`` with the agent's signal cleared and the deferred context-engine notification
     discarded; otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
@@ -126,6 +129,7 @@ def compress_now(
         compressed, _ = agent._compress_context(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
             defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
+            **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)

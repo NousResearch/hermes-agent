@@ -43,7 +43,13 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
       $lastSources.set(data.sources)
     }
 
-    mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
+    // Every live row, not just the active source's: a bot on another
+    // connection reports its own title too, and skipping it left that bot
+    // named by whatever this Desktop last cached for it.
+    mergeServerMeta(
+      roster.filter(row => !row?.ghost),
+      data?.fetchedAt || 0
+    )
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)

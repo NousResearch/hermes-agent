@@ -1725,10 +1725,11 @@ def _start_chat_background_prefetch() -> None:
     def _skills_dir_is_unseeded() -> bool:
         try:
             from hermes_cli.config import get_hermes_home
+            from agent.skill_utils import iter_skill_index_files
             skills_dir = Path(get_hermes_home()) / "skills"
             if not skills_dir.is_dir():
                 return True
-            return next(skills_dir.rglob("SKILL.md"), None) is None
+            return next(iter_skill_index_files(skills_dir, "SKILL.md"), None) is None
         except Exception:
             return False
 

@@ -169,6 +169,7 @@ def test_iter_skill_index_files_skips_hidden_directories(tmp_path):
     (hidden / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
 
     assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [visible / "SKILL.md"]
+    assert is_excluded_skill_path(hidden / "SKILL.md") is True
 
 
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):

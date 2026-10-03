@@ -67,11 +67,27 @@ def org_id_of_path(path, skills_dir: Path) -> Optional[str]:
     return parts[1] if len(parts) >= 2 else None
 
 
+def is_excluded_skill_dir(name: str) -> bool:
+    """True if *name* is a hidden or otherwise non-skill directory."""
+    return name in EXCLUDED_SKILL_DIRS or name.startswith(".")
+
+
 def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* should be skipped by skill scanners (VCS/dependency/cache
     dirs + support packages). Apply to every SKILL.md from a direct ``rglob``."""
-    parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(path, root=root)
+    path_obj = Path(path) if isinstance(path, Path) else Path(str(path))
+    if root is not None:
+        try:
+            parts = path_obj.relative_to(root).parts
+        except ValueError:
+            parts = PurePath(str(path)).parts
+    else:
+        parts = PurePath(str(path)).parts
+        # Absolute paths include the hidden Hermes home directory; only inspect
+        # components below a conventional skills root when one is present.
+        if "skills" in parts:
+            parts = parts[parts.index("skills") + 1:]
+    return any(is_excluded_skill_dir(part) for part in parts[:-1]) or is_skill_support_path(path, root=root)
 
 
 def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
@@ -795,8 +811,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             dirs[:] = [d for d in dirs if d == active_org]
         dirs[:] = [
             d for d in dirs
-            if d not in EXCLUDED_SKILL_DIRS
-            and not d.startswith(".")
+            if not is_excluded_skill_dir(d)
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         if filename in files:

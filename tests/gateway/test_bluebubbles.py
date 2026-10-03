@@ -583,3 +583,73 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesThreadedReplyContext:
+    """threadOriginatorGuid must resolve to reply_to_text / reply_to_is_own_message (#126919)."""
+
+    @pytest.mark.asyncio
+    async def test_threaded_reply_populates_reply_context(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_lookup(guid):
+            assert guid == "ORIGINATOR-GUID"
+            return {"text": "Send this, or revise?", "isFromMe": True}
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_lookup_message", fake_lookup)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "reply-msg-1",
+                "text": "send it",
+                "threadOriginatorGuid": "ORIGINATOR-GUID",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.reply_to_message_id == "ORIGINATOR-GUID"
+        assert event.reply_to_text == "Send this, or revise?"
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_threaded_reply_without_text_still_carries_message_id(self, monkeypatch):
+        """Originator lookup failure degrades to the old behavior: id without text."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_lookup(guid):
+            return None
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_lookup_message", fake_lookup)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "reply-msg-2",
+                "text": "send it",
+                "threadOriginatorGuid": "GONE-GUID",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.reply_to_message_id == "GONE-GUID"
+        assert event.reply_to_text is None
+        assert event.reply_to_is_own_message is False

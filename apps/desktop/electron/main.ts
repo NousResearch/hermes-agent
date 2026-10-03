@@ -8798,7 +8798,11 @@ function installRemoteHeaderRulesOnSession(sess) {
   }
 
   remoteHeaderSessions.add(sess)
-  attachRemoteRequestHeaderListener(sess, headersForRemoteRequest)
+  attachRemoteRequestHeaderListener(
+    sess,
+    headersForRemoteRequest,
+    new URL(DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()).origin
+  )
 }
 
 function installRemoteHeaderRules() {

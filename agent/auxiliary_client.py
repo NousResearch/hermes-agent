@@ -1133,7 +1133,9 @@ def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
 ) -> Tuple[List[str], List[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from agent.codex_responses_adapter import (
+        _extract_responses_message_text, _leaked_tool_call_text, _normalize_codex_response,
+    )
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
     # returning dict items, and the aux adapter's legacy empty completed response.
@@ -1153,6 +1155,17 @@ def _parse_codex_final_response(
     )
     status = str(normalized_final.status or "").strip().lower()
     reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
+    # The main loop's leaked-tool-call recovery clears the text so its continuation can re-elicit a
+    # real call; aux has no continuation, so a completed answer quoting such text keeps it.
+    if finish_reason == "incomplete" and status != "incomplete" and not message.tool_calls \
+            and message.codex_message_items is None:
+        answer = "\n".join(filter(None, (
+            _extract_responses_message_text(item) for item in output
+            if _field(item, "type") == "message"
+            and str(_field(item, "phase", "") or "").strip().lower() not in {"commentary", "analysis"}
+        ))).strip()
+        if answer and _leaked_tool_call_text(answer):
+            message.content, finish_reason = answer, "stop"
     # Aux consumers speak Chat Completions: "length" activates their existing
     # partial-summary rejection/fallback, whereas Codex's "incomplete" does not.
     # A final_answer phase cannot override the provider's incomplete status, but completed

@@ -268,13 +268,46 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
 _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
+_WORKER_RUN_MARKER_PREFIX = "KANBAN_WORKER_RUN_START"
+_WORKER_RUN_MARKER_RE = re.compile(
+    r"^" + re.escape(_WORKER_RUN_MARKER_PREFIX) + r"\s+run_id=(\d+)\s*$", re.MULTILINE,
+)
 _REFUSAL_REASON_RE = re.compile(r"^hermes-refusal-reason:\s*([A-Z_]+)\s*$", re.MULTILINE)
 
 
-def _latest_log_run_segment(raw: Optional[str]) -> str:
-    """The append-only worker-log segment that belongs to the latest observed run."""
+def _worker_log_run_marker(run_id: Optional[int]) -> bytes:
+    """Dispatcher-written delimiter that correlates append-only log text to one task run."""
+    if run_id is None:
+        return b""
+    return f"\n{_WORKER_RUN_MARKER_PREFIX} run_id={int(run_id)}\n".encode("utf-8")
+
+
+def _latest_log_run_segment(raw: Optional[str], *, current_run_id: Optional[int] = None) -> str:
+    """The append-only worker-log segment that belongs to the latest observed run.
+
+    New workers get a dispatcher-written run marker before spawn, so even a
+    worker that dies before printing anything cannot inherit a previous run's
+    refusal marker or exit trailer.  Marker-less logs fall back to the legacy
+    trailer segmentation for workers spawned before the marker existed.
+    """
     if not raw:
         return ""
+    markers = list(_WORKER_RUN_MARKER_RE.finditer(raw))
+    if current_run_id is not None and markers:
+        target = str(int(current_run_id))
+        for idx in range(len(markers) - 1, -1, -1):
+            marker = markers[idx]
+            if marker.group(1) != target:
+                continue
+            end = markers[idx + 1].start() if idx + 1 < len(markers) else len(raw)
+            return raw[marker.end():end]
+        # The log has run markers, but not for this in-flight run.  That means
+        # the current worker produced no correlated log text; never reuse a
+        # previous run's capacity/refusal evidence.
+        return ""
+    if markers:
+        latest = markers[-1]
+        return raw[latest.end():]
     trailers = list(_EXIT_TRAILER_RE.finditer(raw))
     if not trailers:
         return raw
@@ -290,10 +323,19 @@ def _latest_log_run_segment(raw: Optional[str]) -> str:
     return raw[previous_end:latest.start()]
 
 
-def _latest_log_exit_code(raw: Optional[str]) -> Optional[int]:
+def _latest_log_exit_code(raw: Optional[str], *, current_run_id: Optional[int] = None) -> Optional[int]:
     """Exit code for the latest observed log run, if that run wrote a trailer."""
     if not raw:
         return None
+    segment = _latest_log_run_segment(raw, current_run_id=current_run_id)
+    if segment != raw or _WORKER_RUN_MARKER_RE.search(raw):
+        trailers = list(_EXIT_TRAILER_RE.finditer(segment))
+        if not trailers:
+            return None
+        latest = trailers[-1]
+        if segment[latest.end():].strip():
+            return None
+        return int(latest.group(1))
     trailers = list(_EXIT_TRAILER_RE.finditer(raw))
     if not trailers:
         return None
@@ -303,14 +345,18 @@ def _latest_log_exit_code(raw: Optional[str]) -> Optional[int]:
     return int(latest.group(1))
 
 
-def _refusal_reason_for_latest_log_run(raw: Optional[str]) -> Optional[str]:
-    """Machine-readable refusal reason for the log run ending at the latest trailer."""
-    segment = _latest_log_run_segment(raw)
+def _refusal_reason_for_latest_log_run(
+    raw: Optional[str], *, current_run_id: Optional[int] = None,
+) -> Optional[str]:
+    """Machine-readable refusal reason for the current/latest log run."""
+    segment = _latest_log_run_segment(raw, current_run_id=current_run_id)
     matches = _REFUSAL_REASON_RE.findall(segment)
     return matches[-1] if matches else None
 
 
-def _worker_log_refusal_reason(task_id: str, board: Optional[str] = None) -> Optional[str]:
+def _worker_log_refusal_reason(
+    task_id: str, board: Optional[str] = None, *, current_run_id: Optional[int] = None,
+) -> Optional[str]:
     """Machine-readable active-session refusal reason from the worker log.
 
     The quiet CLI prints ``hermes-refusal-reason: <REASON>`` before the human
@@ -322,10 +368,12 @@ def _worker_log_refusal_reason(task_id: str, board: Optional[str] = None) -> Opt
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    return _refusal_reason_for_latest_log_run(raw)
+    return _refusal_reason_for_latest_log_run(raw, current_run_id=current_run_id)
 
 
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
+def _worker_log_exit_code(
+    task_id: str, board: Optional[str] = None, *, current_run_id: Optional[int] = None,
+) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
@@ -337,7 +385,7 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    return _latest_log_exit_code(raw)
+    return _latest_log_exit_code(raw, current_run_id=current_run_id)
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -1051,7 +1099,9 @@ def _log_noise_prefixes() -> tuple[str, ...]:
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
-def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
+def _worker_final_output(
+    task_id: str, board: Optional[str] = None, *, current_run_id: Optional[int] = None,
+) -> str:
     """Best-effort read of a dead worker's last printed text, for the board diagnostic.
 
     A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
@@ -1075,7 +1125,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     # Logs are append-only across attempts.  Keep diagnostics anchored to the
     # latest run segment so stale refusal text from a prior retry does not ride
     # along with a later ordinary crash.
-    raw = _latest_log_run_segment(raw)
+    raw = _latest_log_run_segment(raw, current_run_id=current_run_id)
     raw = _EXIT_TRAILER_RE.sub("", raw)
     cut = raw.rfind(_exit_summary_marker())
     if cut != -1:
@@ -1118,7 +1168,12 @@ class _DeadWorker:
 
 
 def _classify_dead_worker(
-    pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    pid: int,
+    claimer: Optional[str],
+    *,
+    task_id: Optional[str] = None,
+    board: Optional[str] = None,
+    current_run_id: Optional[int] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1126,9 +1181,11 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(
+        pid, claimer, task_id=task_id, board=board, current_run_id=current_run_id
+    )
     if task_id and not dead.rate_limited:
-        worker_output = _worker_final_output(task_id, board=board)
+        worker_output = _worker_final_output(task_id, board=board, current_run_id=current_run_id)
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
@@ -1141,6 +1198,7 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    current_run_id: Optional[int] = None,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
@@ -1152,10 +1210,14 @@ def _classify_dead_worker_exit(
     """
     kind, code = _classify_worker_exit(pid)
     if kind == "unknown" and task_id:
-        logged = _worker_log_exit_code(task_id, board=board)
+        logged = _worker_log_exit_code(task_id, board=board, current_run_id=current_run_id)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
-    if task_id and _worker_log_refusal_reason(task_id, board=board) == MAX_CONCURRENT_SESSIONS:
+    if (
+        task_id
+        and _worker_log_refusal_reason(task_id, board=board, current_run_id=current_run_id)
+        == MAX_CONCURRENT_SESSIONS
+    ):
         # The active-session cap is host capacity, not task failure. Defer and
         # let the respawn guard space retries; do not blur it with ownership or
         # registry-coordination refusals, which remain ordinary nonzero crashes.
@@ -1237,7 +1299,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, current_run_id "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1255,7 +1317,13 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            dead = _classify_dead_worker(
+                pid,
+                row["claim_lock"],
+                task_id=row["id"],
+                board=board,
+                current_run_id=_kb._row_get(row, "current_run_id"),
+            )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -3052,6 +3120,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    marker = _worker_log_run_marker(task.current_run_id)
+    if marker:
+        log_f.write(marker)
+        log_f.flush()
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

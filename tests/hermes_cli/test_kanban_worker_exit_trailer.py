@@ -46,6 +46,8 @@ def _dead_worker_with_custom_log(conn, tid: str, pid: int, body: str) -> None:
     """Claim ``tid`` for a dead worker and write an exact log body."""
     host = kb._claimer_id().split(":", 1)[0]
     kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
+    run = conn.execute("SELECT current_run_id FROM tasks WHERE id=?", (tid,)).fetchone()
+    current_run_id = run["current_run_id"] if run else None
     conn.execute(
         "UPDATE tasks SET worker_pid=?, worker_started_at=NULL, started_at=? WHERE id=?",
         (pid, int(time.time()) - 120, tid),
@@ -54,6 +56,7 @@ def _dead_worker_with_custom_log(conn, tid: str, pid: int, body: str) -> None:
     log = kb.worker_log_path(tid)
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a", encoding="utf-8") as f:
+        f.write(kbd._worker_log_run_marker(current_run_id).decode("utf-8"))
         f.write(body)
 
 
@@ -213,6 +216,47 @@ def test_no_trailer_crash_after_capacity_refusal_uses_trailing_log_segment(kanba
         assert task.status == "ready"
         assert task.consecutive_failures == 1
 
+
+def test_silent_crash_after_capacity_refusal_does_not_reuse_stale_log_evidence(kanban_home):
+    """A worker that dies before printing anything still belongs to its new run.
+
+    The dispatcher-written run marker is the only current-run log evidence; the
+    prior run's capacity refusal marker and exit trailer must not classify this
+    worker as another capacity deferral.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="silent-after-capacity", assignee="a")
+        _dead_worker_with_custom_log(
+            conn,
+            tid,
+            72031,
+            f"hermes-refusal-reason: {MAX_CONCURRENT_SESSIONS}\n"
+            "Hermes is at the active session limit (4/4).\n"
+            f"\n{KANBAN_WORKER_EXIT_TRAILER}1\n",
+        )
+        assert kbd.detect_crashed_workers(conn) == []
+
+        _dead_worker_with_custom_log(conn, tid, 72032, "")
+
+        assert kbd.detect_crashed_workers(conn) == [tid]
+
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id", (tid,)
+        ).fetchall()
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert [row["kind"] for row in events][-1] == "crashed"
+        assert run["outcome"] == "crashed"
+        metadata = kb._json_dict(run["metadata"])
+        assert metadata.get("refusal_reason") is None
+        assert metadata.get("exit_code") is None
+        assert metadata.get("worker_output") is None
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
 
 def test_non_capacity_active_session_refusal_remains_a_crash(kanban_home):
     """Ownership/registry refusals are correctness failures, not capacity; the

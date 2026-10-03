@@ -74,7 +74,11 @@ def main() -> int:
                    help="HTTP header (repeatable)")
     p.add_argument("--timeout", type=float, default=20.0,
                    help="HTTP timeout in seconds (default: 20)")
+    p.add_argument("--max-seen", type=int, default=500,
+                   help="Max IDs retained for deduplication (positive; default: 500)")
     args = p.parse_args()
+    if args.max_seen <= 0:
+        p.error("--max-seen must be a positive integer")
 
     req = urllib.request.Request(args.url, headers={"User-Agent": "Hermes-Watcher/1.0"})
     for k, v in args.header:
@@ -108,7 +112,7 @@ def main() -> int:
     # Keep only dicts — skip any bare strings / numbers so filter_new doesn't crash.
     items = [i for i in items if isinstance(i, dict)]
 
-    wm = Watermark.load(args.name)
+    wm = Watermark.load(args.name, max_seen=args.max_seen)
     new_items = wm.filter_new(items, id_key=args.id_field)
     wm.save()
 

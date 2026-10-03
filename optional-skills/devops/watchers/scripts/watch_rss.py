@@ -85,7 +85,11 @@ def main() -> int:
                    help="Include <description>/<summary> snippet under each item")
     p.add_argument("--timeout", type=float, default=20.0,
                    help="HTTP timeout in seconds (default: 20)")
+    p.add_argument("--max-seen", type=int, default=500,
+                   help="Max IDs retained for deduplication (positive; default: 500)")
     args = p.parse_args()
+    if args.max_seen <= 0:
+        p.error("--max-seen must be a positive integer")
 
     try:
         req = urllib.request.Request(args.url, headers={"User-Agent": "Hermes-Watcher/1.0"})
@@ -100,7 +104,7 @@ def main() -> int:
 
     entries = _parse_feed(xml_bytes)
 
-    wm = Watermark.load(args.name)
+    wm = Watermark.load(args.name, max_seen=args.max_seen)
     new_items = wm.filter_new(entries, id_key="id")
     wm.save()
 

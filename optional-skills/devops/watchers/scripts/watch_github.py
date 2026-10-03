@@ -82,7 +82,11 @@ def main() -> int:
                    help="Include issue/commit body as a snippet under each item")
     p.add_argument("--timeout", type=float, default=30.0,
                    help="HTTP timeout in seconds (default: 30)")
+    p.add_argument("--max-seen", type=int, default=500,
+                   help="Max IDs retained for deduplication (positive; default: 500)")
     args = p.parse_args()
+    if args.max_seen <= 0:
+        p.error("--max-seen must be a positive integer")
 
     if not args.repo and not args.search:
         print("watch_github: one of --repo or --search is required", file=sys.stderr)
@@ -151,7 +155,7 @@ def main() -> int:
     # Drop any items that flattened without an ID (defensive).
     items = [i for i in items if i.get("id")]
 
-    wm = Watermark.load(args.name)
+    wm = Watermark.load(args.name, max_seen=args.max_seen)
     new_items = wm.filter_new(items, id_key="id")
     wm.save()
 

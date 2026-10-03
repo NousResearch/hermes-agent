@@ -352,6 +352,99 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertEqual(after["status"], "success", after)
         self.assertIn("False", after["output"])
 
+    @pytest.mark.platforms("posix")
+    def test_overflow_artifacts_are_private_owner_scoped_bounded_and_reaped(self):
+        """Retained output belongs to the session, not a shared content-addressed cache.
+
+        The path must stay readable through the selected file backend until that owner is
+        cleared, while another owner's cleanup cannot remove it. Repeated overflow is bounded.
+        """
+        from hermes_constants import get_hermes_home
+        from tools.approval import clear_session
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        def overflow(owner: str, index: int) -> Path:
+            code = (
+                f"print('BEGIN-{index}')\n"
+                f"print('\\n'.join('row-%04d-%s' % (i, 'x' * 32) for i in range(2200)))\n"
+                f"print('END-{index}')"
+            )
+            result = self._run_as(owner, code, task_id=f"turn-{owner}-{index}")
+            self.assertTrue(result["stdout_truncated"], result)
+            return Path(result["stdout_spill_path"])
+
+        owner_a, owner_b = "artifact-owner-a", "artifact-owner-b"
+        paths_a: list[Path] = []
+        path_b: Path | None = None
+        try:
+            with _kernel_config():
+                paths_a = [overflow(owner_a, index) for index in range(6)]
+                path_b = overflow(owner_b, 99)
+
+                # Cross both runner-side caps too: stdout above 1 MB and an error whose
+                # diagnostics alone exceed the 50 KB model-facing output window.
+                runner = self._run_as(
+                    owner_a,
+                    "print('\\n'.join('runner-%05d-%s' % (i, 'r' * 32) "
+                    "for i in range(30000)))\nprint('RUNNER-END')",
+                    task_id="turn-runner-overflow",
+                )
+                diagnostic = self._run_as(
+                    owner_a,
+                    "import sys\n"
+                    "print('\\n'.join('local-diagnostic-%04d-%s' % (i, 'd' * 32) "
+                    "for i in range(2200)), file=sys.stderr)\n"
+                    "raise RuntimeError('LOCAL-DIAGNOSTIC-END')",
+                    task_id="turn-diagnostic-overflow",
+                )
+
+            newest = paths_a[-1]
+            self.assertTrue(newest.is_file())
+            self.assertIsNotNone(path_b)
+            self.assertTrue(path_b.is_file())
+            self.assertNotEqual(newest.parent, path_b.parent)
+            self.assertNotIn(owner_a, str(newest))
+            self.assertNotIn(owner_b, str(path_b))
+            self.assertEqual(newest.parent.parent, get_hermes_home() / "cache" / "exec")
+            self.assertEqual(newest.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(newest.parent.stat().st_mode & 0o777, 0o700)
+            self.assertLessEqual(len(list(newest.parent.glob("*.txt"))), 4)
+            self.assertFalse(paths_a[0].exists(), "oldest owner artifact was not pruned")
+
+            runner_path = Path(runner["stdout_spill_path"])
+            self.assertEqual(runner_path.parent, newest.parent)
+            runner_tail = ShellFileOperations(
+                LocalEnvironment(cwd=str(get_hermes_home()))
+            ).read_file(str(runner_path), offset=30000, limit=2)
+            self.assertIn("RUNNER-END", runner_tail.content)
+
+            self.assertEqual(diagnostic["status"], "error", diagnostic)
+            self.assertTrue(diagnostic["stdout_truncated"], diagnostic)
+            diagnostic_path = Path(diagnostic["stdout_spill_path"])
+            self.assertEqual(diagnostic_path.parent, newest.parent)
+            diagnostic_page = ShellFileOperations(
+                LocalEnvironment(cwd=str(get_hermes_home()))
+            ).read_file(str(diagnostic_path), offset=1100, limit=3)
+            self.assertIn("local-diagnostic-1099", diagnostic_page.content)
+
+            # Exercise the same ShellFileOperations path selected by read_file, not Path.read_text.
+            page = ShellFileOperations(LocalEnvironment(cwd=str(get_hermes_home()))).read_file(
+                str(newest), offset=1100, limit=3
+            )
+            self.assertIn("row-1099", page.content)
+
+            clear_session(owner_a)
+            self.assertFalse(newest.exists())
+            self.assertFalse(runner_path.exists())
+            self.assertFalse(diagnostic_path.exists())
+            self.assertTrue(path_b.exists(), "clearing one owner removed another owner's artifact")
+            clear_session(owner_b)
+            self.assertFalse(path_b.exists())
+        finally:
+            clear_session(owner_a)
+            clear_session(owner_b)
+
     def test_live_kernels_are_capped_lru_across_owners(self):
         with _kernel_config(max_session_kernels=2):
             kernels = []

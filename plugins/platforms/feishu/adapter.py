@@ -1344,6 +1344,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._update_prompt_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Pure-media messages (no text) wait here for the chat's next text message.
+        self._pending_media_cache: Dict[str, Dict[str, list]] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -2675,6 +2677,36 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        # Pure-media messages (no text) are cached and acked with "📷 收到"; they are NOT
+        # delivered (and not auto-flushed by the media-batch timer) until the chat's next
+        # text message, which flushes the cached media in as real attachments (images —
+        # image routing decides native vs text) plus "[Media: …]" refs (documents). A chat
+        # that never follows up keeps the ack as the only response.
+        if event.media_urls and not (event.text or "").strip():
+            ckey = self._media_cache_key(event)
+            bucket = self._pending_media_cache.setdefault(ckey, {"images": [], "files": []})
+            for path, mime in zip(event.media_urls, event.media_types):
+                if str(mime or "").startswith("image/"):
+                    bucket["images"].append((path, mime))
+                else:
+                    bucket["files"].append(path)
+            try:
+                await self.send(event.source.chat_id, "📷 收到")
+            except Exception:
+                pass
+            return
+
+        if (event.text or "").strip():
+            bucket = self._pending_media_cache.pop(self._media_cache_key(event), None)
+            if bucket:
+                refs = [f"[Media: {p}]" for p in bucket.get("files", [])]
+                if refs:
+                    event.text = (event.text or "") + "\n\n" + "\n".join(refs)
+                cached_imgs = bucket.get("images", [])
+                if cached_imgs:
+                    event.media_urls = list(event.media_urls or []) + [p for p, _m in cached_imgs]
+                    event.media_types = list(event.media_types or []) + [m for _p, m in cached_imgs]
+
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
@@ -2682,6 +2714,11 @@ class FeishuAdapter(BasePlatformAdapter):
             await self._enqueue_media_event(event)
             return
         await self._handle_message_with_guards(event)
+
+    def _media_cache_key(self, event: MessageEvent) -> str:
+        """Pending-media cache key for a Feishu message: chat + thread."""
+        thread = getattr(event.source, "thread_id", None) or ""
+        return f"feishu:{event.source.chat_id}:{thread}"
 
     # --- Media batching ---
     def _should_batch_media_event(self, event: MessageEvent) -> bool:

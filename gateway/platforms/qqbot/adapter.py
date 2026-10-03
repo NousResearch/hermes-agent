@@ -163,6 +163,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        # Pure-media messages (no text of the user's own) wait here for the chat's next text.
+        self._pending_attachments: Dict[str, list] = {}  # chat key → [(path, mime), ...]
+        self._pending_file_texts: List[Tuple[str, str]] = {}  # chat key → [(info, kind), ...]
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
@@ -838,6 +841,43 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if quoted["image_urls"]:
             image_urls = image_urls + quoted["image_urls"]
             image_media_types = image_media_types + quoted["image_media_types"]
+
+        # Pure-media messages (no text of the user's own) are held back: cache them and
+        # ack with "📷 收到" instead of dispatching; the chat's next text flushes them in
+        # as real attachments (images) / "[Media: …]" refs (files). Judge by the USER's
+        # own input — raw text, voice transcripts, or a quoted block — not by the folded
+        # ``text``: attachment_info alone must not count as the user having typed.
+        ckey = f"qqbot:{chat_id}"
+        user_input = (
+            bool((content or "").strip())
+            or bool(voice_transcripts)
+            or bool(quoted["quote_block"].strip())
+        )
+        if not user_input:
+            if image_urls:
+                # (path, mime) pairs so the flush restores media_urls AND media_types
+                # (image routing needs the per-attachment MIME).
+                self._pending_attachments.setdefault(ckey, []).extend(zip(image_urls, image_media_types))
+            if att["attachment_info"]:
+                self._pending_file_texts.setdefault(ckey, []).append((att["attachment_info"], "file"))
+            if image_urls or att["attachment_info"]:
+                try:
+                    await self.send(chat_id, "📷 收到")
+                except Exception:
+                    pass
+            return
+
+        # Flush cached pure-media into this text as real attachments so gateway image
+        # routing decides native-vs-text per the model's vision capability.
+        pending_imgs = self._pending_attachments.pop(ckey, [])
+        pending_files = self._pending_file_texts.pop(ckey, [])
+        if pending_imgs:
+            image_urls = image_urls + [p for p, _m in pending_imgs]
+            image_media_types = image_media_types + [m for _p, m in pending_imgs]
+        refs = [fp for fp, kind in pending_files if kind == "file"]
+        if refs:
+            text = text + "\n\n" + "\n".join(refs)
+
         if not text.strip() and not image_urls:
             return
 

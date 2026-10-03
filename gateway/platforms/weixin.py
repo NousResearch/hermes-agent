@@ -729,6 +729,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
         # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
         self._configure_text_batch_delays()
+        # Pure-media messages (no text) wait here for the chat's next text message.
+        self._pending_media_cache: Dict[str, Dict[str, list]] = {}
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
@@ -898,6 +900,40 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 await self._collect_media(candidate, media_paths, media_types)
         if not text and not media_paths:
             return
+
+        # Pure-media messages (no text) are held back: cache them and ack with "📷 收到";
+        # the chat's next text flushes them in as real attachments (images) / "[Media: …]"
+        # refs (files). Voice is exempt: the adapter drops the platform's STT text and lets
+        # the runner transcribe centrally, so a voice message must flow through as a VOICE
+        # event — never parked waiting for typed text.
+        ckey = f"weixin:{effective_chat_id}"
+        has_voice = any(item.get("type") == ITEM_VOICE for item in item_list)
+        if not text and not has_voice:
+            if media_paths:
+                bucket = self._pending_media_cache.setdefault(ckey, {"images": [], "files": []})
+                for p, mt in zip(media_paths, media_types):
+                    if str(mt or "").startswith("image/"):
+                        bucket["images"].append((p, mt))
+                    else:
+                        bucket["files"].append(p)
+                try:
+                    await self.send(effective_chat_id, "📷 收到")
+                except Exception:
+                    pass
+            return
+
+        # Flush cached pure-media into this text as real attachments so gateway image
+        # routing decides native-vs-text per the model's vision capability.
+        bucket = self._pending_media_cache.pop(ckey, None)
+        if bucket:
+            cached_imgs = bucket.get("images", [])
+            refs = [f"[Media: {p}]" for p in bucket.get("files", [])]
+            if refs:
+                text = text + "\n\n" + "\n".join(refs)
+            if cached_imgs:
+                media_paths = list(media_paths) + [p for p, _m in cached_imgs]
+                media_types = list(media_types) + [m for _p, m in cached_imgs]
+
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,

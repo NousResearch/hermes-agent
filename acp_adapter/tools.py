@@ -794,9 +794,27 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
         return acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
 
 
+def _delegation_lifecycle_input(arguments: Args) -> Args | None:
+    """Project only the child identity fields ACP hosts need to render delegation rows.
+
+    ``delegate_task`` arguments carry full child prompts and tool-routing metadata;
+    hosts must see the sanitized ``{toolName, tasks: [{goal, role, model}]}`` shape
+    (or the legacy single-goal form), never the raw call arguments."""
+    tasks = arguments.get("tasks")
+    if isinstance(tasks, list):
+        projected = [
+            {key: task[key] for key in ("goal", "role", "model") if key in task}
+            for task in tasks
+            if isinstance(task, dict) and isinstance(task.get("goal"), str)
+        ]
+        return {"toolName": "delegate_task", "tasks": projected} if projected else None
+    goal = arguments.get("goal")
+    return {"toolName": "delegate_task", "goal": goal} if isinstance(goal, str) and goal else None
+
+
 def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit_diff: Any = None) -> ToolCallStart:
     """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
-    raw_input = None
+    raw_input = _delegation_lifecycle_input(arguments) if tool_name == "delegate_task" else None
     if tool_name in ("patch", "write_file") and edit_diff is not None:
         content = [acp.tool_diff_content(path=edit_diff.path, old_text=edit_diff.old_text, new_text=edit_diff.new_text)]
     elif tool_name in _START_CONTENT_BUILDERS:
@@ -815,6 +833,73 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
     )
 
 
+def _background_delegation_lifecycle(result: Optional[str]) -> Args | None:
+    """Return the safe lifecycle marker for an accepted detached delegation.
+
+    The dispatch result is a handle, not a terminal outcome — ``status=completed``
+    here would close the host's bubble while the child is still running, so the
+    call stays open and only ``raw_output.lifecycle`` is exposed."""
+    data = _json_loads_maybe(result)
+    if not isinstance(data, dict) or data.get("status") != "dispatched" or data.get("mode") != "background":
+        return None
+    return {"toolName": "delegate_task", "lifecycle": {"status": "dispatched", "mode": "background"}}
+
+
+def build_delegation_progress(
+    tool_call_id: str, event_type: str, sequence: int, *, task_index: Any = None,
+    terminal_status: str | None = None, **kwargs: Any
+) -> ToolCallProgress | None:
+    """Build one sanitized child-progress update for an open ``delegate_task`` call.
+
+    Only ``taskIndex``/``type``/``status``/``lastToolName``/``summary`` are exposed —
+    never child thought text, tool arguments or raw previews. Returns ``None`` for
+    anything unrenderable so the caller can drop the event."""
+    if not isinstance(task_index, int) or isinstance(task_index, bool) or task_index < 0:
+        return None
+
+    progress: Args = {"sequence": sequence, "taskIndex": task_index}
+    if event_type == "subagent.tool":
+        tool_event = kwargs.get("tool_event")
+        if tool_event not in {"tool.started", "tool.completed"}:
+            return None
+        tool_name = _truncate_text(str(kwargs.get("tool_name") or "tool").strip() or "tool", limit=120)
+        progress.update({
+            "type": tool_event,
+            "status": "running",
+            "lastToolName": tool_name,
+            "summary": f"{'Running' if tool_event == 'tool.started' else 'Finished'} {tool_name}",
+        })
+    elif event_type == "subagent.thinking":
+        progress.update({"type": "thinking", "status": "running", "summary": "Thinking"})
+    elif event_type == "subagent.complete":
+        raw_status = str(kwargs.get("status") or "completed").strip().lower()
+        status = {
+            "completed": "completed",
+            "success": "completed",
+            "succeeded": "completed",
+            "failed": "failed",
+            "error": "failed",
+            "timeout": "failed",
+            "interrupted": "stopped",
+            "cancelled": "stopped",
+            "stopped": "stopped",
+        }.get(raw_status, "failed")
+        raw_summary = kwargs.get("summary") or kwargs.get("preview")
+        summary = _truncate_text(str(raw_summary).strip(), limit=1000) if raw_summary else (
+            "Completed" if status == "completed" else "Stopped" if status == "stopped" else "Failed"
+        )
+        progress.update({"type": "completed", "status": status, "summary": summary})
+    else:
+        return None
+
+    update_status = terminal_status if terminal_status in {"completed", "failed"} else "in_progress"
+    return acp.update_tool_call(
+        tool_call_id,
+        status=update_status,
+        raw_output={"toolName": "delegate_task", "taskProgress": progress},
+    )
+
+
 def build_tool_complete(
     tool_call_id: str, tool_name: str, result: Optional[str] = None, function_args: Optional[Args] = None,
     snapshot: Any = None, is_error: bool = False,
@@ -828,10 +913,18 @@ def build_tool_complete(
     else:
         content = _build_tool_complete_content(tool_name, result, function_args=function_args, snapshot=snapshot)
     structured = isinstance(_json_loads_maybe(result), (dict, list))
+    delegation_lifecycle = _background_delegation_lifecycle(result) if tool_name == "delegate_task" else None
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
-        status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
-        raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
+        status=(
+            "failed" if is_error or _tool_result_failed(result, tool_name)
+            else "in_progress" if delegation_lifecycle is not None
+            else "completed"
+        ),
+        content=content,
+        raw_output=delegation_lifecycle if delegation_lifecycle is not None else (
+            None if tool_name in _POLISHED_TOOLS or structured else result
+        ),
     )
 
 

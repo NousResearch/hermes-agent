@@ -74,6 +74,11 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
     # Another tenant root's gateway is a name collision, not this tenant's host process (#121352).
     if launched_by_other_tenant(record.home, get_hermes_home()):
         return None
+    # A named standalone gateway can win the host lock during boot, but it serves only itself and
+    # must not be treated as the host multiplexer. Let the served-record rung identify the real
+    # multiplexer instead; otherwise every profile is reported as served by the standalone.
+    if len(record.profiles) == 1 and _normalized(record.profiles[0]) != "default":
+        return None
     return HostGatewayTopology(pid=int(record.pid), profiles=tuple(record.profiles), source="host_record",
                                home=record_home(record))
 

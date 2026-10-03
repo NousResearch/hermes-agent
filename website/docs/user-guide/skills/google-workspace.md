@@ -92,9 +92,15 @@ $GAPI gmail reply MESSAGE_ID \
 
 ```bash
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
+$GAPI gmail reply MESSAGE_ID --body "<p>Thanks, that works for me.</p>" --html
+$GAPI gmail reply MESSAGE_ID --body "Thanks" --no-quote-original
 ```
 
-Automatically threads the reply (sets `In-Reply-To` and `References` headers) and uses the original message's thread ID.
+Replies automatically include visible quoted history and preserve the original
+message's `threadId`, `In-Reply-To`, and complete `References` ancestry. If the
+original contains HTML, its safe formatting is retained automatically; `--html`
+controls whether the new reply body is interpreted as HTML. Use
+`--no-quote-original` when only the new body should be sent.
 
 ### Labels
 

@@ -126,3 +126,31 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+def test_native_rg_cleanup_getpgid_race_keeps_completed_results(tree, ops_factory, monkeypatch):
+    """ESRCH after poll must not discard rg's already-drained matches (#123930)."""
+    import tools.environments.local as local
+
+    def missing_group(proc):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(local, "_kill_process_group_posix", missing_group)
+    ops = ops_factory(tree, [])
+    result = ops._run_rg_native(['sh', '-c', '"printf needle; printf \'\\n\'; sleep 20"'], 1, timeout=2)
+    assert result.exit_code == 0
+    assert result.stdout == "needle\n"
+
+
+def test_filename_search_keeps_results_when_rg_group_lookup_races(tree, ops_factory, monkeypatch):
+    """Filename mode shares the native rg cleanup path with content mode (#125461)."""
+    import tools.environments.local as local
+
+    def missing_group(_proc):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
+    monkeypatch.setattr(local, "_kill_process_group_posix", missing_group)
+    result = ops_factory(tree, []).search(pattern="*.py", path=str(tree), target="files", limit=1)
+    assert result.error is None
+    assert result.files and result.files[0].endswith(".py")

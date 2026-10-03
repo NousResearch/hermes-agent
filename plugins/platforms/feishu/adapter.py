@@ -4489,6 +4489,6 @@ def register(ctx) -> None:
         install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
         allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
+        standalone_sender_fn=_standalone_send, standalone_media=True, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
     )

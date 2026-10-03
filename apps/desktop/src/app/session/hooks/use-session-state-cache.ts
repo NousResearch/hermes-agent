@@ -23,10 +23,12 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $parkedTileStoredIds,
   $sessionStates,
   $sessionTiles,
+  acceptsSessionRuntimeSource,
   isSessionInForeground,
   publishSessionState,
   rekeySessionTile,
@@ -415,8 +417,13 @@ export function useSessionStateCache({
     (
       sessionId: string,
       updater: (state: ClientSessionState) => ClientSessionState,
-      storedSessionId?: string | null
+      storedSessionId?: string | null,
+      sourceOwner?: SessionOwnerRoute
     ) => {
+      if (storedSessionId && sourceOwner && !acceptsSessionRuntimeSource(storedSessionId, sourceOwner)) {
+        return sessionStateCache.get(sessionId) ?? createClientSessionState(storedSessionId)
+      }
+
       const previous = ensureSessionState(sessionId, storedSessionId)
       // Give the updater the raw previous state so it can return the same
       // reference when nothing changed (the caller sees a no-op). Previously

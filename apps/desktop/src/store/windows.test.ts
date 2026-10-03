@@ -7,7 +7,8 @@ import {
   isProfilePinnedWindow,
   openBrowserInNewWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  secondarySessionOwnerRoute
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -62,6 +63,13 @@ describe('isProfilePinnedWindow', () => {
 })
 
 describe('openSessionInNewWindow', () => {
+  it('parses the exact owner carried to a secondary renderer', () => {
+    expect(
+      secondarySessionOwnerRoute(
+        '?win=secondary&ownerConnectionId=source-b&ownerProfile=profile-b&ownerTargetProfile=target-b'
+      )
+    ).toEqual({ connectionId: 'source-b', profile: 'profile-b', targetProfile: 'target-b' })
+  })
   it('no-ops without a session id', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
@@ -101,6 +109,17 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
     // The owner resolver's lazy import is the heavy session-actions module.
   }, 60_000)
+
+  it('forwards the exact owner route for a secondary session window', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    const ownerRoute = { connectionId: 'source-b', profile: 'profile-b', targetProfile: 'target-b' }
+    installBridge(open)
+
+    await openSessionInNewWindow('shared-id', { ownerRoute })
+
+    expect(open).toHaveBeenCalledWith('shared-id', { ownerRoute })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
 
   it('notifies on an ok:false result', async () => {
     installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))

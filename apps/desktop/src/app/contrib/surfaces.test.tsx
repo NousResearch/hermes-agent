@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
@@ -10,7 +10,13 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { ChatRoutesSurface } from './surfaces'
 import type { WiringActions } from './types'
 
+const { contributed, openRouteTile } = vi.hoisted(() => ({
+  contributed: [] as Array<{ key: string; path: string; render: () => null }>,
+  openRouteTile: vi.fn()
+}))
+
 vi.mock('@/contrib/react/use-contributions', () => ({ useContributions: vi.fn() }))
+vi.mock('@/store/route-tiles', () => ({ openRouteTile }))
 vi.mock('@/store/connections', () => ({ $activeConnectionId: atom('local') }))
 vi.mock('@/store/gateway', () => ({ $gateway: atom<unknown>(null) }))
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
@@ -29,7 +35,7 @@ vi.mock('../shell/hooks/use-statusbar-items', () => ({
 }))
 vi.mock('../shell/statusbar-controls', () => ({ StatusbarControls: () => null }))
 vi.mock('../routes', () => ({
-  contributedRoutes: () => [],
+  contributedRoutes: () => contributed,
   NEW_CHAT_ROUTE: '/new',
   ROUTES_AREA: 'routes',
   sessionRoute: (id: string) => `/${id}`
@@ -43,6 +49,55 @@ afterEach(() => {
   cleanup()
   $gateway.set(null)
   $activeGatewayProfile.set('default')
+  contributed.length = 0
+  openRouteTile.mockClear()
+})
+
+/** Exposes the router to the test: current pathname + a navigate handle. */
+let probeNavigate: ReturnType<typeof useNavigate> | null = null
+
+function RouterProbe() {
+  probeNavigate = useNavigate()
+
+  return <div data-testid="pathname">{useLocation().pathname}</div>
+}
+
+function renderWithRoutes(initialEntries: string[]) {
+  const actions = { getGateway: () => $gateway.get() } as unknown as WiringActions
+
+  contributed.push({ key: 'plugin:kanban:page', path: '/kanban', render: () => null })
+
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <RouterProbe />
+      <ChatRoutesSurface actions={actions} />
+    </MemoryRouter>
+  )
+}
+
+describe('ChatRoutesSurface — contributed routes land as route tiles', () => {
+  it('opens the tile as a workspace tab and steps back to where the user was on a pushed navigation', async () => {
+    renderWithRoutes(['/session-a'])
+
+    expect(screen.getByTestId('pathname').textContent).toBe('/session-a')
+
+    // What `host.navigate('/kanban')` (a titlebar widget, a palette row) does.
+    act(() => {
+      probeNavigate!('/kanban')
+    })
+
+    await waitFor(() => expect(screen.getByTestId('pathname').textContent).toBe('/session-a'))
+    expect(openRouteTile).toHaveBeenCalledTimes(1)
+    expect(openRouteTile).toHaveBeenCalledWith('/kanban', 'center')
+  })
+
+  it('lands on the new chat when there is nothing to step back to (cold start / replaced entry)', async () => {
+    renderWithRoutes(['/kanban'])
+
+    await waitFor(() => expect(screen.getByTestId('pathname').textContent).toBe('/new'))
+    expect(openRouteTile).toHaveBeenCalledTimes(1)
+    expect(openRouteTile).toHaveBeenCalledWith('/kanban', 'center')
+  })
 })
 
 describe('ChatRoutesSurface', () => {

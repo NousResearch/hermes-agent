@@ -83,6 +83,7 @@ function storedComposerString(base: string): string | null {
 // cross-profile corruption this storage boundary prevents (#67709).
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
+const LAST_SESSION_OWNER_KEY = 'hermes.desktop.lastSessionOwner.v1'
 
 function profileNavigationKey(base: string, profile: string): string {
   const key = profile.trim() || 'default'
@@ -151,13 +152,28 @@ export function setRememberedSessionId(id: null | string, profile: string): void
 export function migrateRememberedNavigationForProfile(oldProfile: string, newProfile: string): void {
   discardLegacyRememberedNavigation()
 
-  for (const base of [LAST_SESSION_KEY, LAST_ROUTE_KEY]) {
+  for (const base of [LAST_SESSION_KEY, LAST_ROUTE_KEY, LAST_SESSION_OWNER_KEY]) {
     const value = storedString(profileNavigationKey(base, oldProfile))
 
     if (value !== null) {
       persistString(profileNavigationKey(base, newProfile), value)
       persistString(profileNavigationKey(base, oldProfile), null)
     }
+  }
+  const remembered = normalizeRememberedSessionOwner(
+    readJson<unknown>(profileNavigationKey(LAST_SESSION_OWNER_KEY, newProfile))
+  )
+  if (remembered?.ownerRoute.connectionId === 'local') {
+    const route = remembered.ownerRoute
+    setRememberedSessionOwner(
+      remembered.storedSessionId,
+      {
+        ...route,
+        profile: route.profile === oldProfile ? newProfile : route.profile,
+        ...(route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+      },
+      newProfile
+    )
   }
 }
 
@@ -187,6 +203,70 @@ export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfil
   if (changed) {
     persistSessionOwnerHints()
   }
+}
+
+interface RememberedSessionOwner {
+  ownerRoute: SessionOwnerRoute
+  storedSessionId: string
+}
+
+function normalizeRememberedSessionOwner(value: unknown): RememberedSessionOwner | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as { ownerRoute?: unknown; storedSessionId?: unknown }
+  const route = candidate.ownerRoute
+  const storedSessionId = typeof candidate.storedSessionId === 'string' ? candidate.storedSessionId.trim() : ''
+
+  if (!storedSessionId || !route || typeof route !== 'object') {
+    return null
+  }
+
+  const raw = route as Record<string, unknown>
+  const connectionId = typeof raw.connectionId === 'string' ? raw.connectionId.trim() : ''
+  const ownerProfile = typeof raw.profile === 'string' ? raw.profile.trim() : ''
+
+  if (!connectionId || !ownerProfile) {
+    return null
+  }
+
+  const targetProfile = typeof raw.targetProfile === 'string' ? raw.targetProfile.trim() : ''
+  const mode = raw.mode === 'local' || raw.mode === 'remote' ? raw.mode : undefined
+
+  return {
+    ownerRoute: {
+      connectionId,
+      ...(mode ? { mode } : {}),
+      profile: ownerProfile,
+      ...(targetProfile ? { targetProfile } : {})
+    },
+    storedSessionId
+  }
+}
+
+/** Exact owner of the remembered MAIN session. This is navigation state, not
+ * a second runtime-binding registry: the stored id is validated on read and
+ * the value is consumed only to route cold restore. */
+export function getRememberedSessionOwner(storedSessionId: string, profile: string): SessionOwnerRoute | undefined {
+  const remembered = normalizeRememberedSessionOwner(
+    readJson<unknown>(profileNavigationKey(LAST_SESSION_OWNER_KEY, profile))
+  )
+
+  return remembered?.storedSessionId === storedSessionId.trim() ? remembered.ownerRoute : undefined
+}
+
+export function setRememberedSessionOwner(
+  storedSessionId: null | string,
+  ownerRoute: SessionOwnerRoute | undefined,
+  profile: string
+): void {
+  const id = storedSessionId?.trim() ?? ''
+
+  writeJson(
+    profileNavigationKey(LAST_SESSION_OWNER_KEY, profile),
+    id && ownerRoute ? normalizeRememberedSessionOwner({ ownerRoute, storedSessionId: id }) : null
+  )
 }
 
 export function sessionBelongsToProfile(
@@ -922,7 +1002,11 @@ export function touchSessionActivity(
  *  cron, messaging) must show it without waiting for a profile switch to
  *  force a refetch (#123337). Reference-stable per slice when nothing
  *  matched or the title is already current. */
-export function applySessionTitle(storedSessionId: string | null | undefined, title: string | null): void {
+export function applySessionTitle(
+  storedSessionId: string | null | undefined,
+  title: string | null,
+  sourceOwner?: SessionOwnerRoute | null
+): void {
   const id = storedSessionId?.trim()
 
   if (!id) {
@@ -935,6 +1019,16 @@ export function applySessionTitle(storedSessionId: string | null | undefined, ti
     let changed = false
 
     const mapped = rows.map(session => {
+      const rowOwner = sourceOwner ? sessionOwnerRouteFromRow(session) : null
+      if (
+        sourceOwner &&
+        (!rowOwner ||
+          rowOwner.connectionId !== sourceOwner.connectionId.trim() ||
+          (rowOwner.targetProfile ?? rowOwner.profile).trim() !==
+            (sourceOwner.targetProfile ?? sourceOwner.profile).trim())
+      ) {
+        return session
+      }
       if (!sessionMatchesStoredId(session, id) || session.title === next) {
         return session
       }

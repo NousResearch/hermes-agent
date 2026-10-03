@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { registry } from '@/contrib/registry'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
@@ -10,13 +11,20 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { _resetLegacyDiscardForTests } from '@/store/session'
+import { openRouteTile } from '@/store/route-tiles'
+import {
+  $sessionResumeRequest,
+  _resetLegacyDiscardForTests,
+  setRememberedRoute,
+  setRememberedSessionId,
+  setRememberedSessionOwner
+} from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../../../test/session-info'
-import { sessionRoute } from '../../routes'
+import { ROUTES_AREA, sessionRoute } from '../../routes'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
 
@@ -43,6 +51,12 @@ vi.mock('@/store/plugin-catalog-install', () => ({
 vi.mock('@/store/plugin-install-request', () => ({
   openPluginInstallRequest: vi.fn()
 }))
+vi.mock('@/store/route-tiles', () => ({ openRouteTile: vi.fn() }))
+
+/** A plugin page at /kanban, the way a `routes` contribution registers one. */
+function contributeKanbanRoute(): () => void {
+  return registry.register({ area: ROUTES_AREA, data: { path: '/kanban' }, id: 'test-kanban', render: () => null })
+}
 
 vi.mock('@/store/windows', async importOriginal => {
   const actual = await importOriginal<typeof WindowsStore>()
@@ -72,9 +86,11 @@ describe('useDesktopIntegrations', () => {
   beforeEach(() => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
+    $sessionResumeRequest.set(null)
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
     vi.mocked(openPluginInstallRequest).mockClear()
+    vi.mocked(openRouteTile).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -186,6 +202,24 @@ describe('useDesktopIntegrations', () => {
       render({ profileReady: true, sessions })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+
+    it('restores duplicate ids through the exact owner last claimed by main', () => {
+      const ownerRoute = { connectionId: 'source-b', profile: 'default' }
+      setRememberedRoute('/shared-id', 'default')
+      setRememberedSessionId('shared-id', 'default')
+      setRememberedSessionOwner('shared-id', ownerRoute, 'default')
+
+      render({
+        profileReady: true,
+        sessions: [
+          session({ connection_id: 'source-a', id: 'shared-id', profile: 'default' }),
+          session({ connection_id: 'source-b', id: 'shared-id', profile: 'default' })
+        ]
+      })
+
+      expect($sessionResumeRequest.get()).toMatchObject({ ownerRoute, sessionId: 'shared-id' })
+      expect(navigate).toHaveBeenCalledWith('/shared-id', { replace: true })
     })
 
     it('restores remembered session id when no remembered route exists', () => {
@@ -674,6 +708,56 @@ describe('useDesktopIntegrations', () => {
 
       // Overlay routes should not be restored.
       expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('re-opens a remembered plugin page as a route tile and still restores the chat', () => {
+      const dispose = contributeKanbanRoute()
+
+      try {
+        // A legacy remembered route: plugin pages used to be router destinations.
+        window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/kanban')
+        window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+        const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+
+        render({ profileReady: true, sessions })
+
+        expect(openRouteTile).toHaveBeenCalledWith('/kanban', 'center')
+        expect(navigate).not.toHaveBeenCalledWith('/kanban', expect.anything())
+        expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      } finally {
+        dispose()
+      }
+    })
+
+    it('does NOT persist a plugin route for next boot — the router only passes through it', () => {
+      const dispose = contributeKanbanRoute()
+
+      try {
+        window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+
+        const { rerender } = render({
+          activeProfile: 'default',
+          locationPathname: '/skills',
+          profileReady: true,
+          routedSessionId: null,
+          sessions: []
+        })
+
+        rerender({
+          activeProfile: 'default',
+          locationPathname: '/kanban',
+          profileReady: true,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: true,
+          routedSessionId: null,
+          sessions: []
+        })
+
+        expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/skills')
+      } finally {
+        dispose()
+      }
     })
 
     it('does NOT persist overlay routes for next boot', () => {

@@ -105,9 +105,11 @@ it('keeps equal profile names on separate gateways and routes section creation a
   fireEvent.click(within(gateway).getAllByRole('button', { name: 'New session in default' })[0])
   expect($newChatRoute.get()).toMatchObject({ connectionId: 'remote-1', profile: 'default' })
   fireEvent.click(screen.getByText('cloud-1 session'))
+  // A plain click carries no tab/window open intent.
   expect(resume).toHaveBeenLastCalledWith(
     'cloud-1',
-    expect.objectContaining({ connection_id: 'cloud-1', profile: 'default' })
+    expect.objectContaining({ connection_id: 'cloud-1', profile: 'default' }),
+    undefined
   )
   const group = within(gateway).getByText('default').closest('[data-gateway-group]')!
   fireEvent.click(within(group as HTMLElement).getByRole('button', { name: 'Hide default sessions' }))

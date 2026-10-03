@@ -1,8 +1,10 @@
 import { atom } from 'nanostores'
 
+import { routePathname } from '@/app/routes'
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { readJson, writeJson } from '@/lib/storage'
 
-import type { SplitDir } from './session-states'
+import type { TileDock } from './session-states'
 
 /**
  * Route (page) tiles — a full-page view (Capabilities / Messaging / Artifacts,
@@ -12,8 +14,8 @@ import type { SplitDir } from './session-states'
 export interface RouteTile {
   /** The route path this tile renders, e.g. `/capabilities`. */
   path: string
-  /** Edge to dock against main on adoption (default right). */
-  dir?: SplitDir
+  /** Dock on adoption (default right; `center` = a tab in the workspace strip). */
+  dir?: TileDock
 }
 
 const TILES_KEY = 'hermes.desktop.routeTiles.v1'
@@ -22,9 +24,15 @@ function loadTiles(): RouteTile[] {
   const parsed = readJson<unknown>(TILES_KEY)
 
   return Array.isArray(parsed)
-    ? parsed
-        .filter((t): t is RouteTile => Boolean(t && typeof (t as RouteTile).path === 'string'))
-        .map(t => ({ dir: t.dir, path: t.path }))
+    ? parsed.reduce<RouteTile[]>((tiles, t) => {
+        if (!t || typeof (t as RouteTile).path !== 'string') {
+          return tiles
+        }
+
+        const path = routePathname((t as RouteTile).path)
+
+        return tiles.some(tile => tile.path === path) ? tiles : [...tiles, { dir: (t as RouteTile).dir, path }]
+      }, [])
     : []
 }
 
@@ -37,14 +45,19 @@ function saveTiles(tiles: RouteTile[]) {
 
 /** Open (or front) a page tile for a route, docked on `dir` (default right).
  *  Idempotent — an already-open tile keeps its original edge. */
-export function openRouteTile(path: string, dir: SplitDir = 'right') {
+export function openRouteTile(path: string, dir: TileDock = 'right') {
+  const canonicalPath = routePathname(path)
   const tiles = $routeTiles.get()
 
-  if (!tiles.some(t => t.path === path)) {
-    saveTiles([...tiles, { dir, path }])
+  if (!tiles.some(t => t.path === canonicalPath)) {
+    saveTiles([...tiles, { dir, path: canonicalPath }])
   }
+
+  revealTreePane(`route-tile:${canonicalPath}`)
 }
 
 export function closeRouteTile(path: string) {
-  saveTiles($routeTiles.get().filter(t => t.path !== path))
+  const canonicalPath = routePathname(path)
+
+  saveTiles($routeTiles.get().filter(t => t.path !== canonicalPath))
 }

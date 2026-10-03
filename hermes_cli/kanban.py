@@ -359,24 +359,41 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    model_override = getattr(args, "model_override", None)
+    provider_override = getattr(args, "provider_override", None)
+    firepower_reason = getattr(args, "firepower", None)
+    from hermes_cli.model_policy import (
+        firepower_guard_error, format_firepower_audit, is_firepower_model,
+    )
+    guard_error = firepower_guard_error(model_override, firepower_reason)
+    if guard_error:
+        return _err(f"kanban: {guard_error}", 2)
     with kbc.connect_closing() as conn:
-        task_id = kb.create_task(
-            conn, title=args.title, body=body, assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
-            project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
-            parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
-            provider_override=getattr(args, "provider_override", None),
-            goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
-            completion_contract=getattr(args, "completion_contract", None),
-            initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
-        )
+        with kb.write_txn(conn):
+            task_id = kb.create_task(
+                conn, title=args.title, body=body, assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
+                project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
+                parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries, model_override=model_override,
+                provider_override=provider_override,
+                goal_mode=bool(getattr(args, "goal_mode", False)),
+                goal_max_turns=getattr(args, "goal_max_turns", None),
+                completion_contract=getattr(args, "completion_contract", None),
+                initial_status=getattr(args, "initial_status", "running"),
+                creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
+                                 if is_dispatcher_owned_worker_context() else None),
+            )
+            if is_firepower_model(model_override):
+                kb.add_comment(
+                    conn, task_id, args.created_by or _profile_author(),
+                    format_firepower_audit(
+                        model_override, provider_override, firepower_reason,
+                    ),
+                )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
@@ -582,9 +599,24 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     if model is not None and model.lower() in {"none", "-", "null", ""}:
         model = None
     provider = getattr(args, "provider", None)
+    firepower_reason = getattr(args, "firepower", None)
+    from hermes_cli.model_policy import (
+        firepower_guard_error, format_firepower_audit, is_firepower_model,
+    )
+    guard_error = firepower_guard_error(model, firepower_reason)
+    if guard_error:
+        return _err(f"kanban: {guard_error}", 2)
+    firepower = is_firepower_model(model)
     try:
         with kbc.connect_closing() as conn:
-            ok = kb.set_model_override(conn, args.task_id, model, provider=provider)
+            ok = kb.set_model_override(
+                conn, args.task_id, model, provider=provider,
+                audit_comment_author=_profile_author() if firepower else None,
+                audit_comment_body=(
+                    format_firepower_audit(model, provider, firepower_reason)
+                    if firepower else None
+                ),
+            )
     except (ValueError, RuntimeError) as exc:
         return _err(f"kanban: {exc}", 2)
     if not ok:

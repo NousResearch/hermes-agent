@@ -203,6 +203,9 @@ _SPECS = [
         _arg("--provider", dest="provider_override",
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
+        _arg("--firepower", metavar="REASON",
+             help="Required non-empty justification when --model selects a "
+                  "flagship/firepower-only model; appended as an audit comment."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
         _arg("--goal", action="store_true", dest="goal_mode",
@@ -256,6 +259,9 @@ _SPECS = [
         _arg("--provider",
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
+        _arg("--firepower", metavar="REASON",
+             help="Required non-empty justification for a flagship/firepower-only "
+                  "model; appended as an audit comment."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [

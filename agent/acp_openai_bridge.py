@@ -11,11 +11,14 @@ makes Hermes redo finished work.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from types import SimpleNamespace
 from typing import Any, Iterable
 
 from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
+
+logger = logging.getLogger(__name__)
 
 TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 TOOL_CALL_JSON_RE = re.compile(
@@ -116,16 +119,26 @@ def render_tool_bridge_sections(
 
 def _parse_tool_call(raw_json: str, ordinal: int) -> ChatCompletionMessageToolCall | None:
     """One ``<tool_call>`` JSON body → tool call, or None when malformed. Missing id → ``acp_call_<ordinal>``."""
+    # Models routinely write multi-line code with literal newlines inside the arguments string;
+    # strict parsing rejected those and the call vanished with its text consumed.
     try:
-        obj = json.loads(raw_json)
-    except Exception:
+        obj = json.loads(raw_json, strict=False)
+    except Exception as exc:
+        logger.warning("ACP bridge dropped an unparseable <tool_call> block (%s): %.200s", exc, raw_json)
         return None
     named = _named_function(obj)
     if named is None:
+        logger.warning("ACP bridge dropped a <tool_call> block with no function name: %.200s", raw_json)
         return None
     fn, fn_name = named
     fn_args = fn.get("arguments", "{}")
-    if not isinstance(fn_args, str):
+    if isinstance(fn_args, str):
+        # The same raw newlines sit inside the arguments string; re-encode so dispatch's strict parse accepts it.
+        try:
+            fn_args = json.dumps(json.loads(fn_args, strict=False), ensure_ascii=False)
+        except ValueError:
+            pass  # handed through unchanged; the tool layer reports malformed arguments
+    else:
         fn_args = json.dumps(fn_args, ensure_ascii=False)
     call_id = obj.get("id")
     if not isinstance(call_id, str) or not call_id.strip():

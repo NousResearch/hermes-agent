@@ -85,6 +85,59 @@ def test_live_props_beats_catalog(hermes_home, monkeypatch):
     assert caps.managed_model_supports_vision(variant.model_id) is True
 
 
+def _fake_router(monkeypatch, loaded: set[str]):
+    """Stand-in for the managed router's GET /props?model= under --models-autoload: without
+    ``autoload=false`` an unloaded child gets LOADED (recorded in ``loads``); with it the router
+    answers 400 "model is not loaded"."""
+    import urllib.error
+    from urllib.parse import parse_qs, urlsplit
+
+    loads: list[str] = []
+
+    def managed_get_json(base, api_key, route, timeout_s):
+        query = parse_qs(urlsplit(route).query)
+        model = query["model"][0]
+        if model not in loaded:
+            if query.get("autoload") == ["false"]:
+                raise urllib.error.HTTPError(base + route, 400, "model is not loaded", {}, None)
+            loads.append(model)
+            raise TimeoutError("timed out while the router loads the model")
+        return {"modalities": {"vision": True}}
+
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint.managed_root",
+                        lambda: ("http://127.0.0.1:18434", "k"))
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint.managed_get_json", managed_get_json)
+    return loads
+
+
+def test_capability_probe_never_autoloads_an_unloaded_model(hermes_home, monkeypatch):
+    """Answering "can it see?" must not load the model: a bare /props?model= makes a
+    --models-autoload router load tens of GB that nothing asked for. An unloaded model is
+    answered from the catalog instead."""
+    import hermes_cli.local_runtime.capabilities as caps
+    from hermes_cli.local_runtime.catalog import CATALOG
+
+    entry = next(e for e in CATALOG if e.mmproj is not None)
+    variant = entry.variants[-1]
+    _stage(hermes_home, variant.model_id)
+    loads = _fake_router(monkeypatch, loaded=set())
+
+    assert caps._props_modalities(variant.model_id) is None
+    # Catalog fallback: no projector staged, so it cannot see.
+    assert caps.managed_model_supports_vision(variant.model_id) is False
+    assert loads == []
+
+
+def test_capability_probe_reads_a_loaded_model(hermes_home, monkeypatch):
+    """A loaded child still answers live (the router proxies the request to it)."""
+    import hermes_cli.local_runtime.capabilities as caps
+
+    loads = _fake_router(monkeypatch, loaded={"Some Model:Q4"})
+
+    assert caps._props_modalities("Some Model:Q4") is True
+    assert loads == []
+
+
 def test_lookup_chain_consults_managed_runtime(hermes_home, monkeypatch):
     """_lookup_supports_vision: user override wins, then the managed
     answer, and the cloud catalog is never reached for a managed model."""

@@ -271,6 +271,23 @@ class TestDockerHostBindApproval:
         assert _tt_mod._docker_has_host_access(
             {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
 
+    def test_windows_drive_cwd_without_mount_flag_is_host_access(self):
+        """A Windows drive-path cwd is bind-mounted even with the mount flag off.
+
+        _resolve_config_cwd sets ``host_cwd`` for a Windows drive path precisely when
+        ``docker_mount_cwd_to_workspace`` is off, and the Docker backend then binds it on
+        path shape alone, so this shape must count as host access or the container
+        fast path approves destructive commands against host files.
+        """
+        # Windows drive-path cwd, mount flag off -> still host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "host_cwd": "C:\\Users\\me\\project",
+             "docker_mount_cwd_to_workspace": False, "docker_volumes": []}) is True
+        # A POSIX cwd with the flag off is not auto-mounted -> no host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "host_cwd": "/home/me/project",
+             "docker_mount_cwd_to_workspace": False, "docker_volumes": []}) is False
+
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
         import tools.approval as A

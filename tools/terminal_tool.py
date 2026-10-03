@@ -140,7 +140,15 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
-    if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
+    host_cwd = config.get("host_cwd")
+    if host_cwd and (
+        config.get("docker_mount_cwd_to_workspace")
+        # A Windows drive-path cwd is set by _resolve_config_cwd even with the mount flag
+        # off, and the backend still binds it (DockerEnvironment._mount_args decides on the
+        # path shape, not the flag), so the guard predicate must agree or destructive
+        # commands against the mounted cwd skip the approval prompt.
+        or _is_windows_drive_path(str(host_cwd))
+    ):
         return True
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 

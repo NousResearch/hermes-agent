@@ -1144,13 +1144,14 @@ class LlamaCppCuda(LlamaCpp):
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
+    # Upstream dropped the win-x64 13.3 archive after b10964 (only 12.4 and
+    # 13.4 ship there now), so both Windows targets ride the 13.4 line —
+    # the only CUDA line upstream builds for win-arm64.
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
+    _CUDART = {"win32-x64": "13.4-x64", "win32-arm64": "13.4-arm64"}
 
     def _asset_names(self, version: str, target: str) -> list[str]:
         return super()._asset_names(version, target) + [

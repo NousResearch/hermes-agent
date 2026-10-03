@@ -625,6 +625,9 @@ class ChatCompletionsTransport(ProviderTransport):
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
+        # ``reasoning`` (Ollama) takes the same fallback so a blank-content reply's
+        # reasoning can be promoted to content below.
+        reasoning = _attr_or_model_extra(msg, "reasoning")
         reasoning_content = _attr_or_model_extra(msg, "reasoning_content")
         provider_data: dict[str, Any] = {}
         if reasoning_content is not None:
@@ -644,9 +647,15 @@ class ChatCompletionsTransport(ProviderTransport):
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
 
+        # Ollama reasoning models return content="" with the actual output in
+        # the ``reasoning`` field.  Promote reasoning to content so the agent
+        # loop does not treat it as an empty response and retry 3 times.
+        if not (isinstance(content, str) and content.strip()) and isinstance(reasoning, str) and reasoning.strip():
+            content = reasoning
+
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
-            reasoning=getattr(msg, "reasoning", None), usage=usage, provider_data=provider_data or None,
+            reasoning=reasoning, usage=usage, provider_data=provider_data or None,
         )
 
     def _normalize_tool_call(self, tc: Any) -> ToolCall | None:

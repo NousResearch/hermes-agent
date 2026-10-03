@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -106,3 +107,21 @@ test('sshOwnershipId is stable, scoped, and does not disclose the UUID', () => {
   assert.ok(!global.includes(ID_A.slice(0, 8)))
   assert.throws(() => sshOwnershipId('bad', ''))
 })
+
+// V20: a repair lock left by a crashed launch used to make every later launch
+// throw at module init. It now names its holder and is reclaimed by liveness.
+test('a repair lock whose holder died is reclaimed instead of bricking launch', () =>
+  withTempDir(directory => {
+    const filePath = path.join(directory, 'desktop-installation.json')
+    // A REAL process that ran and exited: its pid now names nobody.
+    const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' })
+    fs.writeFileSync(`${filePath}.repair.lock`, `${gone.stdout}\n`)
+
+    assert.equal(loadOrCreateInstallationId(filePath, () => ID_A), ID_A)
+    assert.equal(fs.existsSync(`${filePath}.repair.lock`), false)
+
+    // A pre-fix crash left an EMPTY lock (no owner to probe): reclaimed too.
+    fs.rmSync(filePath)
+    fs.writeFileSync(`${filePath}.repair.lock`, '')
+    assert.equal(loadOrCreateInstallationId(filePath, () => ID_B), ID_B)
+  }))

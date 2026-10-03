@@ -239,6 +239,22 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
+def _recover_interrupted_swap(live: Path, aside: Path) -> None:
+    """Finish a swap that died between its two renames before starting a new one: a missing
+    ``live`` with its ``aside`` copy present means the previous app was moved out and nothing
+    moved in, so put it back; otherwise ``aside`` is leftover. Deleting ``aside`` first (as the
+    swappers used to) destroyed the only remaining copy of the app."""
+    if not live.exists() and aside.is_dir():
+        try:
+            aside.rename(live)
+            logger.warning("restored %s from an interrupted desktop app swap", live)
+            return
+        except OSError as exc:
+            logger.warning("could not restore %s from %s: %s", live, aside, exc)
+            return
+    shutil.rmtree(aside, ignore_errors=True)
+
+
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
@@ -252,7 +268,7 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         live_root = release_dir / staged_root.name
         previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
         release_dir.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(previous, ignore_errors=True)
+        _recover_interrupted_swap(live_root, previous)
         moved_aside = live_root.exists()
         if moved_aside:
             # A Desktop may have reopened during the long packaging step (Windows lock) or
@@ -1231,6 +1247,10 @@ def _install_rebuilt_macos_bundles(
     installed: list[Path] = []
     problems: list[str] = []
     for app in candidates:
+        # Either swapper (this one or the Desktop hand-off's posix.sh ``.old``) may have died
+        # between its renames; recover before judging what is installed.
+        _recover_interrupted_swap(app, app.parent / f"{app.name}.hermes-update-old")
+        _recover_interrupted_swap(app, app.parent / f"{app.name}.old")
         if app.is_dir() and _app_asar_hash(app) == rebuilt_hash:
             continue
         if app.resolve() in running:
@@ -1248,7 +1268,6 @@ def _install_rebuilt_macos_bundles(
         tmp = app.parent / f"{app.name}.hermes-update-new"
         old = app.parent / f"{app.name}.hermes-update-old"
         shutil.rmtree(tmp, ignore_errors=True)
-        shutil.rmtree(old, ignore_errors=True)
         try:
             _stage_macos_bundle_copy(rebuilt_app, tmp)
             _swap_in_new_macos_bundle(tmp, app, old)

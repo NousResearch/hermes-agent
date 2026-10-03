@@ -5618,7 +5618,7 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
 
 
 async def _start_gateway_start_control_socket(runner):
-    """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
+    """Start the gateway control socket (identify/status/lifecycle/MCP reload); None when unavailable."""
     import atexit
     _control_server = None
     try:
@@ -5678,6 +5678,28 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _reload_mcp_handler() -> dict:
+            """Schedule MCP reload on the gateway loop without manufacturing a chat event."""
+            future = asyncio.run_coroutine_threadsafe(
+                runner._execute_mcp_reload_from_control(), _main_loop)
+
+            def _log_result(completed) -> None:
+                try:
+                    result = completed.result()
+                except Exception:
+                    logger.warning("Control-socket MCP reload failed", exc_info=True)
+                else:
+                    if result.get("failed_profiles"):
+                        logger.warning(
+                            "Control-socket MCP reload finished with failed profiles: %s",
+                            result["failed_profiles"],
+                        )
+                    else:
+                        logger.info("Control-socket MCP reload finished: %s", result)
+
+            future.add_done_callback(_log_result)
+            return {"reloading": True, "pid": os.getpid()}
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
@@ -5685,6 +5707,7 @@ async def _start_gateway_start_control_socket(runner):
                            "serve-profile": serve_profile_verb(runner),
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "purge-profile-identity": purge_profile_identity_verb(runner),
+                           "reload-mcp": _reload_mcp_handler,
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})

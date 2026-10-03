@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 def normalize_route_base_url(base_url: Any) -> str:
@@ -42,6 +42,83 @@ def normalize_route_base_url(base_url: Any) -> str:
     if had_query_delimiter and not parsed.query:
         normalized += "?"
     return normalized
+
+
+def _route_path(base_url: str) -> str:
+    """The path of *base_url* with the trailing ``/`` and one ``/v1`` suffix removed."""
+    path = (urlsplit(base_url).path or "").rstrip("/")
+    return path[: -len("/v1")] if path.endswith("/v1") else path
+
+
+def _same_query(own_url: str, target_url: str) -> bool:
+    """The two URLs select the same query: same keys, and per key the same values in the same order.
+
+    The query can select a tenant (``?team=a``), so it is part of the route's identity: adding,
+    dropping or changing a parameter is another route, and so is a blank (``?team=``) or a repeated
+    value (``?team=a&team=b`` — servers differ on which one wins). Only key order is ignored. A
+    consumer that moved the query into an SDK ``default_query`` must hand the URL back WITH it
+    (``url_with_query``) before asking; a query-less URL is not a wildcard."""
+    return _query_params(own_url) == _query_params(target_url)
+
+
+def _query_params(url: str) -> Dict[str, List[str]]:
+    params: Dict[str, List[str]] = {}
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        params.setdefault(key, []).append(value)
+    return params
+
+
+def url_with_query(url: Any, default_query: Any) -> str:
+    """*url* with an SDK ``default_query`` put back into it, for identity decisions.
+
+    OpenAI-wire clients carry a query-bearing base URL as a clean ``base_url`` plus
+    ``default_query``; comparing the clean half alone would drop the tenant choice. A URL that
+    already has a query is returned unchanged."""
+    text = str(url or "")
+    if not text or not isinstance(default_query, dict) or not default_query or urlsplit(text).query:
+        return text
+    return f"{text}?{urlencode({str(k): str(v) for k, v in default_query.items()})}"
+
+
+def same_provider_endpoint(own: Any, target: Any) -> bool:
+    """Whether *target* is the endpoint *own* declares: same origin, same path modulo one ``/v1``,
+    same query (``_same_query``).
+
+    Origin alone is not the trust boundary: one host commonly fronts several tenants or relays by
+    path (Cloudflare AI Gateway ``/v1/<account>/<gateway>``, LiteLLM per-team prefixes, a reverse
+    proxy), and an entry's OAuth identity and declared capabilities must not reach a sibling path.
+    ``/v1`` is allowed because resolvers add or strip it for the SAME relay. Other rewrites move
+    to a different relay and are deliberately NOT equal: OpenCode family routing swaps
+    ``/zen`` ↔ ``/zen/go``, dual-surface hosts swap ``/anthropic`` ↔ ``/v1``. Scheme and port are
+    part of the origin: an HTTPS→HTTP downgrade or another port is another server
+    (``base_url_origin``). Fail-closed on anything unparseable or spelled differently.
+    """
+    from utils import base_url_origin
+
+    own_url, target_url = str(own or "").strip(), str(target or "").strip()
+    if not own_url or not target_url:
+        return False
+    try:
+        own_origin, target_origin = base_url_origin(own_url), base_url_origin(target_url)
+        if not target_origin[1] or own_origin != target_origin:
+            return False
+        return _route_path(own_url) == _route_path(target_url) and _same_query(own_url, target_url)
+    except ValueError:
+        return False
+
+
+def named_provider_owns_endpoint(provider: Any, base_url: Any) -> bool:
+    """Whether *base_url* is *provider*'s own ``providers:`` / ``custom_providers:`` endpoint.
+
+    See :func:`same_provider_endpoint` for what "own" means. Fail-closed: no entry, an unparseable
+    URL, or a malformed entry is "not its endpoint".
+    """
+    try:
+        from hermes_cli.runtime_provider_custom import named_custom_provider_endpoint
+        own = named_custom_provider_endpoint(str(provider or ""))
+    except Exception:  # noqa: BLE001 — a malformed entry must not break client construction
+        return False
+    return same_provider_endpoint(own, base_url)
 
 
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:

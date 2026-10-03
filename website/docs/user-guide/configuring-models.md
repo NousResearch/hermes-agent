@@ -228,6 +228,61 @@ providers:
       openai_native_compaction: true
 ```
 
+**`anthropic_oauth_proxy`** — set this capability to `true` only when an
+`anthropic_messages` endpoint forwards an Anthropic OAuth credential and the
+native Messages payload to Anthropic. Hermes then uses Bearer authentication,
+the Claude Code OAuth headers and system/tool-name transformations, and native
+Anthropic thinking-signature replay for that route:
+
+```yaml
+providers:
+  trusted-anthropic-relay:
+    api: https://claude-relay.internal.example.com
+    transport: anthropic_messages
+    key_env: TRUSTED_ANTHROPIC_RELAY_TOKEN
+    capabilities:
+      anthropic_oauth_proxy: true
+```
+
+The relay credential may be its own opaque API key; the capability describes
+the upstream protocol, not the relay's client credential format. Hermes never
+falls back to its native Anthropic credential for a custom endpoint. Do not
+enable this capability for a provider that merely implements an
+Anthropic-compatible API: those endpoints normally require their own auth and
+reject the Claude Code identity fields.
+
+Requests on such a route also carry `x-claude-code-session-id`, the header
+Claude Code tags each conversation with. A relay that fronts several
+subscriptions uses it to spread conversations across them and to keep one
+conversation on the account whose prompt cache is already warm; without it
+every request looks like the same conversation and lands on whichever account
+the relay is currently using. The value is per conversation and stable across
+its turns (auxiliary calls — compression, titles, vision — send the main turn's
+value so they are not mistaken for a separate conversation). Routes that did
+not declare the capability send no such header.
+
+Like every capability, this one is resolved per provider **and per model**, so a
+relay that forwards only part of its catalogue to Anthropic can say so:
+
+```yaml
+providers:
+  mixed-relay:
+    api: https://relay.internal.example.com
+    transport: anthropic_messages
+    key_env: MIXED_RELAY_TOKEN
+    capabilities:
+      anthropic_oauth_proxy: true
+    models:
+      qwen3-coder:
+        anthropic_oauth_proxy: false   # served from the relay's own pool, not Anthropic
+```
+
+The per-model value wins over the provider-level one in both directions. It
+follows the model everywhere the decision is made — the main turn, auxiliary
+calls (compression, titles, vision), a `/model` switch, fallback and resume, and
+a subagent pinned with `delegation.model` — so a model never borrows another
+model's wire policy on a shared endpoint.
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

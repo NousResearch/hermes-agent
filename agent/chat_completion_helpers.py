@@ -1537,9 +1537,10 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """Build the keyword arguments dict for the active API mode.
 
     Wraps the per-api_mode builder so the conversation-affinity headers (OpenCode's
-    ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``) ride on
-    every request regardless of transport (chat_completions / codex_responses /
-    anthropic_messages). No-op for every other provider.
+    ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``, an
+    ``anthropic_oauth_proxy`` relay's ``x-claude-code-session-id``) ride on every request
+    regardless of transport (chat_completions / codex_responses / anthropic_messages).
+    No-op for every other provider.
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
@@ -1549,6 +1550,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
+        getattr(agent, "capabilities", None),
     )
 
 
@@ -2144,6 +2146,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._config_context_length = None
             agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
             agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
+            from agent.auxiliary_oauth import routed_client_capabilities
+            agent.capabilities = routed_client_capabilities(fb_client, fb_provider, fb_model)
             # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
             agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
             if hasattr(agent, "_transport_cache"):

@@ -359,25 +359,39 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
     hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
-    SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
-    base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
+    SDK appends ``/v1/messages``. A URL query goes through ``default_query``: the SDK joins the
+    request path onto ``base_url`` as text, so ``/anthropic?tenant=a`` would become
+    ``/anthropic?tenant=a/v1/messages`` — the path lost inside the query value. Azure's
+    ``api-version`` is added the same way when the URL does not carry one."""
     kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
-    normalized = re.sub(r"/v1/?$", "", _normalize_base_url_text(base_url).rstrip("/"))
+    text = _normalize_base_url_text(base_url)
+    query: Dict[str, Any] = {}
+    if "?" in text:
+        from urllib.parse import parse_qs, urlsplit, urlunsplit
+        parts = urlsplit(text)
+        query = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
+        text = urlunsplit(parts._replace(query="", fragment=""))
+    normalized = re.sub(r"/v1/?$", "", text.rstrip("/"))
     if normalized:
         kwargs["base_url"] = normalized
-        if _is_azure_anthropic_endpoint(normalized) and "api-version" not in normalized:
-            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        if _is_azure_anthropic_endpoint(normalized) and "api-version" not in query:
+            query["api-version"] = "2025-04-15"
+    if query:
+        kwargs["default_query"] = query
     return normalized, kwargs
 
 
 def _build_anthropic_client_with_bearer_hook(
-    token_provider, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False
+    token_provider, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False,
+    force_oauth: bool = False,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
     documented Foundry pattern) uses a custom ``httpx.Client`` whose request hook mints a fresh JWT
     and rewrites ``Authorization``; the SDK skips its own auth when ``http_client`` is given. The
-    placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
+    placeholder ``auth_token`` is still required at construction and makes any leak diagnosable.
+    ``force_oauth`` is the caller's already-made OAuth decision (a relay declaring
+    ``anthropic_oauth_proxy`` with a ``key_cmd`` credential): the same identity as the static arm."""
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
@@ -386,7 +400,7 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     from agent.anthropic_credentials import anthropic_route_is_oauth
-    if anthropic_route_is_oauth(base_url, token_provider):
+    if force_oauth or anthropic_route_is_oauth(base_url, token_provider):
         # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
         # static "oauth" style in build_anthropic_client.
@@ -436,13 +450,15 @@ def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
         return {}
 
 
-def _auth_style(api_key, base_url, normalized_base_url) -> str:
+def _auth_style(api_key, base_url, normalized_base_url, *, force_oauth: bool = False) -> str:
     """Order-sensitive endpoint/key classification for :func:`build_anthropic_client`. ``kimi``:
     Kimi's /coding endpoint 403s without a User-Agent (the Kimi team asked for proper attribution).
     ``bearer``: MiniMax & co. want Authorization: Bearer — checked before the OAuth shape test
     because their secrets lack the sk-ant-api prefix and would be misread as OAuth/setup tokens.
     ``api_key``: third-party proxies use their own x-api-key keys (skip OAuth detection). ``oauth``:
     Bearer auth + Claude Code identity (Anthropic routes OAuth by user-agent; without it, 500s)."""
+    if force_oauth:
+        return "oauth"
     if _is_kimi_coding_endpoint(base_url):
         return "kimi"
     if _requires_bearer_auth(normalized_base_url):
@@ -454,24 +470,30 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False):
+def build_anthropic_client(
+    api_key, base_url: str = None, timeout: float = None, *,
+    drop_context_1m_beta: bool = False, force_oauth: bool = False,
+):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
     (connect stays 10s). ``drop_context_1m_beta`` strips ``context-1m-2025-08-07`` from the
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
-    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
+    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability.
+    ``force_oauth`` applies native Anthropic Bearer and Claude Code headers to an explicitly trusted
+    relay; endpoint URL heuristics still protect every provider that did not opt in."""
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
+            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta,
+            force_oauth=force_oauth,
         )
     normalize_proxy_env_vars()
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
         kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
-    style = _auth_style(api_key, base_url, normalized_base_url)
+    style = _auth_style(api_key, base_url, normalized_base_url, force_oauth=force_oauth)
     kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key
     headers = _beta_header(common_betas + _OAUTH_ONLY_BETAS if style == "oauth" else common_betas)
     if style == "kimi":
@@ -625,7 +647,13 @@ def build_anthropic_kwargs(
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
-    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
+    # An explicitly OAuth-authenticated relay forwards to native Anthropic and must retain
+    # Anthropic-signed thinking blocks. Endpoint-based third-party stripping applies only to
+    # providers implementing their own Anthropic-compatible protocol.
+    conversion_base_url = None if is_oauth else base_url
+    system, anthropic_messages = convert_messages_to_anthropic(
+        messages, base_url=conversion_base_url, model=model
+    )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
     # make the model unresolvable there (prefix AND dots kept).

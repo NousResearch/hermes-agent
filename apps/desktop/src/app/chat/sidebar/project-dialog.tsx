@@ -38,7 +38,10 @@ import { baseName } from './projects/workspace-groups'
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
-// the native directory picker (reused from the default-project-dir setting).
+// the native directory picker (reused from the default-project-dir setting),
+// or typed directly — the native picker only browses the local filesystem, so
+// a remote backend's directory (SSH/docker workspace) can only be entered as
+// text (#112957).
 export function ProjectDialog() {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -48,6 +51,8 @@ export function ProjectDialog() {
 
   const [name, setName] = useState('')
   const [folders, setFolders] = useState<string[]>([])
+  const [typedPath, setTypedPath] = useState('')
+  const [showTypedPath, setShowTypedPath] = useState(false)
   const [idea, setIdea] = useState('')
   const [templates, setTemplates] = useState<ProjectIdeaTemplate[]>([])
   const [generatingIdea, setGeneratingIdea] = useState(false)
@@ -74,6 +79,8 @@ export function ProjectDialog() {
     if (open) {
       setName(state?.name ?? '')
       setFolders([])
+      setTypedPath('')
+      setShowTypedPath(false)
       setIdea('')
       setTemplates(randomIdeaTemplates())
       setGeneratingIdea(false)
@@ -141,6 +148,20 @@ export function ProjectDialog() {
     } catch (err) {
       notifyError(err, p.createFailed)
     }
+  }
+
+  // The native picker only browses the local filesystem; a remote backend's
+  // directory can only be named as text. The backend normalizes the path
+  // against its own host, so no local existence check here — it would be
+  // wrong for remote paths (#112957).
+  const addTypedFolder = () => {
+    const trimmed = typedPath.trim()
+
+    if (trimmed) {
+      setFolders(prev => (prev.includes(trimmed) ? prev : [...prev, trimmed]))
+    }
+
+    setTypedPath('')
   }
 
   const submit = async () => {
@@ -263,6 +284,37 @@ export function ProjectDialog() {
                 ))}
               </ul>
             )}
+            {showTypedPath && (
+              <div className="flex items-center gap-1.5">
+                <Input
+                  className="h-7 text-[0.75rem]"
+                  onChange={event => setTypedPath(event.target.value)}
+                  onKeyDown={event => {
+                    if (isSubmitEnter(event)) {
+                      event.preventDefault()
+                      addTypedFolder()
+                    } else if (event.key === 'Escape') {
+                      event.stopPropagation()
+                      setTypedPath('')
+                      setShowTypedPath(false)
+                    }
+                  }}
+                  placeholder={p.typePathPlaceholder}
+                  value={typedPath}
+                />
+                <Button
+                  className="h-7 shrink-0 px-2 text-[0.75rem]"
+                  disabled={!typedPath.trim()}
+                  onClick={addTypedFolder}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Codicon name="check" size="0.75rem" />
+                  {p.typePathAdd}
+                </Button>
+              </div>
+            )}
             <Button
               className="self-start"
               disabled={submitting}
@@ -274,6 +326,19 @@ export function ProjectDialog() {
               <Codicon name="add" size="0.75rem" />
               {p.addFolder}
             </Button>
+            {!showTypedPath && (
+              <Button
+                className="self-start"
+                disabled={submitting}
+                onClick={() => setShowTypedPath(true)}
+                size="sm"
+                type="button"
+                variant="ghost"
+              >
+                <Codicon name="edit" size="0.75rem" />
+                {p.typePath}
+              </Button>
+            )}
           </div>
         )}
 

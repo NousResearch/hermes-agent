@@ -189,6 +189,42 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertIn("border-color: var(--ha-tier)", hover_rule)
         self.assertIn("box-shadow:", hover_rule)
 
+    def test_rescan_returns_failure_when_the_scan_cannot_refresh(self):
+        import asyncio
+
+        with (
+            TemporaryDirectory() as data_dir,
+            patch.object(plugin_api, "_data_dir", return_value=Path(data_dir)),
+            patch.object(plugin_api, "get_hermes_home", return_value=Path(data_dir)),
+            patch.object(plugin_api, "compute_all", side_effect=OSError("state.db is unavailable")),
+            patch.object(plugin_api, "_SNAPSHOT_CACHE", None),
+            patch.object(plugin_api, "_SNAPSHOT_CACHE_AT", 0),
+            patch.object(
+                plugin_api,
+                "_SCAN_STATUS",
+                {"state": "idle", "started_at": None, "finished_at": None, "last_error": None, "last_duration_ms": None, "run_count": 0},
+            ),
+        ):
+            result = asyncio.run(plugin_api.rescan())
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "state.db is unavailable")
+        self.assertEqual(result["scan_meta"]["status"]["state"], "failed")
+
+    def test_rescan_preserves_success_payload(self):
+        import asyncio
+
+        payload = {"summary": {"unlocked": 3}, "scan_meta": {"scan_mode": "sync"}}
+        status = {"state": "idle", "last_error": None}
+        with patch.object(plugin_api, "evaluate_all", return_value=payload), patch.object(
+            plugin_api, "_scan_status_payload", return_value=status
+        ):
+            result = asyncio.run(plugin_api.rescan())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["summary"], payload["summary"])
+        self.assertEqual(result["scan_meta"], {"scan_mode": "sync", "status": status})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -632,14 +632,18 @@ Hermes Agent works in Telegram group chats with a few considerations:
 
 ### Multiple Hermes bots in one group
 
-If you run several Hermes profiles in the same Telegram group, create one Telegram bot token per profile and start one gateway per profile. Do not reuse the same bot token in multiple running gateways; Telegram will reject concurrent polling for the same token.
+If you run several Hermes profiles in the same Telegram group, create one Telegram bot token per profile and serve them from the default profile's multiplex gateway. Do not reuse a bot token across profiles; Telegram allows only one poller per token.
 
 Recommended group config:
 
 ```yaml
 telegram:
+  allowed_chats: [-1001234567890]
+  group_allowed_chats: [-1001234567890]
   require_mention: true
   exclusive_bot_mentions: true
+  bots_require_mention: true
+  allow_bots: mentions
   mention_patterns: []
 ```
 
@@ -662,23 +666,19 @@ A legitimate high-volume bot posting more than 20 messages into one chat in 5 mi
 
 Group conversation text and media captions keep every mention when the message names other participants too (`@research_bot , @ops_bot are you both listening?` reaches `research_bot` verbatim); when this bot is the only one addressed, its own handle is still stripped so short answers such as `@hermes_bot 2` keep working. Group turns also carry the bot's own Telegram username in the per-channel context so the model can tell which retained mentions are for it. Slash commands still use the normal command-trigger cleanup.
 
+Under a multiplex gateway, that context also lists the live `profile → @username` addresses of sibling Telegram adapters whose effective profile-scoped configuration (environment override or YAML) explicitly allows the same group. The roster follows BotFather username changes without hardcoding handles in `SOUL.md`. It is an addressing hint, not a Telegram membership check or a `message_agent` authorization grant: Hermes cannot enumerate ordinary group members, so add every bot to the group and configure the group ID on every participating profile. Use a visible `@username` handoff or the acknowledged `message_agent` path, never both for the same handoff.
+
 Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.
 
-To operate several profiles, run the gateway command once per profile. For example:
+Enable multiplexing on the default profile and run one gateway:
 
 ```bash
-# default profile
+hermes config set gateway.multiplex_profiles true
 hermes gateway start
 hermes gateway status
-hermes gateway stop
-
-# named profiles
-hermes -p research gateway start
-hermes -p research gateway status
-hermes -p research gateway stop
 ```
 
-For a small fixed fleet, use a shell loop or script that calls `hermes gateway <action>` for the default profile and `hermes -p <profile> gateway <action>` for each named profile. This is more reliable than assuming a single process-level command controls every named profile on every service manager.
+The gateway discovers live named profiles and connects each profile's configured Telegram adapter. See [Multi-Profile Gateways](../multi-profile-gateways.md) for migration and troubleshooting.
 
 ### Troubleshooting: works in DMs but not groups
 

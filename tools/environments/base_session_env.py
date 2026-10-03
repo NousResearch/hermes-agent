@@ -29,7 +29,7 @@ from typing import Iterable
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
     "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT|"
-    "HERMES_RPC_|HERMES_KERNEL_DIR)")
+    "HERMES_RPC_|HERMES_KERNEL_DIR|HERMES_SINGLE_QUERY_SESSION)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -76,7 +76,7 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # Scope markers stamped onto a delegate_task child's / cron run's subprocess
         # env; a snapshot taken inside that window would re-assert them on every
         # later ``source`` and fence the PARENT session's kanban CLI (#90782).
-        "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION "
+        "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION HERMES_SINGLE_QUERY_SESSION "
         # Remote code-execution channel vars (RPC token, kernel/rpc dirs): a
         # leaked token in the snapshot would re-export into every later command
         # on the backend and outlive the private dir it protects.

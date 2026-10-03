@@ -309,7 +309,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert _runner_author(command) == {"id": "bot:default", "name": "hermes", "is_bot": True}
 
     # attribution prefix applied server-side; body verbatim inside the file
-    content = Path(dm_file).read_text(encoding="utf-8")
+    content = Path(dm_file).read_text(encoding="utf-8-sig")
     assert content.startswith("Message from 🤖 hermes (@hermes): ")
     assert '$(and this is not shell)' in content
 
@@ -441,6 +441,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     # machine-root config (home/config.yaml) still holds the registry.
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
     agent = _FakeAgent(reviewer_home, title="Bot Chat")
 
     result = json.loads(
@@ -548,7 +549,7 @@ def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp
     result = json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
     assert result["status"] == "queued"
     _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
-    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia (@hermes): ")
+    assert Path(dm_file).read_text(encoding="utf-8-sig").startswith("Message from 🤖 Maia (@hermes): ")
 
     coder = _FakeAgent(home / "profiles" / "coder")
     for target in ("maia", "@maia", "@hermes"):
@@ -562,7 +563,7 @@ def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp
     )
     json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
     _mode, dm_file, _argv = _runner_parts(calls[-1]["command"])
-    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia Prime (@hermes): ")
+    assert Path(dm_file).read_text(encoding="utf-8-sig").startswith("Message from 🤖 Maia Prime (@hermes): ")
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -577,7 +578,7 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     )
     assert result["status"] == "queued"
     _mode, dm_file, _transport_argv = _runner_parts(calls[0]["command"])
-    assert Path(dm_file).read_text(encoding="utf-8").startswith(
+    assert Path(dm_file).read_text(encoding="utf-8-sig").startswith(
         "Message from 🤖 coder (@coder): "
     )
     assert _runner_author(calls[0]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
@@ -643,7 +644,7 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     failed = json.loads(capsys.readouterr().out)
     assert failed["status"] == "failed"
     assert failed["delivery_id"] == first["delivery_id"]
-    assert dm_file.read_text(encoding="utf-8") == "hello"
+    assert dm_file.read_text(encoding="utf-8-sig") == "hello"
 
 
 def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
@@ -840,7 +841,7 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file,
     )
 
     assert returncode == 0
-    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
+    assert observed.read_text(encoding="utf-8-sig") == "secret λ $(not shell)"
     assert not dm_file.exists()
 
 
@@ -852,7 +853,7 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     child = tmp_path / "fail.py"
     child.write_text(
         "import pathlib, sys\n"
-        "assert pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8') == 'secret'\n"
+        "assert pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8-sig') == 'secret'\n"
         "raise SystemExit(7)\n",
         encoding="utf-8",
     )
@@ -986,7 +987,7 @@ def test_real_delivery_command_round_trip_carries_author(tmp_path):
     result = subprocess.run(shlex.split(command), check=False)
 
     assert result.returncode == 0
-    assert json.loads(observed.read_text(encoding="utf-8")) == author
+    assert json.loads(observed.read_text(encoding="utf-8-sig")) == author
     assert not dm_file.exists()
 
 
@@ -1032,7 +1033,7 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     child = tmp_path / "child with spaces.py"
     child.write_text(
         "import pathlib, sys\n"
-        "source = sys.stdin if sys.argv[1] == '-' else open(sys.argv[1], encoding='utf-8')\n"
+        "source = sys.stdin if sys.argv[1] == '-' else open(sys.argv[1], encoding='utf-8-sig')\n"
         "with source:\n"
         "    pathlib.Path(sys.argv[2]).write_text(source.read(), encoding='utf-8')\n",
         encoding="utf-8",
@@ -1047,7 +1048,7 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     result = subprocess.run(shlex.split(command), check=False)
 
     assert result.returncode == 0
-    assert observed.read_text(encoding="utf-8") == "secret λ\nsecond line"
+    assert observed.read_text(encoding="utf-8-sig") == "secret λ\nsecond line"
     assert not dm_file.exists()
 
 
@@ -1079,7 +1080,7 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert observed.read_text(encoding="utf-8") == "started"
+    assert observed.read_text(encoding="utf-8-sig") == "started"
     assert not dm_file.exists()
 
 
@@ -1172,7 +1173,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     dm_dir = bot_mode_dm._dm_dir()
 
     if hasattr(os, "getuid"):
-        assert dm_dir.name == f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+        assert dm_dir.name == f"{bot_mode_dm._DM_DIR_NAME}-{getattr(os, 'getuid')()}"
     else:
         assert dm_dir.name == bot_mode_dm._DM_DIR_NAME
     assert dm_dir.stat().st_mode & 0o777 == 0o700
@@ -1195,7 +1196,7 @@ def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
 def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target = tmp_path / "attacker-controlled"
     target.mkdir()
-    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{getattr(os, 'getuid')()}"
     expected.symlink_to(target, target_is_directory=True)
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 

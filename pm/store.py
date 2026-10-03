@@ -217,16 +217,18 @@ def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """
     import tarfile
 
-    dest.mkdir(parents=True, exist_ok=True)
-    real_dest = os.path.realpath(dest)
+    extract_dest = _windows_long_path(dest)
+    Path(extract_dest).mkdir(parents=True, exist_ok=True)
+    real_dest = os.path.realpath(extract_dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        tf.extractall(extract_dest, filter=lambda member, path: _tar_filter(member, real_dest))
 
 
 def extract(archive: Path, dest: Path) -> None:
-    shutil.rmtree(dest, ignore_errors=True)
-    dest.mkdir(parents=True, exist_ok=True)
+    extract_dest = _windows_long_path(dest)
+    shutil.rmtree(extract_dest, ignore_errors=True)
+    Path(extract_dest).mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
     if name.endswith((".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2")):
         extract_tar(archive, dest)
@@ -251,7 +253,7 @@ def _extract_zip(archive: Path, dest: Path) -> None:
             if mode & 0o111 and written.is_file():
                 written.chmod(mode & 0o777)
         for info, target in symlinks:
-            _zip_symlink(info.filename, target, dest)
+            _zip_symlink(info.filename, target, extract_dest)
 
 
 def _windows_long_path(path: Path) -> str | Path:
@@ -266,8 +268,8 @@ def _windows_long_path(path: Path) -> str | Path:
     return "\\\\?\\" + resolved
 
 
-def _zip_symlink(member: str, target: str, dest: Path) -> None:
-    root = dest.resolve()
+def _zip_symlink(member: str, target: str, dest: Path | str) -> None:
+    root = Path(dest).resolve()
     link = (root / member).resolve()
     if not link.is_relative_to(root):
         return

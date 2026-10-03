@@ -97,6 +97,10 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     proxies like Cloudflare Warp that leave peer-initiated FIN in ``CLOSE_WAIT`` (same class as #18451).
     ``enable_cleanup_closed=True`` helps the connector clean up sockets that the remote side has already
     closed.
+
+    On Windows, aiohttp's default async resolver (c-ares/pycares) can fail on hosts the system DNS resolves
+    fine ("Could not contact DNS servers", #41597); force ``ThreadedResolver`` so lookups go through the OS
+    stack. Non-Windows keeps aiohttp's default resolver.
     """
     try:
         import ssl
@@ -105,7 +109,8 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
         return None
     if not AIOHTTP_AVAILABLE:
         return None
-    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
+    resolver = aiohttp.ThreadedResolver() if os.name == "nt" else None
+    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True, resolver=resolver)
 
 
 def _new_session(**kwargs: Any) -> "aiohttp.ClientSession":

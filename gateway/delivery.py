@@ -1,8 +1,10 @@
 """Delivery routing for cron job outputs and agent responses, by target: explicit ("telegram:123456789"),
 platform home channel ("telegram"), origin (back to where the job was created), or local (files)."""
 
+import asyncio
 import logging
 import re
+import threading
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -15,6 +17,10 @@ from .session import SessionSource
 from .dead_targets import DeadTargetRegistry, classify_dead_error
 
 logger = logging.getLogger(__name__)
+
+# The event loop previously serialized all artifact writers. Preserve that
+# guarantee across router instances in workers, without parking the loop.
+_OUTPUT_WRITE_LOCK = threading.Lock()
 
 # Cap before gateway-level truncation of cron output for non-chunking platform delivery. Telegram's hard
 # API limit is 4096; the headroom covers the "full output saved to …" footer. Adapters that split long
@@ -192,7 +198,7 @@ class DeliveryRouter:
                 continue
             try:
                 if target.platform == Platform.LOCAL:
-                    result = self._deliver_local(content, job_id, job_name, metadata)
+                    result = await asyncio.to_thread(self._deliver_local, content, job_id, job_name, metadata)
                 else:
                     result = await self._deliver_to_platform(target, content, metadata)
                     if target.chat_id and _send_result_error(result) is None:
@@ -210,23 +216,25 @@ class DeliveryRouter:
     def _deliver_local(self, content: str, job_id: Optional[str], job_name: Optional[str],
                        metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Save content to local files."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = self.output_dir / (job_id or "misc") / f"{timestamp}.md"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f"# {job_name}" if job_name else "# Delivery Output", "",
-                 f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
-        lines += [f"**Job ID:** {job_id}"] if job_id else []
-        lines += [f"**{key}:** {value}" for key, value in (metadata or {}).items()] + ["", "---", "", content]
-        output_path.write_text("\n".join(lines), encoding="utf-8")
-        return {"path": str(output_path), "timestamp": timestamp}
+        with _OUTPUT_WRITE_LOCK:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = self.output_dir / (job_id or "misc") / f"{timestamp}.md"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            lines = [f"# {job_name}" if job_name else "# Delivery Output", "",
+                     f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+            lines += [f"**Job ID:** {job_id}"] if job_id else []
+            lines += [f"**{key}:** {value}" for key, value in (metadata or {}).items()] + ["", "---", "", content]
+            output_path.write_text("\n".join(lines), encoding="utf-8")
+            return {"path": str(output_path), "timestamp": timestamp}
 
     def _save_full_output(self, content: str, job_id: str) -> Path:
         """Save full cron output to disk and return the file path."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = get_hermes_home() / "cron" / "output" / f"{job_id}_{timestamp}.txt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return path
+        with _OUTPUT_WRITE_LOCK:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = get_hermes_home() / "cron" / "output" / f"{job_id}_{timestamp}.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return path
 
     def _filter_silence_narration_enabled(self) -> bool:
         """filter silence narration based on gateway config without checking process env"""
@@ -276,7 +284,9 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         adapter = transport.adapter
-        content = self._cap_oversized_output(adapter, content, (metadata or {}).get("job_id", "unknown"))
+        if len(content) > MAX_PLATFORM_OUTPUT:
+            content = await asyncio.to_thread(
+                self._cap_oversized_output, adapter, content, (metadata or {}).get("job_id", "unknown"))
 
         # Substrate-level anti-loop guard: drop hallucinated "silence narration" (*(silent)*, 🔇, a bare ".")
         # before it reaches any adapter — in bot-to-bot channels these mirror back and forth until a model

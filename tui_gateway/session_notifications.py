@@ -5,6 +5,7 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+import threading
 
 from .method_ctx import bind_module
 
@@ -158,6 +159,52 @@ def _notif_claim_turn(session: dict) -> bool:
 
 def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
+_REAPED_NOTIFICATION_TTL_SECONDS = 600.0
+_REAPED_NOTIFICATION_MAX = 32
+_REAPED_NOTIFICATION_MAX_PER_OWNER = 8
+_reaped_notification_backlog: "list[tuple[float, str, dict]]" = []
+_reaped_notification_lock = threading.Lock()
+
+
+def _reaped_notification_owner(evt: dict) -> str:
+    return str(evt.get("session_key") or evt.get("origin_ui_session_id") or "")
+
+
+def _retain_reaped_notification(evt: dict) -> bool:
+    """Retain one addressed event for a temporarily absent owner, with per-owner fairness."""
+    owner = _reaped_notification_owner(evt)
+    if not owner:
+        return False
+    now = time.monotonic()
+    with _reaped_notification_lock:
+        retained = [(deadline, key, parked) for deadline, key, parked in _reaped_notification_backlog
+                    if deadline > now]
+        same_owner = [i for i, (_deadline, key, _parked) in enumerate(retained) if key == owner]
+        if len(same_owner) >= _REAPED_NOTIFICATION_MAX_PER_OWNER:
+            retained.pop(same_owner[0])
+        elif len(retained) >= _REAPED_NOTIFICATION_MAX:
+            retained.pop(0)
+        retained.append((now + _REAPED_NOTIFICATION_TTL_SECONDS, owner, evt))
+        _reaped_notification_backlog[:] = retained
+    return True
+
+
+def _claim_reaped_notifications(sid: str, session: dict) -> list:
+    """Claim retained events this live session proves it owns, preserving arrival order."""
+    now = time.monotonic()
+    claimed, keep = [], []
+    with _reaped_notification_lock:
+        for deadline, owner, parked in _reaped_notification_backlog:
+            if deadline <= now:
+                continue
+            if _session_owns_notification_event(sid, session, parked):
+                claimed.append(parked)
+            else:
+                keep.append((deadline, owner, parked))
+        _reaped_notification_backlog[:] = keep
+    return claimed
 
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
@@ -519,20 +566,22 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
-        if deferred is None:
-            # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
-            # is live (#97202), and keep that retry out of WARNING.
-            restored = is_delegation and bool(evt.get("restored"))
-            (logger.warning if is_delegation and not restored else logger.debug)(
-                "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
-                evt_type, origin, key, sid)
-            if is_delegation:
+        if is_delegation:
+            if deferred is not None:
+                deferred.append(evt)
+            else:
+                restored = bool(evt.get("restored"))
+                (logger.warning if not restored else logger.debug)(
+                    "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
+                    evt_type, origin, key, sid)
                 from tools.async_delegation import return_completion_offer
                 return_completion_offer(evt)
-        elif is_delegation:
-            deferred.append(evt)
+        elif _retain_reaped_notification(evt):
+            logger.debug("Retained unowned %s notification (origin=%r key=%r) for a resumed owner",
+                         evt_type, origin, key)
         else:
-            logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
+            logger.debug("Dropping unowned %s notification without a retainable owner (origin=%r key=%r)",
+                         evt_type, origin, key)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
         return True
@@ -734,6 +783,12 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
         async_delegation.maybe_sweep_orphaned_completions(queue)
+        retained = _claim_reaped_notifications(sid, session)
+        if retained:
+            try:
+                handle(retained, None)
+            except Exception as exc:
+                _notif_log_failure("retained notification dispatch failed", exc)
         if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:  # bot DM → live-owner delivery latency ≤ 5 s
             last_bot_poll = now
             _poll_bot_live_delivery_guarded(sid, session, now)
@@ -765,8 +820,8 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
             # This thread is the session's only path to notifications, /loop, /heartbeat and its
             # bot mailbox; one bad event must not end all four.
             _notif_log_failure("notification dispatch failed", exc)
-    # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
-    # events are handed back to the shared queue afterwards.
+    # Drain remaining events after the stop signal. Foreign live-owner events are handed back to the shared
+    # queue; addressed events with no live owner enter the bounded reap mailbox for a future resume.
     deferred: list = []
     ready = []
     for _ in range(queue.qsize()):

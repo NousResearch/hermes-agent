@@ -810,6 +810,9 @@ def _reset_tui_gateway_server_state():
         obj = getattr(mod, name, None)
         if isinstance(obj, dict):
             obj.clear()
+    retained = getattr(mod, "_reaped_notification_backlog", None)
+    if isinstance(retained, list):
+        retained.clear()
 
     if snapshot is not None:
         mod._methods.clear()

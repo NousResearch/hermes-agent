@@ -511,7 +511,12 @@ class SessionSessionsMixin:
             conn.execute(
                 "UPDATE messages SET active = 0 "
                 f"WHERE session_id = ? AND role = 'user' AND active = 1 "
-                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
+                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1 "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM messages AS result "
+                "WHERE result.session_id = messages.session_id "
+                "AND result.id > messages.id AND result.role = 'assistant'"
+                ")",
                 (session_id,),
             )
             conn.execute(

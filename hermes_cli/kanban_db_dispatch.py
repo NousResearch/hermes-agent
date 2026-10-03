@@ -652,6 +652,15 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     task's source phase so the next tick re-spawns the same kind of worker —
     unless the circuit breaker already gave up, leaving it blocked. Host-local
     only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+
+    The runtime window is measured from the CURRENT RUN's start
+    (``task_runs.started_at``), never from ``tasks.started_at`` (the first-ever
+    start, which is never refreshed on re-dispatch). A running worker whose
+    active ``task_runs`` row is absent (``current_run_id`` NULL / run row
+    missing) is skipped here, not killed: it is an inconsistent/legacy state,
+    and it is still reaped by the identity-verified paths
+    (``reap_terminal_workers`` / ``detect_crashed_workers``) that key on the
+    closed run row's retained pid + fingerprint.
     """
     timed_out: list[str] = []
     now = int(time.time())
@@ -659,20 +668,22 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
-        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       r.started_at AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
-        "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
+        "  AND r.started_at IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
-        # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
-        # so retries must be measured from the active task_runs row.
+        # Runtime is per attempt: measured from the active task_runs row's
+        # start. Every row reaching here has a valid per-run start (the WHERE
+        # clause requires r.started_at IS NOT NULL), so no fallback to the
+        # stale first-start is possible.
         elapsed = now - int(row["active_started_at"])
         limit = int(row["max_runtime_seconds"])
         if elapsed < limit:

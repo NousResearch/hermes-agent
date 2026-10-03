@@ -312,6 +312,75 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         _kb._pid_alive = original_alive
 
 
+def test_max_runtime_no_run_row_survives(kanban_home):
+    """A running task with a wall-clock cap whose active ``task_runs`` row is
+    absent (``current_run_id`` NULL) is SKIPPED by the sweep, not killed.
+
+    Regression for the 2026-09-24 gateway sweep (house card t_e427ebda):
+    ``enforce_max_runtime`` measured elapsed time with
+    ``COALESCE(task_runs.started_at, tasks.started_at)``. When the active run
+    row is missing the LEFT JOIN yields NULL and the sweep fell back to
+    ``tasks.started_at`` — the task's FIRST-VER start (never refreshed on
+    re-dispatch) — so a verified-ALIVE worker on a long-lived task was
+    spurious-killed the instant it re-reached ``running``. The runtime window
+    is per-attempt: it must be measured from the current run's start. A row
+    with no current run row cannot have its elapsed proven, so the sweep skips
+    it (it is still reaped by the identity-verified ``reap_terminal_workers``
+    / ``detect_crashed_workers`` paths that key on the closed run row).
+    """
+    signaled = []
+    def _signal_fn(pid, sig):
+        signaled.append((pid, sig))
+
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+
+    try:
+        conn = kbc.connect()
+        try:
+            tid = kb.create_task(
+                conn, title="no active run row", assignee="worker",
+                max_runtime_seconds=1,  # one second cap
+            )
+            kb.claim_task(conn, tid)
+            kbd._set_worker_pid(conn, tid, os.getpid())  # a verified-ALIVE pid
+            # Backdate the task's FIRST-VER start so task-age >> limit. Under
+            # the (buggy) COALESCE fallback this alone exceeded the cap.
+            old_started = int(time.time()) - 3600
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET started_at = ? WHERE id = ?",
+                    (old_started, tid),
+                )
+            # Remove the active run row: close it, leaving current_run_id NULL.
+            # The task stays ``running`` with a live worker pid — exactly the
+            # inconsistent state that must NOT be swept.
+            kb._end_run(conn, tid, outcome="orphaned_for_test")
+
+            timed_out = kbd.enforce_max_runtime(conn, signal_fn=_signal_fn)
+            assert timed_out == [], (
+                f"task with no active run row was swept; timed_out={timed_out}"
+            )
+            assert signaled == [], "no signal may be sent to a live worker"
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "running", (
+                f"task should stay running, got {task.status}"
+            )
+            assert task.worker_pid == os.getpid(), (
+                f"live worker pid must be intact, got {task.worker_pid}"
+            )
+            events = kb.list_events(conn, tid)
+            assert not any(e.kind == "timed_out" for e in events), (
+                "no timed_out event may be emitted for a skipped run-row task"
+            )
+        finally:
+            conn.close()
+    finally:
+        _kb._pid_alive = original_alive
+
+
 
 
 

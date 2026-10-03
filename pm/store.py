@@ -270,15 +270,43 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+_OS_METADATA_NAMES = frozenset({".DS_Store", "Thumbs.db", "Desktop.ini", ".localized"})
+
+
+def _is_os_metadata(entry: Path) -> bool:
+    return entry.is_file() and (
+        entry.name in _OS_METADATA_NAMES or entry.name.startswith("._")
+    )
+
+
+def _unlink_os_metadata(entry: Path) -> None:
+    try:
+        entry.unlink()
+    except OSError:
+        # A metadata file the OS refuses to release right now is inert next
+        # to the real payload; refusing to flatten it is a clearer failure
+        # than crashing the install on it.
+        pass
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
-    (bin/, cmd/, lib/...). Refuses on name collisions."""
+    (bin/, cmd/, lib/...). Refuses on name collisions. OS metadata Finder
+    and Spotlight drop into a staging tree mid-extract (.DS_Store, ._*
+    AppleDouble sidecars, Thumbs.db) is not content: it neither counts as
+    an entry nor survives into the published layout."""
+    for item in list(dest.iterdir()):
+        if _is_os_metadata(item):
+            _unlink_os_metadata(item)
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
     for item in list(inner.iterdir()):
+        if _is_os_metadata(item):
+            _unlink_os_metadata(item)
+            continue
         target = dest / item.name
         if target.exists():
             return

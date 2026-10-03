@@ -11,11 +11,13 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -83,7 +85,9 @@ _STDERR_CAP_CHARS = 4000
 
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 # Screenshot paths printed by capture_screenshot(): POSIX or Windows drive-letter absolute.
-_IMAGE_PATH_RE = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
+# Spaces and ``@`` are legal (Google Drive ``Shared drives/…``, ``user@host`` folder names);
+# quotes/newlines still terminate so we don't swallow the rest of stdout.
+_IMAGE_PATH_RE = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\n\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
 # http(s) URL literals in exec code checked against browser_navigate's policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
 _FHS_BIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
@@ -304,6 +308,22 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
         except OSError:
             continue
     return None
+
+
+def _stabilize_screenshot(path: str) -> str:
+    """Copy *path* to a unique cache file so later captures cannot overwrite the
+    bytes this tool result attached (browser-use writes a fixed ``shot.png``)."""
+    src = Path(path)
+    try:
+        dest_dir = Path(get_hermes_home()) / "cache" / "screenshots"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        suffix = src.suffix.lower() if src.suffix else ".png"
+        dest = dest_dir / f"browser_{uuid.uuid4().hex}{suffix}"
+        shutil.copy2(src, dest)
+        return str(dest)
+    except OSError as e:
+        logger.debug("screenshot stabilize copy failed (%s); using original path", e)
+        return path
 
 
 def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:
@@ -714,6 +734,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["stderr"] = stderr
     screenshot = _find_screenshot(proc.stdout, started)
     if screenshot:
+        screenshot = _stabilize_screenshot(screenshot)
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)
         if native is not None:

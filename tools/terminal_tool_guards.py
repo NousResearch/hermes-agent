@@ -86,14 +86,18 @@ def _strip_quotes(command: str) -> str:
     return re.sub(r"`[^`]*`", "``", result)
 
 
+# A server name directly under an installed-package directory is a path, not a launch
+# (`ls .venv/lib/python3.13/site-packages/uvicorn`, `cat node_modules/nodemon/package.json`).
+_NOT_IN_PACKAGE_DIR = r"(?<!(?:site|dist)-packages[/\\])(?<!node_modules[/\\])"
+
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
     r"\bdocker\s+compose\s+up\b",
     r"\bnext\s+dev\b",
-    r"\bvite(?:\s|$)",
-    r"\bnodemon\b",
-    r"\buvicorn\b",
-    r"\bgunicorn\b",
+    _NOT_IN_PACKAGE_DIR + r"\bvite(?:\s|$)",
+    _NOT_IN_PACKAGE_DIR + r"\bnodemon\b",
+    _NOT_IN_PACKAGE_DIR + r"\buvicorn\b",
+    _NOT_IN_PACKAGE_DIR + r"\bgunicorn\b",
     r"\bpython(?:3)?\s+-m\s+http\.server\b",
 ))
 

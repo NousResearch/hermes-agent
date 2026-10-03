@@ -220,7 +220,7 @@ def hatch_pet(
 ) -> HatchResult:
     """Turn an approved base image into a full, installed Hermes pet.
 
-    Idle falls back to the base look so the pet always renders. Raises
+    Idle reuses the approved base when keying leaves a visible frame. Raises
     :class:`GenerationError` on failure. Once *is_cancelled* trips, aborts before
     composing/saving so a stopped hatch never writes a half-built pet.
     """
@@ -231,17 +231,27 @@ def hatch_pet(
     progress = on_progress or (lambda *_: None)
     cancelled = is_cancelled or (lambda: False)
     label = concept or display_name or slug
+    if cancelled():
+        raise GenerationError("hatch cancelled")
+    # Decode before paid work: a corrupt base must not burn row generations.
+    idle = atlas.single_frame(base, fit=False)
     frames_by_state: dict[str, list] = {}
     total_rows = len(atlas.ROW_SPECS)
-    logger.info("pet hatch %r: generating %d animation rows", slug, total_rows)
+    if idle.getchannel("A").getbbox() is not None:
+        frames_by_state["idle"] = [idle]
+        progress("row", f"idle:1:{total_rows}")
+        logger.info("pet hatch %r: idle reuses the approved base image", slug)
+    else:
+        logger.info("pet hatch %r: base has no visible idle after keying; generating idle", slug)
 
     def _gen_row(spec: tuple[str, int, int]) -> tuple[str, list | None]:
         return _generate_row(spec, base=base, label=label, style=style, slug=slug, sprite=sprite, cancelled=cancelled)
 
+    # Reuse a visible identity anchor, but preserve generation when keying erased it.
     # running-left is mirrored from running-right (consistent, one fewer generation).
-    generated_specs = [spec for spec in atlas.ROW_SPECS if spec[0] != "running-left"]
+    generated_specs = [spec for spec in atlas.ROW_SPECS if spec[0] != "running-left" and spec[0] not in frames_by_state]
     cancel_log = f"pet hatch {slug!r}: cancelled — dropping remaining rows"
-    done = 0
+    done = len(frames_by_state)
     for state, frames in _run_parallel(_gen_row, generated_specs, cancelled=cancelled, on_cancel_log=cancel_log):
         done += 1
         progress("row", f"{state}:{done}:{total_rows}")
@@ -260,10 +270,6 @@ def hatch_pet(
         logger.info("pet hatch %r: row 'running-left' mirrored from running-right", slug)
     else:
         logger.warning("pet hatch %r: no running-right to mirror; left walk left empty", slug)
-
-    if not frames_by_state.get("idle"):  # the renderer's resting fallback — guarantee it
-        progress("row", "idle-fallback")
-        frames_by_state["idle"] = [atlas.single_frame(base, fit=False)]
 
     progress("compose", "")
     logger.info("pet hatch %r: composing atlas from %d states", slug, len(frames_by_state))

@@ -367,7 +367,12 @@ def _copy_verified_source(package, lockfile, copy_from, staged, version, target)
                                    _identity(lockfile, package.name, target))
             or not _entry_verified(package, source, source_store, target)):
         raise InstallError(package.name, "bundled copy source failed verification")
-    shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
+    shutil.copytree(
+        source_store.entry(source["entry"]),
+        staged,
+        symlinks=True,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     if tree_digest(staged) != source["digest"]:
         raise InstallError(package.name, "copied bytes do not match the bundled source")
 

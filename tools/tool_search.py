@@ -455,17 +455,21 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     limit = (config.search_default_limit if raw_limit is None
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
     catalog = build_catalog(_deferrable_in(current_tool_defs))
+    local_hits = [search_catalog(catalog, query, limit=limit) for query in queries]
     remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
     hosted_failure: Optional[str] = None
-    if connections_in_scope(current_tool_defs):
+    # A complete local result set cannot be improved within the caller's limit,
+    # so avoid paying the hosted connector search latency.  Any query with room
+    # left still searches both catalogs so connector matches remain discoverable.
+    if connections_in_scope(current_tool_defs) and any(len(hits) < limit for hits in local_hits):
         remote_entries, hosted_failure = connector_entries_by_group(
             queries, connector_search=connector_search)
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
     for position, query in enumerate(queries):
-        corpus = catalog + remote_entries[position]
-        hits = search_catalog(corpus, query, limit=limit)
+        hits = (search_catalog(catalog + remote_entries[position], query, limit=limit)
+                if remote_entries[position] else local_hits[position])
         for h in hits:
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]

@@ -645,6 +645,39 @@ def _same_pin_key(a: str, b: str) -> bool:
     return a == b or (bool(a) and bool(b) and _same_live_dir(a, b))
 
 
+def _dir_identity(path: str) -> Optional[Tuple[int, int]]:
+    """``(st_dev, st_ino)`` of a directory, recorded when a snapshot is pinned to it.
+
+    A pathname only proves which directory a snapshot was taken in until the path
+    is rebound: renaming the directory and reusing its old name for a symlink to
+    somewhere else makes today's resolution of the stored spelling land on the
+    new directory, and a current-filesystem comparison then replays the snapshot
+    there. Recording the identity at capture time lets the replay gate tell a
+    stable alias (same directory behind the spelling) from a rebound one. None
+    when the directory cannot be stat'd."""
+    try:
+        st = Path(path).stat()
+        return (st.st_dev, st.st_ino)
+    except OSError:
+        return None
+
+
+def _persisted_root_still_physical(root_line: str) -> bool:
+    """Provenance evidence carried by a persisted ``- Root:`` line.
+
+    The line is ``git rev-parse --show-toplevel`` output — the physical, fully
+    resolved spelling of the repo root on the day the snapshot was taken, so it
+    is a fixpoint of ``resolve()`` at capture. If resolving it today traverses a
+    symlink, the physical directory it named has been renamed or its pathname
+    rebound, and today's ``samefile`` agreement proves nothing about the
+    snapshot's origin; the gate must take a fresh snapshot instead of adopting
+    the bytes."""
+    try:
+        return Path(root_line).resolve() == Path(root_line)
+    except (OSError, RuntimeError):
+        return False
+
+
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
     """The workspace snapshot inside ``prompt`` taken for ``key`` (its ``- Root:`` is ``key`` or an
     ancestor); "" when the prompt has none; None when it has one for another root."""
@@ -659,8 +692,12 @@ def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
         # The Root line is persisted session bytes: resolve it inside _same_live_dir so a
         # symlink loop in it cannot escape into the caller's blanket handler.
         root_line = block.split("\n", 2)[1][len("- Root: "):]
-        if _same_live_dir(root_line, str(cwd)) or any(
-                _same_live_dir(root_line, str(p)) for p in cwd.parents):
+        # Provenance first: a Root line that no longer resolves to itself names a
+        # directory that was renamed or rebound after capture, so today's samefile
+        # agreement is not evidence this block belongs to the current workspace.
+        if _persisted_root_still_physical(root_line) and (
+                _same_live_dir(root_line, str(cwd)) or any(
+                    _same_live_dir(root_line, str(p)) for p in cwd.parents)):
             return block
         start = prompt.find(head, start + 2)
     return None
@@ -703,7 +740,7 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the
     # coding posture, or with tools off) leaves the pin open so this build captures one.
     if block:
-        agent._frozen_workspace_snapshot = (key, block)
+        agent._frozen_workspace_snapshot = (key, block, _dir_identity(key))
 
 
 def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
@@ -727,11 +764,21 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
             _seed_workspace_pin(agent, cwd_key)
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
-        replay = pinned[1] if pinned is not None and _same_pin_key(pinned[0], cwd_key) else None
+        # A key match alone is not provenance: the captured key names its directory only
+        # until the path is rebound (renamed + reused for a symlink), so a pinned snapshot
+        # whose recorded directory identity no longer matches the key's today replays as
+        # None and the build probes fresh. Legacy 2-tuples carry no identity and keep the
+        # key-match contract.
+        replay = None
+        if pinned is not None and _same_pin_key(pinned[0], cwd_key):
+            identity = pinned[2] if len(pinned) > 2 else None
+            if identity is None or _dir_identity(pinned[0]) == identity:
+                replay = pinned[1]
         parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
                                            valid_tool_names=agent.valid_tool_names, workspace_block=replay)
         if replay is None:
-            agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
+            agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "",
+                                                _dir_identity(cwd_key))
         return parts
     except Exception:
         pass

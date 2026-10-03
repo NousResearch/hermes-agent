@@ -270,6 +270,69 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     return list(out.values())
 
 
+def _collect_memory_provider_restore_roots(home_dir: Path) -> List[Path]:
+    """Home-relative roots declared by locally installed memory providers.
+
+    Import cannot trust the archive to name its own allowed write targets. Query every provider
+    recognized by the local installation instead, retaining missing paths so a backup can restore
+    provider state onto a fresh machine before those files or directories exist.
+    """
+    try:
+        from plugins.memory import list_memory_provider_names, load_memory_provider
+        names = list_memory_provider_names()
+    except Exception:
+        return []
+
+    roots: Dict[Path, Path] = {}
+    for name in names:
+        try:
+            provider = load_memory_provider(name, register_skills=False)
+            declared = provider.backup_paths() if provider is not None else []
+        except Exception as exc:
+            logger.warning("backup_paths() failed for memory provider %r: %s", name, exc)
+            continue
+        for raw in declared or []:
+            try:
+                path = Path(raw).expanduser()
+                if not path.is_absolute():
+                    continue
+                rel = path.resolve().relative_to(home_dir)
+            except (OSError, ValueError):
+                continue
+            roots.setdefault(rel, path)
+    return list(roots)
+
+
+def _validated_external_targets(
+    members: List[str], home_dir: Path
+) -> tuple[Dict[str, Path], List[str]]:
+    """Resolve provider-declared ``_external/`` members or report every refused member."""
+    external = [member for member in members if member.startswith(_EXTERNAL_PREFIX)]
+    if not external:
+        return {}, []
+
+    declared_roots = _collect_memory_provider_restore_roots(home_dir)
+    targets: Dict[str, Path] = {}
+    refused: List[str] = []
+    for member in external:
+        try:
+            parts = normalize_archive_parts(member[len(_EXTERNAL_PREFIX):])
+            rel = Path(*parts)
+            target = home_dir.joinpath(*parts)
+            if not target.resolve().is_relative_to(home_dir):
+                raise ValueError("path traversal")
+        except (OSError, ValueError):
+            refused.append(f"{member}: path traversal blocked")
+            continue
+        if not any(rel == root or rel.is_relative_to(root) for root in declared_roots):
+            refused.append(
+                f"{member}: path is not declared by an installed memory provider"
+            )
+            continue
+        targets[member] = target
+    return targets, refused
+
+
 def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
     if base.is_file() and not base.is_symlink():
@@ -757,12 +820,26 @@ def run_import(args) -> Optional[int]:
         prefix = _detect_prefix(zf)
         members = [n for n in zf.namelist() if not n.endswith("/")]
         file_count = len(members)
+        home_dir = Path.home().resolve()
+        external_targets, refused_external = _validated_external_targets(members, home_dir)
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
 
         if prefix:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
+
+        # A backup is data, not authority to choose arbitrary write targets under $HOME. Refuse
+        # the whole archive before the confirmation prompt or integrity pass if even one external
+        # member falls outside locally installed providers' ``backup_paths()`` declarations.
+        if refused_external:
+            _print_capped(
+                f"Error: backup contains {len(refused_external)} undeclared or unsafe external "
+                "member(s); nothing was restored:",
+                refused_external,
+                "  ",
+            )
+            return 1
 
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
@@ -803,7 +880,6 @@ def run_import(args) -> Optional[int]:
         # import replaced with one holding fewer rows. A restore is allowed to
         # do that — it just must not do it silently (issue #100960).
         db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
-        home_dir = Path.home().resolve()
         # Resolved once: every member is published via a temp file, and mkstemp
         # would otherwise create newly restored files as 0600.
         new_file_mode = _default_new_file_mode()
@@ -814,16 +890,7 @@ def run_import(args) -> Optional[int]:
             # ``_external/`` arc prefix restores to its original home-relative
             # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
             if member.startswith(_EXTERNAL_PREFIX):
-                ext_rel = member[len(_EXTERNAL_PREFIX):]
-                if not ext_rel:
-                    continue
-                target = home_dir / ext_rel
-                # Security: the resolved target must stay under the home dir.
-                try:
-                    target.resolve().relative_to(home_dir)
-                except ValueError:
-                    errors.append(f"  {member}: path traversal blocked")
-                    continue
+                target = external_targets[member]
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     _extract_member_atomically(zf, member, target, new_file_mode)

@@ -1,5 +1,12 @@
 export type WindowAcceleratorAction =
-  'close-tab' | 'reload' | 'zoom-in' | 'zoom-out' | 'zoom-reset' | 'swallow' | 'ignore'
+  | 'close-tab'
+  | 'force-reload'
+  | 'reload'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'zoom-reset'
+  | 'swallow'
+  | 'ignore'
 
 /**
  * How long after the window gains focus a Close Tab / Reload keyDown is
@@ -45,6 +52,14 @@ export function windowAcceleratorAction(
 
   if (!accel) {
     return 'ignore'
+  }
+
+  if (folded === 'r' && input.shift) {
+    if (input.isAutoRepeat || msSinceFocus < FOCUS_GRACE_MS) {
+      return 'swallow'
+    }
+
+    return 'force-reload'
   }
 
   if ((folded === 'w' || folded === 'r') && !input.shift) {

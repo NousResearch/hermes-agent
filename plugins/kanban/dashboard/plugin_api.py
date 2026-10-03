@@ -707,7 +707,13 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
-        if not kanban_db.delete_task(conn, task_id):
+        try:
+            deleted = kanban_db.delete_task(conn, task_id)
+        except kanban_db.TaskHasChildrenError as e:
+            # 409 + the gating child ids so the dashboard can point at the
+            # way forward (archive the parent or unlink the children).
+            raise _conflict(str(e))
+        if not deleted:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}
 

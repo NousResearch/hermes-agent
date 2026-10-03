@@ -100,6 +100,45 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
 
 
+class TestAmbiguousRecoveryNeverGuesses:
+    """Two configured entries matching the row's evidence is ambiguity, not identity: config
+    order must not decide routing, and an ambiguous inference must never be applied — let alone
+    persisted as a named override (#117819 review)."""
+
+    @pytest.fixture
+    def shared_model_config(self, monkeypatch):
+        config = {
+            "custom_providers": [
+                {"name": "provider-a", "base_url": "https://a.invalid/v1",
+                 "api_key": "sk-a", "model": "shared-model"},
+                {"name": "provider-b", "base_url": "https://b.invalid/v1",
+                 "api_key": "sk-b", "model": "shared-model"},
+            ]
+        }
+        monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        return config
+
+    def test_model_owned_by_two_entries_is_not_recovered(self, shared_model_config):
+        """Saved endpoint missing/unmatched + two model owners: no exact identity exists.
+        Taking the first config entry made config order decide the route — reversing the
+        config flipped which endpoint served the session."""
+        assert rp.canonical_custom_identity(base_url="https://stale.invalid/v1",
+                                            model="shared-model") is None
+        assert rp.canonical_custom_identity(model="shared-model") is None
+
+    def test_shared_endpoint_stops_instead_of_retargeting(self, shared_model_config, monkeypatch):
+        """Two entries on one endpoint: stop at the ambiguous tier instead of falling through
+        to the ambient profile provider (the retarget class of review finding 1)."""
+        shared = "https://shared.invalid/v1"
+        for entry in shared_model_config["custom_providers"]:
+            entry["base_url"] = shared
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:provider-a"})
+
+        assert rp.canonical_custom_identity(base_url=shared, model="shared-model") is None
+
+
 class TestIsRoutableProvider:
     """``is_routable_provider`` gates session-resume fallback: a persisted
     provider name that no longer resolves (renamed/removed) must be detected

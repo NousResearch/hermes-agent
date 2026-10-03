@@ -1009,6 +1009,12 @@ def _format_backend_probe(output: str) -> str:
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
     from hermes_constants import hermes_home_key
+    # agent.environment_probe gates every prompt-side environment probing, not just the tools/env_probe
+    # line: off, a remote backend would still create+force-remove a probe container (and run the orphan
+    # reaper via _build_docker_env) on every fresh process against the shared daemon (#131409).
+    agent_cfg = _config_readonly("agent.environment_probe").get("agent", {}) or {}
+    if not agent_cfg.get("environment_probe", True):
+        return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:

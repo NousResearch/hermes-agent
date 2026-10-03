@@ -585,6 +585,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-parallel-cli',
                     'user-guide/skills/optional/research/research-pinecone-research',
                     'user-guide/skills/optional/research/research-qmd',
+                    'user-guide/skills/optional/research/research-qmd-persistent-memory',
                     'user-guide/skills/optional/research/research-research-paper-writing',
                     'user-guide/skills/optional/research/research-rss-feeds',
                     'user-guide/skills/optional/research/research-scrapling',

@@ -239,6 +239,7 @@ hermes skills uninstall <skill-name>
 | [**parallel-cli**](../user-guide/skills/optional/research/research-parallel-cli.md) | Agent-native web search, deep research, and enrichment. |
 | [**pinecone-research**](../user-guide/skills/optional/research/research-pinecone-research.md) | Agent RAG and long-term memory with Pinecone. |
 | [**qmd**](../user-guide/skills/optional/research/research-qmd.md) | Hybrid local search over notes, docs, and transcripts. |
+| [**qmd-persistent-memory**](../user-guide/skills/optional/research/research-qmd-persistent-memory.md) | Give persistent agent memory local semantic search via QMD. |
 | [**research-paper-writing**](../user-guide/skills/optional/research/research-research-paper-writing.md) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. |
 | [**rss-feeds**](../user-guide/skills/optional/research/research-rss-feeds.md) | Read RSS, Atom, JSON feeds; discover feeds behind a page. |
 | [**scrapling**](../user-guide/skills/optional/research/research-scrapling.md) | Scrape sites with stealth browsing and Cloudflare bypass. |

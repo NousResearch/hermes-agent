@@ -224,7 +224,7 @@
       "category": "scar",
       "expect": "semantic",
       "input": "`C:\\Users\\ben\\file.txt` and ```\npath = \"a\\\\b\"\n```",
-      "native_output": "`C:\\\\Users\\\\ben\\\\file.txt` and ```\npath = \"a\\\\\\\\b\"\n```"
+      "native_output": "`C:\\\\Users\\\\ben\\\\file.txt` and \\`\\``\npath = \"a\\\\\\\\b\"\n`\\`\\`"
     },
     {
       "id": "backtick-in-fence",
@@ -319,7 +319,7 @@
       "category": "adversarial",
       "expect": "semantic",
       "input": "```\na\n```\nmid\n```\nb\n```\nend ```inline``` tail",
-      "native_output": "```\na\n```\nmid\n```\nb\n```\nend ```inline``` tail"
+      "native_output": "```\na\n```\nmid\n```\nb\n```\nend \\`\\``inline`\\`\\` tail"
     }
   ]
 }

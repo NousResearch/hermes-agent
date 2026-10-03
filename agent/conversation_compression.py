@@ -3729,17 +3729,26 @@ def _commit_compaction(
             # away whether or not the id rotates.
             agent.commit_memory_session(messages)
 
-            # Pop _compaction_tail tags before the size estimate / rotation: they must not
-            # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
-            _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
             compressed, _refused_sp = _salvage_or_refuse_grown_transcript(
                 agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
                 attempt_snapshot=attempt.snapshot,
             )
             if compressed is None:
+                # Refused (would-grow): pop tags from the caller's untouched original so the
+                # pop below can never run on None — a TypeError here would be swallowed by
+                # the outer except and misreported as a split failure (#126102).
+                for m in messages:
+                    if isinstance(m, dict):
+                        m.pop("_compaction_tail", None)
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
                 )
+
+            # Pop _compaction_tail tags before the rotation: they must not reach the provider.
+            # AFTER salvage (it rebuilds dicts, so id() tracking on the pre-salvage list lost
+            # every tag and tail_count dropped to 0, leaving the originals unarchived as ghost
+            # rows #126102); track ids on the post-salvage list: salvage may subset it.
+            _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
             if in_place:
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
                 # searchable) + insert `compressed` atomically; no pre-flush (tail already in).

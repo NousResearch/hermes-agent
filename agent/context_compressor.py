@@ -326,7 +326,9 @@ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 _DB_PERSISTED_MARKER = "_db_persisted"
 # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
 # they don't duplicate live copies in recall; never persisted (unknown column).
-_COMPACTION_TAIL_MARKER = "_compaction_tail"
+# Aliased from message_metadata: it is a persistence-only field, so the wire-shadow
+# token estimator must never price it (the commit pops it only after salvage #126102).
+from agent.message_metadata import COMPACTION_TAIL_MARKER as _COMPACTION_TAIL_MARKER  # noqa: E402
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
@@ -526,6 +528,11 @@ _SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message bel
 # these delimiters, so the summary prefix is not at content start.
 _MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
 _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
+
+# A carrier re-folds once per compaction it survives; each fold adds one end marker. A
+# bound (not while-True) keeps a malformed/legacy stacked row from spinning forever, and
+# a row that STILL unwraps to a summary at the bound is a pure handoff (hide it).
+_MAX_STACKED_HANDOFF_GENERATIONS = 8
 
 # Prefixes the copy of a still-running user task that compaction re-states after
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
@@ -4489,13 +4496,35 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _strip_context_summary_handoff_message(cls, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Drop stale handoff data while preserving merged prior-tail content.
         Returns a copy for non-handoff rows, the unwrapped prior-tail content for merged handoffs
-        (delimiter form, or legacy end-marker form), and ``None`` for standalone ones."""
+        (delimiter form, or legacy end-marker form), and ``None`` for standalone ones.
+
+        A force-user-leading carrier that itself rode the protected tail into the NEXT
+        compaction stacks generations (each fold prepends a summary before the previous
+        carrier's content, so the end marker appears more than once). Peeling exactly one
+        layer keeps the PREVIOUS generation's summary as the "live" remainder, which every
+        display projection then paints as the user's message (#126102). Re-peel while the
+        remainder is still a summary; only the final non-summary remainder is live content.
+        """
         if not isinstance(message, dict):
             return message
         if not cls._is_context_summary_message(message):
             return message.copy()
-        content = message.get("content")
+        unwrapped = message
+        for _ in range(_MAX_STACKED_HANDOFF_GENERATIONS):
+            content = unwrapped.get("content")
+            peeled = cls._peel_one_summary_layer(unwrapped, content)
+            if peeled is None:
+                return None
+            if not cls._is_context_summary_content(peeled.get("content")):
+                return peeled
+            unwrapped = peeled
+        # A pathological carrier that still unwraps to a summary after every layer is a
+        # pure handoff: hide it rather than paint a summary as the user's words.
+        return None
 
+    @classmethod
+    def _peel_one_summary_layer(cls, message: Dict[str, Any], content: Any) -> Optional[Dict[str, Any]]:
+        """Peel ONE summary layer off *message* (see ``_strip_context_summary_handoff_message``)."""
         def _unwrapped(new_content: Any) -> Dict[str, Any]:
             unwrapped = {**message, "content": new_content}
             unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
@@ -5584,6 +5613,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # regurgitating it (#33256).
             compressed.append({
                 "role": summary_role, "content": summary + "\n\n" + _SUMMARY_END_MARKER,
+                "display_kind": "hidden",
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn),
             })

@@ -37,12 +37,19 @@ ABSORBED_MESSAGE_UIDS = "_absorbed_message_uids"
 # (``messages.tool_call_uid``). The provider-facing ``id`` is untouched; these never reach the wire.
 TOOL_CALL_UIDS = "_tool_call_uids"
 TOOL_CALL_UID = "_tool_call_uid"
+# Carried-forward compaction tail rows archive as rewind-style (active=0, compacted=0) so they don't
+# duplicate live copies in recall; never persisted (unknown column), never sent. _commit_compaction
+# pops it only AFTER the anti-growth salvage pass (the id() tag tracking must see the post-salvage
+# rebuilt dicts), so between compress() and the pop it rides the candidate while the estimate runs —
+# it must not move that estimate or a tagged-tail candidate is falsely refused as would-grow (#126102).
+COMPACTION_TAIL_MARKER = "_compaction_tail"
 PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     # Membership is the real contract, NOT the leading underscore: the chat-completions transport happens
     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
     # backend 400s on any key it does not know.
     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
-     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID}
+     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
+     COMPACTION_TAIL_MARKER}
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 

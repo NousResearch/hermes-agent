@@ -471,10 +471,11 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
 # Ingress dispatch stall (#102260, #130407): the transport probes prove getUpdates round-trips complete, not
-# that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
-# backlog and no dispatch progress: warn once per stall and hand the adapter to the supervisor for a
-# rebuild (an in-place polling restart keeps the wedged dispatcher). Re-arms on dispatch progress.
-_INGRESS_DISPATCH_STALL_HEARTBEATS = 2
+# that PTB's dispatcher ever handed the fetched updates to a handler. A backlog with no dispatch progress for
+# four heartbeats (360s) hands the adapter to the supervisor for a rebuild (an in-place restart keeps the
+# wedged dispatcher). Sized past _POLLING_ERROR_TASK_STUCK_TIMEOUT (300s), the bound on a slow handler: PTB
+# dispatches sequentially, so e.g. a sticker vision_analyze (120s default) must not trip it. Re-arms on progress.
+_INGRESS_DISPATCH_STALL_HEARTBEATS = 4
 # sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
 # to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0

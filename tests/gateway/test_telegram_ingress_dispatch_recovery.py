@@ -72,7 +72,8 @@ async def test_dispatch_stall_marks_degraded_and_goes_fatal():
 
     try:
         with patch("asyncio.sleep", new=AsyncMock()) as sleep:
-            adapter._check_ingress_dispatch_stall()
+            for _ in range(3):
+                adapter._check_ingress_dispatch_stall()
             assert adapter._polling_error_task is None
             adapter._check_ingress_dispatch_stall()
             task = adapter._polling_error_task
@@ -100,15 +101,17 @@ async def test_dispatch_progress_rearms_recovery_scheduling(caplog):
     caplog.set_level(logging.WARNING)
     _receive(adapter, 3)
     with patch.object(adapter, "_schedule_polling_recovery") as sched:
-        adapter._check_ingress_dispatch_stall()
+        for _ in range(3):  # 270s: a slow-but-bounded (<=300s) sequential handler is not a wedge
+            adapter._check_ingress_dispatch_stall()
+        assert sched.call_count == 0
         adapter._check_ingress_dispatch_stall()
         assert sched.call_count == 1
         assert len(_deaf_reports(caplog)) == 1
         await _dispatch(adapter, 1)
         adapter._check_ingress_dispatch_stall()
         assert sched.call_count == 1
-        adapter._check_ingress_dispatch_stall()
-        adapter._check_ingress_dispatch_stall()
+        for _ in range(4):
+            adapter._check_ingress_dispatch_stall()
         assert sched.call_count == 2
     assert len(_deaf_reports(caplog)) == 2
     for call in sched.call_args_list:

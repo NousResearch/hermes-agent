@@ -53,7 +53,7 @@ def _deaf_reports(caplog) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
-    """Healthy dispatch never reports; a wedged dispatcher is reported after two heartbeats even
+    """Healthy dispatch never reports; a wedged dispatcher is reported after four heartbeats even
     while new updates keep arriving, and only once per stall."""
     adapter = _polling_adapter()
     caplog.set_level(logging.WARNING)
@@ -63,11 +63,11 @@ async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
     assert _deaf_reports(caplog) == []
 
     with patch.object(adapter, "_schedule_polling_recovery"):
-        for _ in range(3):  # a fresh update lands before every heartbeat, none dispatched
+        for _ in range(5):  # a fresh update lands before every heartbeat, none dispatched
             _receive(adapter, 1)
             adapter._check_ingress_dispatch_stall()
     (report,) = _deaf_reports(caplog)
-    assert "2 update(s) fetched" in report and "4 received, 2 dispatched" in report
+    assert "4 update(s) fetched" in report and "6 received, 2 dispatched" in report
 
 
 @pytest.mark.asyncio
@@ -76,13 +76,13 @@ async def test_dispatch_progress_rearms_the_report(caplog):
     caplog.set_level(logging.WARNING)
     with patch.object(adapter, "_schedule_polling_recovery"):
         _receive(adapter, 3)
-        _heartbeats(adapter, 3)
+        _heartbeats(adapter, 5)
         assert len(_deaf_reports(caplog)) == 1
 
         await _dispatch(adapter, 1)  # partial drain: progress, backlog remains
         adapter._check_ingress_dispatch_stall()
         assert len(_deaf_reports(caplog)) == 1
-        _heartbeats(adapter, 2)
+        _heartbeats(adapter, 4)
         assert len(_deaf_reports(caplog)) == 2
 
 

@@ -916,3 +916,56 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+@pytest.mark.parametrize("consumer", ["direct", "auxiliary", "async_auxiliary"])
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("error_code", [None, 429, 503])
+def test_stream_error_envelope_reaches_caller(monkeypatch, consumer, partial, error_code):
+    """An in-stream API error must not turn partial output into a completed auxiliary reply."""
+    import asyncio
+    import httpx
+    from agent.auxiliary_client import _acreate_with_stream, _create_with_progress
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient, GeminiAPIError, GeminiNativeClient
+
+    frames = [{"candidates": [{"content": {"parts": [{"text": "partial "}]}}]}] if partial else []
+    if error_code is None:
+        frames.append({"candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}]})
+    else:
+        status = "RESOURCE_EXHAUSTED" if error_code == 429 else "UNAVAILABLE"
+        frames.append({"error": {"code": error_code, "status": status, "message": "provider rejected stream"}})
+    responses = []
+
+    def handle_request(_transport, request):
+        payload = "".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
+        response = httpx.Response(200, stream=httpx.ByteStream(payload.encode()))
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_request)
+    with GeminiNativeClient(api_key="test-key") as client:
+        kwargs = {"model": "gemini-test", "messages": [{"role": "user", "content": "hello"}]}
+
+        def consume():
+            if consumer == "direct":
+                return list(client.chat.completions.create(**kwargs, stream=True))
+            if consumer == "auxiliary":
+                return _create_with_progress(client, kwargs, task="compression", force_stream=True)
+            return asyncio.run(_acreate_with_stream(AsyncGeminiNativeClient(client), kwargs, task="compression"))
+
+        if error_code is not None:
+            with pytest.raises(GeminiAPIError) as exc:
+                consume()
+            assert exc.value.status_code == error_code
+            assert exc.value.response is not None
+            assert exc.value.response.status_code == 200
+            assert "provider rejected stream" in str(exc.value)
+        else:
+            result = consume()
+            if consumer == "direct":
+                assert result[-1].choices[0].finish_reason == "stop"
+            else:
+                assert result.choices[0].message.content == ("partial " if partial else "") + "done"
+                assert result.choices[0].finish_reason == "stop"
+    assert len(responses) == 1
+    assert responses[0].is_closed

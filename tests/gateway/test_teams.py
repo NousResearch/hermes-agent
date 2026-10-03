@@ -1140,3 +1140,99 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ===========================================================================
+# #124974 — approval_request_id forwarding (real queue, real resolve)
+# ===========================================================================
+
+class TestTeamsApprovalRequestIdForwarding:
+    """A card click must resolve ITS queued entry (real tools.approval queue,
+    real resolve), not the FIFO-oldest one; absent id → FIFO."""
+
+    @staticmethod
+    def _card_ctx(data: dict, from_account: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(
+            activity=SimpleNamespace(
+                value=SimpleNamespace(action=SimpleNamespace(data=data)),
+                from_=from_account,
+            ),
+        )
+
+    @staticmethod
+    def _from_account() -> SimpleNamespace:
+        return SimpleNamespace(aad_object_id="aad-1", id="user-1")
+
+    def _adapter(self):
+        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        return adapter
+
+    async def _invoke(self, adapter, ctx):
+        return await adapter._on_card_action(ctx)
+
+    @pytest.mark.asyncio
+    async def test_click_with_request_id_resolves_its_own_card_entry(self, monkeypatch):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        session_key = "agent:main:teams:dm:user-1"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        rid = new.data["request_id"]
+
+        adapter = self._adapter()
+        data = {"hermes_action": "approve_once", "session_key": session_key,
+                "cmd": "rm -rf /x", "desc": "dangerous", "approval_request_id": rid}
+        try:
+            result = await self._invoke(adapter, self._card_ctx(data, self._from_account()))
+        finally:
+            clear_approvals(session_key)
+        assert result is not None and result.status == 200
+        assert_resolved(new, "once")
+        assert_still_pending(old)
+
+    @pytest.mark.asyncio
+    async def test_click_without_request_id_keeps_fifo(self, monkeypatch):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        session_key = "agent:main:teams:dm:user-1"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+
+        adapter = self._adapter()
+        data = {"hermes_action": "approve_once", "session_key": session_key,
+                "cmd": "rm -rf /x", "desc": "dangerous"}
+        try:
+            result = await self._invoke(adapter, self._card_ctx(data, self._from_account()))
+        finally:
+            clear_approvals(session_key)
+        assert result is not None and result.status == 200
+        assert_resolved(old, "once")
+        assert_still_pending(new)
+
+    def test_send_exec_approval_embeds_forwarded_request_id_in_button_data(self, monkeypatch):
+        """The card's buttons must carry the forwarded id so the click can read it."""
+        from gateway.platforms.base import ExecApprovalPrompt
+
+        recorded: list = []
+
+        class _ExecuteActionRecorder:
+            def __init__(self, *a, **kw):
+                recorded.append(kw)
+
+        # The adapter looks ExecuteAction up in its own module globals at call time.
+        monkeypatch.setattr(_teams_mod, "ExecuteAction", _ExecuteActionRecorder)
+
+        adapter = self._adapter()
+        prompt = ExecApprovalPrompt(
+            chat_id="c1", session_key="sess-rid", text="run it",
+            actions=[("Approve Once", "once", "primary"), ("Deny", "deny", "danger")],
+            command="rm -rf /x", description="dangerous", smart_denied=False,
+            metadata={"approval_request_id": "f" * 32},
+        )
+        adapter._send_card = AsyncMock(return_value=MagicMock(id="card-rid"))
+        import asyncio
+        result = asyncio.run(adapter._send_exec_approval_prompt(prompt))
+        assert result.success is True
+        assert recorded, "ExecuteAction was never constructed"
+        assert any(kw.get("data", {}).get("approval_request_id") == "f" * 32 for kw in recorded)

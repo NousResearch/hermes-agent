@@ -464,3 +464,59 @@ def test_minted_prompt_ids_are_instance_scoped_and_callback_safe():
     # A legacy id minted before the nonce existed (no "." segment) is still
     # treated as ours, so a prompt in flight across an upgrade resolves.
     assert a._minted_here("a1b2c3d4") is True
+
+
+# ── #124974: approval_request_id forwarding (real queue, real resolve) ────
+
+
+class TestRelayApprovalRequestIdForwarding:
+    """A prompt tap must resolve ITS queued entry (real tools.approval queue,
+    real resolve), not the FIFO-oldest one; absent id → FIFO."""
+
+    @pytest.mark.asyncio
+    async def test_tap_with_request_id_resolves_its_own_card_entry(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        adapter, _stub = _adapter()
+        session_key = "sess:rid:1"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        rid = new.data["request_id"]
+        state = {"session_key": session_key, "approval_request_id": rid, "kind": "exec_approval"}
+        try:
+            await adapter._resolve_exec_approval(state, "once", "c1", {})
+        finally:
+            clear_approvals(session_key)
+        assert_resolved(new, "once")
+        assert_still_pending(old)
+
+    @pytest.mark.asyncio
+    async def test_tap_without_request_id_keeps_fifo(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        adapter, _stub = _adapter()
+        session_key = "sess:fifo:1"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        state = {"session_key": session_key, "kind": "exec_approval"}
+        try:
+            await adapter._resolve_exec_approval(state, "once", "c1", {})
+        finally:
+            clear_approvals(session_key)
+        assert_resolved(old, "once")
+        assert_still_pending(new)
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_mints_state_with_forwarded_request_id(self):
+        """The send side must ride the card's id into the minted state so the
+        tap's resolver can see it."""
+        from tests.gateway._approval_queue_helpers import clear_approvals
+        adapter, stub = _adapter()
+        result = await adapter.send_exec_approval(
+            "c1", "rm -rf /tmp/x", "sess:rid:2", description="deletes files",
+            metadata={"approval_request_id": "ab" * 16},
+        )
+        assert result.success is True
+        action = stub.sent[-1]
+        assert action["op"] == "prompt"
+        state = adapter._pending_prompts[action["prompt_id"]]
+        assert state["approval_request_id"] == "ab" * 16
+        clear_approvals("sess:rid:2")

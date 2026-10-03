@@ -417,17 +417,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _send_interactive(
         self, chat_id: str, interactive: Dict[str, Any], metadata: Optional[Dict[str, Any]],
         state: "OrderedDict[str, str]", state_id: str, session_key: str,
+        *, request_id: Optional[str] = None,
     ) -> SendResult:
         """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
         success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
-        Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
+        Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user.
+        Exec approvals additionally store the card's ``approval_request_id`` (a ``(session_key,
+        request_id)`` tuple) so a tap resolves ITS queued entry, not the FIFO-oldest one (#124974)."""
         result = await self._post_message_result(
             self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
             fail_log="[whatsapp_cloud] interactive send failed",
             reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
         )
         if result.success:
-            bounded_put(state, state_id, session_key, INTERACTIVE_STATE_CACHE_SIZE)
+            value: Any = (session_key, request_id) if request_id else session_key
+            bounded_put(state, state_id, value, INTERACTIVE_STATE_CACHE_SIZE)
         return result
 
     @staticmethod
@@ -503,8 +507,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._truncate_body(prompt.text),
             (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
             (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
+        from tools.approval import metadata_request_id
         return await self._send_interactive(
-            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id,
+            prompt.session_key, request_id=metadata_request_id(prompt.metadata))
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -910,17 +916,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
-        session_key = self._pop_tap_state(
+        stored = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
             choice, ("approve", "deny"),
         )
-        if not session_key:
+        if not stored:
             return False
+        # Exec-approval sends store ``(session_key, request_id)`` so a tap resolves
+        # ITS card's queued entry, not the FIFO-oldest one (#124974). Legacy/plain
+        # entries (and the other interactive states) store the bare session_key.
+        if isinstance(stored, tuple):
+            session_key, request_id = stored
+        else:
+            session_key, request_id = stored, None
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval(session_key, choice)
+        count = approval.resolve_gateway_approval(session_key, choice, request_id=request_id)
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:

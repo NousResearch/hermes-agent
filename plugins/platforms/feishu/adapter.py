@@ -1777,6 +1777,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
+            from tools.approval import metadata_request_id
             approval_id = next(self._approval_counter)
             actions = [
                 _card_button(label, style or "default",
@@ -1786,6 +1787,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                request_id=metadata_request_id(prompt.metadata),
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1794,19 +1796,25 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _send_interactive_card(
         self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]], failure_message: str, *,
         state_map: Dict[int, Dict[str, str]], state_id: int, session_key: str,
+        request_id: Optional[str] = None,
     ) -> SendResult:
-        """Send a button card and, on success, remember where it went so a click can be validated."""
+        """Send a button card and, on success, remember where it went so a click can be validated.
+        Exec-approval cards also store the forwarded ``approval_request_id`` so the click resolves
+        ITS queued entry, not the FIFO-oldest one (#124974)."""
         response = await self._feishu_send_with_retry(
             chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
             reply_to=None, metadata=metadata,
         )
         result = self._finalize_send_result(response, failure_message)
         if result.success:
-            state_map[state_id] = {
+            state_entry: Dict[str, str] = {
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
             }
+            if request_id:
+                state_entry["approval_request_id"] = request_id
+            state_map[state_id] = state_entry
         return result
 
     @staticmethod
@@ -2351,7 +2359,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
+            request_id = str(state.get("approval_request_id") or "").strip() or None
+            count = resolve_gateway_approval(state["session_key"], choice, request_id=request_id)
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

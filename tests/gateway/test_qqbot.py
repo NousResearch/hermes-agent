@@ -853,8 +853,8 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         # Patch the *module-level* function that _default_interaction_dispatch
@@ -874,7 +874,7 @@ class TestDefaultInteractionDispatch:
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False, None)]
 
 
     @pytest.mark.asyncio
@@ -882,8 +882,8 @@ class TestDefaultInteractionDispatch:
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -974,8 +974,8 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -993,7 +993,7 @@ class TestProfileNamespaceApprovalAuthz:
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False, None)]
 
     @pytest.mark.asyncio
     async def test_group_click_on_named_profile_key_authorizes_session_owner(self):
@@ -1002,8 +1002,8 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -1021,7 +1021,7 @@ class TestProfileNamespaceApprovalAuthz:
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False)]
+        assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False, None)]
 
     @pytest.mark.asyncio
     async def test_named_profile_key_still_rejects_wrong_operator(self):
@@ -1030,8 +1030,8 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         import tools.approval
@@ -1253,3 +1253,79 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+
+# ---------------------------------------------------------------------------
+# #124974 — approval_request_id forwarding: a tap resolves ITS queued entry
+# ---------------------------------------------------------------------------
+
+class TestApprovalRequestIdForwarding:
+    """A card carrying ``approval_request_id`` must resolve THAT queued entry
+    (real tools.approval queue, real resolve) instead of the FIFO-oldest one;
+    an absent id keeps FIFO exactly as before."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    async def _dispatch(self, adapter, button_data: str):
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        event = parse_interaction_event({
+            "id": "i",
+            "chat_type": 2,
+            "user_openid": "u-42",
+            "data": {"resolved": {"button_data": button_data}},
+        })
+        await adapter._default_interaction_dispatch(event)
+
+    @pytest.mark.asyncio
+    async def test_tap_with_request_id_resolves_its_own_card_entry(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "agent:main:qqbot:c2c:u-42"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        rid = new.data["request_id"]
+        adapter = self._make_adapter()
+        try:
+            await self._dispatch(adapter, f"approve:{session_key}:rid={rid}:allow-once")
+        finally:
+            clear_approvals(session_key)
+        assert_resolved(new, "once")
+        assert_still_pending(old)
+
+    @pytest.mark.asyncio
+    async def test_tap_without_request_id_keeps_fifo(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "agent:main:qqbot:c2c:u-42"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        adapter = self._make_adapter()
+        try:
+            await self._dispatch(adapter, f"approve:{session_key}:allow-once")
+        finally:
+            clear_approvals(session_key)
+        assert_resolved(old, "once")
+        assert_still_pending(new)
+
+
+class TestApprovalKeyboardRequestIdRoundTrip:
+    """The button data embeds the forwarded request_id and the parser recovers
+    it, while legacy button data (no id) still parses to the 2-tuple exactly."""
+
+    def test_build_embeds_rid_and_parse_recovers_it(self):
+        from gateway.platforms.qqbot.keyboards import (
+            build_approval_keyboard, parse_approval_button_data_full)
+        kb = build_approval_keyboard("agent:main:qqbot:c2c:UID", request_id="a" * 32)
+        datas = [b.action.data for b in kb.content.rows[0].buttons]
+        assert datas[0] == f"approve:agent:main:qqbot:c2c:UID:rid={'a' * 32}:allow-once"
+        parsed = parse_approval_button_data_full(datas[0])
+        assert parsed == ("agent:main:qqbot:c2c:UID", "allow-once", "a" * 32)
+
+    def test_legacy_button_data_parses_without_rid(self):
+        from gateway.platforms.qqbot.keyboards import (
+            build_approval_keyboard, parse_approval_button_data, parse_approval_button_data_full)
+        kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
+        datas = [b.action.data for b in kb.content.rows[0].buttons]
+        assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
+        assert parse_approval_button_data(datas[0]) == ("agent:main:qqbot:c2c:UID", "allow-once")
+        assert parse_approval_button_data_full(datas[0]) == ("agent:main:qqbot:c2c:UID", "allow-once", None)

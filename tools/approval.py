@@ -136,6 +136,17 @@ def unregister_gateway_notify(session_key: str) -> None:
             entry.event.set()
 
 
+def metadata_request_id(metadata) -> Optional[str]:
+    """Defensively read the forwarded ``approval_request_id`` from an adapter's
+    button metadata / state dict (#124974). Metadata may be None, may lack the
+    key, or the value may be blank; an absent id yields ``None`` so callers pass
+    ``request_id=None`` and ``resolve_gateway_approval`` keeps its FIFO fallback
+    exactly."""
+    if not isinstance(metadata, dict):
+        return None
+    return str(metadata.get("approval_request_id") or "").strip() or None
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,

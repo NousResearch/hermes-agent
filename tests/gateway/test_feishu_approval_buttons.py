@@ -215,7 +215,7 @@ class TestResolveApproval:
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
-        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
+        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once", request_id=None)
         assert 1 not in adapter._approval_state
 
 
@@ -662,3 +662,76 @@ class TestResolveUpdatePrompt:
         assert 3 in adapter._update_prompt_state
 
 
+
+
+# ===========================================================================
+# #124974 — approval_request_id forwarding (real queue, real resolve)
+# ===========================================================================
+
+class TestResolveApprovalRequestIdForwarding:
+    """A card's click must resolve ITS queued entry (real tools.approval queue,
+    real resolve), not the FIFO-oldest one; absent id → FIFO."""
+
+    @pytest.mark.asyncio
+    async def test_click_with_request_id_resolves_its_own_card_entry(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "agent:main:feishu:group:oc_12345"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        rid = new.data["request_id"]
+
+        adapter = _make_adapter()
+        adapter._approval_state[1] = {
+            "session_key": session_key,
+            "message_id": "msg_001",
+            "chat_id": "oc_12345",
+            "approval_request_id": rid,
+        }
+        try:
+            await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
+        finally:
+            clear_approvals(session_key)
+        assert_resolved(new, "once")
+        assert_still_pending(old)
+        assert 1 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_click_without_request_id_keeps_fifo(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "agent:main:feishu:group:oc_12345"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+
+        adapter = _make_adapter()
+        adapter._approval_state[2] = {
+            "session_key": session_key,
+            "message_id": "msg_002",
+            "chat_id": "oc_12345",
+        }
+        try:
+            await adapter._resolve_approval(2, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
+        finally:
+            clear_approvals(session_key)
+        assert_resolved(old, "once")
+        assert_still_pending(new)
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_stores_the_forwarded_request_id(self):
+        """The send side must persist the card's id into the click state."""
+        adapter = _make_adapter()
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_rid"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="echo rid",
+                session_key="sess-rid",
+                metadata={"approval_request_id": "c" * 32},
+            )
+        approval_id = list(adapter._approval_state.keys())[0]
+        assert adapter._approval_state[approval_id]["approval_request_id"] == "c" * 32

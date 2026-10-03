@@ -2043,10 +2043,24 @@ class RelayAdapter(BasePlatformAdapter):
         options = [{"id": choice, "label": label, **({"style": style} if style else {})}
                    for label, choice, style in prompt.actions]
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
+            "exec_approval", self._exec_approval_state_for(prompt), prompt.chat_id, prompt_kind="approval",
             text=prompt.text, options=options, metadata=prompt.metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
+
+    @staticmethod
+    def _exec_approval_state_for(prompt: ExecApprovalPrompt) -> Dict[str, Any]:
+        """Mint state for an exec-approval prompt. Carries the card's forwarded
+        ``approval_request_id`` so ``_resolve_exec_approval`` can resolve THAT
+        entry when the tap returns, instead of the FIFO-oldest one (#124974).
+        Absent id → exactly today's state (id never stored, FIFO fallback)."""
+        from tools.approval import metadata_request_id
+
+        state: Dict[str, Any] = {"session_key": prompt.session_key}
+        rid = metadata_request_id(prompt.metadata)
+        if rid:
+            state["approval_request_id"] = rid
+        return state
 
     async def send_slash_confirm(
         self,
@@ -2158,7 +2172,8 @@ class RelayAdapter(BasePlatformAdapter):
         from tools.approval import resolve_gateway_approval
 
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
+        request_id = str(state.get("approval_request_id") or "").strip() or None
+        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice, request_id=request_id)
         label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).

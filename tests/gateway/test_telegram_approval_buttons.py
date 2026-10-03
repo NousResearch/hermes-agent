@@ -356,3 +356,89 @@ class TestTelegramApprovalCallback:
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
 
+
+
+# ===========================================================================
+# #124974 — approval_request_id forwarding (real queue, real resolve)
+# ===========================================================================
+
+class TestTelegramApprovalRequestIdForwarding:
+    """A card's tap must resolve ITS queued entry (real tools.approval queue,
+    real resolve), not the FIFO-oldest one; absent id → FIFO."""
+
+    def _make_query(self, approval_id: int, choice: str = "once"):
+        query = AsyncMock()
+        query.data = f"ea:{choice}:{approval_id}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        return query
+
+    async def _tap(self, adapter, approval_id: int, choice: str = "once"):
+        query = self._make_query(approval_id, choice)
+        cb = adapter._callback_ctx(query)
+        await adapter._handle_exec_approval_callback(query, query.data, cb)
+
+    @pytest.mark.asyncio
+    async def test_tap_with_request_id_resolves_its_own_card_entry(self):
+        from unittest.mock import patch
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "agent:main:telegram:group:12345:99"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        rid = new.data["request_id"]
+
+        adapter = _make_adapter()
+        adapter._approval_state[5] = {"session_key": session_key, "request_id": rid}
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            try:
+                await self._tap(adapter, 5)
+            finally:
+                clear_approvals(session_key)
+        assert_resolved(new, "once")
+        assert_still_pending(old)
+
+    @pytest.mark.asyncio
+    async def test_tap_without_request_id_keeps_fifo(self):
+        from unittest.mock import patch
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "agent:main:telegram:group:12345:99"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+
+        adapter = _make_adapter()
+        adapter._approval_state[6] = session_key  # legacy bare-session_key state
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            try:
+                await self._tap(adapter, 6)
+            finally:
+                clear_approvals(session_key)
+        assert_resolved(old, "once")
+        assert_still_pending(new)
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_stores_forwarded_request_id(self):
+        """The send side must persist the card's id into the click state."""
+        from unittest.mock import patch
+        adapter = _make_adapter()
+        sent = []
+        with patch.object(adapter, "_send_prompt", new_callable=AsyncMock) as mock_send:
+            async def _fake_send(what, chat_id, metadata, build, **kw):
+                text, keyboard, on_sent = build()
+                sent.append((text, keyboard, on_sent))
+                from gateway.platforms.base import SendResult
+                return SendResult(success=True, message_id="tg-rid")
+            mock_send.side_effect = _fake_send
+            result = await adapter.send_exec_approval(
+                chat_id="12345", command="echo rid", session_key="sess-rid",
+                metadata={"approval_request_id": "e" * 32},
+            )
+        assert result.success is True
+        _text, _keyboard, on_sent = sent[0]
+        on_sent(None)  # fire the state hook like the real send path does
+        approval_id = list(adapter._approval_state.keys())[0]
+        assert adapter._approval_state[approval_id] == {"session_key": "sess-rid", "request_id": "e" * 32}

@@ -2179,15 +2179,14 @@ def _(rid, params: dict, session: dict) -> dict:
         logger.warning("session.save: stored-session read failed; saving the in-memory history", exc_info=True)
         data = None
     path = Path(session.get("profile_home") or get_hermes_home()) / "sessions/saved" / f"hermes_conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
-    if not data:  # No stored row: the in-memory history, with the agent's session_start else created_at.
+    if not data:  # No stored row: the in-memory history as an importable snapshot (CLI fallback shape).
         started = getattr(agent := session["agent"], "session_start", None)
-        if not isinstance(started, datetime) and isinstance(created := session.get("created_at"), (int, float)):
-            started = datetime.fromtimestamp(created)
+        started = started.timestamp() if isinstance(started, datetime) else session.get("created_at")
         with session["history_lock"]:
-            data = {"model": getattr(agent, "model", ""), "messages": list(session.get("history", [])),
-                    "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
-                    "session_start": started.isoformat() if isinstance(started, datetime) else "",
-                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or ""}
+            data = {"id": _submit_row_target_key(session), "model": getattr(agent, "model", ""),
+                    "started_at": started if isinstance(started, (int, float)) else None,
+                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                    "messages": list(session.get("history", []))}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_session_for_save(data, "json"), encoding="utf-8")

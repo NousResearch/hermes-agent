@@ -175,6 +175,13 @@ jobs:
       - name: Forbid literal /tmp paths outside the baseline
         run: python scripts/check_no_tmp_literals.py
 
+      # `m.assert_called_once(), "msg"` is a tuple expression, not an assert: the message is
+      # discarded and a non-call element (`x == y, "msg"`) never runs at all. ruff/flake8 B018
+      # exempts expressions containing a Call, so the whole class is invisible to the lint
+      # config; a human reviewer caught the first one (#117299), not CI.
+      - name: Forbid inert tuple assertions
+        run: python scripts/check_inert_tuple_assertions.py
+
       # config.yaml is hand-edited and commented; a PyYAML dump of it destroys every comment
       # (#92554, regressed repeatedly). All writers go through the hermes_cli.config writer seam.
       - name: Forbid config.yaml writers that bypass the comment-preserving writer

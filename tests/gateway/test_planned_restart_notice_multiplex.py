@@ -67,7 +67,7 @@ async def test_planned_restart_notifies_every_served_profile(multiplex_runner):
     await runner._replay_pending_planned_restart_notification()
 
     launch.send.assert_awaited_once()
-    coder.send.assert_awaited_once(), "a served profile's home channel is owed the restart notice"
+    assert coder.send.await_count == 1, "a served profile's home channel is owed the restart notice"
     assert coder.send.await_args.args[:2] == ("coder-home", ONLINE_NOTICE)
     assert not marker.exists(), "every owed target was notified — the obligation is discharged"
 
@@ -179,7 +179,7 @@ async def test_one_broken_profile_does_not_starve_the_rest(multiplex_runner, mon
 
     await runner._send_home_channel_startup_notifications()
 
-    ok.send.assert_awaited_once(), "a profile after the broken one is still notified"
+    assert ok.send.await_count == 1, "a profile after the broken one is still notified"
 
 
 @pytest.mark.asyncio

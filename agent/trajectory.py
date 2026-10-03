@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -95,19 +95,28 @@ def _trajectory_tool_responses(msg: Dict[str, Any], messages: List[Dict[str, Any
     return tool_responses, j
 
 
-def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
-    """Convert internal message history to trajectory format for saving."""
+def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: Optional[str], completed: bool) -> List[Dict[str, Any]]:
+    """Export history when ``user_query`` is None; otherwise retain the canonical dataset prompt."""
+    from agent.codex_responses_adapter import _summarize_user_message_for_log
     from agent.tool_dispatch_helpers import _trajectory_normalize_msg
 
     # Trajectories are text-only: swap image-bearing tool messages for their text_summary so ~1MB
     # base64 blobs are not embedded.
-    messages = [_trajectory_normalize_msg(m) for m in messages]
+    normalized = [_trajectory_normalize_msg(m) for m in messages]
+    if user_query is None:
+        for index, message in enumerate(messages):
+            if message["role"] == "user":
+                # Preserve the first-user summary before image parts become screenshots.
+                normalized[index] = {**normalized[index], "content": _summarize_user_message_for_log(message.get("content"))}
+                break
+    messages = normalized
     trajectory = [
         {"from": "system", "value": _TRAJECTORY_SYSTEM_PROMPT.format(tools=agent._format_tools_for_system_message())},
-        {"from": "human", "value": user_query},
     ]
-    # Skip messages[0] (already added). Prefill is injected at API-call time only, so no offset adjustment is needed.
-    i = 1
+    i = 0
+    if user_query is not None:
+        trajectory.append({"from": "human", "value": user_query})
+        i = 1  # Dataset/sample callers supply the canonical replacement for the first row.
     while i < len(messages):
         msg = messages[i]
         if msg["role"] == "assistant":

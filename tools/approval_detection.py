@@ -49,8 +49,9 @@ _SENSITIVE_WRITE_TARGET = (
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
-# `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
-_COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+# `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out. Trailing redirections (`2>/dev/null`,
+# `2>&1`) and a closing `)`/backtick may follow the destination.
+_COMMAND_TAIL = r'[)`]*(?:\s+(?:\d*|&)(?:>>?|<)&?\s*\S+)*(?:\s*(?:&&|\|\||;).*)?\s*$'
 # `>`/`>>`/tee: the path is ALWAYS a write target regardless of what follows, so only require a
 # shell word boundary (_COMMAND_TAIL let `echo x > .env extra` / `echo x > .env # note` slip past).
 # `#` is deliberately NOT a boundary: a glued `#` is part of the filename (`.env#backup`).
@@ -381,7 +382,15 @@ DANGEROUS_PATTERNS = [
     # Anchor whole-input lookaheads: re.search otherwise rescans every suffix of
     # long non-matching commands, holding the GIL and starving Gateway threads.
     (r'\A(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
-    (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
+    # Matched per top-level segment (_SEGMENT_SCOPED_DANGEROUS_DESCRIPTIONS). mv touches /etc as a
+    # source too (it removes the file there); cp/install only write when /etc is the DESTINATION (the
+    # last operand, see _COMMAND_TAIL, or the -t/--target-directory value), so backing
+    # up a config (`cp /etc/nginx/nginx.conf ./nginx.conf.bak`) is not a write into /etc.
+    (rf'\b(cp|mv|install)\b(?:(?<=mv).*\s["\']?{_SYSTEM_CONFIG_PATH}'
+     rf'|.*\s(?-i:-t\s*|--target-directory[=\s]\s*)["\']?{_SYSTEM_CONFIG_PATH}'
+     rf'|.*\s(?:"{_SYSTEM_CONFIG_PATH}[^"]*"|\'{_SYSTEM_CONFIG_PATH}[^\']*\'|{_SYSTEM_CONFIG_PATH}[^\s)`]*)'
+     rf'{_COMMAND_TAIL})',
+     "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
     # injection) — pairs the tee/redirection coverage. Anchored to the command tail so only the
@@ -464,6 +473,17 @@ DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGERO
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+})
+
+# Rules whose `.*` must not run into a LATER command (`find . | xargs wc -l; rm -f out.txt` is not
+# "xargs with rm", `cp a b && cat /etc/os-release` is not a copy into /etc): matched against each
+# top-level segment instead of the whole command line.
+_SEGMENT_SCOPED_DANGEROUS_DESCRIPTIONS = frozenset({
+    "xargs with rm",
+    "kill hermes/gateway process (self-termination)",
+    "copy/move file into system config path",
+    "copy/move file into sensitive credential/SSH/shell-rc path",
+    "overwrite project env/config file",
 })
 
 # Preserve approvals stored under the removed interpreter regex rules.
@@ -869,6 +889,21 @@ def _iter_top_level_shell_segments(command: str):
             start = j
     if start < len(command):
         yield command[start:]
+
+
+def _separator_bounded_segments(command: str) -> list[str]:
+    """Top-level segments like ``_iter_top_level_shell_segments``, but an ``&``/``|`` that belongs
+    to a redirection (``2>&1``, ``&>``, ``>|``) does not end the command. Segments are stripped so a
+    destination-anchored rule sees the destination at the end (`cp k ~/.ssh/authorized_keys | cat`)."""
+    segments, start = [], 0
+    for kind, i, j, quote in _scan_shell(command, comments=True):
+        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
+            if command[i] in "&|" and ((i and command[i - 1] in "<>") or command[i + 1:i + 2] == ">"):
+                continue
+            segments.append(command[start:i].strip())
+            start = j
+    segments.append(command[start:].strip())
+    return [segment for segment in segments if segment]
 
 
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
@@ -1530,8 +1565,14 @@ def detect_dangerous_command(command: str) -> tuple:
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
+        segments: list[str] | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+            if description in _SEGMENT_SCOPED_DANGEROUS_DESCRIPTIONS:
+                if segments is None:
+                    segments = _separator_bounded_segments(command_lower)
+                if any(pattern_re.search(segment) for segment in segments):
+                    return (True, description, description)
+            elif description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
                         _mask_quoted_prose(command_variant)

@@ -4,6 +4,7 @@ A quota-exhausted / expired primary raises ``AuthError`` from ``resolve_runtime_
 ``AIAgent`` exists, so the mid-session ``fallback_model`` wiring never gets a chance. The shared
 ``resolve_runtime_with_fallback`` helper gives oneshot the gateway's resolution-time behaviour."""
 
+import httpx
 import pytest
 
 from hermes_cli.auth import AuthError
@@ -64,6 +65,109 @@ class TestResolveRuntimeWithFallback:
             _, entry = resolve_runtime_with_fallback(_CFG, requested="openai-codex")
         assert entry["provider"] == "openai"
         assert any(r.levelname == "WARNING" and "anthropic" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("transport_exc", [
+        httpx.ReadTimeout("portal token refresh timed out"),
+        httpx.ConnectTimeout("connect timed out"),
+        httpx.ConnectError("connection refused"),
+    ])
+    def test_unreachable_primary_walks_chain(self, monkeypatch, caplog, transport_exc):
+        """A primary whose credential endpoint is unreachable (e.g. Nous Portal token refresh timing out
+        during an outage) raises a transport error, not AuthError -- it must still reach the fallback chain."""
+        def fake_resolve(**kw):
+            if kw.get("requested") == "nous":
+                raise transport_exc
+            return {"provider": kw["requested"]}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
+            runtime, entry = resolve_runtime_with_fallback(_CFG, requested="nous")
+        assert (runtime["provider"], entry["model"]) == ("anthropic", "claude-x")
+        assert any("unreachable" in r.getMessage() for r in caplog.records)
+
+    def test_wrapped_transport_error_walks_chain(self, monkeypatch):
+        """Transport errors re-raised inside another exception are recognised via the cause chain."""
+        def fake_resolve(**kw):
+            if kw.get("requested") == "nous":
+                try:
+                    raise httpx.ReadTimeout("timed out")
+                except httpx.ReadTimeout as exc:
+                    raise RuntimeError("credential refresh failed") from exc
+            return {"provider": kw["requested"]}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        _, entry = resolve_runtime_with_fallback(_CFG, requested="nous")
+        assert entry["provider"] == "anthropic"
+
+    def test_unreachable_primary_re_raised_when_chain_exhausted(self, monkeypatch):
+        def fake_resolve(**kw):
+            if kw.get("requested") == "nous":
+                raise httpx.ReadTimeout("primary unreachable")
+            raise AuthError("fallback down")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        with pytest.raises(httpx.ReadTimeout, match="primary unreachable"):
+            resolve_runtime_with_fallback(_CFG, requested="nous")
+
+    @pytest.mark.parametrize("primary_exc", [
+        ValueError("Unknown provider 'antropic'"),
+        httpx.HTTPStatusError("boom", request=httpx.Request("POST", "https://portal.example/api/oauth/token"),
+                              response=httpx.Response(500, request=httpx.Request("POST", "https://portal.example"))),
+    ], ids=["misconfiguration", "http-status-not-mapped-to-auth"])
+    def test_non_eligible_error_propagates_without_consulting_the_chain(self, monkeypatch, primary_exc):
+        """Pins the guard itself: asserting only that the primary error surfaces is not enough, since
+        an exhausted chain re-raises the primary too. The chain must never be walked (#81209)."""
+        calls = []
+
+        def fake_resolve(**kw):
+            calls.append(kw.get("requested"))
+            if kw.get("requested") == "nous":
+                raise primary_exc
+            return {"provider": kw["requested"]}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        with pytest.raises(type(primary_exc)):
+            resolve_runtime_with_fallback(_CFG, requested="nous")
+        assert calls == ["nous"]
+
+
+def test_primary_failure_wording_distinguishes_unreachable():
+    from hermes_cli.auth import primary_failure_wording
+
+    assert primary_failure_wording(httpx.ReadTimeout("t")) == ("unreachable", "Primary provider unreachable")
+    assert primary_failure_wording(AuthError("expired")) == ("auth failed", "Primary auth failed")
+
+
+def test_classifier_follows_explicit_cause_not_implicit_context():
+    """``raise X from transport_err`` is a wrapped network failure; an unrelated error that merely
+    happened to be raised while handling one (implicit ``__context__``) is not -- otherwise a
+    misconfiguration hit during a DNS blip would be silently rerouted."""
+    from hermes_cli.fallback_config import is_fallback_eligible_resolution_error
+
+    try:
+        try:
+            raise httpx.ConnectError("connection refused")
+        except httpx.ConnectError as exc:
+            raise RuntimeError("credential refresh failed") from exc
+    except RuntimeError as wrapped:
+        assert is_fallback_eligible_resolution_error(wrapped)
+
+    try:
+        try:
+            raise httpx.ConnectError("connection refused")
+        except httpx.ConnectError:
+            raise ValueError("provider 'p0' is disabled in config")
+    except ValueError as misconfig:
+        assert not is_fallback_eligible_resolution_error(misconfig)
+
+
+def test_cron_and_interactive_walkers_share_one_classifier():
+    """One transient-network classifier for every resolution-time walker, so cron and the
+    gateway/CLI/TUI cannot drift apart again."""
+    from cron.scheduler_preflight import _is_transient_provider_resolve_error
+    from hermes_cli.fallback_config import is_transient_provider_resolve_error
+
+    assert _is_transient_provider_resolve_error is is_transient_provider_resolve_error
 
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):

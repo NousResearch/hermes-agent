@@ -361,10 +361,14 @@ def _quota_auth_error():
     (_quota_auth_error, "quota exhausted", "auth failed"),
     (lambda: __import__("hermes_cli.auth", fromlist=["AuthError"]).AuthError(
         "no key", provider="openai-codex", code="missing_api_key"), "Primary auth failed", "quota exhausted"),
+    # An unreachable primary (Nous Portal refresh timing out) is neither bad credentials nor quota.
+    (lambda: __import__("httpx").ReadTimeout("portal token refresh timed out"),
+     "Primary provider unreachable", "auth failed"),
 ])
 def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(monkeypatch, tmp_path, exc_factory, expected, absent):
     """A 429 at credential resolution is quota, not bad credentials (#117482); a real
-    credential failure keeps the auth-failed wording."""
+    credential failure keeps the auth-failed wording; a network failure reaches the fallback too
+    and reads as unreachable."""
     from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
     home = tmp_path / "hermes"
@@ -386,6 +390,27 @@ def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(mon
     assert printed
     assert expected in printed[-1]
     assert absent not in printed[-1]
+
+
+def test_fallback_runtime_never_reroutes_misconfiguration(monkeypatch, tmp_path):
+    """Pins the CLI guard: a misconfiguration returns None without touching the fallback chain."""
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    resolved = []
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: resolved.append(kw) or {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
+    )
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
+
+    assert shell._resolve_fallback_runtime(ValueError("Unknown provider 'antropic'")) is None
+    assert resolved == []
 
 
 def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_path):

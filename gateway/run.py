@@ -5956,8 +5956,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
         # Telegram polling) until it returned. See #16856.
         await _discover_gateway_mcp_tools(runner.config)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+    except Exception as exc:
+        logger.debug("MCP tool discovery failed: %s", exc)
+    except BaseException as exc:
+        logger.critical("MCP tool discovery aborted startup: %s", exc, exc_info=True)
+        raise
 
     try:
         success = await runner.start()

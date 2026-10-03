@@ -1,0 +1,25 @@
+name: qdrant
+repo: https://github.com/kuehnberger/hermes-qdrant-memory
+sha: 26540540975ef3297bd5d2b19b637c3099f5e8a3
+version: "0.1.5"
+image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/26540540975ef3297bd5d2b19b637c3099f5e8a3/docs/banner.jpg
+description: "Dense semantic memory for Hermes, stored in a Qdrant collection you host. Each turn becomes one point — user and assistant text verbatim, no LLM summarization step — embedded on-device at 384 dimensions with fastembed (ONNX, no torch) and recalled by cosine search with an optional session_id payload filter, so a result quotes what was actually said. Registers 5 tools: qdrant_search, qdrant_upsert, qdrant_recall, qdrant_collect, qdrant_prepare. An optional progress display (off/minimal/verbose) reports stored and recalled counts in the CLI. sentence-transformers is selectable on GPU hosts; both backends produce identical vectors for all-MiniLM-L6-v2, so switching backends needs no re-embedding. A circuit breaker (5 consecutive I/O failures, 120 s cooldown) degrades to no new memories instead of crashing, and is_available()/check_backend()/unavailable_reason() distinguish a misconfiguration from a dead server. Hybrid dense+sparse RRF search and INT8 quantization exist in _backend.py but are not on the live path. Local embedded Qdrant mode is not supported: the provider is REST-only and needs a reachable server. Disclosure — all memory content (verbatim user and assistant turns) is stored in and read back from the Qdrant server at the configured url (default http://localhost:6333); QDRANT_API_KEY is only needed for Qdrant Cloud, is kept in .env and read through the Hermes secret scope, and is never written to config.yaml or qdrant.json. Disclosure — the only other outbound traffic is a one-time download of the embedding model weights from huggingface.co (fastembed falls back to storage.googleapis.com/qdrant-fastembed if that fails); embedding runs on-device and no memory content goes to any other party. Disclosure — settings are stored in <HERMES_HOME>/qdrant.json (created 0600, no credentials) and last-operation status in <HERMES_HOME>/qdrant-status.json."
+maintainer: kuehnberger
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/kuehnberger/hermes-qdrant-memory#readme
+known_issues:
+- "Windows on ARM is unsupported: grpcio, pulled in by qdrant-client, has no win_arm64 wheel. Linux and macOS on x86_64/arm64 and Windows x86_64 are supported."
+- "Local embedded Qdrant mode is not supported — the provider is REST-only and requires a reachable server."
+- "Running the plugin's pytest suite inside an installed copy still changes the PM dependency stamp (the .pytest_cache directory is hashed as a build input); only an upstream core change can exclude gitignored state."
+capabilities:
+  provides_tools:
+  - qdrant_search
+  - qdrant_upsert
+  - qdrant_recall
+  - qdrant_collect
+  - qdrant_prepare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

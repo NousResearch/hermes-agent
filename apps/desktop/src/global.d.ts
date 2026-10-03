@@ -1696,4 +1696,6 @@ export interface HermesSelectPathsOptions {
 export interface BackendExit {
   code: number | null
   signal: string | null
+  /** Main's exit supervisor is already respawning this backend; not a terminal stop. */
+  recovering?: boolean
 }

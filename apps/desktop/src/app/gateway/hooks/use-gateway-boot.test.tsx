@@ -1863,6 +1863,49 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(secondaryBot).toMatchObject({ runtimeId: 'runtime-secondary-live' })
   })
 
+  it('a soft re-home (backend recycle / connection apply) unbinds tiles from the torn-down primary so they re-resume', async () => {
+    // "Restart Hermes" / Models-page recovery: main SIGTERMs the primary,
+    // spawns a replacement and fires onConnectionApplied WITHOUT reloading
+    // the renderer. The switch wipes every $sessionStates slice, so an open
+    // tab still bound to a runtime id minted by the dead process painted an
+    // endless loader and 4001'd ("session not found") on every poll — its
+    // resume effect only re-arms once the binding is gone.
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    $sessionTiles.set([
+      { runtimeId: '5b359a94', storedSessionId: 'stored-find-and-fix' },
+      {
+        ownerRoute: { connectionId: 'primary-vps', mode: 'remote', profile: 'default' },
+        runtimeId: 'cccae222',
+        storedSessionId: 'stored-review'
+      },
+      {
+        ownerRoute: { connectionId: 'coder-remote', mode: 'remote', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-secondary-live',
+        storedSessionId: 'secondary-bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'coder-remote::coder'
+      }
+    ])
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+    await flushAsync()
+
+    expect($gatewaySwitching.get()).toBe(false)
+    expect($gatewayState.get()).toBe('open')
+
+    const [plainTab, primaryOwnedTab, secondaryBot] = $sessionTiles.get()
+
+    expect(plainTab).toEqual({ storedSessionId: 'stored-find-and-fix' })
+    expect(primaryOwnedTab).not.toHaveProperty('runtimeId')
+    expect(primaryOwnedTab).toMatchObject({ storedSessionId: 'stored-review' })
+    // Another source's backend was not torn down; its runtime is still live.
+    expect(secondaryBot).toMatchObject({ runtimeId: 'runtime-secondary-live' })
+  })
+
   it('FIX: a successful reconnect retires the focused composer busy latch (#93059)', async () => {
     // Backend respawned mid-turn (auto-update, sleep/wake): the focused
     // composer's draft latches never get their terminal busy:false, and Send
@@ -2098,6 +2141,48 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(toast?.action).toBeTruthy()
     toast?.action?.onClick()
     expect($backendRestartRequest.get()).toBe(before + 1)
+  })
+
+  it('a backend exit the supervisor is already respawning offers no Restart that would kill the replacement', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().visible).toBe(false)
+
+    // An external `hermes update` SIGTERMed the backend; main's supervisor
+    // claimed the respawn and announced the exit as recovering.
+    FakeWebSocket.mode = 'fail'
+    act(() => FakeWebSocket.instances[0].drop())
+    act(() => backendExit?.({ code: null, signal: 'SIGTERM', recovering: true }))
+
+    expect($notifications.get().find(entry => entry.kind === 'error')).toBeUndefined()
+
+    // The replacement comes up and the reconnect loop re-dials it on its own.
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($notifications.get().find(entry => entry.kind === 'error')).toBeUndefined()
+  })
+
+  it('a backend-stopped toast is retired once the primary socket reopens', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    FakeWebSocket.mode = 'fail'
+    act(() => FakeWebSocket.instances[0].drop())
+    act(() => backendExit?.({ code: 1, signal: null }))
+    act(() => backendExit?.({ code: 1, signal: null }))
+
+    // Repeated exits replace one sticky toast instead of stacking them.
+    expect($notifications.get().filter(entry => entry.kind === 'error')).toHaveLength(1)
+
+    // A backend is reachable again, so "Restart Hermes" would now recycle a
+    // healthy one.
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($notifications.get().find(entry => entry.kind === 'error')).toBeUndefined()
   })
 
   it('seeds the configured default project dir pre-connect — no route-resume race (#71873)', async () => {

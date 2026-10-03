@@ -197,7 +197,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const startNewSession = useCallback(
     async (msg?: string, title?: string, keepCurrent = false) => {
+      // A session applied while this one is being created (a `/resume` typed
+      // while the TUI starts) is the newer choice: keep it, never close or
+      // overwrite it with the session created here (#121456).
+      const previousSid = getUiState().sid
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
+
+      if (getUiState().sid !== previousSid) {
+        return null
+      }
 
       if (setup?.provider_configured === false) {
         panel(setupRequiredTitle(), buildSetupRequiredSections())
@@ -205,8 +213,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         return null
       }
-
-      const previousSid = getUiState().sid
 
       if (!keepCurrent) {
         await closeSession(previousSid)
@@ -216,6 +222,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         cols: colsRef.current,
         ...(STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {})
       })
+
+      if (getUiState().sid !== previousSid) {
+        if (r) {
+          void closeSession(r.session_id)
+        }
+
+        return null
+      }
 
       if (!r) {
         patchUiState({ status: 'ready' })

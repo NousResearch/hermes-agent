@@ -373,6 +373,7 @@ from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
+from hermes_cli.subcommands.installs import build_installs_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
@@ -2378,6 +2379,13 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
+def cmd_installs(args):
+    """List, remove, or dismiss other Hermes installs on this machine."""
+    from hermes_cli.installs import run_cli
+
+    return run_cli(args)
+
+
 def _clear_bytecode_cache(root: Path) -> int:
     """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
 
@@ -2895,7 +2903,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
+        "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights", "installs",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
@@ -3542,6 +3550,7 @@ def _build_cli_parser():
     build_vault_parser(subparsers)
     build_update_parser(subparsers, cmd_update=cmd_update)
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
+    build_installs_parser(subparsers, cmd_installs=cmd_installs)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
@@ -3698,6 +3707,10 @@ def main():
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+
+    # Each command records its own install, so other installs can find this one.
+    from hermes_cli.installs import record_launch
+    record_launch()
 
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and

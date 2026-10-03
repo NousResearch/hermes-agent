@@ -111,6 +111,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes --version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
+| `hermes installs` | List other Hermes installs on this machine, remove one, or hide the launch notice. |
 
 ## `hermes chat`
 
@@ -2033,6 +2034,12 @@ Additional behavior:
 | `hermes update` | Pull latest changes and reinstall dependencies. |
 
 | `hermes uninstall [--full] [--gui] [--data] [--dry-run] [--yes]` | Remove owned source-install files. `--gui` selects source-built desktop removal; `--full` also removes data. `--data` removes user data without deleting package-owned code. Sealed installs use their package owner for application removal. `--dry-run` previews the scope; `--yes` skips confirmation. |
+
+| Command | Description |
+|---------|-------------|
+| `hermes installs [list] [--json]` | List every Hermes install on this machine and the `hermes` launchers on PATH, in the order a new terminal finds them. |
+| `hermes installs remove <id> [--dry-run] [--yes]` | Remove one other install: its folder, and the launchers and shortcuts that point into it. Your data, User PATH, User environment variables, and the gateway stay as they are. The running install and sealed installs are refused. A Windows package install is removed with `Remove-AppxPackage`. |
+| `hermes installs dismiss` | Hide the launch notice until the set of other installs changes. |
 
 ## See also
 

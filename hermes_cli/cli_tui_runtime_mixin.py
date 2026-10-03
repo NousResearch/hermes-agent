@@ -229,6 +229,18 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
+    def _show_installs_notice(self):
+        """One line when another Hermes install shares this machine. See ``hermes installs``."""
+        try:
+            from gateway.warning_notifications import render_notification
+            from hermes_cli.installs import launch_notice
+
+            notice = launch_notice()
+            if notice:
+                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
+        except Exception:
+            logger.debug("installs notice failed", exc_info=True)
+
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
@@ -243,6 +255,7 @@ class CLITuiRuntimeMixin:
         self.show_banner()
         self._show_security_advisories()
         self._show_browser_backend_notice()
+        self._show_installs_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A

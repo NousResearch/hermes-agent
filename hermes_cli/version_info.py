@@ -125,9 +125,9 @@ def _resolve_stamp_file() -> Path | None:
     return p if p.is_file() else None
 
 
-def _stamp_version_info() -> VersionInfo | None:
-    """Read provenance from a build-time install stamp."""
-    stamp_file = _resolve_stamp_file()
+def _stamp_version_info(stamp_file: Path | None = None) -> VersionInfo | None:
+    """Read provenance from a build-time install stamp (the executing tree's by default)."""
+    stamp_file = stamp_file or _resolve_stamp_file()
     if stamp_file is None:
         return None
     try:
@@ -297,6 +297,24 @@ def get_version_info() -> VersionInfo:
 
     _cached_version_info = info
     return info
+
+
+def version_info_for(root: Path) -> VersionInfo:
+    """Provenance of the tree at ``root``: its stamp, else its live git, else unknown.
+
+    ``get_version_info`` answers for the running tree and caches; this is the
+    uncached read for any other install, with the same resolution order.
+    """
+    from pm.paths import install_stamp_path
+
+    stamp_file = install_stamp_path(root)
+    try:
+        info = _stamp_version_info(stamp_file) if stamp_file.is_file() else None
+    except RuntimeError:
+        info = None
+    if info is None and (root / ".git").exists():
+        info = _git_version_info(root)
+    return info or VersionInfo("unknown", "unknown", None, None, None, "unknown")
 
 
 def get_code_identity(refresh: bool = False) -> dict:

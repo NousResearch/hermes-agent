@@ -250,6 +250,13 @@ _SPECS = [
          help="Show a task with comments + events"),
     _cmd("assign", [_TASK_ID, _arg("profile", help="Profile name (or 'none' to unassign)")],
          help="Assign or reassign a task"),
+    _cmd("reorder", [
+        _TASK_ID,
+        _arg("--before", metavar="TASK_ID", help="Move the task just before this task in the same lane"),
+        _arg("--after", metavar="TASK_ID", help="Move the task just after this task in the same lane"),
+        _arg("--top", action="store_true", help="Move the task to the top of its lane"),
+        _arg("--bottom", action="store_true", help="Move the task to the bottom of its lane"),
+    ], help="Move a task within its lane; read it back with `list --sort manual`"),
     _cmd("set-model", [
         _TASK_ID,
         _arg("model", nargs="?", help="Model to pin the worker to (or 'none' to clear the override)"),

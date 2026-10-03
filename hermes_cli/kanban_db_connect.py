@@ -837,6 +837,9 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Manual lane position for ``order_by="manual"``; 0 = never reordered, so
+    # every existing board keeps its current order (#88640).
+    ("sort_order", "sort_order INTEGER NOT NULL DEFAULT 0"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

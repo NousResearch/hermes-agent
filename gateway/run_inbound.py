@@ -526,9 +526,13 @@ class GatewayInboundMixin:
             self._SLASH_CONFIRM_CMD_CHOICES.get(event.get_command())
             or self._slash_confirm_text_choices().get(_norm_reply)
         )
-        if _confirm_choice is not None:
+        # Answering runs the confirmed command ("always" also persists the opt-out): only someone
+        # allowed to run it may answer (the gate registered with the prompt, shared with every
+        # adapter's buttons); anyone else's reply is ordinary chat.
+        _user_id = event.source.user_id
+        if _confirm_choice is not None and _slash_confirm_mod.can_answer(_quick_key, _user_id):
             _resolved = await _slash_confirm_mod.resolve(
-                _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
+                _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice, user_id=_user_id,
             )
             return _resolved or ""
         # Stale pending + unrelated command: the user moved on, so drop the pending state rather

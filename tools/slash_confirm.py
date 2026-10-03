@@ -2,10 +2,10 @@
 
 Slash commands with an expensive side effect (currently only ``/reload-mcp``, which invalidates
 the provider prompt cache) route through here. Button-UI adapters render Approve Once / Always
-Approve / Cancel and call ``resolve()``; text-only adapters get a prompt and the gateway
-intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``tools.approval``)
-so adapters can resolve without a ``GatewayRunner`` backreference. The CLI has its own
-synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
+Approve / Cancel and call ``resolve()`` with the clicking user's id; text-only adapters get a
+prompt and the gateway intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level
+(like ``tools.approval``) so adapters can resolve without a ``GatewayRunner`` backreference. The
+CLI has its own synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# session_key -> {"confirm_id", "command", "handler", "created_at"}
+# session_key -> {"confirm_id", "command", "handler", "authorize", "created_at"}
 _pending: Dict[str, Dict[str, Any]] = {}
 _lock = threading.RLock()
 
@@ -27,11 +27,28 @@ DEFAULT_TIMEOUT_SECONDS = 300
 
 
 def register(session_key: str, confirm_id: str, command: str,
-             handler: Callable[[str], Awaitable[Optional[str]]]) -> None:
-    """Register a pending confirm, superseding any prior one for the session."""
+             handler: Callable[[str], Awaitable[Optional[str]]], *,
+             authorize: Optional[Callable[[Optional[str]], bool]] = None) -> None:
+    """Register a pending confirm, superseding any prior one for the session.
+
+    ``authorize(user_id)`` decides who may answer: answering runs ``command``, so the gateway
+    passes its slash access policy for it, and every answer path (typed reply, any adapter's
+    button) goes through ``resolve``."""
     with _lock:
-        _pending[session_key] = {"confirm_id": confirm_id, "command": command,
-                                 "handler": handler, "created_at": time.time()}
+        _pending[session_key] = {"confirm_id": confirm_id, "command": command, "handler": handler,
+                                 "authorize": authorize, "created_at": time.time()}
+
+
+def _may_answer(entry: Optional[Dict[str, Any]], user_id: Optional[str]) -> bool:
+    authorize = entry.get("authorize") if entry else None
+    return authorize is None or bool(authorize(user_id))
+
+
+def can_answer(session_key: str, user_id: Optional[str]) -> bool:
+    """Whether ``user_id`` may answer the session's pending confirm (True when none is pending).
+    Answer paths ask before claiming a tap or reply, so a refused one leaves the prompt live."""
+    with _lock:
+        return _may_answer(_pending.get(session_key), user_id)
 
 
 def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
@@ -62,15 +79,20 @@ def clear_if_stale(session_key: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -
 
 
 async def resolve(session_key: str, confirm_id: str, choice: str,
-                  timeout: float = DEFAULT_TIMEOUT_SECONDS) -> Optional[str]:
-    """Run the pending handler with ``choice`` ("once" / "always" / "cancel").
+                  timeout: float = DEFAULT_TIMEOUT_SECONDS, *, user_id: Optional[str] = None) -> Optional[str]:
+    """Run the pending handler with ``choice`` ("once" / "always" / "cancel") for ``user_id``, the
+    user who answered.
 
     Returns the handler's output string, or None if the confirm was stale, already resolved,
-    or the confirm_id doesn't match (superseded prompt).
+    the confirm_id doesn't match (superseded prompt), or ``user_id`` may not answer it — then it
+    stays pending for someone who may (an answer naming no user is refused while it is gated).
     """
     with _lock:
         entry = _pending.get(session_key)
         if not entry or entry.get("confirm_id") != confirm_id:
+            return None
+        if not _may_answer(entry, user_id):
+            logger.info("Slash-confirm for /%s refused for user %s", entry.get("command"), user_id)
             return None
         # Pop before running so duplicate callbacks (button double-click) cannot run it twice.
         _pending.pop(session_key, None)

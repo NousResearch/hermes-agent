@@ -2133,12 +2133,17 @@ class RelayAdapter(BasePlatformAdapter):
                 "relay prompt_response %s (option=%s) already resolved — ignoring repeat", prompt_id, option_id
             )
             return True
+        answered_by = getattr(event.source, "user_id", None)
+        if not self._may_answer_prompt(prompt_id, answered_by):
+            logger.info("relay prompt_response %s refused for %s by its slash policy", prompt_id, answered_by)
+            return True  # consumed, but the prompt stays live for someone allowed
         state = self._pop_prompt(prompt_id)
         if state is None:
             logger.info("relay prompt_response for unknown/expired prompt %s (option=%s)", prompt_id, option_id)
             await self._notify_prompt_expired(event)
             return True
         self._note_prompt_resolved(prompt_id)
+        state["answered_by"] = answered_by
 
         kind = state.get("kind")
         chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
@@ -2166,12 +2171,23 @@ class RelayAdapter(BasePlatformAdapter):
         if count:
             self.resume_typing_for_chat(chat_id)
 
+    def _may_answer_prompt(self, prompt_id: str, answered_by: Optional[str]) -> bool:
+        """A slash-confirm answer runs the confirmed command, so the presser must pass that
+        confirm's slash policy; asked before the prompt is consumed (other kinds: always)."""
+        pending = self._pending_prompts.get(prompt_id) or {}
+        if pending.get("kind") != "slash_confirm":
+            return True
+        from tools import slash_confirm as slash_confirm_mod
+
+        return slash_confirm_mod.can_answer(str(pending.get("session_key") or ""), answered_by)
+
     async def _resolve_slash_confirm(self, state, option_id, chat_id, ack_meta) -> None:
         from tools import slash_confirm as slash_confirm_mod
 
         choice = option_id if option_id in _SLASH_CONFIRM_LABELS else "cancel"
         result_text = await slash_confirm_mod.resolve(
-            str(state.get("session_key") or ""), str(state.get("confirm_id") or ""), choice
+            str(state.get("session_key") or ""), str(state.get("confirm_id") or ""), choice,
+            user_id=state.get("answered_by"),
         )
         self._send_lifecycle_ack(chat_id, _SLASH_CONFIRM_LABELS[choice], ack_meta)
         if result_text:

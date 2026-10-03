@@ -944,7 +944,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if slash_confirm is None:
             return False
         try:
-            result_text = await slash_confirm.resolve(session_key, confirm_id, choice)
+            # ``to`` is the tapping user (DMs only), whom the confirm's slash policy checks.
+            result_text = await slash_confirm.resolve(session_key, confirm_id, choice, user_id=to)
         except Exception:
             logger.exception("[whatsapp_cloud] slash_confirm.resolve failed")
             return True  # still claim the tap; surfacing it as text wouldn't help

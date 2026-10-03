@@ -1237,9 +1237,9 @@ class TestDispatchInteractiveReplySlashConfirm:
 
         captured = {}
 
-        async def fake_resolve(session_key, confirm_id, choice):
+        async def fake_resolve(session_key, confirm_id, choice, *, user_id=None):
             captured.update(
-                session_key=session_key, confirm_id=confirm_id, choice=choice
+                session_key=session_key, confirm_id=confirm_id, choice=choice, user_id=user_id
             )
             return "MCP reloaded."
 
@@ -1261,6 +1261,7 @@ class TestDispatchInteractiveReplySlashConfirm:
             "session_key": "sess-sc-1",
             "confirm_id": "cf-9",
             "choice": "once",
+            "user_id": raw["from"],  # the tapper, whom the confirm's slash policy checks
         }
         reply_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert "MCP reloaded" in reply_payload["text"]["body"]

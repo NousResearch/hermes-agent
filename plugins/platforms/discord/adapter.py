@@ -6508,13 +6508,20 @@ def _define_discord_view_classes() -> None:
                 unauth_msg=_unauthorized(),
             ):
                 return
+            from tools import slash_confirm as _slash_confirm_mod
+            user_id = str(interaction.user.id)
+            # Answering runs the confirmed command: a clicker its slash policy refuses is turned
+            # away like any unauthorized click, and the prompt stays live for someone allowed.
+            if not _slash_confirm_mod.can_answer(self.session_key, user_id):
+                await interaction.response.send_message(_unauthorized(), ephemeral=True)
+                return
             await self._finalize_embed(
                 interaction, color,
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             # A returned follow-up message is posted in the same channel.
             try:
-                from tools import slash_confirm as _slash_confirm_mod
-                result_text = await _slash_confirm_mod.resolve(self.session_key, self.confirm_id, choice)
+                result_text = await _slash_confirm_mod.resolve(
+                    self.session_key, self.confirm_id, choice, user_id=user_id)
                 if result_text:
                     await interaction.followup.send(result_text)
                 logger.info(

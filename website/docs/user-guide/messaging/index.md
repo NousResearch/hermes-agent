@@ -400,7 +400,7 @@ Every allowed user falls into one of two tiers per scope (DM vs group/channel):
 
 The tiers are configured per platform and per scope. DM admin status does not imply group/channel admin status — each scope has its own admin list.
 
-**What the tiers gate today:** slash commands. The split runs through the live command registry, so it covers built-ins and plugin-registered commands without per-feature wiring. Plain chat is not affected — non-admins can still talk to the agent.
+**What the tiers gate today:** slash commands. The split runs through the live command registry, so it covers built-ins and plugin-registered commands without per-feature wiring. Plain chat is not affected — non-admins can still talk to the agent. Answering a command's confirmation prompt (such as the one `/reset` shows) counts as running that command. That applies to the Approve buttons on every platform and to typed replies like `approve` or `always`, so in a shared chat only someone allowed to run the command can confirm it.
 
 **What may be gated in the future:** more capability surfaces (tool access, model switching, expensive operations) will hang off the same admin / user distinction as we add them. Configuring the split now means those future restrictions land cleanly without you having to re-model who's an admin.
 

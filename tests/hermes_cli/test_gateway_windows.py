@@ -660,7 +660,14 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     launcher = script_path.with_suffix(".vbs")
     template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
     calls: list[list[str]] = []
-    registered = {"xml": _PRE_HARDENING_TASK_XML}
+    # The old task may omit current flags/hardening, but its executed launcher
+    # must still be the launcher for this target. A task from another home is
+    # user-owned from this target's perspective and is deliberately not repaired.
+    registered = {
+        "xml": _PRE_HARDENING_TASK_XML.replace(
+            r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs", str(launcher)
+        )
+    }
 
     def fake_schtasks(args):
         calls.append(list(args))
@@ -841,3 +848,49 @@ def test_wizard_install_service_asks_once_and_never_starts_after_windows_install
 
     assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
     assert starts == []
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_update_refresh_reconciles_only_the_explicit_home(monkeypatch, tmp_path, registered):
+    from hermes_cli import main, main_install_repair, update_cmd_windows
+
+    root = tmp_path / ".hermes"
+    alpha, beta = root / "profiles" / "alpha", root / "profiles" / "beta"
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(alpha))
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    monkeypatch.setattr(main, "_is_windows", lambda: True)
+    untouched_homes = (root, alpha, tmp_path / "other-install")
+    for home in (*untouched_homes, beta):
+        gateway_windows.get_startup_entry_path(home).write_text("fallback", encoding="utf-8")
+        gateway_windows._legacy_startup_entry_path(home).write_text("legacy", encoding="utf-8")
+    untouched_paths = [
+        path for home in untouched_homes
+        for path in (gateway_windows.get_startup_entry_path(home), gateway_windows._legacy_startup_entry_path(home))
+    ]
+    before = [p.read_bytes() for p in untouched_paths]
+    queries, refreshed = [], []
+
+    def query(args):
+        queries.append(args)
+        assert args == ["/Query", "/TN", gateway_windows.get_task_name(beta)]
+        return (0 if registered else 1, "", "")
+
+    def write_script(home=None):
+        refreshed.append(home)
+        return gateway_windows.get_task_script_path(home)
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", query)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", write_script)
+    monkeypatch.setattr(gateway_windows, "reconcile_scheduled_task", lambda *_a, **_kw: False)
+    update_cmd_windows._refresh_windows_gateway_launchers(home=beta)
+    assert refreshed and all(home == beta for home in refreshed)
+    assert queries
+    assert [p.read_bytes() for p in untouched_paths] == before
+    assert not gateway_windows._legacy_startup_entry_path(beta).exists()
+    assert gateway_windows.get_startup_entry_path(beta).exists() is (not registered)
+    assert gateway_windows.redundant_autostart_entries(home=beta) == []

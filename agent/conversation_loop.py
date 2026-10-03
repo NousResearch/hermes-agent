@@ -905,8 +905,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         return False
     # Compare against resolve_agent_cwd() — the SAME resolver used to build the
     # prompt — so TERMINAL_CWD sessions are not falsely rejected.
+    # A deleted cwd (OSError) cannot be compared; the stored bytes are the best record left.
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and stored_cwd != str(resolve_agent_cwd()):
+    try:
+        current_cwd = str(resolve_agent_cwd()) if stored_cwd else ""
+    except OSError:
+        current_cwd = stored_cwd
+    if stored_cwd and stored_cwd != current_cwd:
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
     # stored bytes, it only makes their interface section out of date, and that is corrected by

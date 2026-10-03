@@ -11,7 +11,9 @@ _UPDATE_CRITICAL_MODULES = "hermes_cli.main", "run_agent", "model_tools", "tools
 
 
 def _critical_module_import_failures(
-    root, *, report_runtime_errors: bool = False) -> dict[str, tuple[str, str]]:
+    root, *, report_runtime_errors: bool = False,
+    allow_successful_relaunch: bool = False,
+) -> dict[str, tuple[str, str]]:
     """Import each ``_UPDATE_CRITICAL_MODULES`` entry in a subprocess; return failures in probe order.
 
     Syntax validation only *parses*: a partially-updated tree (Windows ZIP copy loop) parses yet
@@ -44,6 +46,10 @@ def _critical_module_import_failures(
         "    except Exception as exc:\n"
         "        if %r:\n"
         "            failures.append((name, type(exc).__name__, str(exc)))\n"
+        "    except SystemExit as exc:\n"
+        "        # Exit status alone cannot prove that this import was the updater takeover.\n"
+        "        # Keep unrelated successful exits visible to the stash-safety comparison.\n"
+        "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"

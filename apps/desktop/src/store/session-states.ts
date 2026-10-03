@@ -540,8 +540,9 @@ function writeSessionState(runtimeId: string, updater: (state: ClientSessionStat
 /** The backend reported the turn over and its end events never arrived. Settle
  *  it like the running=false edge: nothing is interrupted, the kept stream
  *  bubble is remembered so a late message.complete settles onto it. */
-function settleEndedLiveTurn(runtimeId: string) {
+function settleEndedLiveTurn(runtimeId: string): string | null {
   const occurredAt = Date.now() / 1000
+  let settledId: string | null = null
 
   writeSessionState(runtimeId, state => {
     if (!isLiveTurnAwaitingEvents(state)) {
@@ -549,13 +550,19 @@ function settleEndedLiveTurn(runtimeId: string) {
     }
 
     const messages = sealOpenToolParts(finalizeInterruptedMessages(state.messages, state.streamId, occurredAt))
+    // Reserve an identity even when settling drops the empty stream bubble.
+    // History recovery may await I/O; a newer message.start invalidates this
+    // identity before that recovery can attach a notice to the wrong turn.
+    settledId =
+      state.streamId && messages.some(message => message.id === state.streamId)
+        ? state.streamId
+        : `assistant-no-reply-${Date.now()}`
 
     return {
       ...state,
       awaitingResponse: false,
       busy: false,
-      heartbeatSettledStreamId:
-        state.streamId && messages.some(message => message.id === state.streamId) ? state.streamId : null,
+      heartbeatSettledStreamId: settledId,
       messages,
       pendingBranchGroup: null,
       streamId: null,
@@ -563,6 +570,8 @@ function settleEndedLiveTurn(runtimeId: string) {
       turnStartedAt: null
     }
   })
+
+  return settledId
 }
 
 // Raised only after the backend confirmed the turn is over and no reply reached
@@ -590,7 +599,7 @@ function turnHasReply(messages: ChatMessage[]): boolean {
   return false
 }
 
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
+function withNoReplyNotice(messages: ChatMessage[], noticeId: string): ChatMessage[] {
   const last = messages.findLast(message => !message.hidden)
 
   // A turn that ran tools but never wrote text carries the notice on its own bubble.
@@ -608,7 +617,7 @@ function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
       completedAt: occurredAt,
       error: NO_REPLY_ERROR,
       errorSurface: NO_REPLY_SURFACE,
-      id: `assistant-no-reply-${Date.now()}`,
+      id: noticeId,
       parts: [],
       pending: false,
       role: 'assistant',
@@ -619,15 +628,27 @@ function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
 
 /** Stamp the retry card on an ended turn that has no reply. A newer turn the
  *  user started meanwhile is either live (skipped) or has its own reply. */
-function markTurnWithoutReply(runtimeId: string) {
-  writeSessionState(runtimeId, state =>
-    isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
-      ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
-  )
+function markTurnWithoutReply(runtimeId: string, settledId: string) {
+  writeSessionState(runtimeId, state => {
+    if (
+      state.heartbeatSettledStreamId !== settledId ||
+      isLiveTurnAwaitingEvents(state) ||
+      turnHasReply(state.messages)
+    ) {
+      return state
+    }
+
+    const messages = withNoReplyNotice(state.messages, settledId)
+
+    return {
+      ...state,
+      messages,
+      heartbeatSettledStreamId: messages.findLast(message => !message.hidden)?.id ?? settledId
+    }
+  })
 }
 
-async function recoverEndedLiveTurn(runtimeId: string) {
+async function recoverEndedLiveTurn(runtimeId: string, settledId: string) {
   const storedSessionId = $sessionStates.get()[runtimeId]?.storedSessionId ?? null
   const refreshTranscript = liveTurnBackend?.refreshTranscript
 
@@ -641,7 +662,7 @@ async function recoverEndedLiveTurn(runtimeId: string) {
     }
   }
 
-  markTurnWithoutReply(runtimeId)
+  markTurnWithoutReply(runtimeId, settledId)
 }
 
 /** The silence window ran out: ask the backend. Running keeps the turn and
@@ -671,8 +692,11 @@ async function onEventSilence(runtimeId: string) {
     return
   }
 
-  settleEndedLiveTurn(runtimeId)
-  await recoverEndedLiveTurn(runtimeId)
+  const settledId = settleEndedLiveTurn(runtimeId)
+
+  if (settledId) {
+    await recoverEndedLiveTurn(runtimeId, settledId)
+  }
 }
 
 /** Record that this session just produced an event. A live turn that then goes

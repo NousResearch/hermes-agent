@@ -335,6 +335,24 @@ describe('live turn event silence', () => {
     expect($workingSessionIds.get()).not.toContain('s-bg')
   })
 
+  it('does not stamp a prior turn notice after a newer turn finished during transcript recovery', async () => {
+    $activeSessionId.set('rt-race')
+    publishSessionState('rt-race', state({ busy: true, awaitingResponse: true, turnLive: true }))
+
+    const refreshTranscript = vi.fn(async (runtimeId: string) => {
+      const current = $sessionStates.get()[runtimeId]!
+      // message.start of the new turn invalidates the old recovery target;
+      // its complete then leaves the runtime idle before this read returns.
+      publishSessionState(runtimeId, { ...current, heartbeatSettledStreamId: null })
+    })
+
+    backend(async () => ({ sessions: [] }), refreshTranscript)
+    noteSessionEvent('rt-race')
+    await vi.advanceTimersByTimeAsync(SILENCE_MS)
+    expect(refreshTranscript).toHaveBeenCalledOnce()
+    expect(card('rt-race')).toBeUndefined()
+  })
+
   it('asks the backend that owns the turn, not the window gateway', async () => {
     publishSessionState('rt-remote', partial('partial', { storedSessionId: 's-remote' }))
     recordSessionEventScope({ connectionId: 'homelab', profile: 'work', session_id: 'rt-remote' })

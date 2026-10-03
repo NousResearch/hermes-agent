@@ -231,7 +231,8 @@ def _list_sessions(source: str, root: Optional[Path]) -> List[ForeignSession]:
 def import_foreign_session(source: str, path, db=None) -> str:
     """Import one foreign session into the Hermes SessionDB; returns the new Hermes session id.
 
-    Raises ``ValueError`` on unknown source or a session with no usable conversation turns."""
+    Raises ``ValueError`` on unknown source, a session with no usable conversation turns, or a
+    failed write (nothing is imported: the row and every turn commit together or not at all)."""
     source = (source or "").strip().lower().lstrip("@")
     if source not in _SOURCE_LABELS:
         raise ValueError(f"Unknown foreign session source: {source!r}")
@@ -253,9 +254,11 @@ def import_foreign_session(source: str, path, db=None) -> str:
     try:
         session_id = new_session_id()
         origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
-        db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
-        for turn in turns:
-            db.append_message(session_id, turn["role"], turn["content"])
+        try:
+            db.create_imported_session(session_id, tool, turns, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
+        except Exception as exc:
+            # The one write txn rolled back; ValueError is the channel both callers print and exit 1 on.
+            raise ValueError(f"Could not import {path}: {exc}; nothing was imported") from exc
         with contextlib.suppress(Exception):  # title is cosmetic; the import itself succeeded
             db.set_session_title(session_id, f"Imported from {_SOURCE_LABELS[source]}: {first_user}")
         return session_id

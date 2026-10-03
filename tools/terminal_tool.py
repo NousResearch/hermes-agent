@@ -1024,7 +1024,7 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
                 "", status="pending_approval",
-                approval_pending=True,
+                approval_pending=True, policy_blocked=True,
                 command=approval.get("command", command),
                 description=approval.get("description", "command flagged"),
                 pattern_key=approval.get("pattern_key", ""),
@@ -1034,9 +1034,9 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
         desc = approval.get("description", "command flagged")
         fallback_msg = (
             f"Command denied: {desc}. "
-            "Use the approval prompt to allow it, or rephrase the command."
+            "Stop and report the denial; do not rephrase it to evade approval."
         )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked", policy_blocked=True,
                                     **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
